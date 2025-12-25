@@ -20,6 +20,19 @@ interface InventoryModalProps {
   initialData?: InventoryItem | null; // If present, we are in EDIT mode
 }
 
+type InventoryFormState = Partial<Omit<InventoryItem, 'totalStockQuantity' | 'reorderThreshold'>> & {
+  totalStockQuantity?: number | string;
+  reorderThreshold?: number | string;
+};
+
+type InventoryFormField =
+  | 'name'
+  | 'shelf'
+  | 'unit'
+  | 'description'
+  | 'totalStockQuantity'
+  | 'reorderThreshold';
+
 export default function InventoryModal({ 
   isOpen, 
   onOpenChange, 
@@ -29,7 +42,7 @@ export default function InventoryModal({
 }: InventoryModalProps) {
   
   // Default Empty State
-  const defaultState: Partial<InventoryItem> = {
+  const defaultState: InventoryFormState = {
     name: '',
     category: 'Other',
     location: 'HQ',
@@ -43,7 +56,7 @@ export default function InventoryModal({
     expirationDate: undefined
   };
 
-  const [formData, setFormData] = useState<Partial<InventoryItem>>(defaultState);
+  const [formData, setFormData] = useState<InventoryFormState>(defaultState);
 
   // Effect: When modal opens or initialData changes, update form state
   useEffect(() => {
@@ -54,9 +67,8 @@ export default function InventoryModal({
     }
   }, [initialData, isOpen]);
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
+  const handleValueChange = (field: InventoryFormField) => (value: string) => {
+    setFormData(prev => ({ ...prev, [field]: value }));
   };
 
   const handleSubmit = (onClose: () => void) => {
@@ -65,8 +77,8 @@ export default function InventoryModal({
     // Ensure numbers are numbers and clean up data
     const payload = {
       ...formData,
-      totalStockQuantity: Number(formData.totalStockQuantity),
-      reorderThreshold: Number(formData.reorderThreshold),
+      totalStockQuantity: Number(formData.totalStockQuantity ?? 0),
+      reorderThreshold: Number(formData.reorderThreshold ?? 0),
       // Clean up room if location isn't HQ
       room: formData.location === 'HQ' ? formData.room : undefined,
       // Ensure expiration date is a Date object (if present)
@@ -131,7 +143,7 @@ export default function InventoryModal({
                   variant="bordered"
                   name="name"
                   value={formData.name}
-                  onChange={handleInputChange}
+                  onValueChange={handleValueChange('name')}
                   className="md:col-span-2"
                 />
 
@@ -191,7 +203,7 @@ export default function InventoryModal({
                   variant="bordered"
                   name="shelf"
                   value={formData.shelf}
-                  onChange={handleInputChange}
+                  onValueChange={handleValueChange('shelf')}
                   className="md:col-span-2"
                 />
 
@@ -204,7 +216,7 @@ export default function InventoryModal({
                   variant="bordered"
                   name="unit"
                   value={formData.unit}
-                  onChange={handleInputChange}
+                  onValueChange={handleValueChange('unit')}
                 />
 
                 <Input 
@@ -214,9 +226,9 @@ export default function InventoryModal({
                   variant="bordered"
                   name="expirationDate"
                   value={getDateString(formData.expirationDate)}
-                  onChange={(e) => setFormData(prev => ({ 
-                    ...prev, 
-                    expirationDate: e.target.value ? new Date(e.target.value) : undefined 
+                  onValueChange={(value) => setFormData(prev => ({
+                    ...prev,
+                    expirationDate: value ? new Date(value) : undefined
                   }))}
                 />
 
@@ -226,8 +238,8 @@ export default function InventoryModal({
                   placeholder="0" 
                   variant="bordered"
                   name="totalStockQuantity"
-                  value={formData.totalStockQuantity?.toString()}
-                  onChange={handleInputChange}
+                  value={formData.totalStockQuantity?.toString() ?? ''}
+                  onValueChange={handleValueChange('totalStockQuantity')}
                 />
 
                 <Input 
@@ -236,8 +248,8 @@ export default function InventoryModal({
                   placeholder="5" 
                   variant="bordered"
                   name="reorderThreshold"
-                  value={formData.reorderThreshold?.toString()}
-                  onChange={handleInputChange}
+                  value={formData.reorderThreshold?.toString() ?? ''}
+                  onValueChange={handleValueChange('reorderThreshold')}
                 />
 
                 <div className="md:col-span-2">
@@ -247,7 +259,7 @@ export default function InventoryModal({
                         variant="bordered"
                         name="description"
                         value={formData.description}
-                        onChange={handleInputChange}
+                        onValueChange={handleValueChange('description')}
                     />
                 </div>
               </div>

@@ -12,7 +12,7 @@ import {
   doc, getDoc, updateDoc, addDoc, collection, serverTimestamp 
 } from 'firebase/firestore';
 import { auth, db } from '@/firebase'; 
-import { Statpack } from '@/app/types'; 
+import { Statpack, User } from '@/app/types'; 
 import { 
   ArrowLeft, ArrowRight, Save, 
   Minus, Plus, RefreshCw, CheckCircle2,
@@ -36,6 +36,7 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
   
   // -- Auth & Data --
   const [user, setUser] = useState<any>(null);
+  const [userRole, setUserRole] = useState<User['role'] | null>(null);
   const [pack, setPack] = useState<Statpack | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -59,6 +60,14 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
         return;
       }
       setUser(u);
+      try {
+        const userSnap = await getDoc(doc(db, 'users', u.uid));
+        const role = (userSnap.data() as User | undefined)?.role ?? 'member';
+        setUserRole(role);
+      } catch (e) {
+        console.error('Failed to load user role:', e);
+        setUserRole('member');
+      }
       
       // ✨ FIX 2: Only load data if we haven't successfully finished yet
       if (!isSuccess) {
@@ -149,6 +158,11 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
   // 4. Submission
   const handleCompleteCheckin = async () => {
     if (!pack || !user) return;
+    const isReturnAllowed = userRole === 'admin' || pack.assignedToUserId === user.uid;
+    if (!isReturnAllowed) {
+      alert('Only the assignee or an admin can return this bag.');
+      return;
+    }
     setSubmitting(true);
 
     try {
@@ -221,7 +235,7 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
 
   // -- RENDER STATES --
 
-  if (loading) return <div className="h-screen flex items-center justify-center"><Spinner size="lg" /></div>;
+  if (loading || userRole === null) return <div className="h-screen flex items-center justify-center"><Spinner size="lg" /></div>;
 
   // ✨ FIX 4: Explicit Success View.
   // This ensures that even if 'pack' becomes null in the background, the user sees this instead of an error.
@@ -234,6 +248,25 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
   );
 
   if (!pack) return <div className="p-6">Pack not found</div>;
+
+  const isReturnAllowed = userRole === 'admin' || pack.assignedToUserId === user?.uid;
+  if (!isReturnAllowed) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-zinc-950 p-6">
+        <Card className="max-w-md w-full">
+          <CardBody className="space-y-3 text-center">
+            <h2 className="text-xl font-bold">Return Restricted</h2>
+            <p className="text-sm text-gray-500">
+              Only the assignee or an admin can return this bag.
+            </p>
+            <Button color="primary" onPress={() => router.push(`/mobile/${id}`)}>
+              Back to Bag
+            </Button>
+          </CardBody>
+        </Card>
+      </div>
+    );
+  }
 
   const progressVal = ((activePocketIndex) / (pocketSteps.length)) * 100;
 

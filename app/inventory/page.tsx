@@ -197,10 +197,20 @@ export default function InventoryPage(): JSX.Element {
   const handleUpdateItem = async (id: string, updatedData: Partial<InventoryItem>) => {
     try {
       const itemRef = doc(db, 'inventory', id);
-      await updateDoc(itemRef, {
+      const payload: Record<string, unknown> = {
         ...updatedData,
+        expirationDate: updatedData.expirationDate ?? null,
+        room: updatedData.room ?? null,
         updatedAt: serverTimestamp(),
+      };
+
+      Object.keys(payload).forEach((key) => {
+        if (payload[key] === undefined) {
+          delete payload[key];
+        }
       });
+
+      await updateDoc(itemRef, payload);
     } catch (error) {
       console.error("Error updating document: ", error);
       alert("Failed to update item.");

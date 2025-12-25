@@ -1,5 +1,5 @@
 import React from 'react';
-import { Card, CardBody, Chip, Badge } from '@heroui/react';
+import { Card, CardBody, Chip } from '@heroui/react';
 import { Statpack, StatpackPocket } from '@/app/types';
 import { CheckCircle2, Circle } from 'lucide-react';
 
@@ -68,9 +68,10 @@ export const BagVisualizer: React.FC<BagVisualizerProps> = ({
               <span className="vertical-rl text-xs font-bold text-default-500 tracking-widest whitespace-nowrap uppercase">
                 Left
               </span>
-              <Badge content={getPocketCount('side_left')} color="primary" isInvisible={getPocketCount('side_left') === 0}>
-                <Circle className="text-default-300" size={24} />
-              </Badge>
+              <Circle className="text-default-300" size={24} />
+              <Chip size="sm" variant="flat">
+                {getPocketCount('side_left')} Items
+              </Chip>
            </CardBody>
         </Card>
 
@@ -93,12 +94,12 @@ export const BagVisualizer: React.FC<BagVisualizerProps> = ({
 
           {/* Front Aux */}
           <Card {...getCardProps('front_aux')} className={`${getCardProps('front_aux').className} h-24`}>
-             <CardBody className="flex flex-row items-center justify-between px-4">
-                <div className="flex flex-col items-start">
-                  <span className="font-bold text-small text-foreground">FRONT</span>
-                  <span className="text-[10px] text-default-400 uppercase">Auxiliary</span>
-                </div>
-                <Chip size="sm" variant="flat">{getPocketCount('front_aux')}</Chip>
+             <CardBody className="flex flex-col items-start justify-center px-4">
+                <span className="font-bold text-small text-foreground">FRONT</span>
+                <span className="text-[10px] text-default-400 uppercase">Auxiliary</span>
+                <Chip size="sm" variant="flat" className="mt-2">
+                  {getPocketCount('front_aux')} Items
+                </Chip>
              </CardBody>
           </Card>
         </div>
@@ -110,9 +111,10 @@ export const BagVisualizer: React.FC<BagVisualizerProps> = ({
               <span className="vertical-rl text-xs font-bold text-default-500 tracking-widest whitespace-nowrap uppercase">
                 Right
               </span>
-              <Badge content={getPocketCount('side_right')} color="primary" isInvisible={getPocketCount('side_right') === 0}>
-                <Circle className="text-default-300" size={24} />
-              </Badge>
+              <Circle className="text-default-300" size={24} />
+              <Chip size="sm" variant="flat">
+                {getPocketCount('side_right')} Items
+              </Chip>
            </CardBody>
         </Card>
       </div>

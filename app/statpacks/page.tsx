@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 
 // --- Imports for Visualization ---
-import type { Statpack, InventoryItem, StatpackItem, StatpackLog, StatpackPocket } from '@/app/types';
+import type { Statpack, InventoryItem, StatpackItem, StatpackLog, StatpackPocket, User } from '@/app/types';
 import { BagVisualizer } from '@/app/components/statpackvisualizer'; 
 
 const BLANK_PACK: Partial<Statpack> = {
@@ -40,6 +40,7 @@ export default function StatpacksPage(): JSX.Element {
   const { isOpen: isHistoryOpen, onOpen: onHistoryOpen, onOpenChange: onHistoryChange } = useDisclosure();
   
   const [user, setUser] = useState<any>(null);
+  const [userRole, setUserRole] = useState<User['role'] | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -68,6 +69,24 @@ export default function StatpacksPage(): JSX.Element {
     });
     return () => unsubscribe();
   }, [router]);
+
+  useEffect(() => {
+    if (!user) return;
+    const userRef = doc(db, 'users', user.uid);
+    const unsubscribe = onSnapshot(
+      userRef,
+      (snapshot) => {
+        const data = snapshot.data() as User | undefined;
+        setUserRole(data?.role ?? 'member');
+      },
+      (error) => {
+        console.error('Error fetching user role:', error);
+        setUserRole('member');
+      }
+    );
+
+    return () => unsubscribe();
+  }, [user]);
 
   useEffect(() => {
     if (!user) return;
@@ -282,6 +301,11 @@ export default function StatpacksPage(): JSX.Element {
   };
 
   const handleReturnBag = async (pack: Statpack) => {
+    const isReturnAllowed = userRole === 'admin' || pack.assignedToUserId === user?.uid;
+    if (!isReturnAllowed) {
+      alert('Only the assignee or an admin can return this bag.');
+      return;
+    }
     if (!confirm(`Return ${pack.name}?`)) return;
     setLoading(true);
     try {
@@ -333,6 +357,11 @@ export default function StatpacksPage(): JSX.Element {
     if(s === 'In Use') return 'warning'; // Shows as yellow/orange
     if(s === 'Expired Items') return 'danger';
     return 'warning'; // Fallback
+  };
+
+  const canReturnPack = (pack: Statpack) => {
+    if (!user) return false;
+    return userRole === 'admin' || pack.assignedToUserId === user.uid;
   };
 
   if (loading) return <div className="h-screen flex items-center justify-center"><Spinner /></div>;
@@ -395,9 +424,22 @@ export default function StatpacksPage(): JSX.Element {
               </CardBody>
               <CardFooter className="bg-indigo-50/70 dark:bg-slate-800/60 flex gap-2">
                 {pack.isCheckedOut ? (
-                   <Button fullWidth color="warning" variant="flat" onPress={() => handleReturnBag(pack)}>
-                    Return / Check In
-                  </Button>
+                  <Tooltip 
+                    content="Only the assignee or an admin can return this bag." 
+                    isDisabled={canReturnPack(pack)}
+                  >
+                    <span className="w-full">
+                      <Button 
+                        fullWidth 
+                        color="warning" 
+                        variant="flat" 
+                        onPress={() => handleReturnBag(pack)}
+                        isDisabled={!canReturnPack(pack)}
+                      >
+                        Return / Check In
+                      </Button>
+                    </span>
+                  </Tooltip>
                 ) : (
                   <Button fullWidth color="primary" onPress={() => handleOpenCheckout(pack)} startContent={<ClipboardCheck size={18} />}>
                     Inspect & Check Out

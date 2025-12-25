@@ -9,7 +9,7 @@ import {
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '@/firebase'; 
-import { Statpack } from '@/app/types'; 
+import type { Statpack, User } from '@/app/types'; 
 import { 
   BriefcaseMedical, LogOut, LogIn, AlertTriangle, 
   History, ShieldCheck, User, Clock
@@ -26,6 +26,7 @@ export default function MobilePackDashboard({ params }: MobileDashboardProps) {
   const [pack, setPack] = useState<Statpack | null>(null);
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<any>(null);
+  const [userRole, setUserRole] = useState<User['role'] | null>(null);
 
   // 1. Auth & Fetch
   useEffect(() => {
@@ -37,6 +38,14 @@ export default function MobilePackDashboard({ params }: MobileDashboardProps) {
         return;
       }
       setUser(u);
+      try {
+        const userSnap = await getDoc(doc(db, 'users', u.uid));
+        const role = (userSnap.data() as User | undefined)?.role ?? 'member';
+        setUserRole(role);
+      } catch (e) {
+        console.error('Failed to load user role:', e);
+        setUserRole('member');
+      }
       loadPack(id);
     });
     return () => unsubscribe();
@@ -68,10 +77,11 @@ export default function MobilePackDashboard({ params }: MobileDashboardProps) {
     return <AlertTriangle size={18} />;
   };
 
-  if (loading) return <div className="h-screen flex items-center justify-center"><Spinner size="lg" /></div>;
+  if (loading || userRole === null) return <div className="h-screen flex items-center justify-center"><Spinner size="lg" /></div>;
   if (!pack) return <div className="p-6 text-center">Pack not found</div>;
 
   const isCheckedOut = pack.status === 'In Use' || pack.isCheckedOut;
+  const canReturn = userRole === 'admin' || pack.assignedToUserId === user?.uid;
 
   return (
     <div className="min-h-screen bg-gray-100 dark:bg-zinc-950 p-4 pb-20">
@@ -152,11 +162,15 @@ export default function MobilePackDashboard({ params }: MobileDashboardProps) {
                 className="w-full font-bold text-lg shadow-lg"
                 startContent={<LogIn />}
                 onPress={() => router.push(`/mobile/${id}/checkin`)}
-                // Optional: Only allow the assignee or an admin to check it back in?
-                // isDisabled={pack.assignedToUserId !== user.uid} 
+                isDisabled={!canReturn}
               >
                 Return & Restock
               </Button>
+              {!canReturn && (
+                <p className="text-xs text-blue-700 dark:text-blue-300">
+                  Only the assignee or an admin can return this bag.
+                </p>
+              )}
             </CardBody>
           </Card>
         )}
