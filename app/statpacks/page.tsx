@@ -14,10 +14,13 @@ import {
   collection, addDoc, updateDoc, doc, serverTimestamp, query, where, orderBy, limit, onSnapshot, getDocs, Timestamp
 } from 'firebase/firestore';
 import { auth, db } from '@/firebase'; 
+import Image from 'next/image';
 import { 
   Plus, BriefcaseMedical, AlertCircle, CheckCircle, 
-  Trash2, ClipboardCheck, History, UserMinus, UserCheck
+  Trash2, ClipboardCheck, History, UserMinus, UserCheck, QrCode
 } from 'lucide-react';
+import { toDataURL } from 'qrcode';
+import { jsPDF } from 'jspdf';
 
 // --- Imports for Visualization ---
 import type { Statpack, InventoryItem, StatpackItem, StatpackLog, StatpackPocket, User } from '@/app/types';
@@ -38,6 +41,7 @@ export default function StatpacksPage() {
   const { isOpen: isEditOpen, onOpen: onEditOpen, onOpenChange: onEditChange } = useDisclosure();
   const { isOpen: isCheckoutOpen, onOpen: onCheckoutOpen, onOpenChange: onCheckoutChange } = useDisclosure();
   const { isOpen: isHistoryOpen, onOpen: onHistoryOpen, onOpenChange: onHistoryChange } = useDisclosure();
+  const { isOpen: isQrOpen, onOpen: onQrOpen, onOpenChange: onQrChange } = useDisclosure();
   
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [userRole, setUserRole] = useState<User['role'] | null>(null);
@@ -53,6 +57,10 @@ export default function StatpacksPage() {
   const [currentPack, setCurrentPack] = useState<Partial<Statpack>>(BLANK_PACK);
   const [selectedInventoryId, setSelectedInventoryId] = useState<string>("");
   const [checkoutNotes, setCheckoutNotes] = useState("");
+  const [qrPack, setQrPack] = useState<Statpack | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState('');
+  const [qrUrl, setQrUrl] = useState('');
+  const [qrLoading, setQrLoading] = useState(false);
 
   // --- NEW: Visualizer State ---
   const [viewPocket, setViewPocket] = useState<StatpackPocket | 'all'>('all');
@@ -182,6 +190,72 @@ export default function StatpacksPage() {
     setCurrentPack(pack);
     await fetchLogs(pack.id);
     onHistoryOpen();
+  };
+
+  const buildCheckoutUrl = (packId: string) => {
+    if (typeof window === 'undefined') return '';
+    return `${window.location.origin}/mobile/${packId}/checkout`;
+  };
+
+  const handleOpenQr = async (pack: Statpack) => {
+    const url = buildCheckoutUrl(pack.id);
+    setQrPack(pack);
+    setQrUrl(url);
+    setQrDataUrl('');
+    setQrLoading(true);
+    onQrOpen();
+
+    if (!url) {
+      setQrLoading(false);
+      return;
+    }
+
+    try {
+      const dataUrl = await toDataURL(url, { errorCorrectionLevel: 'M', margin: 2, width: 256 });
+      setQrDataUrl(dataUrl);
+    } catch (error) {
+      console.error('QR code generation failed:', error);
+    } finally {
+      setQrLoading(false);
+    }
+  };
+
+  const handleDownloadQrPdf = async () => {
+    if (!qrPack) return;
+    const url = qrUrl || buildCheckoutUrl(qrPack.id);
+    if (!url) return;
+
+    let dataUrl = qrDataUrl;
+    if (!dataUrl) {
+      try {
+        dataUrl = await toDataURL(url, { errorCorrectionLevel: 'M', margin: 2, width: 512 });
+      } catch (error) {
+        console.error('QR code generation failed:', error);
+        return;
+      }
+    }
+
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'letter' });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const margin = 40;
+    const qrSize = Math.min(pageWidth - margin * 2, 320);
+    const x = (pageWidth - qrSize) / 2;
+    let y = 110;
+
+    doc.setFontSize(18);
+    doc.text('Statpack Checkout QR', pageWidth / 2, 48, { align: 'center' });
+    doc.setFontSize(12);
+    doc.text(qrPack.name, pageWidth / 2, 70, { align: 'center' });
+    doc.addImage(dataUrl, 'PNG', x, y, qrSize, qrSize);
+    y += qrSize + 24;
+    doc.setFontSize(10);
+    doc.text(url, pageWidth / 2, y, { align: 'center' });
+
+    const safeName = (qrPack.name || qrPack.id)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '');
+    doc.save(`statpack-${safeName}-checkout-qr.pdf`);
   };
 
   // 3. Handlers: Inventory Management
@@ -411,6 +485,11 @@ export default function StatpacksPage() {
                    <Tooltip content="View History">
                      <Button isIconOnly size="sm" variant="light" onPress={() => handleViewHistory(pack)}>
                        <History size={18} className="text-gray-400" />
+                     </Button>
+                   </Tooltip>
+                   <Tooltip content="QR Code">
+                     <Button isIconOnly size="sm" variant="light" onPress={() => handleOpenQr(pack)}>
+                        <QrCode size={18} className="text-gray-400" />
                      </Button>
                    </Tooltip>
                    <Tooltip content="Edit Configuration">
@@ -730,6 +809,54 @@ export default function StatpacksPage() {
                 )}
               </ModalBody>
               <ModalFooter><Button onPress={onClose}>Close</Button></ModalFooter>
+            </>
+          )}
+        </ModalContent>
+      </Modal>
+
+      {/* --- 4. QR CODE MODAL --- */}
+      <Modal isOpen={isQrOpen} onOpenChange={onQrChange} size="lg" scrollBehavior="inside">
+        <ModalContent>
+          {(onClose) => (
+            <>
+              <ModalHeader>Checkout QR Code</ModalHeader>
+              <ModalBody>
+                <div className="flex flex-col items-center gap-4">
+                  <div className="text-center">
+                    <p className="font-semibold text-lg">{qrPack?.name || 'Statpack'}</p>
+                    <p className="text-xs text-gray-500">Opens the mobile checkout page for this statpack.</p>
+                  </div>
+                  <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-gray-200 dark:border-slate-700">
+                    {qrLoading ? (
+                      <Spinner size="sm" />
+                    ) : qrDataUrl ? (
+                      <Image
+                        src={qrDataUrl}
+                        alt={`QR code for ${qrPack?.name ?? 'statpack'}`}
+                        width={192}
+                        height={192}
+                        className="w-48 h-48"
+                        unoptimized
+                      />
+                    ) : (
+                      <p className="text-xs text-gray-500">QR code unavailable.</p>
+                    )}
+                  </div>
+                  {qrUrl && (
+                    <p className="text-xs text-gray-500 break-all text-center">{qrUrl}</p>
+                  )}
+                </div>
+              </ModalBody>
+              <ModalFooter>
+                <Button variant="light" onPress={onClose}>Close</Button>
+                <Button 
+                  color="primary" 
+                  onPress={handleDownloadQrPdf}
+                  isDisabled={qrLoading || !qrDataUrl || !qrPack}
+                >
+                  Download PDF
+                </Button>
+              </ModalFooter>
             </>
           )}
         </ModalContent>
