@@ -194,7 +194,7 @@ export default function StatpacksPage() {
 
   const buildCheckoutUrl = (packId: string) => {
     if (typeof window === 'undefined') return '';
-    return `${window.location.origin}/mobile/${packId}/checkout`;
+    return `${window.location.origin}/mobile/checkout?id=${encodeURIComponent(packId)}`;
   };
 
   const handleOpenQr = async (pack: Statpack) => {
@@ -540,9 +540,9 @@ export default function StatpacksPage() {
                 )}
                 
                 {/* TEMPORARY: Developer Shortcut to simulate scanning a QR code */}
-                {/* UPDATED: Points to /mobile/[id] instead of /mobile/checkout/[id] */}
+                {/* UPDATED: Points to /mobile with query params for static export */}
                 <a 
-                  href={`/mobile/${pack.id}`} 
+                  href={`/mobile?id=${pack.id}`} 
                   target="_blank"
                   className="text-[10px] text-blue-500 hover:text-blue-700 underline uppercase tracking-widest mt-1 text-center w-full"
                 >

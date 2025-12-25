@@ -1,62 +1,70 @@
 'use client';
 
-import React, { useEffect, useState, use, useMemo } from 'react';
-import { useRouter } from 'next/navigation';
-import { 
-  Card, CardBody, 
-  Button, Chip, Spinner, Progress,
-  Input, Textarea, Divider
+import React, { useEffect, useMemo, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import {
+  Card,
+  CardBody,
+  Button,
+  Chip,
+  Spinner,
+  Progress,
+  Input,
+  Textarea,
+  Divider
 } from '@heroui/react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
-import { 
-  doc, getDoc, updateDoc, addDoc, collection, serverTimestamp 
+import {
+  doc,
+  getDoc,
+  updateDoc,
+  addDoc,
+  collection,
+  serverTimestamp
 } from 'firebase/firestore';
-import { auth, db } from '@/firebase'; 
-import { Statpack, User } from '@/app/types'; 
-import { 
-  ArrowLeft, ArrowRight, Save, 
-  Minus, Plus, RefreshCw, CheckCircle2,
-  Stethoscope, FileText
+import { auth, db } from '@/firebase';
+import { Statpack, User } from '@/app/types';
+import {
+  ArrowLeft,
+  ArrowRight,
+  Save,
+  Minus,
+  Plus,
+  RefreshCw,
+  CheckCircle2,
+  Stethoscope,
+  FileText
 } from 'lucide-react';
 
-interface MobileCheckinProps {
-  params: Promise<{ id: string }>;
-}
-
-// Helper to track the state of a single item during check-in
 interface ItemState {
-  originalQty: number; // What the DB said was there (start)
-  foundQty: number;    // What the user found (used to calc usage)
-  restocked: boolean;  // Did they refill it to max?
+  originalQty: number;
+  foundQty: number;
+  restocked: boolean;
 }
 
-export default function MobileCheckinPage({ params }: MobileCheckinProps) {
-  const { id } = use(params); 
+export default function MobileCheckinClient() {
+  const searchParams = useSearchParams();
+  const id = searchParams.get('id') ?? '';
   const router = useRouter();
-  
-  // -- Auth & Data --
+
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [userRole, setUserRole] = useState<User['role'] | null>(null);
   const [pack, setPack] = useState<Statpack | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  
-  // ✨ FIX 1: Add success state to prevent "Pack not found" flash
   const [isSuccess, setIsSuccess] = useState(false);
 
-  // -- Wizard State --
   const [activePocketIndex, setActivePocketIndex] = useState(0);
   const [itemStates, setItemStates] = useState<Record<string, ItemState>>({});
-  
-  // -- Form Data --
-  const [incidentId, setIncidentId] = useState("");
-  const [notes, setNotes] = useState("");
 
-  // 1. Setup
+  const [incidentId, setIncidentId] = useState('');
+  const [notes, setNotes] = useState('');
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
       if (!u) {
-        router.push(`/login?returnUrl=/mobile/checkin/${id}`);
+        const returnUrl = id ? `/mobile/checkin?id=${id}` : '/mobile/checkin';
+        router.push(`/login?returnUrl=${encodeURIComponent(returnUrl)}`);
         return;
       }
       setUser(u);
@@ -68,24 +76,26 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
         console.error('Failed to load user role:', e);
         setUserRole('member');
       }
-      
-      // ✨ FIX 2: Only load data if we haven't successfully finished yet
+
       if (!isSuccess) {
         await loadPack(id);
       }
     });
     return () => unsubscribe();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]); // Removed 'router' dependency to prevent unnecessary re-runs
+  }, [id, router, isSuccess]);
 
   const loadPack = async (packId: string) => {
+    if (!packId) {
+      setPack(null);
+      setLoading(false);
+      return;
+    }
     try {
       const snap = await getDoc(doc(db, 'statpacks', packId));
       if (snap.exists()) {
         const data = { id: snap.id, ...snap.data() } as Statpack;
         setPack(data);
 
-        // Initialize state for all items
         const initialStates: Record<string, ItemState> = {};
         data.contents?.forEach((item, idx) => {
           const key = `${item.itemId}_${idx}`;
@@ -104,7 +114,6 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
     }
   };
 
-  // 2. Computed Steps
   const pocketSteps = useMemo(() => {
     if (!pack?.contents) return [];
     const pockets = Array.from(new Set(pack.contents.map(i => i.pocket || 'Main')));
@@ -125,7 +134,6 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
       .filter(({ item }) => (item.pocket || 'Main') === currentPocket);
   }, [pack, currentPocket, isLastStep]);
 
-  // 3. Handlers
   const updateFoundQty = (key: string, delta: number) => {
     setItemStates(prev => {
       const current = prev[key];
@@ -153,13 +161,12 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
       window.scrollTo(0, 0);
     }
   };
-  
+
   const handleBack = () => {
     if (activePocketIndex > 0) setActivePocketIndex(prev => prev - 1);
     else router.back();
   };
 
-  // 4. Submission
   const handleCompleteCheckin = async () => {
     if (!pack || !user) return;
     const isReturnAllowed = userRole === 'admin' || pack.assignedToUserId === user.uid;
@@ -170,7 +177,6 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
     setSubmitting(true);
 
     try {
-      // Logic to determine new contents
       let overallStatus: Statpack['status'] = 'Ready';
       const usageReport: string[] = [];
       const restockReport: string[] = [];
@@ -179,22 +185,18 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
       const updatedContents = pack.contents.map((item, idx) => {
         const key = `${item.itemId}_${idx}`;
         const state = itemStates[key];
-        
-        // Calculate Usage
+
         const usedAmount = state.originalQty - state.foundQty;
         if (usedAmount > 0) {
           usageReport.push(`${usedAmount}x ${item.itemDetails?.name}`);
         }
 
-        // Determine Final Quantity
         const finalQty = state.restocked ? item.requiredQuantity : state.foundQty;
 
-        // Log Restock
         if (state.restocked) {
           restockReport.push(item.itemDetails?.name || 'Item');
         }
 
-        // Check for Missing status
         if (finalQty < item.requiredQuantity) {
           overallStatus = 'Restock Needed';
           missingReport.push(`${item.itemDetails?.name} (${finalQty}/${item.requiredQuantity})`);
@@ -203,19 +205,17 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
         return { ...item, currentQuantity: finalQty };
       });
 
-      // Update Pack
       await updateDoc(doc(db, 'statpacks', pack.id), {
         contents: updatedContents,
         status: overallStatus,
-        isCheckedOut: false, // CHECKED IN
+        isCheckedOut: false,
         lastCheckedBy: user.uid,
         lastCheckedAt: serverTimestamp(),
-        assignedToUserId: null, // Clear assignment
+        assignedToUserId: null,
         assignedToUserName: null,
         currentEvent: null
       });
 
-      // Create detailed log
       await addDoc(collection(db, 'statpack_logs'), {
         statpackId: pack.id,
         statpackName: pack.name,
@@ -226,32 +226,42 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
         notes: `Check-in Complete.\n\nUsage:\n${usageReport.join('\n') || 'None'}\n\nRestocked:\n${restockReport.join(', ') || 'None'}\n\nIncident ID: ${incidentId}\nNotes: ${notes}`
       });
 
-      // ✨ FIX 3: Set success state immediately. This prevents the component from rendering "Pack not found"
       setIsSuccess(true);
-      
-      router.push('/mobile/dashboard');
+      router.push(`/mobile?id=${pack.id}`);
     } catch (e) {
       console.error(e);
-      alert("Error processing check-in");
-      setSubmitting(false); // Only turn off submitting if we failed
-    } 
+      alert('Error processing check-in');
+      setSubmitting(false);
+    }
   };
 
-  // -- RENDER STATES --
+  if (loading || userRole === null) {
+    return (
+      <div className="h-screen flex items-center justify-center">
+        <Spinner size="lg" />
+      </div>
+    );
+  }
 
-  if (loading || userRole === null) return <div className="h-screen flex items-center justify-center"><Spinner size="lg" /></div>;
+  if (isSuccess) {
+    return (
+      <div className="h-screen flex flex-col items-center justify-center space-y-4 animate-fade-in">
+        <CheckCircle2 size={64} className="text-success" />
+        <h2 className="text-2xl font-bold">Check-In Complete</h2>
+        <p className="text-gray-500">Redirecting to dashboard...</p>
+      </div>
+    );
+  }
 
-  // ✨ FIX 4: Explicit Success View.
-  // This ensures that even if 'pack' becomes null in the background, the user sees this instead of an error.
-  if (isSuccess) return (
-    <div className="h-screen flex flex-col items-center justify-center space-y-4 animate-fade-in">
-      <CheckCircle2 size={64} className="text-success" />
-      <h2 className="text-2xl font-bold">Check-In Complete</h2>
-      <p className="text-gray-500">Redirecting to dashboard...</p>
-    </div>
-  );
-
-  if (!pack) return <div className="p-6">Pack not found</div>;
+  if (!pack) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-3 text-center p-6 bg-gray-50 dark:bg-zinc-950">
+        <p className="text-lg font-semibold">No statpack selected</p>
+        <p className="text-sm text-gray-500">Open this page with an id query parameter.</p>
+        <Button color="primary" onPress={() => router.push('/statpacks')}>View Statpacks</Button>
+      </div>
+    );
+  }
 
   const isReturnAllowed = userRole === 'admin' || pack.assignedToUserId === user?.uid;
   if (!isReturnAllowed) {
@@ -263,7 +273,7 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
             <p className="text-sm text-gray-500">
               Only the assignee or an admin can return this bag.
             </p>
-            <Button color="primary" onPress={() => router.push(`/mobile/${id}`)}>
+            <Button color="primary" onPress={() => router.push(`/mobile?id=${id}`)}>
               Back to Bag
             </Button>
           </CardBody>
@@ -276,8 +286,6 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-zinc-950 pb-28">
-      
-      {/* Header */}
       <div className="bg-white dark:bg-zinc-900 sticky top-0 z-20 shadow-sm">
         <div className="px-4 py-3 flex items-center justify-between">
           <Button isIconOnly size="sm" variant="light" onPress={handleBack}>
@@ -293,8 +301,6 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
       </div>
 
       <div className="p-4 max-w-lg mx-auto">
-        
-        {/* REVIEW STEP */}
         {isLastStep ? (
           <div className="space-y-6 animate-fade-in">
             <div className="text-center space-y-2">
@@ -303,7 +309,6 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
               <p className="text-gray-500">Confirm usage and return bag to storage.</p>
             </div>
 
-            {/* Calculated Usage Summary */}
             <Card className="border shadow-sm">
               <CardBody className="space-y-2">
                 <div className="flex items-center gap-2 font-bold text-gray-700 dark:text-gray-200">
@@ -333,26 +338,25 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
             </Card>
 
             <div className="space-y-4">
-              <Input 
-                label="Incident / PCR Number" 
-                placeholder="e.g. 23-00512" 
-                value={incidentId} 
-                onValueChange={setIncidentId} 
-                startContent={<FileText size={16} className="text-gray-400"/>}
+              <Input
+                label="Incident / PCR Number"
+                placeholder="e.g. 23-00512"
+                value={incidentId}
+                onValueChange={setIncidentId}
+                startContent={<FileText size={16} className="text-gray-400" />}
               />
-              <Textarea 
-                label="Shift Notes" 
-                placeholder="Any issues with the bag or equipment?" 
-                value={notes} 
-                onValueChange={setNotes} 
+              <Textarea
+                label="Shift Notes"
+                placeholder="Any issues with the bag or equipment?"
+                value={notes}
+                onValueChange={setNotes}
               />
             </div>
           </div>
         ) : (
-          /* INSPECTION STEP */
           <div className="space-y-4 animate-fade-in">
             <h2 className="text-2xl font-bold capitalize mb-4">{currentPocket?.replace('_', ' ')}</h2>
-            
+
             <div className="space-y-3">
               {currentItems.map(({ item, originalIndex }) => {
                 const key = `${item.itemId}_${originalIndex}`;
@@ -388,20 +392,20 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
                         </div>
 
                         {isFoundLow && (
-                           <div className="flex-grow flex justify-end">
-                             <Button 
-                               size="sm" 
-                               color={state.restocked ? "success" : "warning"} 
-                               variant={state.restocked ? "solid" : "ghost"}
-                               onPress={() => toggleRestock(key)}
-                               startContent={state.restocked ? <CheckCircle2 size={14}/> : <RefreshCw size={14}/>}
-                             >
-                               {state.restocked ? "Filled" : "Restock"}
-                             </Button>
-                           </div>
+                          <div className="flex-grow flex justify-end">
+                            <Button
+                              size="sm"
+                              color={state.restocked ? 'success' : 'warning'}
+                              variant={state.restocked ? 'solid' : 'ghost'}
+                              onPress={() => toggleRestock(key)}
+                              startContent={state.restocked ? <CheckCircle2 size={14} /> : <RefreshCw size={14} />}
+                            >
+                              {state.restocked ? 'Filled' : 'Restock'}
+                            </Button>
+                          </div>
                         )}
                       </div>
-                      
+
                       {state.originalQty > state.foundQty && (
                         <p className="text-xs text-danger mt-2 flex items-center gap-1">
                           <Minus size={10} /> Used {state.originalQty - state.foundQty} this shift
@@ -418,9 +422,9 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
 
       <div className="fixed bottom-0 left-0 right-0 p-4 bg-white dark:bg-zinc-900 border-t dark:border-zinc-800 z-30">
         <div className="max-w-lg mx-auto flex gap-3">
-          <Button 
-            variant="light" 
-            onPress={handleBack} 
+          <Button
+            variant="light"
+            onPress={handleBack}
             isDisabled={activePocketIndex === 0}
             className="flex-1"
           >
@@ -428,9 +432,9 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
           </Button>
 
           {isLastStep ? (
-            <Button 
-              className="flex-[2] font-bold shadow-lg" 
-              color="success" 
+            <Button
+              className="flex-[2] font-bold shadow-lg"
+              color="success"
               size="lg"
               onPress={handleCompleteCheckin}
               isLoading={submitting}
@@ -439,9 +443,9 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
               Complete Check-In
             </Button>
           ) : (
-            <Button 
-              className="flex-[2] font-bold" 
-              color="primary" 
+            <Button
+              className="flex-[2] font-bold"
+              color="primary"
               size="lg"
               onPress={handleNext}
               endContent={<ArrowRight />}
