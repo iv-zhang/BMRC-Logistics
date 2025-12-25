@@ -11,7 +11,7 @@ import {
 } from '@heroui/react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { 
-  collection, getDocs, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, query, where, orderBy, limit 
+  collection, addDoc, updateDoc, doc, serverTimestamp, query, where, orderBy, limit, onSnapshot, getDocs
 } from 'firebase/firestore';
 import { auth, db } from '@/firebase'; 
 import { 
@@ -59,37 +59,69 @@ export default function StatpacksPage(): JSX.Element {
 
   // 1. Auth & Data
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       if (!currentUser) {
         router.push('/login');
         return;
       }
       setUser(currentUser);
-      await fetchData();
     });
     return () => unsubscribe();
   }, [router]);
 
-  const fetchData = async () => {
-    try {
-      const packsSnap = await getDocs(collection(db, 'statpacks'));
-      const packsData = packsSnap.docs.map(d => ({ 
-        id: d.id, ...d.data(),
-        lastCheckedAt: d.data().lastCheckedAt?.toDate(),
-        checkedOutAt: d.data().checkedOutAt?.toDate(),
-      })) as Statpack[];
-      
-      const invSnap = await getDocs(collection(db, 'inventory'));
-      const invData = invSnap.docs.map(d => ({ id: d.id, ...d.data() })) as InventoryItem[];
+  useEffect(() => {
+    if (!user) return;
+    setLoading(true);
+    let packsReady = false;
+    let inventoryReady = false;
 
-      setStatpacks(packsData);
-      setInventory(invData);
-    } catch (err) {
-      console.error("Error fetching data:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
+    const finishLoadingIfReady = () => {
+      if (packsReady && inventoryReady) {
+        setLoading(false);
+      }
+    };
+
+    const unsubscribePacks = onSnapshot(
+      collection(db, 'statpacks'),
+      (snapshot) => {
+        const packsData = snapshot.docs.map(d => ({ 
+          id: d.id, 
+          ...d.data(),
+          lastCheckedAt: d.data().lastCheckedAt?.toDate(),
+          checkedOutAt: d.data().checkedOutAt?.toDate(),
+        })) as Statpack[];
+
+        setStatpacks(packsData);
+        packsReady = true;
+        finishLoadingIfReady();
+      },
+      (error) => {
+        console.error("Error fetching statpacks:", error);
+        packsReady = true;
+        finishLoadingIfReady();
+      }
+    );
+
+    const unsubscribeInventory = onSnapshot(
+      collection(db, 'inventory'),
+      (snapshot) => {
+        const invData = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as InventoryItem[];
+        setInventory(invData);
+        inventoryReady = true;
+        finishLoadingIfReady();
+      },
+      (error) => {
+        console.error("Error fetching inventory:", error);
+        inventoryReady = true;
+        finishLoadingIfReady();
+      }
+    );
+
+    return () => {
+      unsubscribePacks();
+      unsubscribeInventory();
+    };
+  }, [user]);
 
   const fetchLogs = async (packId: string) => {
     try {
@@ -201,7 +233,6 @@ export default function StatpacksPage(): JSX.Element {
         await addDoc(collection(db, 'statpack_logs'), { ...logEntry, statpackId: docRef.id });
       }
 
-      await fetchData();
       onClose();
     } catch (error) {
       console.error(error);
@@ -242,7 +273,6 @@ export default function StatpacksPage(): JSX.Element {
       };
       await addDoc(collection(db, 'statpack_logs'), logEntry);
 
-      await fetchData();
       onClose();
     } catch (e) {
       console.error(e);
@@ -284,7 +314,6 @@ export default function StatpacksPage(): JSX.Element {
         notes: `Bag returned. Status set to: ${newStatus}`
       });
 
-      await fetchData();
     } catch (e) {
       console.error(e);
     } finally {

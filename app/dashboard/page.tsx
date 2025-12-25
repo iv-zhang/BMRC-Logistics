@@ -12,7 +12,7 @@ import {
   ScrollShadow
 } from '@heroui/react';
 import { onAuthStateChanged } from 'firebase/auth';
-import { collection, getDocs, query, where, orderBy, limit } from 'firebase/firestore';
+import { collection, onSnapshot, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
 import { 
   AlertTriangle, 
@@ -52,56 +52,81 @@ export default function DashboardPage(): JSX.Element {
   const [loadingLogs, setLoadingLogs] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       if (!currentUser) {
         router.push('/login');
         return;
       }
       setUser(currentUser);
-      await fetchData(); 
     });
 
     return () => unsubscribe();
   }, [router]);
 
-  const fetchData = async () => {
-    try {
-      // 1. Fetch Statpacks
-      const packsSnapshot = await getDocs(collection(db, 'statpacks'));
-      const packsData = packsSnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        lastCheckedAt: doc.data().lastCheckedAt?.toDate(),
-        contents: doc.data().contents?.map((c: any) => ({
-           ...c,
-           expirationDate: c.expirationDate?.toDate()
-        })) || []
-      })) as Statpack[];
+  useEffect(() => {
+    if (!user) return;
+    setLoading(true);
+    let packsReady = false;
+    let inventoryReady = false;
 
-      setStatpacks(packsData);
+    const finishLoadingIfReady = () => {
+      if (packsReady && inventoryReady) {
+        setLoading(false);
+      }
+    };
 
-      // 2. Fetch Inventory
-      const invSnapshot = await getDocs(collection(db, 'inventory'));
-      const invData = invSnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        createdAt: doc.data().createdAt?.toDate(),
-        updatedAt: doc.data().updatedAt?.toDate(),
-        // IMPORTANT: Convert Firestore Timestamp to JS Date for expiration
-        expirationDate: doc.data().expirationDate?.toDate(), 
-      })) as InventoryItem[];
+    const unsubscribePacks = onSnapshot(
+      collection(db, 'statpacks'),
+      (snapshot) => {
+        const packsData = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data(),
+          lastCheckedAt: doc.data().lastCheckedAt?.toDate(),
+          contents: doc.data().contents?.map((c: any) => ({
+             ...c,
+             expirationDate: c.expirationDate?.toDate()
+          })) || []
+        })) as Statpack[];
 
-      setInventory(invData);
-      setLoading(false);
+        setStatpacks(packsData);
+        packsReady = true;
+        finishLoadingIfReady();
+      },
+      (error) => {
+        console.error("Error fetching statpacks:", error);
+        packsReady = true;
+        finishLoadingIfReady();
+      }
+    );
 
-      // 3. Process Alerts for BOTH
-      processAlerts(packsData, invData);
+    const unsubscribeInventory = onSnapshot(
+      collection(db, 'inventory'),
+      (snapshot) => {
+        const invData = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data(),
+          createdAt: doc.data().createdAt?.toDate(),
+          updatedAt: doc.data().updatedAt?.toDate(),
+          // IMPORTANT: Convert Firestore Timestamp to JS Date for expiration
+          expirationDate: doc.data().expirationDate?.toDate(), 
+        })) as InventoryItem[];
 
-    } catch (error) {
-      console.error("Error fetching dashboard data:", error);
-      setLoading(false);
-    }
-  };
+        setInventory(invData);
+        inventoryReady = true;
+        finishLoadingIfReady();
+      },
+      (error) => {
+        console.error("Error fetching inventory:", error);
+        inventoryReady = true;
+        finishLoadingIfReady();
+      }
+    );
+
+    return () => {
+      unsubscribePacks();
+      unsubscribeInventory();
+    };
+  }, [user]);
 
   const handleToggleExpand = async (packId: string) => {
     if (expandedPackId === packId) {
@@ -193,6 +218,10 @@ export default function DashboardPage(): JSX.Element {
     alerts.sort((a, b) => a.daysRemaining - b.daysRemaining);
     setExpiryAlerts(alerts);
   };
+
+  useEffect(() => {
+    processAlerts(statpacks, inventory);
+  }, [statpacks, inventory]);
 
   const getStatusColor = (status: Statpack['status']) => {
     switch (status) {

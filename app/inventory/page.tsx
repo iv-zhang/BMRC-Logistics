@@ -1,10 +1,10 @@
 'use client';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
-  Card, CardBody, CardHeader, Tab, Tabs, Chip, Progress, Button, Spinner, Divider, useDisclosure 
+  Card, CardBody, CardHeader, Tab, Tabs, Chip, Progress, Button, Spinner, Divider, useDisclosure, Input 
 } from '@heroui/react';
-import { Boxes, Plus } from 'lucide-react';
+import { Boxes, Plus, Search } from 'lucide-react';
 
 // Firebase Imports
 import { onAuthStateChanged } from 'firebase/auth';
@@ -26,6 +26,45 @@ import InventoryModal from '@/app/components/additemmodal';
 // Types
 import { InventoryItem, ItemCategory } from '@/app/types';
 
+const SEED_ITEMS: Array<Partial<InventoryItem>> = [
+  {
+    name: 'Stethoscope',
+    category: 'Vitals',
+    description: 'Standard diagnostic stethoscope.',
+    location: 'HQ',
+    room: 'Front',
+    shelf: 'Diagnostics',
+    totalStockQuantity: 2,
+    unit: 'count',
+    reorderThreshold: 1,
+    isDisposable: false,
+  },
+  {
+    name: 'CPR Dummy',
+    category: 'Other',
+    description: 'CPR training mannequin.',
+    location: 'HQ',
+    room: 'Office',
+    shelf: 'Training',
+    totalStockQuantity: 1,
+    unit: 'count',
+    reorderThreshold: 0,
+    isDisposable: false,
+  },
+  {
+    name: "Ivan's Toy",
+    category: 'Other',
+    description: 'Training aid item.',
+    location: 'HQ',
+    room: 'Office',
+    shelf: 'Misc',
+    totalStockQuantity: 1,
+    unit: 'count',
+    reorderThreshold: 0,
+    isDisposable: false,
+  },
+];
+
 export default function InventoryPage(): JSX.Element {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
@@ -35,6 +74,8 @@ export default function InventoryPage(): JSX.Element {
   const { isOpen, onOpen, onOpenChange } = useDisclosure();
   
   const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const seedOnceRef = useRef(false);
 
   // --- EFFECT 1: Handle Authentication ---
   useEffect(() => {
@@ -91,6 +132,47 @@ export default function InventoryPage(): JSX.Element {
 
     return () => unsubscribe();
   }, [user]); // <--- This dependency ensures we wait for 'user'
+
+  useEffect(() => {
+    if (!user || loading || seedOnceRef.current) return;
+
+    const existingNames = new Set(inventory.map(item => item.name.trim().toLowerCase()));
+    const missingItems = SEED_ITEMS.filter(item => item.name && !existingNames.has(item.name.toLowerCase()));
+
+    if (missingItems.length === 0) {
+      seedOnceRef.current = true;
+      return;
+    }
+
+    seedOnceRef.current = true;
+    const addSeedItems = async () => {
+      try {
+        await Promise.all(
+          missingItems.map(item => {
+            const payload: Record<string, unknown> = {
+              ...item,
+              expirationDate: item.expirationDate ?? null,
+              room: item.room ?? null,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            };
+
+            Object.keys(payload).forEach((key) => {
+              if (payload[key] === undefined) {
+                delete payload[key];
+              }
+            });
+
+            return addDoc(collection(db, 'inventory'), payload);
+          })
+        );
+      } catch (error) {
+        console.error('Error seeding inventory items:', error);
+      }
+    };
+
+    void addSeedItems();
+  }, [user, loading, inventory]);
 
   // --- CRUD HANDLERS ---
 
@@ -176,6 +258,33 @@ export default function InventoryPage(): JSX.Element {
 
   const lowStockItems = inventory.filter(i => i.totalStockQuantity <= i.reorderThreshold);
   const criticalStockItems = inventory.filter(i => i.totalStockQuantity === 0);
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const matchesSearch = (item: InventoryItem) => {
+    if (!normalizedQuery) return true;
+    const haystack = [
+      item.name,
+      item.category,
+      item.description,
+      item.location,
+      item.room,
+      item.shelf,
+      item.unit,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+
+    return haystack.includes(normalizedQuery);
+  };
+  const filteredInventory = normalizedQuery ? inventory.filter(matchesSearch) : inventory;
+  const filteredLowStockItems = normalizedQuery ? lowStockItems.filter(matchesSearch) : lowStockItems;
+  const lowStockBadgeCount = normalizedQuery ? filteredLowStockItems.length : lowStockItems.length;
+  const emptyAllItemsMessage = normalizedQuery
+    ? `No items match "${searchQuery}".`
+    : 'No items found in inventory.';
+  const emptyLowStockMessage = normalizedQuery
+    ? `No restock items match "${searchQuery}".`
+    : 'No items currently need restock.';
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
@@ -237,12 +346,31 @@ export default function InventoryPage(): JSX.Element {
           </CardHeader>
           
           <CardBody className="p-6">
+            <div className="flex flex-col md:flex-row md:items-end gap-4 mb-6">
+              <Input
+                label="Search inventory"
+                placeholder="Search by name, category, location, or shelf"
+                value={searchQuery}
+                onValueChange={setSearchQuery}
+                variant="bordered"
+                startContent={<Search size={16} className="text-gray-400" />}
+                className="md:max-w-md"
+              />
+              <div className="text-xs text-gray-500 dark:text-gray-400">
+                Showing {filteredInventory.length} of {inventory.length}
+              </div>
+            </div>
             <Tabs aria-label="Inventory Options" variant="underlined" color="primary">
               
               {/* TAB 1: ALL ITEMS */}
               <Tab key="all" title="All Items">
-                <div className="space-y-4 mt-2">
-                  {inventory.map((item) => {
+                {filteredInventory.length === 0 ? (
+                  <div className="mt-6 rounded-xl border border-dashed border-gray-300/70 dark:border-slate-700 p-6 text-center text-sm text-gray-500 dark:text-gray-400">
+                    {emptyAllItemsMessage}
+                  </div>
+                ) : (
+                  <div className="space-y-4 mt-2">
+                    {filteredInventory.map((item) => {
                     const expStatus = getExpirationStatus(item.expirationDate);
                     const isExpired = expStatus?.isExpired;
                     
@@ -324,18 +452,24 @@ export default function InventoryPage(): JSX.Element {
                         </Card>
                     );
                   })}
-                </div>
+                  </div>
+                )}
               </Tab>
 
               {/* TAB 2: LOW STOCK */}
               <Tab key="low-stock" title={
                   <div className="flex items-center gap-2">
                     <span>Restock Needed</span>
-                    {lowStockItems.length > 0 && <Chip size="sm" color="danger" variant="solid">{lowStockItems.length}</Chip>}
+                    {lowStockBadgeCount > 0 && <Chip size="sm" color="danger" variant="solid">{lowStockBadgeCount}</Chip>}
                   </div>
               }>
-                <div className="space-y-4 mt-2">
-                  {lowStockItems.map((item) => {
+                {filteredLowStockItems.length === 0 ? (
+                  <div className="mt-6 rounded-xl border border-dashed border-gray-300/70 dark:border-slate-700 p-6 text-center text-sm text-gray-500 dark:text-gray-400">
+                    {emptyLowStockMessage}
+                  </div>
+                ) : (
+                  <div className="space-y-4 mt-2">
+                    {filteredLowStockItems.map((item) => {
                     const expStatus = getExpirationStatus(item.expirationDate);
                     return (
                       <Card 
@@ -371,7 +505,8 @@ export default function InventoryPage(): JSX.Element {
                       </Card>
                     );
                   })}
-                </div>
+                  </div>
+                )}
               </Tab>
 
             </Tabs>
