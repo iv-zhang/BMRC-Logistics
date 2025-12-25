@@ -98,6 +98,11 @@ export default function InventoryPage(): JSX.Element {
     try {
       await addDoc(collection(db, 'inventory'), {
         ...newItemData,
+        // FIX: Firestore cannot save 'undefined'. 
+        // We use '?? null' to ensure if it's undefined, it becomes null.
+        expirationDate: newItemData.expirationDate ?? null,
+        room: newItemData.room ?? null, 
+        
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });

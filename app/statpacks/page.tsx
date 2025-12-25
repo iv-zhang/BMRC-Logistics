@@ -374,6 +374,16 @@ export default function StatpacksPage(): JSX.Element {
                     Inspect & Check Out
                   </Button>
                 )}
+                
+                {/* TEMPORARY: Developer Shortcut to simulate scanning a QR code */}
+                {/* UPDATED: Points to /mobile/[id] instead of /mobile/checkout/[id] */}
+                <a 
+                  href={`/mobile/${pack.id}`} 
+                  target="_blank"
+                  className="text-[10px] text-blue-500 hover:text-blue-700 underline uppercase tracking-widest mt-1 text-center w-full"
+                >
+                  [DEV] Simulate QR Scan
+                </a>
               </CardFooter>
             </Card>
           ))}
