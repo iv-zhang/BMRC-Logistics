@@ -5,10 +5,10 @@ import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
   Card, CardBody, CardHeader, CardFooter,
-  Button, Chip, Divider, Spinner,
-  Input, Textarea, Avatar
+  Button, Spinner,
+  Input, Textarea
 } from '@heroui/react';
-import { onAuthStateChanged } from 'firebase/auth';
+import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { 
   doc, getDoc, updateDoc, addDoc, collection, serverTimestamp 
 } from 'firebase/firestore';
@@ -29,7 +29,7 @@ export default function MobileCheckoutPage({ params }: MobileCheckoutProps) {
   const router = useRouter();
   const packId = params.id;
 
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<FirebaseUser | null>(null);
   const [pack, setPack] = useState<Statpack | null>(null);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
@@ -95,7 +95,7 @@ export default function MobileCheckoutPage({ params }: MobileCheckoutProps) {
         statpackName: pack.name,
         action: 'checkout',
         userId: user.uid,
-        userName: user.displayName || user.email,
+        userName: user.displayName || user.email || 'Unknown User',
         timestamp: serverTimestamp(),
         notes: `Mobile Scan Checkout. Event: ${eventName || 'N/A'}. Notes: ${notes}`
       };
@@ -127,6 +127,14 @@ export default function MobileCheckoutPage({ params }: MobileCheckoutProps) {
       <div className="min-h-screen w-full flex flex-col items-center justify-center bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 gap-4">
         <Spinner size="lg" />
         <p className="text-sm text-gray-500 animate-pulse">Locating Statpack...</p>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen w-full flex items-center justify-center bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
+        <Spinner size="lg" />
       </div>
     );
   }

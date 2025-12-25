@@ -14,7 +14,7 @@ import {
   DropdownItem
 } from '@heroui/react';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore'; 
-import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { onAuthStateChanged, signOut, type User as FirebaseUser } from 'firebase/auth';
 import { auth, db } from '@/firebase';
 
 // Icons
@@ -36,7 +36,7 @@ const LogOutIcon = () => (
 export default function AppNavbar() {
   const pathname = usePathname();
   const router = useRouter();
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<FirebaseUser | null>(null);
 
   useEffect(() => {
   const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {

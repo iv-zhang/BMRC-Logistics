@@ -3,13 +3,13 @@
 import React, { useEffect, useState, use } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
-  Card, CardBody, CardHeader, CardFooter,
+  Card, CardBody, CardHeader,
   Button, Chip, Spinner, Avatar, Divider
 } from '@heroui/react';
-import { onAuthStateChanged } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
+import { doc, getDoc, Timestamp } from 'firebase/firestore';
 import { auth, db } from '@/firebase'; 
-import type { Statpack, User } from '@/app/types'; 
+import type { Statpack, User as AppUser } from '@/app/types'; 
 import { 
   BriefcaseMedical, LogOut, LogIn, AlertTriangle, 
   History, ShieldCheck, User, Clock
@@ -25,8 +25,8 @@ export default function MobilePackDashboard({ params }: MobileDashboardProps) {
   
   const [pack, setPack] = useState<Statpack | null>(null);
   const [loading, setLoading] = useState(true);
-  const [user, setUser] = useState<any>(null);
-  const [userRole, setUserRole] = useState<User['role'] | null>(null);
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [userRole, setUserRole] = useState<AppUser['role'] | null>(null);
 
   // 1. Auth & Fetch
   useEffect(() => {
@@ -40,7 +40,7 @@ export default function MobilePackDashboard({ params }: MobileDashboardProps) {
       setUser(u);
       try {
         const userSnap = await getDoc(doc(db, 'users', u.uid));
-        const role = (userSnap.data() as User | undefined)?.role ?? 'member';
+        const role = (userSnap.data() as AppUser | undefined)?.role ?? 'member';
         setUserRole(role);
       } catch (e) {
         console.error('Failed to load user role:', e);
@@ -55,7 +55,23 @@ export default function MobilePackDashboard({ params }: MobileDashboardProps) {
     try {
       const snap = await getDoc(doc(db, 'statpacks', packId));
       if (snap.exists()) {
-        setPack({ id: snap.id, ...snap.data() } as Statpack);
+        const data = snap.data();
+        const toDateIfTimestamp = (value: unknown) => {
+          if (value instanceof Timestamp) {
+            return value.toDate();
+          }
+          if (value instanceof Date) {
+            return value;
+          }
+          return undefined;
+        };
+
+        setPack({
+          id: snap.id,
+          ...data,
+          checkedOutAt: toDateIfTimestamp(data.checkedOutAt),
+          lastCheckedAt: toDateIfTimestamp(data.lastCheckedAt),
+        } as Statpack);
       }
     } catch (e) {
       console.error(e);
@@ -149,7 +165,9 @@ export default function MobilePackDashboard({ params }: MobileDashboardProps) {
                   <p className="font-bold text-lg">{pack.assignedToUserName || 'Unknown User'}</p>
                   <div className="flex items-center gap-1 text-xs text-gray-500">
                     <Clock size={12} />
-                    <span>Since {pack.checkedOutAt?.toDate ? pack.checkedOutAt.toDate().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Unknown time'}</span>
+                    <span>
+                      Since {pack.checkedOutAt ? pack.checkedOutAt.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Unknown time'}
+                    </span>
                   </div>
                 </div>
               </div>

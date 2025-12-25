@@ -6,9 +6,10 @@ import { Button, Input, Card, CardBody, CardHeader, Divider } from '@heroui/reac
 import { EyeSlashFilledIcon, EyeFilledIcon } from '@heroui/shared-icons';
 import { LogIn } from 'lucide-react';
 import { signInWithEmailAndPassword } from 'firebase/auth';
+import { FirebaseError } from 'firebase/app';
 import { auth } from '@/firebase';
 
-export default function LoginPage(): JSX.Element {
+export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -25,16 +26,20 @@ export default function LoginPage(): JSX.Element {
     try {
       await signInWithEmailAndPassword(auth, email, password);
       router.push('/dashboard');
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Login error:', err);
-      if (err.code === 'auth/invalid-credential') {
-        setError('Invalid email or password');
-      } else if (err.code === 'auth/user-not-found') {
-        setError('User not found');
-      } else if (err.code === 'auth/wrong-password') {
-        setError('Wrong password');
+      if (err instanceof FirebaseError) {
+        if (err.code === 'auth/invalid-credential') {
+          setError('Invalid email or password');
+        } else if (err.code === 'auth/user-not-found') {
+          setError('User not found');
+        } else if (err.code === 'auth/wrong-password') {
+          setError('Wrong password');
+        } else {
+          setError(err.message || 'Failed to sign in');
+        }
       } else {
-        setError(err.message || 'Failed to sign in');
+        setError('Failed to sign in');
       }
     } finally {
       setLoading(false);
@@ -99,7 +104,7 @@ export default function LoginPage(): JSX.Element {
           </form>
           <div className="text-center text-sm">
             <p className="text-gray-600 dark:text-gray-400">
-              Don't have an account?{' '}
+              Don&apos;t have an account?{' '}
               <Link href="/register" className="text-indigo-600 dark:text-indigo-400 font-semibold hover:underline">
                 Register
               </Link>

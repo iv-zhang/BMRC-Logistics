@@ -9,14 +9,14 @@ import {
   Table, TableHeader, TableColumn, TableBody, TableRow, TableCell,
   Autocomplete, AutocompleteItem, Tooltip, Textarea
 } from '@heroui/react';
-import { onAuthStateChanged } from 'firebase/auth';
+import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { 
-  collection, addDoc, updateDoc, doc, serverTimestamp, query, where, orderBy, limit, onSnapshot, getDocs
+  collection, addDoc, updateDoc, doc, serverTimestamp, query, where, orderBy, limit, onSnapshot, getDocs, Timestamp
 } from 'firebase/firestore';
 import { auth, db } from '@/firebase'; 
 import { 
   Plus, BriefcaseMedical, AlertCircle, CheckCircle, 
-  Trash2, Save, X, ClipboardCheck, History, UserMinus, UserCheck, Eye
+  Trash2, ClipboardCheck, History, UserMinus, UserCheck
 } from 'lucide-react';
 
 // --- Imports for Visualization ---
@@ -31,7 +31,7 @@ const BLANK_PACK: Partial<Statpack> = {
   isCheckedOut: false
 };
 
-export default function StatpacksPage(): JSX.Element {
+export default function StatpacksPage() {
   const router = useRouter();
   
   // Modals Control
@@ -39,7 +39,7 @@ export default function StatpacksPage(): JSX.Element {
   const { isOpen: isCheckoutOpen, onOpen: onCheckoutOpen, onOpenChange: onCheckoutChange } = useDisclosure();
   const { isOpen: isHistoryOpen, onOpen: onHistoryOpen, onOpenChange: onHistoryChange } = useDisclosure();
   
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<FirebaseUser | null>(null);
   const [userRole, setUserRole] = useState<User['role'] | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -226,18 +226,19 @@ export default function StatpacksPage(): JSX.Element {
 
   // 4. Handlers: Database Actions
   const handleSaveConfig = async (onClose: () => void) => {
-    if (!currentPack.name) return;
+    if (!currentPack.name || !user) return;
     setSaving(true);
     try {
-      const payload: any = { ...currentPack, updatedAt: serverTimestamp() };
+      const payload: Record<string, unknown> = { ...currentPack, updatedAt: serverTimestamp() };
       Object.keys(payload).forEach(key => payload[key] === undefined && delete payload[key]);
+      const userName = user.displayName || user.email || 'Unknown User';
       
       const logEntry: StatpackLog = {
         statpackId: currentPack.id || 'new',
         statpackName: currentPack.name,
         action: 'maintenance',
         userId: user.uid,
-        userName: user.displayName || user.email,
+        userName,
         timestamp: serverTimestamp(),
         notes: 'Configuration updated'
       };
@@ -261,9 +262,10 @@ export default function StatpacksPage(): JSX.Element {
   };
 
   const handleSubmitCheckout = async (onClose: () => void) => {
-    if (!currentPack.id) return;
+    if (!currentPack.id || !user) return;
     setSaving(true);
     try {
+      const userName = user.displayName || user.email || 'Unknown User';
       // UPDATED: Automatically set status to "In Use" when checking out
       const newStatus: Statpack['status'] = 'In Use';
 
@@ -272,7 +274,7 @@ export default function StatpacksPage(): JSX.Element {
         status: newStatus,
         isCheckedOut: true,
         assignedToUserId: user.uid,
-        assignedToUserName: user.displayName || user.email,
+        assignedToUserName: userName,
         checkedOutAt: serverTimestamp(),
         lastCheckedBy: user.uid,
         lastCheckedAt: serverTimestamp(),
@@ -286,7 +288,7 @@ export default function StatpacksPage(): JSX.Element {
         statpackName: currentPack.name || 'Unknown',
         action: 'checkout',
         userId: user.uid,
-        userName: user.displayName || user.email,
+        userName,
         timestamp: serverTimestamp(),
         notes: checkoutNotes || `Bag checked out for use`
       };
@@ -301,6 +303,8 @@ export default function StatpacksPage(): JSX.Element {
   };
 
   const handleReturnBag = async (pack: Statpack) => {
+    if (!user) return;
+    const userName = user.displayName || user.email || 'Unknown User';
     const isReturnAllowed = userRole === 'admin' || pack.assignedToUserId === user?.uid;
     if (!isReturnAllowed) {
       alert('Only the assignee or an admin can return this bag.');
@@ -333,7 +337,7 @@ export default function StatpacksPage(): JSX.Element {
         statpackName: pack.name,
         action: 'checkin',
         userId: user.uid,
-        userName: user.displayName || user.email,
+        userName,
         timestamp: serverTimestamp(),
         notes: `Bag returned. Status set to: ${newStatus}`
       });
@@ -357,6 +361,16 @@ export default function StatpacksPage(): JSX.Element {
     if(s === 'In Use') return 'warning'; // Shows as yellow/orange
     if(s === 'Expired Items') return 'danger';
     return 'warning'; // Fallback
+  };
+
+  const formatLogTimestamp = (value: StatpackLog['timestamp']) => {
+    if (value instanceof Timestamp) {
+      return value.toDate().toLocaleString();
+    }
+    if (value instanceof Date) {
+      return value.toLocaleString();
+    }
+    return 'Just now';
   };
 
   const canReturnPack = (pack: Statpack) => {
@@ -471,11 +485,11 @@ export default function StatpacksPage(): JSX.Element {
                  {/* Top Controls: Name, Type, Status */}
                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                   <Input label="Bag Name" value={currentPack.name} onValueChange={(val) => setCurrentPack(p => ({...p, name: val}))} />
-                  <Select label="Type" selectedKeys={currentPack.type ? [currentPack.type] : []} onChange={(e) => setCurrentPack(p => ({...p, type: e.target.value as any}))}>
+                  <Select label="Type" selectedKeys={currentPack.type ? [currentPack.type] : []} onChange={(e) => setCurrentPack(p => ({...p, type: e.target.value as Statpack['type']}))}>
                     <SelectItem key="Primary">Primary</SelectItem>
                     <SelectItem key="Secondary">Secondary</SelectItem>
                   </Select>
-                  <Select label="Forced Status" selectedKeys={currentPack.status ? [currentPack.status] : []} onChange={(e) => setCurrentPack(p => ({...p, status: e.target.value as any}))}>
+                  <Select label="Forced Status" selectedKeys={currentPack.status ? [currentPack.status] : []} onChange={(e) => setCurrentPack(p => ({...p, status: e.target.value as Statpack['status']}))}>
                     <SelectItem key="Ready">Ready</SelectItem>
                     <SelectItem key="Restock Needed">Restock Needed</SelectItem>
                     <SelectItem key="In Use">In Use</SelectItem>
@@ -705,7 +719,7 @@ export default function StatpacksPage(): JSX.Element {
                         <div className="flex justify-between">
                           <span className="font-bold capitalize">{log.action}</span>
                           <span className="text-xs text-gray-400">
-                             {log.timestamp?.toDate ? log.timestamp.toDate().toLocaleString() : 'Just now'}
+                             {formatLogTimestamp(log.timestamp)}
                           </span>
                         </div>
                         <p className="text-sm">{log.notes}</p>

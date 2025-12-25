@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import {
   Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button, 
   Input, Select, SelectItem, Switch, Textarea
@@ -33,6 +33,20 @@ type InventoryFormField =
   | 'totalStockQuantity'
   | 'reorderThreshold';
 
+const DEFAULT_STATE: InventoryFormState = {
+  name: '',
+  category: 'Other',
+  location: 'HQ',
+  room: 'Middle',
+  shelf: '',
+  totalStockQuantity: 0,
+  unit: 'count',
+  reorderThreshold: 5,
+  isDisposable: true,
+  description: '',
+  expirationDate: undefined
+};
+
 export default function InventoryModal({ 
   isOpen, 
   onOpenChange, 
@@ -40,32 +54,9 @@ export default function InventoryModal({
   onUpdateItem,
   initialData 
 }: InventoryModalProps) {
-  
-  // Default Empty State
-  const defaultState: InventoryFormState = {
-    name: '',
-    category: 'Other',
-    location: 'HQ',
-    room: 'Middle',
-    shelf: '',
-    totalStockQuantity: 0,
-    unit: 'count',
-    reorderThreshold: 5,
-    isDisposable: true,
-    description: '',
-    expirationDate: undefined
-  };
-
-  const [formData, setFormData] = useState<InventoryFormState>(defaultState);
-
-  // Effect: When modal opens or initialData changes, update form state
-  useEffect(() => {
-    if (initialData) {
-      setFormData({ ...initialData });
-    } else {
-      setFormData(defaultState);
-    }
-  }, [initialData, isOpen]);
+  const [formData, setFormData] = useState<InventoryFormState>(() => (
+    initialData ? { ...initialData } : DEFAULT_STATE
+  ));
 
   const handleValueChange = (field: InventoryFormField) => (value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
@@ -154,7 +145,7 @@ export default function InventoryModal({
                   onSelectionChange={(keys) => setFormData({...formData, category: Array.from(keys)[0] as ItemCategory})}
                 >
                   {CATEGORIES.map((cat) => (
-                    <SelectItem key={cat} value={cat}>{cat}</SelectItem>
+                    <SelectItem key={cat}>{cat}</SelectItem>
                   ))}
                 </Select>
 
@@ -178,7 +169,7 @@ export default function InventoryModal({
                   onSelectionChange={(keys) => setFormData({...formData, location: Array.from(keys)[0] as LocationType})}
                 >
                   {LOCATIONS.map((loc) => (
-                    <SelectItem key={loc} value={loc}>{loc}</SelectItem>
+                    <SelectItem key={loc}>{loc}</SelectItem>
                   ))}
                 </Select>
 
@@ -190,7 +181,7 @@ export default function InventoryModal({
                     onSelectionChange={(keys) => setFormData({...formData, room: Array.from(keys)[0] as HQRoom})}
                   >
                     {HQ_ROOMS.map((room) => (
-                      <SelectItem key={room} value={room}>{room}</SelectItem>
+                      <SelectItem key={room}>{room}</SelectItem>
                     ))}
                   </Select>
                 ) : (

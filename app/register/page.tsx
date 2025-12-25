@@ -6,11 +6,12 @@ import { Button, Input, Card, CardBody, CardHeader, Divider } from '@heroui/reac
 import { EyeSlashFilledIcon, EyeFilledIcon } from '@heroui/shared-icons';
 import { UserPlus } from 'lucide-react';
 import { createUserWithEmailAndPassword, updateProfile } from 'firebase/auth';
+import { FirebaseError } from 'firebase/app';
 import { auth, db } from '@/firebase';
 import { doc, setDoc } from 'firebase/firestore';
 import type { User } from '@/app/types';
 
-export default function RegisterPage(): JSX.Element {
+export default function RegisterPage() {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -74,6 +75,7 @@ export default function RegisterPage(): JSX.Element {
         id: firebaseUser.uid,
         fullName,
         email,
+        role: 'member',
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -82,14 +84,18 @@ export default function RegisterPage(): JSX.Element {
 
       // Redirect to login page
       router.push('/login');
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Registration error:', err);
-      if (err.code === 'auth/email-already-in-use') {
-        setError('Email is already in use');
-      } else if (err.code === 'auth/invalid-email') {
-        setError('Invalid email address');
+      if (err instanceof FirebaseError) {
+        if (err.code === 'auth/email-already-in-use') {
+          setError('Email is already in use');
+        } else if (err.code === 'auth/invalid-email') {
+          setError('Invalid email address');
+        } else {
+          setError(err.message || 'Failed to create account');
+        }
       } else {
-        setError(err.message || 'Failed to create account');
+        setError('Failed to create account');
       }
     } finally {
       setLoading(false);

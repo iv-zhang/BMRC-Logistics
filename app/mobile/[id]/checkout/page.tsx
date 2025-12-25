@@ -3,18 +3,18 @@
 import React, { useEffect, useState, use, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
-  Card, CardBody, Button, Chip, Spinner, Progress,
+  Card, CardBody, Button, Spinner, Progress,
   Input, Textarea
 } from '@heroui/react';
-import { onAuthStateChanged } from 'firebase/auth';
+import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { 
   doc, getDoc, updateDoc, addDoc, collection, serverTimestamp 
 } from 'firebase/firestore';
 import { auth, db } from '@/firebase'; 
 import { Statpack } from '@/app/types'; 
 import { 
-  ArrowLeft, ArrowRight, CheckCircle2, AlertTriangle, 
-  Minus, Plus, ClipboardCheck, Box
+  ArrowLeft, CheckCircle2, 
+  Minus, Plus, ClipboardCheck
 } from 'lucide-react';
 
 interface MobileCheckoutProps {
@@ -26,7 +26,7 @@ export default function MobileCheckoutPage({ params }: MobileCheckoutProps) {
   const router = useRouter();
   
   // -- State --
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<FirebaseUser | null>(null);
   const [pack, setPack] = useState<Statpack | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -83,7 +83,11 @@ export default function MobileCheckoutPage({ params }: MobileCheckoutProps) {
   const pocketSteps = useMemo(() => {
     if (!pack?.contents) return [];
     const pockets = Array.from(new Set(pack.contents.map(i => i.pocket || 'Main')));
-    return pockets.sort((a, b) => (a === 'Main' ? -1 : 1));
+    return pockets.sort((a, b) => {
+      if (a === 'Main') return -1;
+      if (b === 'Main') return 1;
+      return 0;
+    });
   }, [pack]);
 
   const currentPocket = pocketSteps[activePocketIndex];

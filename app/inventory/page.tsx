@@ -7,7 +7,7 @@ import {
 import { Boxes, Plus, Search } from 'lucide-react';
 
 // Firebase Imports
-import { onAuthStateChanged } from 'firebase/auth';
+import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { 
   collection, 
   addDoc,
@@ -65,9 +65,9 @@ const SEED_ITEMS: Array<Partial<InventoryItem>> = [
   },
 ];
 
-export default function InventoryPage(): JSX.Element {
+export default function InventoryPage() {
   const router = useRouter();
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<FirebaseUser | null>(null);
   const [loading, setLoading] = useState(true);
   
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
@@ -100,7 +100,7 @@ export default function InventoryPage(): JSX.Element {
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const items = snapshot.docs.map((doc) => {
         const data = doc.data();
-        const getDate = (ts: any) => (ts instanceof Timestamp ? ts.toDate() : new Date());
+        const getDate = (ts: unknown) => (ts instanceof Timestamp ? ts.toDate() : new Date());
 
         return {
           id: doc.id,
@@ -525,6 +525,7 @@ export default function InventoryPage(): JSX.Element {
 
         {/* Modal Component */}
         <InventoryModal 
+            key={`${selectedItem?.id ?? 'new'}-${isOpen ? 'open' : 'closed'}`}
             isOpen={isOpen} 
             onOpenChange={onOpenChange} 
             onAddItem={handleAddItem}

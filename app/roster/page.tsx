@@ -20,9 +20,11 @@ import {
 import { Users } from 'lucide-react';
 import { collection, getDocs, doc, updateDoc } from 'firebase/firestore';
 import { db } from '@/firebase'; // Assuming your firebase config export
-import { User } from '@/types'; // Adjust path based on your folder structure
+import type { User } from '@/app/types'; // Adjust path based on your folder structure
 
-const ROLE_OPTIONS = [
+type RoleChipColor = 'danger' | 'warning' | 'success' | 'default';
+
+const ROLE_OPTIONS: Array<{ label: string; value: User['role']; color: RoleChipColor }> = [
   { label: 'Admin', value: 'admin', color: 'danger' },
   { label: 'FTO', value: 'FTO', color: 'warning' },
   { label: 'Quartermaster', value: 'quartermaster', color: 'success' },
@@ -59,7 +61,7 @@ export default function RosterPage() {
     fetchUsers();
   }, []);
 
-  const handleRoleChange = async (userId: string, newRole: string) => {
+  const handleRoleChange = async (userId: string, newRole: User['role']) => {
     setUpdatingId(userId);
     try {
       const userRef = doc(db, 'users', userId);
@@ -67,7 +69,7 @@ export default function RosterPage() {
       
       // Update local state to reflect change immediately
       setUsers(prev => prev.map(u => 
-        u.id === userId ? { ...u, role: newRole as any } : u
+        u.id === userId ? { ...u, role: newRole } : u
       ));
     } catch (error) {
       console.error("Error updating role:", error);
@@ -94,8 +96,8 @@ export default function RosterPage() {
       case "role":
         const roleConfig = ROLE_OPTIONS.find(r => r.value === user.role) || ROLE_OPTIONS[3];
         return (
-          <Chip className="capitalize" color={roleConfig.color as any} size="sm" variant="flat">
-            {cellValue}
+          <Chip className="capitalize" color={roleConfig.color} size="sm" variant="flat">
+            {user.role}
           </Chip>
         );
       case "actions":
@@ -109,11 +111,13 @@ export default function RosterPage() {
               size="sm"
               isDisabled={updatingId === user.id}
               onChange={(e) => {
-                if(e.target.value) handleRoleChange(user.id, e.target.value);
+                if (e.target.value) {
+                  handleRoleChange(user.id, e.target.value as User['role']);
+                }
               }}
             >
               {ROLE_OPTIONS.map((role) => (
-                <SelectItem key={role.value} value={role.value} textValue={role.label}>
+                <SelectItem key={role.value} textValue={role.label}>
                   <div className="flex items-center gap-2">
                     <span className={`w-2 h-2 rounded-full bg-${role.color}-500 opacity-70`}></span>
                     {role.label}
@@ -125,7 +129,7 @@ export default function RosterPage() {
           </div>
         );
       default:
-        return cellValue;
+        return String(cellValue ?? '');
     }
   }, [updatingId]);
 

@@ -30,8 +30,8 @@ let analytics;
 if (typeof window !== "undefined") {
   try {
     analytics = getAnalytics(app);
-  } catch (e) {
-    // analytics may fail during SSR or if measurementId is missing — ignore silently
+  } catch {
+    // Analytics may fail during SSR or if measurementId is missing; ignore silently.
   }
 }
 

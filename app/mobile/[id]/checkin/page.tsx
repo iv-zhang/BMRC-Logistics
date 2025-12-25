@@ -7,7 +7,7 @@ import {
   Button, Chip, Spinner, Progress,
   Input, Textarea, Divider
 } from '@heroui/react';
-import { onAuthStateChanged } from 'firebase/auth';
+import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { 
   doc, getDoc, updateDoc, addDoc, collection, serverTimestamp 
 } from 'firebase/firestore';
@@ -35,7 +35,7 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
   const router = useRouter();
   
   // -- Auth & Data --
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<FirebaseUser | null>(null);
   const [userRole, setUserRole] = useState<User['role'] | null>(null);
   const [pack, setPack] = useState<Statpack | null>(null);
   const [loading, setLoading] = useState(true);
@@ -108,7 +108,11 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
   const pocketSteps = useMemo(() => {
     if (!pack?.contents) return [];
     const pockets = Array.from(new Set(pack.contents.map(i => i.pocket || 'Main')));
-    return pockets.sort((a, b) => (a === 'Main' ? -1 : 1));
+    return pockets.sort((a, b) => {
+      if (a === 'Main') return -1;
+      if (b === 'Main') return 1;
+      return 0;
+    });
   }, [pack]);
 
   const currentPocket = pocketSteps[activePocketIndex];
@@ -133,7 +137,7 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
     });
   };
 
-  const toggleRestock = (key: string, requiredQty: number) => {
+  const toggleRestock = (key: string) => {
     setItemStates(prev => {
       const current = prev[key];
       return {
@@ -215,7 +219,7 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
       await addDoc(collection(db, 'statpack_logs'), {
         statpackId: pack.id,
         statpackName: pack.name,
-        action: 'check-in',
+        action: 'checkin',
         userId: user.uid,
         userName: user.displayName || user.email,
         timestamp: serverTimestamp(),
@@ -310,8 +314,7 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
                 <ul className="text-sm space-y-1 pl-2">
                   {Object.entries(itemStates).map(([key, state]) => {
                     if (state.originalQty > state.foundQty) {
-                      const [itemId, idxStr] = key.split('_');
-                      const idx = parseInt(idxStr);
+                      const idx = Number(key.split('_')[1]);
                       const name = pack.contents[idx].itemDetails?.name;
                       return (
                         <li key={key} className="flex justify-between">
@@ -390,7 +393,7 @@ export default function MobileCheckinPage({ params }: MobileCheckinProps) {
                                size="sm" 
                                color={state.restocked ? "success" : "warning"} 
                                variant={state.restocked ? "solid" : "ghost"}
-                               onPress={() => toggleRestock(key, req)}
+                               onPress={() => toggleRestock(key)}
                                startContent={state.restocked ? <CheckCircle2 size={14}/> : <RefreshCw size={14}/>}
                              >
                                {state.restocked ? "Filled" : "Restock"}

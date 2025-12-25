@@ -11,8 +11,8 @@ import {
   Spinner,
   ScrollShadow
 } from '@heroui/react';
-import { onAuthStateChanged } from 'firebase/auth';
-import { collection, onSnapshot, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
+import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
+import { collection, onSnapshot, query, where, orderBy, limit, getDocs, Timestamp } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
 import { 
   AlertTriangle, 
@@ -23,7 +23,7 @@ import {
   LayoutDashboard 
 } from 'lucide-react';
 
-import type { Statpack, InventoryItem, StatpackLog } from '@/types';
+import type { Statpack, InventoryItem, StatpackLog, StatpackItem } from '@/app/types';
 
 interface ExpiryAlert {
   bagName: string; // Used for Bag Name OR Location String
@@ -33,9 +33,9 @@ interface ExpiryAlert {
   source: 'kit' | 'inventory'; // Added to distinguish source if needed for styling
 }
 
-export default function DashboardPage(): JSX.Element {
+export default function DashboardPage() {
   const router = useRouter();
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<FirebaseUser | null>(null);
   const [loading, setLoading] = useState(true);
 
   // --- Domain State ---
@@ -75,6 +75,16 @@ export default function DashboardPage(): JSX.Element {
       }
     };
 
+    const toDateIfTimestamp = (value: unknown) => {
+      if (value instanceof Timestamp) {
+        return value.toDate();
+      }
+      if (value instanceof Date) {
+        return value;
+      }
+      return undefined;
+    };
+
     const unsubscribePacks = onSnapshot(
       collection(db, 'statpacks'),
       (snapshot) => {
@@ -82,10 +92,12 @@ export default function DashboardPage(): JSX.Element {
           id: doc.id,
           ...doc.data(),
           lastCheckedAt: doc.data().lastCheckedAt?.toDate(),
-          contents: doc.data().contents?.map((c: any) => ({
-             ...c,
-             expirationDate: c.expirationDate?.toDate()
-          })) || []
+          contents: Array.isArray(doc.data().contents)
+            ? doc.data().contents.map((item: StatpackItem) => ({
+                ...item,
+                expirationDate: toDateIfTimestamp(item.expirationDate)
+              }))
+            : []
         })) as Statpack[];
 
         setStatpacks(packsData);

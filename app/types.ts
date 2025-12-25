@@ -91,6 +91,7 @@ export interface StatpackLog {
   action: 'checkout' | 'checkin' | 'maintenance' | 'update';
   userId: string;
   userName: string;
-  timestamp: any; 
+  timestamp: Timestamp | Date | FieldValue; 
   notes?: string;
 }
+import type { FieldValue, Timestamp } from 'firebase/firestore';
