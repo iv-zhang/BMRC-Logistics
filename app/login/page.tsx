@@ -2,8 +2,9 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Button, Input, Card, CardBody, CardHeader } from '@heroui/react';
+import { Button, Input, Card, CardBody, CardHeader, Divider } from '@heroui/react';
 import { EyeSlashFilledIcon, EyeFilledIcon } from '@heroui/shared-icons';
+import { LogIn } from 'lucide-react';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { auth } from '@/firebase';
 
@@ -42,12 +43,16 @@ export default function LoginPage(): JSX.Element {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-4">
-      <Card className="max-w-md w-full shadow-lg dark:bg-slate-800 dark:border-slate-700 rounded-3xl">
-        <CardHeader className="flex flex-col gap-3 p-6 bg-gradient-to-r from-indigo-600 to-blue-600 dark:from-indigo-700 dark:to-blue-700 rounded-t-3xl">
-          <h1 className="text-2xl font-bold text-white">Sign in to BMRC</h1>
-          <p className="text-indigo-100 text-sm">Access your logistics dashboard</p>
+      <Card className="max-w-md w-full shadow-lg bg-white/80 dark:bg-slate-800/80 border border-gray-200/70 dark:border-slate-700 rounded-xl">
+        <CardHeader className="flex flex-col gap-2 p-6">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
+            <LogIn className="text-indigo-600" size={22} />
+            Sign in to BMRC
+          </h1>
+          <p className="text-gray-500 dark:text-gray-400 text-sm">Access your logistics dashboard</p>
         </CardHeader>
-        <CardBody className="p-8 gap-6 rounded-b-3xl">
+        <Divider />
+        <CardBody className="p-8 gap-6">
           {error && (
             <div className="w-full p-4 bg-red-100 dark:bg-red-900/30 border-l-4 border-red-500 dark:border-red-600 rounded-2xl">
               <p className="text-red-700 dark:text-red-400 font-medium">{error}</p>
@@ -85,7 +90,8 @@ export default function LoginPage(): JSX.Element {
             <Button
               type="submit"
               isLoading={loading}
-              className="w-full h-12 bg-gradient-to-r from-indigo-600 to-blue-600 dark:from-indigo-700 dark:to-blue-700 text-white font-semibold rounded-2xl transition-colors"
+              color="primary"
+              className="w-full h-12 font-semibold"
               size="lg"
             >
               {loading ? 'Signing in...' : 'Sign In'}

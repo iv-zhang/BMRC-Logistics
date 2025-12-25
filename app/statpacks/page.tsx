@@ -309,7 +309,7 @@ export default function StatpacksPage(): JSX.Element {
   if (loading) return <div className="h-screen flex items-center justify-center"><Spinner /></div>;
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-slate-900 p-6">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
       <div className="max-w-7xl mx-auto space-y-6">
         
         {/* Header */}
@@ -364,7 +364,7 @@ export default function StatpacksPage(): JSX.Element {
                   )}
                 </div>
               </CardBody>
-              <CardFooter className="bg-gray-100 dark:bg-slate-800/50 flex gap-2">
+              <CardFooter className="bg-indigo-50/70 dark:bg-slate-800/60 flex gap-2">
                 {pack.isCheckedOut ? (
                    <Button fullWidth color="warning" variant="flat" onPress={() => handleReturnBag(pack)}>
                     Return / Check In
@@ -406,7 +406,7 @@ export default function StatpacksPage(): JSX.Element {
                 {/* --- VISUALIZER INTEGRATION (EDIT MODE) --- */}
                 <div className="flex flex-col lg:flex-row gap-6">
                   {/* Left: Visualizer */}
-                  <div className="flex-none lg:w-auto lg:min-w-[520px] flex justify-center items-center bg-gray-100 dark:bg-slate-800 border border-transparent dark:border-slate-700 rounded-xl p-10">
+                  <div className="flex-none lg:w-auto lg:min-w-[520px] flex justify-center items-center bg-white/80 dark:bg-slate-800/80 border border-transparent dark:border-slate-700 rounded-xl p-10">
                     <BagVisualizer 
                       statpack={currentPack as Statpack} 
                       selectedPocket={viewPocket} 
@@ -454,7 +454,7 @@ export default function StatpacksPage(): JSX.Element {
                     </Table>
 
                     {/* Add Item Logic */}
-                    <div className="flex flex-col gap-2 p-4 bg-gray-100 dark:bg-slate-800 rounded-lg">
+                    <div className="flex flex-col gap-2 p-4 bg-white/80 dark:bg-slate-800/80 rounded-lg">
                        <span className="text-xs font-bold text-gray-500 uppercase">Add to Bag</span>
                        <div className="flex gap-2 items-end">
                           <div className="w-1/3">

@@ -14,8 +14,10 @@ import {
   SelectItem,
   Card,
   CardBody,
-  Spinner
+  Spinner,
+  Divider
 } from '@heroui/react';
+import { Users } from 'lucide-react';
 import { collection, getDocs, doc, updateDoc } from 'firebase/firestore';
 import { db } from '@/firebase'; // Assuming your firebase config export
 import { User } from '@/types'; // Adjust path based on your folder structure
@@ -129,39 +131,45 @@ export default function RosterPage() {
 
   if (loading) {
     return (
-      <div className="w-full h-[80vh] flex justify-center items-center">
+      <div className="min-h-screen flex justify-center items-center bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
         <Spinner size="lg" label="Loading Roster..." />
       </div>
     );
   }
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6">
-      <div className="flex flex-col gap-2">
-        <h1 className="text-3xl font-bold tracking-tight text-gray-900 dark:text-gray-100">Team Roster</h1>
-        <p className="text-gray-500 dark:text-gray-400">Manage member permissions and roles.</p>
-      </div>
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
+      <div className="max-w-7xl mx-auto space-y-6">
+        <div className="flex flex-col gap-2">
+          <h1 className="text-3xl font-bold tracking-tight text-gray-900 dark:text-gray-100 flex items-center gap-2">
+            <Users className="text-indigo-600" size={26} />
+            Team Roster
+          </h1>
+          <p className="text-gray-500 dark:text-gray-400">Manage member permissions and roles.</p>
+        </div>
+        <Divider />
 
-      <Card className="border border-gray-200 dark:border-slate-800 shadow-sm">
-        <CardBody className="p-0">
-          <Table aria-label="Team Roster Table" shadow="none" removeWrapper>
-            <TableHeader columns={COLUMNS}>
-              {(column) => (
-                <TableColumn key={column.uid} align={column.uid === "actions" ? "start" : "start"}>
-                  {column.name}
-                </TableColumn>
-              )}
-            </TableHeader>
-            <TableBody items={users} emptyContent={"No members found."}>
-              {(item) => (
-                <TableRow key={item.id}>
-                  {(columnKey) => <TableCell>{renderCell(item, columnKey)}</TableCell>}
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </CardBody>
-      </Card>
+        <Card className="border border-gray-200/70 dark:border-slate-700 shadow-lg bg-white/80 dark:bg-slate-800/80 rounded-xl">
+          <CardBody className="p-0">
+            <Table aria-label="Team Roster Table" shadow="none" removeWrapper>
+              <TableHeader columns={COLUMNS}>
+                {(column) => (
+                  <TableColumn key={column.uid} align={column.uid === "actions" ? "start" : "start"}>
+                    {column.name}
+                  </TableColumn>
+                )}
+              </TableHeader>
+              <TableBody items={users} emptyContent={"No members found."}>
+                {(item) => (
+                  <TableRow key={item.id}>
+                    {(columnKey) => <TableCell>{renderCell(item, columnKey)}</TableCell>}
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </CardBody>
+        </Card>
+      </div>
     </div>
   );
 }

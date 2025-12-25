@@ -124,7 +124,7 @@ export default function MobileCheckoutPage({ params }: MobileCheckoutProps) {
 
   if (loading) {
     return (
-      <div className="h-screen w-full flex flex-col items-center justify-center bg-gray-50 dark:bg-black gap-4">
+      <div className="min-h-screen w-full flex flex-col items-center justify-center bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 gap-4">
         <Spinner size="lg" />
         <p className="text-sm text-gray-500 animate-pulse">Locating Statpack...</p>
       </div>
@@ -133,7 +133,7 @@ export default function MobileCheckoutPage({ params }: MobileCheckoutProps) {
 
   if (!pack) {
     return (
-      <div className="h-screen p-6 flex flex-col items-center justify-center text-center">
+      <div className="min-h-screen p-6 flex flex-col items-center justify-center text-center bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
         <AlertTriangle size={48} className="text-danger mb-4" />
         <h1 className="text-2xl font-bold">Statpack Not Found</h1>
         <p className="text-gray-500 mt-2">The QR code scanned does not match any active inventory.</p>
@@ -144,7 +144,7 @@ export default function MobileCheckoutPage({ params }: MobileCheckoutProps) {
 
   // 4. Main UI
   return (
-    <div className="min-h-screen bg-gray-100 dark:bg-zinc-950 p-4 pb-20">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-4 pb-20">
       
       {/* Top Bar */}
       <div className="flex items-center gap-2 mb-6">
@@ -210,7 +210,7 @@ export default function MobileCheckoutPage({ params }: MobileCheckoutProps) {
               variant="bordered"
             />
             
-            <div className="bg-gray-50 dark:bg-zinc-900 p-3 rounded-lg text-xs text-gray-500 flex gap-2">
+            <div className="bg-white/80 dark:bg-slate-800/80 p-3 rounded-lg text-xs text-gray-500 flex gap-2">
                <ShieldCheck size={16} className="text-success shrink-0" />
                <span>By checking out, you assume responsibility for this kit and its contents until return.</span>
             </div>

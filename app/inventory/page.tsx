@@ -2,8 +2,9 @@
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
-  Card, CardBody, CardHeader, Tab, Tabs, Chip, Progress, Button, useDisclosure 
+  Card, CardBody, CardHeader, Tab, Tabs, Chip, Progress, Button, Spinner, Divider, useDisclosure 
 } from '@heroui/react';
+import { Boxes, Plus } from 'lucide-react';
 
 // Firebase Imports
 import { onAuthStateChanged } from 'firebase/auth';
@@ -160,52 +161,62 @@ export default function InventoryPage(): JSX.Element {
     return { label: `Exp: ${expiry.toLocaleDateString()}`, color: 'default' as const, isExpired: false };
   };
 
-  if (loading) return <div className="flex h-screen w-full items-center justify-center">Loading Inventory...</div>;
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
+        <Spinner />
+      </div>
+    );
+  }
 
   const lowStockItems = inventory.filter(i => i.totalStockQuantity <= i.reorderThreshold);
   const criticalStockItems = inventory.filter(i => i.totalStockQuantity === 0);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-4">
-      <div className="max-w-6xl mx-auto">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
+      <div className="max-w-7xl mx-auto">
         
         {/* Header */}
-        <div className="flex justify-between items-center mb-8">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
           <div>
-            <h1 className="text-4xl font-bold text-gray-800 dark:text-white mb-2">Master Inventory</h1>
-            <p className="text-gray-600 dark:text-gray-400">Manage the Supply Closet</p>
+            <h1 className="text-3xl font-bold text-gray-800 dark:text-white mb-1 flex items-center gap-2">
+              <Boxes className="text-indigo-600" size={28} />
+              Master Inventory
+            </h1>
+            <p className="text-gray-600 dark:text-gray-400">Manage the supply closet</p>
           </div>
           
           <Button 
             onPress={openAddModal}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold shadow-lg shadow-indigo-500/30"
-            startContent={<span>+</span>}
+            color="primary"
+            startContent={<Plus size={18} />}
           >
             Add Item
           </Button>
         </div>
+        <Divider />
 
         {/* Stats Cards */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-          <Card className="shadow-lg dark:bg-slate-800 dark:border-slate-700 rounded-3xl">
+          <Card className="shadow-md bg-white/80 dark:bg-slate-800/80 border border-gray-200/70 dark:border-slate-700 rounded-xl">
             <CardBody className="p-6">
               <p className="text-gray-600 dark:text-gray-400 text-sm mb-2">Total SKUs</p>
               <p className="text-3xl font-bold text-indigo-600 dark:text-indigo-400">{inventory.length}</p>
             </CardBody>
           </Card>
-          <Card className="shadow-lg dark:bg-slate-800 dark:border-slate-700 rounded-3xl">
+          <Card className="shadow-md bg-white/80 dark:bg-slate-800/80 border border-gray-200/70 dark:border-slate-700 rounded-xl">
             <CardBody className="p-6">
               <p className="text-gray-600 dark:text-gray-400 text-sm mb-2">Reorder Needed</p>
               <p className="text-3xl font-bold text-orange-500 dark:text-orange-400">{lowStockItems.length}</p>
             </CardBody>
           </Card>
-          <Card className="shadow-lg dark:bg-slate-800 dark:border-slate-700 rounded-3xl">
+          <Card className="shadow-md bg-white/80 dark:bg-slate-800/80 border border-gray-200/70 dark:border-slate-700 rounded-xl">
             <CardBody className="p-6">
               <p className="text-gray-600 dark:text-gray-400 text-sm mb-2">Critical (Out)</p>
               <p className="text-3xl font-bold text-red-600 dark:text-red-400">{criticalStockItems.length}</p>
             </CardBody>
           </Card>
-          <Card className="shadow-lg dark:bg-slate-800 dark:border-slate-700 rounded-3xl">
+          <Card className="shadow-md bg-white/80 dark:bg-slate-800/80 border border-gray-200/70 dark:border-slate-700 rounded-xl">
             <CardBody className="p-6">
               <p className="text-gray-600 dark:text-gray-400 text-sm mb-2">Categories</p>
               <p className="text-3xl font-bold text-purple-600 dark:text-purple-400">{new Set(inventory.map(i => i.category)).size}</p>
@@ -214,12 +225,13 @@ export default function InventoryPage(): JSX.Element {
         </div>
 
         {/* Main Content Tabs */}
-        <Card className="shadow-lg dark:bg-slate-800 dark:border-slate-700 rounded-3xl">
-          <CardHeader className="flex flex-col gap-3 p-6 bg-gradient-to-r from-indigo-600 to-blue-600 dark:from-indigo-700 dark:to-blue-700 rounded-t-3xl">
-            <h2 className="text-2xl font-bold text-white">Supply Closet</h2>
+        <Card className="shadow-lg bg-white/80 dark:bg-slate-800/80 border border-gray-200/70 dark:border-slate-700 rounded-xl">
+          <CardHeader className="flex flex-col gap-2 p-6 border-b border-gray-200/70 dark:border-slate-700">
+            <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Supply Closet</h2>
+            <p className="text-sm text-gray-500 dark:text-gray-400">Browse and update items across storage locations.</p>
           </CardHeader>
           
-          <CardBody className="p-6 rounded-b-3xl">
+          <CardBody className="p-6">
             <Tabs aria-label="Inventory Options" variant="underlined" color="primary">
               
               {/* TAB 1: ALL ITEMS */}
@@ -230,8 +242,8 @@ export default function InventoryPage(): JSX.Element {
                     const isExpired = expStatus?.isExpired;
                     
                     const cardClasses = isExpired 
-                      ? "w-full border-2 border-red-500 bg-red-50 dark:bg-red-900/20 rounded-2xl transition-colors cursor-pointer" 
-                      : "w-full dark:bg-slate-700 dark:border-slate-600 rounded-2xl hover:bg-gray-50 dark:hover:bg-slate-600 transition-colors cursor-pointer";
+                      ? "w-full border border-red-300 dark:border-red-700 bg-red-50/70 dark:bg-red-900/20 rounded-xl transition-shadow cursor-pointer"
+                      : "w-full bg-white/80 dark:bg-slate-800/80 border border-gray-200/70 dark:border-slate-700 rounded-xl hover:shadow-md transition-shadow cursor-pointer";
 
                     return (
                         <Card 
@@ -278,7 +290,7 @@ export default function InventoryPage(): JSX.Element {
                                 </div>
 
                                 <p className="text-sm text-gray-500 dark:text-gray-400">
-                                Unit: {item.unit} • {item.isDisposable ? 'Disposable' : 'Reusable Asset'}
+                                Unit: {item.unit} - {item.isDisposable ? 'Disposable' : 'Reusable Asset'}
                                 </p>
                             </div>
 
@@ -325,7 +337,7 @@ export default function InventoryPage(): JSX.Element {
                           key={item.id} 
                           isPressable
                           onPress={() => openEditModal(item)}
-                          className="w-full border-l-4 border-red-500 dark:bg-slate-700 rounded-2xl"
+                          className="w-full border border-red-200 dark:border-red-700 border-l-4 border-red-500 bg-white/80 dark:bg-slate-800/80 rounded-xl"
                       >
                         <CardBody className="p-4">
                           <div className="flex justify-between items-start">

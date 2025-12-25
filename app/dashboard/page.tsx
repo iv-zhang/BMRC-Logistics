@@ -7,12 +7,21 @@ import {
   CardHeader, 
   Button, 
   Chip,
+  Divider,
   Spinner,
   ScrollShadow
 } from '@heroui/react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { collection, getDocs, query, where, orderBy, limit } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
+import { 
+  AlertTriangle, 
+  ArrowUpRight, 
+  ChevronDown, 
+  ChevronUp, 
+  Clock, 
+  LayoutDashboard 
+} from 'lucide-react';
 
 import type { Statpack, InventoryItem, StatpackLog } from '@/types';
 
@@ -207,25 +216,29 @@ export default function DashboardPage(): JSX.Element {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-slate-900">
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
         <div className="animate-pulse text-indigo-600 font-semibold">Loading Dashboard...</div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-slate-900 p-6">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
       <div className="max-w-7xl mx-auto space-y-8">
         
         {/* --- Header --- */}
-        <div className="flex flex-col md:flex-row justify-between items-center gap-4">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">BMRC Dashboard</h1>
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
+              <LayoutDashboard className="text-indigo-600" size={28} />
+              BMRC Dashboard
+            </h1>
             <p className="text-gray-500 dark:text-gray-400">
-              Overview of Fleet Readiness & Supply Levels
+              Overview of fleet readiness and supply levels
             </p>
           </div>
         </div>
+        <Divider />
 
         {/* --- Statpack Grid --- */}
         <section>
@@ -258,7 +271,7 @@ export default function DashboardPage(): JSX.Element {
                   {/* CARD: Handles only the Visuals (Borders, Background, Shadow) */}
                   <Card 
                     className={`
-                      h-full hover:shadow-lg transition-shadow
+                      h-full bg-white/80 dark:bg-slate-800/80 hover:shadow-lg transition-shadow
                       ${getStatusBorderClass(pack.status)}
                     `}
                   >
@@ -298,13 +311,14 @@ export default function DashboardPage(): JSX.Element {
                               className="h-6 text-xs"
                               onPress={() => router.push(`/statpacks?id=${pack.id}`)}
                               onClick={(e) => e.stopPropagation()} 
+                              endContent={<ArrowUpRight size={14} />}
                             >
-                              Manage Full Details →
+                              Manage Details
                             </Button>
                           </div>
                           
                           {/* Logs Section */}
-                          <div className="bg-gray-50 dark:bg-slate-800 rounded-lg p-2 min-h-[100px]">
+                          <div className="bg-white/80 dark:bg-slate-800/80 rounded-lg p-2 min-h-[100px]">
                             {isLoadingLogs ? (
                               <div className="flex justify-center py-4">
                                 <Spinner size="sm" />
@@ -343,9 +357,11 @@ export default function DashboardPage(): JSX.Element {
                       
                       {/* TOGGLE ARROW (Always visible, changes direction) */}
                       <div className="mt-2 flex justify-center">
-                          <span className="text-gray-300 text-xs group-hover:text-gray-500 transition-colors">
-                            {isExpanded ? '▲' : '▼'}
-                          </span>
+                        {isExpanded ? (
+                          <ChevronUp className="text-gray-400 group-hover:text-gray-600 transition-colors" size={16} />
+                        ) : (
+                          <ChevronDown className="text-gray-400 group-hover:text-gray-600 transition-colors" size={16} />
+                        )}
                       </div>
                     </CardBody>
                   </Card>
@@ -357,10 +373,10 @@ export default function DashboardPage(): JSX.Element {
 
         {/* --- Alert Sections --- */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <Card className="h-full shadow-md dark:bg-slate-800">
-            <CardHeader className="flex gap-3 bg-red-50 dark:bg-red-900/20 border-b border-red-100 dark:border-red-900/30 px-6 py-4">
+          <Card className="h-full shadow-md bg-white/80 dark:bg-slate-800/80 border border-gray-200/70 dark:border-slate-700">
+            <CardHeader className="flex gap-3 bg-red-50/70 dark:bg-red-900/20 border-b border-red-100 dark:border-red-900/30 px-6 py-4">
               <div className="p-2 bg-red-100 dark:bg-red-800 rounded-lg text-red-600 dark:text-red-100">
-                ⚠️
+                <AlertTriangle size={18} />
               </div>
               <div>
                 <h3 className="text-lg font-bold text-gray-900 dark:text-white">Supply Closet Low</h3>
@@ -373,7 +389,7 @@ export default function DashboardPage(): JSX.Element {
               {lowStockItems.length > 0 ? (
                 <div className="divide-y divide-gray-100 dark:divide-slate-700">
                   {lowStockItems.map((item) => (
-                    <div key={item.id} className="flex justify-between items-center p-4 hover:bg-gray-50">
+                    <div key={item.id} className="flex justify-between items-center p-4 hover:bg-indigo-50/70 dark:hover:bg-slate-700/60">
                       <div>
                         <p className="font-semibold text-gray-800 dark:text-gray-200">{item.name}</p>
                         <p className="text-xs text-gray-500">Category: {item.category}</p>
@@ -390,16 +406,16 @@ export default function DashboardPage(): JSX.Element {
                 </div>
               ) : (
                 <div className="p-8 text-center text-gray-500">
-                  <p>All stock levels are healthy. ✅</p>
+                  <p>All stock levels are healthy.</p>
                 </div>
               )}
             </CardBody>
           </Card>
 
-          <Card className="h-full shadow-md dark:bg-slate-800">
-             <CardHeader className="flex gap-3 bg-orange-50 dark:bg-orange-900/20 border-b border-orange-100 dark:border-orange-900/30 px-6 py-4">
+          <Card className="h-full shadow-md bg-white/80 dark:bg-slate-800/80 border border-gray-200/70 dark:border-slate-700">
+             <CardHeader className="flex gap-3 bg-orange-50/70 dark:bg-orange-900/20 border-b border-orange-100 dark:border-orange-900/30 px-6 py-4">
               <div className="p-2 bg-orange-100 dark:bg-orange-800 rounded-lg text-orange-600 dark:text-orange-100">
-                🕒
+                <Clock size={18} />
               </div>
               <div>
                 <h3 className="text-lg font-bold text-gray-900 dark:text-white">Expiring Items</h3>
@@ -412,7 +428,7 @@ export default function DashboardPage(): JSX.Element {
               {expiryAlerts.length > 0 ? (
                 <div className="divide-y divide-gray-100 dark:divide-slate-700">
                   {expiryAlerts.map((alert, idx) => (
-                    <div key={idx} className="flex justify-between items-center p-4 hover:bg-gray-50">
+                    <div key={idx} className="flex justify-between items-center p-4 hover:bg-indigo-50/70 dark:hover:bg-slate-700/60">
                       <div>
                         <div className="flex items-center gap-2">
                            <p className="font-semibold text-gray-800 dark:text-gray-200">{alert.itemName}</p>
@@ -440,7 +456,7 @@ export default function DashboardPage(): JSX.Element {
                 </div>
               ) : (
                 <div className="p-8 text-center text-gray-500">
-                  <p>No immediate expirations found. ✅</p>
+                  <p>No immediate expirations found.</p>
                 </div>
               )}
             </CardBody>

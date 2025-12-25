@@ -1,51 +1,67 @@
 'use client';
 import Link from 'next/link';
-import { Button, Card, CardBody, CardHeader } from '@heroui/react';
+import { Button, Card, CardBody, Divider } from '@heroui/react';
+import { Truck } from 'lucide-react';
 
 export default function Home() {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-4">
-      <main className="max-w-3xl w-full">
-        <Card className="shadow-lg dark:bg-slate-800 dark:border-slate-700 rounded-3xl">
-          <CardHeader className="flex flex-col gap-3 p-6 bg-gradient-to-r from-indigo-600 to-blue-600 dark:from-indigo-700 dark:to-blue-700 rounded-t-3xl">
-            <h1 className="text-4xl font-bold text-white">BMRC Logistics</h1>
-            <p className="text-indigo-100">Efficient logistics management for your business</p>
-          </CardHeader>
-          <CardBody className="p-8 gap-6 rounded-b-3xl">
-            <div className="space-y-4">
-              <h2 className="text-2xl font-semibold text-gray-800 dark:text-white">Welcome to your Dashboard</h2>
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
+      <main className="max-w-5xl mx-auto space-y-6">
+        <div className="flex flex-col gap-2">
+          <h1 className="text-3xl md:text-4xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
+            <Truck className="text-indigo-600" size={30} />
+            BMRC Logistics
+          </h1>
+          <p className="text-gray-500 dark:text-gray-400">
+            Efficient logistics management for your operations
+          </p>
+        </div>
+        <Divider />
+        <Card className="shadow-lg bg-white/80 dark:bg-slate-800/80 border border-gray-200/70 dark:border-slate-700 rounded-xl">
+          <CardBody className="p-8 gap-8">
+            <div className="space-y-3">
+              <h2 className="text-2xl font-semibold text-gray-900 dark:text-white">Welcome to your dashboard</h2>
               <p className="text-gray-600 dark:text-gray-400 leading-relaxed">
-                BMRC Logistics provides comprehensive solutions for tracking, managing, and optimizing your supply chain operations. 
-                Sign in to access your account and manage shipments, inventory, and more.
+                BMRC Logistics provides a clear view of fleet readiness, inventory health, and audit history.
+                Sign in to manage statpacks, supplies, and team activity in one place.
               </p>
             </div>
             
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 my-6">
-              <div className="p-4 bg-blue-50 dark:bg-blue-900/30 rounded-2xl dark:border dark:border-blue-800">
-                <h3 className="font-semibold text-blue-900 dark:text-blue-300 mb-2">Track Shipments</h3>
-                <p className="text-sm text-blue-700 dark:text-blue-200">Real-time tracking of your deliveries</p>
-              </div>
-              <div className="p-4 bg-green-50 dark:bg-green-900/30 rounded-2xl dark:border dark:border-green-800">
-                <h3 className="font-semibold text-green-900 dark:text-green-300 mb-2">Manage Inventory</h3>
-                <p className="text-sm text-green-700 dark:text-green-200">Control stock levels efficiently</p>
-              </div>
-              <div className="p-4 bg-purple-50 dark:bg-purple-900/30 rounded-2xl dark:border dark:border-purple-800">
-                <h3 className="font-semibold text-purple-900 dark:text-purple-300 mb-2">Analytics</h3>
-                <p className="text-sm text-purple-700 dark:text-purple-200">Insights into your operations</p>
-              </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <Card className="bg-white/80 dark:bg-slate-900/60 border border-gray-200/70 dark:border-slate-700 rounded-xl">
+                <CardBody className="p-4">
+                  <h3 className="font-semibold text-gray-900 dark:text-gray-100 mb-2">Track Readiness</h3>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">Inspect kits, verify counts, and document checks.</p>
+                </CardBody>
+              </Card>
+              <Card className="bg-white/80 dark:bg-slate-900/60 border border-gray-200/70 dark:border-slate-700 rounded-xl">
+                <CardBody className="p-4">
+                  <h3 className="font-semibold text-gray-900 dark:text-gray-100 mb-2">Manage Inventory</h3>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">Monitor supply levels and restock thresholds.</p>
+                </CardBody>
+              </Card>
+              <Card className="bg-white/80 dark:bg-slate-900/60 border border-gray-200/70 dark:border-slate-700 rounded-xl">
+                <CardBody className="p-4">
+                  <h3 className="font-semibold text-gray-900 dark:text-gray-100 mb-2">Audit History</h3>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">Review recent activity and compliance logs.</p>
+                </CardBody>
+              </Card>
             </div>
 
-            <div className="flex gap-4 pt-4 items-center justify-center">
-              <Link href="/login" className="flex-1 max-w-xs">
+            <div className="flex flex-col md:flex-row gap-4 pt-2 items-center justify-center">
+              <Link href="/login" className="w-full md:w-auto">
                 <Button 
                   as="div"
-                  className="w-full h-12 bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-700 dark:hover:bg-indigo-600 text-white font-semibold rounded-2xl transition-colors cursor-pointer flex items-center justify-center"
+                  color="primary"
+                  className="w-full md:w-48 h-12 font-semibold"
                 >
                   Sign In
                 </Button>
               </Link>
               <Button 
-                className="flex-1 max-w-xs h-12 border-2 border-indigo-600 dark:border-indigo-500 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 font-semibold rounded-2xl transition-colors flex items-center justify-center"
+                variant="bordered"
+                color="primary"
+                className="w-full md:w-48 h-12 font-semibold"
               >
                 Learn More
               </Button>
