@@ -1,3 +1,5 @@
+import type { FieldValue, Timestamp } from 'firebase/firestore';
+
 // --- USER & AUTH ---
 export interface User {
   id: string;
@@ -17,7 +19,6 @@ export interface AuthResponse {
 
 // --- MASTER INVENTORY (The Supply Closet) ---
 
-// BLS-Specific Categories
 export type ItemCategory = 
   | 'Airway'       
   | 'Trauma'       
@@ -28,9 +29,16 @@ export type ItemCategory =
   | 'Hygiene'      
   | 'Other';
 
-// --- NEW: Location Types ---
 export type LocationType = 'HQ' | 'CPR Closet' | 'Shed';
 export type HQRoom = 'Front' | 'Middle' | 'Back' | 'Office';
+
+// --- VARIATION LOGIC ---
+export interface InventoryVariant {
+  id: string;           
+  name: string;         // e.g. "Medium", "Large"
+  quantityPerUnit: number; // e.g. 100 (if box has 100 gloves)
+  stock: number;        // The number of units (e.g. 5 boxes)
+}
 
 export interface InventoryItem {
   id: string;
@@ -38,20 +46,24 @@ export interface InventoryItem {
   category: ItemCategory;
   description?: string;
   
-  // --- NEW: Location Tracking ---
+  // Location Tracking
   location: LocationType;
-  room?: HQRoom;   // Only required if location === 'HQ'
-  shelf: string;   // User defined string (e.g., "Top Rack", "Bin 4")
+  room?: HQRoom;
+  shelf: string;
 
   // Master Supply Levels
   totalStockQuantity: number; 
   unit: string;
   
+  // --- VARIATION SUPPORT ---
+  hasVariants: boolean;
+  variants?: InventoryVariant[];
+
   // Restocking Logic
   reorderThreshold: number; 
   isDisposable: boolean;
 
-  // --- NEW: Expiration Tracking ---
+  // Expiration Tracking
   tracksExpiration: boolean;
   expirationDate?: Date;
   
@@ -59,15 +71,16 @@ export interface InventoryItem {
   updatedAt: Date;
 }
 
+// --- STATPACKS ---
 export type StatpackPocket = 'main' | 'front_aux' | 'side_left' | 'side_right';
 
 export interface StatpackCompartment {
   id: string;
-  name: string;           // e.g., "Airway Kit", "Trauma Module"
+  name: string;
   parentPocket: StatpackPocket; 
-  isSealed: boolean;      // If true, requires seal check
-  sealNumber?: string;    // The code/number on the plastic seal
-  expirationDate?: Date;  // If the whole kit expires
+  isSealed: boolean;
+  sealNumber?: string;
+  expirationDate?: Date;
 }
 
 export interface StatpackItem {
@@ -107,4 +120,3 @@ export interface StatpackLog {
   timestamp: Timestamp | Date | FieldValue; 
   notes?: string;
 }
-import type { FieldValue, Timestamp } from 'firebase/firestore';
