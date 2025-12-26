@@ -18,6 +18,7 @@ interface InventoryModalProps {
   onAddItem: (item: Partial<InventoryItem>) => void;
   onUpdateItem: (id: string, item: Partial<InventoryItem>) => void;
   initialData?: InventoryItem | null; // If present, we are in EDIT mode
+  canToggleExpiration?: boolean;
 }
 
 type InventoryFormState = Partial<Omit<InventoryItem, 'totalStockQuantity' | 'reorderThreshold'>> & {
@@ -53,12 +54,13 @@ export default function InventoryModal({
   onOpenChange, 
   onAddItem, 
   onUpdateItem,
-  initialData 
+  initialData,
+  canToggleExpiration = false
 }: InventoryModalProps) {
   
   // Initialize state. 
   // We check if initialData exists; if so, we populate. 
-  // If tracksExpiration is undefined in DB, we infer it from presence of expirationDate.
+  // If an expiration date exists, ensure tracking is enabled.
   const [formData, setFormData] = useState<InventoryFormState>(DEFAULT_STATE);
 
   useEffect(() => {
@@ -66,7 +68,7 @@ export default function InventoryModal({
       if (initialData) {
         setFormData({
             ...initialData,
-            tracksExpiration: initialData.tracksExpiration ?? (!!initialData.expirationDate)
+            tracksExpiration: !!initialData.expirationDate || initialData.tracksExpiration || false
         });
       } else {
         setFormData(DEFAULT_STATE);
@@ -235,12 +237,15 @@ export default function InventoryModal({
                 <div className="flex items-center justify-between p-3 border-2 border-default-200 rounded-xl">
                     <div className="flex flex-col">
                         <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Tracks Expiration?</span>
-                        <span className="text-xs text-gray-500">Enable for meds/perishables</span>
+                        <span className="text-xs text-gray-500">
+                          {canToggleExpiration ? 'Enable for meds/perishables' : 'Admin-only setting'}
+                        </span>
                     </div>
                     <Switch 
                         isSelected={formData.tracksExpiration ?? false} 
                         onValueChange={(val) => setFormData({...formData, tracksExpiration: val})}
                         color="warning"
+                        isDisabled={!canToggleExpiration}
                     />
                 </div>
 

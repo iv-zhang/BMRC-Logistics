@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
   Card, CardBody, CardHeader, Tab, Tabs, Chip, Progress, Button, Spinner, Divider, useDisclosure, Input 
@@ -24,49 +24,7 @@ import { auth, db } from '@/firebase';
 import InventoryModal from '@/app/components/additemmodal';
 
 // Types
-import { InventoryItem, ItemCategory } from '@/app/types';
-
-const SEED_ITEMS: Array<Partial<InventoryItem>> = [
-  {
-    name: 'Stethoscope',
-    category: 'Vitals',
-    description: 'Standard diagnostic stethoscope.',
-    location: 'HQ',
-    room: 'Front',
-    shelf: 'Diagnostics',
-    totalStockQuantity: 2,
-    unit: 'count',
-    reorderThreshold: 1,
-    isDisposable: false,
-    tracksExpiration: false,
-  },
-  {
-    name: 'CPR Dummy',
-    category: 'Other',
-    description: 'CPR training mannequin.',
-    location: 'HQ',
-    room: 'Office',
-    shelf: 'Training',
-    totalStockQuantity: 1,
-    unit: 'count',
-    reorderThreshold: 0,
-    isDisposable: false,
-    tracksExpiration: false,
-  },
-  {
-    name: "Ivan's Toy",
-    category: 'Other',
-    description: 'Training aid item.',
-    location: 'HQ',
-    room: 'Office',
-    shelf: 'Misc',
-    totalStockQuantity: 1,
-    unit: 'count',
-    reorderThreshold: 0,
-    isDisposable: false,
-    tracksExpiration: false,
-  },
-];
+import { InventoryItem, ItemCategory, User } from '@/app/types';
 
 export default function InventoryPage() {
   const router = useRouter();
@@ -78,7 +36,8 @@ export default function InventoryPage() {
   
   const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const seedOnceRef = useRef(false);
+  const [userRole, setUserRole] = useState<User['role'] | null>(null);
+  const isAdmin = userRole === 'admin';
 
   // --- EFFECT 1: Handle Authentication ---
   useEffect(() => {
@@ -93,6 +52,23 @@ export default function InventoryPage() {
     return () => unsubscribe();
   }, [router]);
 
+  useEffect(() => {
+    if (!user) return;
+    const userRef = doc(db, 'users', user.uid);
+    const unsubscribe = onSnapshot(
+      userRef,
+      (snapshot) => {
+        const data = snapshot.data() as User | undefined;
+        setUserRole(data?.role ?? 'member');
+      },
+      (error) => {
+        console.error('Error fetching user role:', error);
+        setUserRole('member');
+      }
+    );
+    return () => unsubscribe();
+  }, [user]);
+
   // --- EFFECT 2: Handle Data Fetching (Only runs when 'user' is ready) ---
   useEffect(() => {
     // STOP: Do not run this code if user is not logged in yet
@@ -104,6 +80,8 @@ export default function InventoryPage() {
       const items = snapshot.docs.map((doc) => {
         const data = doc.data();
         const getDate = (ts: unknown) => (ts instanceof Timestamp ? ts.toDate() : new Date());
+        const expirationDate = data.expirationDate ? getDate(data.expirationDate) : undefined;
+        const tracksExpiration = data.tracksExpiration ?? !!expirationDate;
 
         return {
           id: doc.id,
@@ -120,8 +98,8 @@ export default function InventoryPage() {
           reorderThreshold: data.reorderThreshold,
           isDisposable: data.isDisposable,
           
-          tracksExpiration: data.tracksExpiration ?? false,
-          expirationDate: data.expirationDate ? getDate(data.expirationDate) : undefined,
+          tracksExpiration,
+          expirationDate,
 
           createdAt: getDate(data.createdAt),
           updatedAt: getDate(data.updatedAt),
@@ -136,47 +114,6 @@ export default function InventoryPage() {
 
     return () => unsubscribe();
   }, [user]); // <--- This dependency ensures we wait for 'user'
-
-  useEffect(() => {
-    if (!user || loading || seedOnceRef.current) return;
-
-    const existingNames = new Set(inventory.map(item => item.name.trim().toLowerCase()));
-    const missingItems = SEED_ITEMS.filter(item => item.name && !existingNames.has(item.name.toLowerCase()));
-
-    if (missingItems.length === 0) {
-      seedOnceRef.current = true;
-      return;
-    }
-
-    seedOnceRef.current = true;
-    const addSeedItems = async () => {
-      try {
-        await Promise.all(
-          missingItems.map(item => {
-            const payload: Record<string, unknown> = {
-              ...item,
-              expirationDate: item.expirationDate ?? null,
-              room: item.room ?? null,
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            };
-
-            Object.keys(payload).forEach((key) => {
-              if (payload[key] === undefined) {
-                delete payload[key];
-              }
-            });
-
-            return addDoc(collection(db, 'inventory'), payload);
-          })
-        );
-      } catch (error) {
-        console.error('Error seeding inventory items:', error);
-      }
-    };
-
-    void addSeedItems();
-  }, [user, loading, inventory]);
 
   // --- CRUD HANDLERS ---
 
@@ -537,6 +474,7 @@ export default function InventoryPage() {
             onAddItem={handleAddItem}
             onUpdateItem={handleUpdateItem}
             initialData={selectedItem}
+            canToggleExpiration={isAdmin}
         />
 
       </div>

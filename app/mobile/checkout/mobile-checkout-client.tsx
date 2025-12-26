@@ -78,8 +78,10 @@ export default function MobileCheckoutClient() {
   const [counts, setCounts] = useState<Record<string, number>>({}); 
   // Store updated expiration dates. Key: "itemId_index", Value: "YYYY-MM-DD" string
   const [expirationUpdates, setExpirationUpdates] = useState<Record<string, string>>({});
+  const [missingExpirationKeys, setMissingExpirationKeys] = useState<Set<string>>(new Set());
 
   const [currentStepSealIntact, setCurrentStepSealIntact] = useState<boolean | undefined>(undefined);
+  const [sealStatusByStep, setSealStatusByStep] = useState<Record<string, boolean>>({});
 
   // -- Form Data --
   const [eventName, setEventName] = useState('');
@@ -126,13 +128,16 @@ export default function MobileCheckoutClient() {
 
         data.contents?.forEach((item, idx) => {
           initialCounts[`${item.itemId}_${idx}`] = 0;
-          if (item.expirationDate) {
+          const expSource = item.expirationDate ?? item.itemDetails?.expirationDate;
+          if (expSource instanceof Date) {
             // Convert existing date to YYYY-MM-DD for input
-            initialExps[`${item.itemId}_${idx}`] = item.expirationDate.toISOString().split('T')[0];
+            initialExps[`${item.itemId}_${idx}`] = expSource.toISOString().split('T')[0];
           }
         });
         setCounts(initialCounts);
         setExpirationUpdates(initialExps);
+        setMissingExpirationKeys(new Set());
+        setSealStatusByStep({});
       }
     } catch (e) {
       console.error(e);
@@ -157,6 +162,23 @@ export default function MobileCheckoutClient() {
     if (diffDays < 0) return { status: 'expired', label: `EXPIRED`, color: 'danger' as const };
     if (diffDays <= 30) return { status: 'warning', label: `Exp < 30d`, color: 'warning' as const };
     return { status: 'ok', label: `OK`, color: 'success' as const };
+  };
+
+  const requiresExpirationCheck = (item: StatpackItem) =>
+    Boolean(item.itemDetails?.tracksExpiration || item.itemDetails?.expirationDate || item.expirationDate);
+
+  const getMissingExpirationKeysForStep = (step: CheckoutStep) => {
+    if (!pack?.contents) return [];
+    if (step.isSealed && sealStatusByStep[step.id] === true) return [];
+
+    return step.items.reduce<string[]>((acc, item) => {
+      const globalIdx = pack.contents.indexOf(item);
+      if (globalIdx < 0) return acc;
+      if (!requiresExpirationCheck(item)) return acc;
+      const key = `${item.itemId}_${globalIdx}`;
+      if (!expirationUpdates[key]) acc.push(key);
+      return acc;
+    }, []);
   };
 
   // 2. Build Steps
@@ -232,8 +254,14 @@ export default function MobileCheckoutClient() {
   };
 
   const handleFinishStep = () => {
-    // Optional: Validation check - block if expiration date missing for tracked items?
-    // For now, we allow proceeding but could add a warning toast.
+    if (currentStep) {
+      const missingKeys = getMissingExpirationKeysForStep(currentStep);
+      if (missingKeys.length > 0) {
+        setMissingExpirationKeys(prev => new Set([...prev, ...missingKeys]));
+        alert('Please enter expiration dates for all tracked items in this section.');
+        return;
+      }
+    }
     if (activeStepId) {
       setCompletedSteps(prev => new Set(prev).add(activeStepId));
       setView('dashboard');
@@ -243,6 +271,9 @@ export default function MobileCheckoutClient() {
 
   const handleSealResponse = (isIntact: boolean) => {
     setCurrentStepSealIntact(isIntact);
+    if (currentStep?.id) {
+      setSealStatusByStep(prev => ({ ...prev, [currentStep.id]: isIntact }));
+    }
     if (isIntact) {
       // Auto-fill counts
       setCounts(prev => {
@@ -273,10 +304,22 @@ export default function MobileCheckoutClient() {
       ...prev,
       [key]: newValue
     }));
+    setMissingExpirationKeys(prev => {
+      if (!prev.has(key) || !newValue) return prev;
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
   };
 
   const handleCompleteCheckout = async () => {
     if (!pack || !user) return;
+    const missingKeys = steps.flatMap(getMissingExpirationKeysForStep);
+    if (missingKeys.length > 0) {
+      setMissingExpirationKeys(new Set(missingKeys));
+      alert('Please enter expiration dates for all tracked items or confirm sealed compartments before checking out.');
+      return;
+    }
     setSubmitting(true);
 
     try {
@@ -291,7 +334,8 @@ export default function MobileCheckoutClient() {
         
         // Handle Expiration Logic
         const dateStr = expirationUpdates[`${item.itemId}_${idx}`];
-        const newExpDate = dateStr ? new Date(dateStr) : item.expirationDate;
+        const existingExpDate = item.expirationDate ?? item.itemDetails?.expirationDate;
+        const newExpDate = dateStr ? new Date(dateStr) : existingExpDate;
 
         if (missingAmount > 0) {
           missingItemsLog.push(`${item.itemDetails?.name || 'Item'} (Found: ${counted}/${item.requiredQuantity})`);
@@ -459,9 +503,10 @@ export default function MobileCheckoutClient() {
                       const req = item.requiredQuantity;
                       const isLow = count < req;
                       
-                      const tracksExp = item.itemDetails?.tracksExpiration;
+                      const tracksExp = requiresExpirationCheck(item);
                       const currentExpStr = expirationUpdates[key] || '';
                       const expStatus = getExpirationStatus(currentExpStr);
+                      const isExpMissing = missingExpirationKeys.has(key);
 
                       return (
                         <Card key={key} className={`border ${isLow ? 'border-danger-200' : 'border-transparent'}`}>
@@ -502,7 +547,7 @@ export default function MobileCheckoutClient() {
                                         placeholder="YYYY-MM-DD"
                                         value={currentExpStr}
                                         onValueChange={(val) => handleDateChange(globalIdx, val)}
-                                        className={expStatus.status === 'expired' ? "text-danger font-bold" : ""}
+                                        className={(expStatus.status === 'expired' || isExpMissing) ? "text-danger font-bold" : ""}
                                       />
                                       {expStatus.status !== 'ok' && (
                                         <Chip size="sm" color={expStatus.color} variant="flat" className="h-8">
@@ -510,6 +555,9 @@ export default function MobileCheckoutClient() {
                                         </Chip>
                                       )}
                                    </div>
+                                   {isExpMissing && (
+                                     <p className="text-xs text-danger mt-1">Expiration date required.</p>
+                                   )}
                                 </div>
                              )}
                           </CardBody>
