@@ -61,6 +61,15 @@ export default function MobileCheckinClient() {
   const [didRestock, setDidRestock] = useState(false);
   const [usageCalculated, setUsageCalculated] = useState(false);
 
+  const getVariantLabel = (item: StatpackItem) => {
+    if (item.variantName) return item.variantName;
+    if (item.variantId && item.itemDetails?.variants) {
+      const match = item.itemDetails.variants.find(v => v.id === item.variantId);
+      return match?.name;
+    }
+    return undefined;
+  };
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
       if (!u) {
@@ -364,15 +373,21 @@ export default function MobileCheckinClient() {
                {currentStep.items.map(item => {
                  const globalIdx = pack.contents.indexOf(item);
                  const key = `${item.itemId}_${globalIdx}`;
-                 const count = foundCounts[key] || 0;
-                 const req = item.requiredQuantity;
-                 const used = req - count;
+               const count = foundCounts[key] || 0;
+               const req = item.requiredQuantity;
+               const used = req - count;
+               const variantLabel = getVariantLabel(item);
 
                  return (
                    <Card key={key}>
                       <CardBody className="flex items-center justify-between p-3">
                          <div>
                             <div className="font-bold text-sm">{item.itemDetails?.name}</div>
+                            {variantLabel && (
+                              <div className="text-[10px] text-gray-400">
+                                Variation: {variantLabel}
+                              </div>
+                            )}
                             {used > 0 && <span className="text-xs text-amber-600 font-bold">Used: {used}</span>}
                          </div>
                          <div className="flex items-center gap-3 bg-gray-100 dark:bg-zinc-800 rounded-lg p-1">

@@ -162,6 +162,15 @@ export default function MobileCheckoutClient() {
      return Boolean(item.itemDetails?.tracksExpiration || item.expirationDate);
   };
 
+  const getVariantLabel = (item: StatpackItem) => {
+    if (item.variantName) return item.variantName;
+    if (item.variantId && item.itemDetails?.variants) {
+      const match = item.itemDetails.variants.find(v => v.id === item.variantId);
+      return match?.name;
+    }
+    return undefined;
+  };
+
   const getMissingExpirationKeysForStep = (step: CheckoutStep) => {
     if (!pack?.contents) return [];
     if (step.isSealed && sealStatusByStep[step.id] === true) return [];
@@ -506,6 +515,7 @@ export default function MobileCheckoutClient() {
                       const enteredDate = expirationUpdates[key];
                       const expStatus = getExpirationStatus(enteredDate); 
                       const isExpMissing = missingExpirationKeys.has(key);
+                      const variantLabel = getVariantLabel(item);
                       
                       return (
                         <Card 
@@ -519,6 +529,11 @@ export default function MobileCheckoutClient() {
                                     {item.itemDetails?.name || 'Unknown Item'}
                                   </div>
                                   <div className="text-xs text-gray-500">Par Level: {req}</div>
+                                  {variantLabel && (
+                                    <div className="text-[10px] text-gray-400">
+                                      Variation: {variantLabel}
+                                    </div>
+                                  )}
                                 </div>
                                 <div className="flex items-center gap-3 bg-gray-100 dark:bg-zinc-800 rounded-lg p-1">
                                   <Button isIconOnly size="sm" variant="light" onPress={() => handleCountChange(globalIdx, -1)}><Minus size={16}/></Button>

@@ -83,6 +83,7 @@ export default function StatpacksPage() {
   // Active Item State
   const [currentPack, setCurrentPack] = useState<Partial<Statpack>>(BLANK_PACK);
   const [selectedInventoryId, setSelectedInventoryId] = useState<string>("");
+  const [selectedVariantId, setSelectedVariantId] = useState<string>("");
   const [checkoutNotes, setCheckoutNotes] = useState("");
   const [qrPack, setQrPack] = useState<Statpack | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState('');
@@ -365,10 +366,16 @@ export default function StatpacksPage() {
 
     const masterItem = inventory.find(i => i.id === selectedInventoryId);
     if (!masterItem) return;
+    const hasVariants = masterItem.hasVariants && (masterItem.variants || []).length > 0;
+    const selectedVariant = hasVariants
+      ? masterItem.variants?.find(v => v.id === selectedVariantId) ?? masterItem.variants?.[0]
+      : undefined;
 
     const newItem: StatpackItem = {
       itemId: masterItem.id,
       itemDetails: masterItem,
+      variantId: selectedVariant?.id,
+      variantName: selectedVariant?.name,
       requiredQuantity: 1,     
       currentQuantity: 0,
       pocket: finalPocket,
@@ -377,6 +384,7 @@ export default function StatpacksPage() {
 
     setCurrentPack(prev => ({ ...prev, contents: [...(prev.contents || []), newItem] }));
     setSelectedInventoryId(""); 
+    setSelectedVariantId("");
   };
 
   const updateItemInList = (itemToUpdate: StatpackItem, field: string, val: number) => {
@@ -386,6 +394,31 @@ export default function StatpacksPage() {
             (i === itemToUpdate) ? { ...i, [field]: val } : i
         )
     }));
+  };
+
+  const updateItemVariant = (itemToUpdate: StatpackItem, variantId: string) => {
+    const itemDetails = itemToUpdate.itemDetails || inventory.find(i => i.id === itemToUpdate.itemId);
+    const variants = itemDetails?.variants || [];
+    const match = variants.find(v => v.id === variantId);
+
+    setCurrentPack(prev => ({
+      ...prev,
+      contents: prev.contents?.map(i =>
+        (i === itemToUpdate)
+          ? { ...i, variantId: match?.id, variantName: match?.name }
+          : i
+      )
+    }));
+  };
+
+  const getVariantLabel = (item: StatpackItem) => {
+    if (item.variantName) return item.variantName;
+    if (item.variantId) {
+      const itemDetails = item.itemDetails || inventory.find(i => i.id === item.itemId);
+      const match = itemDetails?.variants?.find(v => v.id === item.variantId);
+      return match?.name;
+    }
+    return undefined;
   };
 
   const removeItemFromBag = (itemToRemove: StatpackItem) => {
@@ -577,6 +610,10 @@ export default function StatpacksPage() {
     
     return opts;
   };
+
+  const selectedInventoryItem = inventory.find(i => i.id === selectedInventoryId);
+  const availableVariants = selectedInventoryItem?.variants || [];
+  const showVariantSelect = Boolean(selectedInventoryItem?.hasVariants && availableVariants.length > 0);
 
   if (loading) return <div className="h-screen flex items-center justify-center"><Spinner /></div>;
 
@@ -813,6 +850,7 @@ export default function StatpacksPage() {
                     <Table aria-label="Config Table" removeWrapper className="max-h-[400px] overflow-y-auto">
                         <TableHeader>
                           <TableColumn>ITEM</TableColumn>
+                          <TableColumn>VARIATION</TableColumn>
                           <TableColumn>LOCATION</TableColumn>
                           <TableColumn width={100}>REQ QTY</TableColumn>
                           <TableColumn width={50}>DEL</TableColumn>
@@ -820,9 +858,38 @@ export default function StatpacksPage() {
                         <TableBody emptyContent="No items in this pocket.">
                           {getVisibleItems().map((item, idx) => {
                               const comp = currentPack.compartments?.find(c => c.id === item.compartmentId);
+                              const itemDetails = item.itemDetails || inventory.find(i => i.id === item.itemId);
+                              const variants = itemDetails?.variants || [];
+                              const hasVariants = Boolean(itemDetails?.hasVariants && variants.length > 0);
+                              const variantLabel = getVariantLabel(item);
                               return (
                                 <TableRow key={`${item.itemId}_${idx}`}>
-                                  <TableCell>{item.itemDetails?.name || inventory.find(i => i.id === item.itemId)?.name || "Item"}</TableCell>
+                                  <TableCell>
+                                    <div className="flex flex-col">
+                                      <span>{itemDetails?.name || "Item"}</span>
+                                      {variantLabel && (
+                                        <span className="text-[10px] text-gray-400">Variation: {variantLabel}</span>
+                                      )}
+                                    </div>
+                                  </TableCell>
+                                  <TableCell>
+                                    {hasVariants ? (
+                                      <Select
+                                        size="sm"
+                                        placeholder="Select"
+                                        selectedKeys={item.variantId ? [item.variantId] : []}
+                                        onChange={(e) => updateItemVariant(item, e.target.value)}
+                                      >
+                                        {variants.map(variant => (
+                                          <SelectItem key={variant.id} textValue={variant.name}>
+                                            {variant.name}
+                                          </SelectItem>
+                                        ))}
+                                      </Select>
+                                    ) : (
+                                      <span className="text-xs text-gray-400">—</span>
+                                    )}
+                                  </TableCell>
                                   <TableCell>
                                     <div className="flex flex-col">
                                       {comp ? (
@@ -877,12 +944,47 @@ export default function StatpacksPage() {
                                 placeholder="Search Inventory..." 
                                 size="sm"
                                 selectedKey={selectedInventoryId}
-                                onSelectionChange={(key) => setSelectedInventoryId(key as string)}
+                                onSelectionChange={(key) => {
+                                  const id = key as string;
+                                  setSelectedInventoryId(id);
+                                  const item = inventory.find(i => i.id === id);
+                                  if (item?.hasVariants && item.variants && item.variants.length > 0) {
+                                    setSelectedVariantId(item.variants[0].id);
+                                  } else {
+                                    setSelectedVariantId("");
+                                  }
+                                }}
                               >
                                 {inventory.map((item) => <AutocompleteItem key={item.id}>{item.name}</AutocompleteItem>)}
                             </Autocomplete>
                           </div>
-                          <Button onPress={addItemToBag} isDisabled={!selectedInventoryId || !targetLocationId} color="primary" size="sm" className="mb-[2px]">Add</Button>
+                          {showVariantSelect && (
+                            <div className="w-48">
+                              <Select 
+                                label="Variation" 
+                                labelPlacement="outside"
+                                placeholder="Select"
+                                size="sm"
+                                selectedKeys={selectedVariantId ? [selectedVariantId] : []}
+                                onChange={(e) => setSelectedVariantId(e.target.value)}
+                              >
+                                {availableVariants.map(variant => (
+                                  <SelectItem key={variant.id} textValue={variant.name}>
+                                    {variant.name}
+                                  </SelectItem>
+                                ))}
+                              </Select>
+                            </div>
+                          )}
+                          <Button
+                            onPress={addItemToBag}
+                            isDisabled={!selectedInventoryId || !targetLocationId || (showVariantSelect && !selectedVariantId)}
+                            color="primary"
+                            size="sm"
+                            className="mb-[2px]"
+                          >
+                            Add
+                          </Button>
                        </div>
                     </div>
                   </div>
@@ -951,6 +1053,7 @@ export default function StatpacksPage() {
                          const name = item.itemDetails?.name || inventory.find(i => i.id === item.itemId)?.name || "Unknown";
                          const isLow = item.currentQuantity < item.requiredQuantity;
                          const comp = currentPack.compartments?.find(c => c.id === item.compartmentId);
+                         const variantLabel = getVariantLabel(item);
 
                          return (
                            <TableRow key={`${item.itemId}_${idx}`}>
@@ -958,6 +1061,9 @@ export default function StatpacksPage() {
                                <div className="flex flex-col">
                                  <span className="font-medium">{name}</span>
                                  <span className="text-xs text-gray-400">{item.itemDetails?.category}</span>
+                                 {variantLabel && (
+                                   <span className="text-[10px] text-gray-400">Variation: {variantLabel}</span>
+                                 )}
                                </div>
                              </TableCell>
                              <TableCell>

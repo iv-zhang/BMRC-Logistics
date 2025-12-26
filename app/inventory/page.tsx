@@ -82,6 +82,8 @@ export default function InventoryPage() {
         const getDate = (ts: unknown) => (ts instanceof Timestamp ? ts.toDate() : new Date());
         const expirationDate = data.expirationDate ? getDate(data.expirationDate) : undefined;
         const tracksExpiration = data.tracksExpiration ?? !!expirationDate;
+        const variants = Array.isArray(data.variants) ? data.variants : [];
+        const hasVariants = data.hasVariants ?? variants.length > 0;
 
         return {
           id: doc.id,
@@ -95,6 +97,8 @@ export default function InventoryPage() {
 
           totalStockQuantity: data.totalStockQuantity,
           unit: data.unit,
+          hasVariants,
+          variants,
           reorderThreshold: data.reorderThreshold,
           isDisposable: data.isDisposable,
           
@@ -119,6 +123,7 @@ export default function InventoryPage() {
 
   const handleAddItem = async (newItemData: Partial<InventoryItem>) => {
     try {
+      const hasVariants = newItemData.hasVariants ?? false;
       await addDoc(collection(db, 'inventory'), {
         ...newItemData,
         // FIX: Firestore cannot save 'undefined'. 
@@ -126,6 +131,8 @@ export default function InventoryPage() {
         expirationDate: newItemData.expirationDate ?? null,
         room: newItemData.room ?? null, 
         tracksExpiration: newItemData.tracksExpiration ?? false,
+        hasVariants,
+        variants: hasVariants ? newItemData.variants ?? [] : [],
         
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -139,10 +146,13 @@ export default function InventoryPage() {
   const handleUpdateItem = async (id: string, updatedData: Partial<InventoryItem>) => {
     try {
       const itemRef = doc(db, 'inventory', id);
+      const hasVariants = updatedData.hasVariants ?? false;
       const payload: Record<string, unknown> = {
         ...updatedData,
         expirationDate: updatedData.expirationDate ?? null,
         room: updatedData.room ?? null,
+        hasVariants,
+        variants: hasVariants ? updatedData.variants ?? [] : [],
         updatedAt: serverTimestamp(),
       };
 

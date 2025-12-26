@@ -86,6 +86,8 @@ export interface StatpackCompartment {
 export interface StatpackItem {
   itemId: string;
   itemDetails?: InventoryItem;
+  variantId?: string;
+  variantName?: string;
   requiredQuantity: number; 
   currentQuantity: number; 
   pocket?: StatpackPocket; 

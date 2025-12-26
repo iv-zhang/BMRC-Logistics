@@ -55,23 +55,20 @@ export default function InventoryModal({
   canToggleExpiration = false
 }: InventoryModalProps) {
   
-  const [formData, setFormData] = useState<InventoryFormState>(DEFAULT_STATE);
+  const getInitialFormData = (data?: InventoryItem | null): InventoryFormState => {
+    if (!data) return DEFAULT_STATE;
+    const variants = data.variants || [];
+    return {
+      ...DEFAULT_STATE,
+      ...data,
+      tracksExpiration: !!data.expirationDate || data.tracksExpiration || false,
+      variants,
+      hasVariants: data.hasVariants || variants.length > 0
+    };
+  };
 
-  useEffect(() => {
-    if (isOpen) {
-      if (initialData) {
-        setFormData({
-            ...initialData,
-            tracksExpiration: !!initialData.expirationDate || initialData.tracksExpiration || false,
-            // Ensure we load existing variants correctly
-            variants: initialData.variants || [],
-            hasVariants: initialData.hasVariants || (initialData.variants && initialData.variants.length > 0) || false
-        });
-      } else {
-        setFormData(DEFAULT_STATE);
-      }
-    }
-  }, [isOpen, initialData]);
+  // InventoryPage remounts this modal on open/close and item changes via key prop.
+  const [formData, setFormData] = useState<InventoryFormState>(() => getInitialFormData(initialData));
 
   const handleValueChange = (field: keyof InventoryFormState) => (value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
