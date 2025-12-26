@@ -39,3 +39,5 @@ jobs:
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_BMRC_LOGISTICS }}
           projectId: bmrc-logistics
           channelId: live
+        env:
+          FIREBASE_CLI_EXPERIMENTS: webframeworks
