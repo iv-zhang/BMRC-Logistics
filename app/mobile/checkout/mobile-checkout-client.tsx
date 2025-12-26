@@ -11,14 +11,13 @@ import {
   Input,
   Textarea,
   Chip,
-  Tooltip
+  Tooltip,
+  Badge
 } from '@heroui/react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import {
   doc,
   getDoc,
-  updateDoc,
-  addDoc,
   collection,
   serverTimestamp,
   writeBatch,
@@ -40,8 +39,8 @@ import {
   ListFilter,
   ArrowRight,
   CalendarDays,
-  AlertOctagon,
-  Info
+  History,
+  Layers // Icon for 'batch'
 } from 'lucide-react';
 
 interface CheckoutStep {
@@ -75,11 +74,16 @@ export default function MobileCheckoutClient() {
   const [filterPocket, setFilterPocket] = useState<StatpackPocket | 'all'>('all');
 
   // -- Inspection State --
-  const [counts, setCounts] = useState<Record<string, number>>({}); 
-  // Store updated expiration dates. Key: "itemId_index", Value: "YYYY-MM-DD" string
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  
+  // Active Form State: Key: "itemId_index", Value: "YYYY-MM-DD" string (User input)
   const [expirationUpdates, setExpirationUpdates] = useState<Record<string, string>>({});
-  const [missingExpirationKeys, setMissingExpirationKeys] = useState<Set<string>>(new Set());
+  
+  // We keep lastKnownExps internally to detect significant deviations if needed later, 
+  // but we won't show it to the user to prevent cheating.
+  const [lastKnownExps, setLastKnownExps] = useState<Record<string, string>>({});
 
+  const [missingExpirationKeys, setMissingExpirationKeys] = useState<Set<string>>(new Set());
   const [currentStepSealIntact, setCurrentStepSealIntact] = useState<boolean | undefined>(undefined);
   const [sealStatusByStep, setSealStatusByStep] = useState<Record<string, boolean>>({});
 
@@ -124,18 +128,20 @@ export default function MobileCheckoutClient() {
         setPack(data);
         
         const initialCounts: Record<string, number> = {};
-        const initialExps: Record<string, string> = {};
+        const knownExps: Record<string, string> = {};
 
         data.contents?.forEach((item, idx) => {
           initialCounts[`${item.itemId}_${idx}`] = 0;
+          
           const expSource = item.expirationDate ?? item.itemDetails?.expirationDate;
           if (expSource instanceof Date) {
-            // Convert existing date to YYYY-MM-DD for input
-            initialExps[`${item.itemId}_${idx}`] = expSource.toISOString().split('T')[0];
+            knownExps[`${item.itemId}_${idx}`] = expSource.toISOString().split('T')[0];
           }
         });
+        
         setCounts(initialCounts);
-        setExpirationUpdates(initialExps);
+        setLastKnownExps(knownExps); 
+        setExpirationUpdates({}); // ALWAYS start empty to force manual check
         setMissingExpirationKeys(new Set());
         setSealStatusByStep({});
       }
@@ -146,13 +152,12 @@ export default function MobileCheckoutClient() {
     }
   };
 
-  // Helper: Check Expiration Status (for visual coloring)
+  // Helper: Check Expiration Status (for visual coloring after input)
   const getExpirationStatus = (dateString?: string) => {
-    if (!dateString) return { status: 'ok', label: '', color: 'default' as const };
+    if (!dateString) return { status: 'empty', label: 'Required', color: 'default' as const };
     
     const date = new Date(dateString);
     const now = new Date();
-    // Reset times for accurate day diff
     date.setHours(0,0,0,0);
     now.setHours(0,0,0,0);
 
@@ -164,8 +169,10 @@ export default function MobileCheckoutClient() {
     return { status: 'ok', label: `OK`, color: 'success' as const };
   };
 
-  const requiresExpirationCheck = (item: StatpackItem) =>
-    Boolean(item.itemDetails?.tracksExpiration || item.itemDetails?.expirationDate || item.expirationDate);
+  const requiresExpirationCheck = (item: StatpackItem) => {
+     // Strict check: Only required if the inventory item explicitly tracks it
+     return Boolean(item.itemDetails?.tracksExpiration || item.expirationDate);
+  };
 
   const getMissingExpirationKeysForStep = (step: CheckoutStep) => {
     if (!pack?.contents) return [];
@@ -174,14 +181,19 @@ export default function MobileCheckoutClient() {
     return step.items.reduce<string[]>((acc, item) => {
       const globalIdx = pack.contents.indexOf(item);
       if (globalIdx < 0) return acc;
-      if (!requiresExpirationCheck(item)) return acc;
-      const key = `${item.itemId}_${globalIdx}`;
-      if (!expirationUpdates[key]) acc.push(key);
+      
+      if (requiresExpirationCheck(item)) {
+        const key = `${item.itemId}_${globalIdx}`;
+        // CRITICAL: We only accept it if the user has physically entered a date string
+        if (!expirationUpdates[key] || expirationUpdates[key] === '') {
+          acc.push(key);
+        }
+      }
       return acc;
     }, []);
   };
 
-  // 2. Build Steps
+  // 2. Build Steps (Memoized)
   const steps = useMemo<CheckoutStep[]>(() => {
     if (!pack?.contents) return [];
     const result: CheckoutStep[] = [];
@@ -258,7 +270,7 @@ export default function MobileCheckoutClient() {
       const missingKeys = getMissingExpirationKeysForStep(currentStep);
       if (missingKeys.length > 0) {
         setMissingExpirationKeys(prev => new Set([...prev, ...missingKeys]));
-        alert('Please enter expiration dates for all tracked items in this section.');
+        alert('Verification Required: You must manually enter expiration dates for all tracked items.');
         return;
       }
     }
@@ -275,7 +287,6 @@ export default function MobileCheckoutClient() {
       setSealStatusByStep(prev => ({ ...prev, [currentStep.id]: isIntact }));
     }
     if (isIntact) {
-      // Auto-fill counts
       setCounts(prev => {
         const next = { ...prev };
         currentStep?.items.forEach(item => {
@@ -317,7 +328,7 @@ export default function MobileCheckoutClient() {
     const missingKeys = steps.flatMap(getMissingExpirationKeysForStep);
     if (missingKeys.length > 0) {
       setMissingExpirationKeys(new Set(missingKeys));
-      alert('Please enter expiration dates for all tracked items or confirm sealed compartments before checking out.');
+      alert('Incomplete: Please verify expiration dates for all items or confirm seals.');
       return;
     }
     setSubmitting(true);
@@ -352,7 +363,7 @@ export default function MobileCheckoutClient() {
         return { 
           ...item, 
           currentQuantity: finalQty,
-          expirationDate: newExpDate // Save the updated or verified date
+          expirationDate: newExpDate 
         };
       });
 
@@ -360,8 +371,6 @@ export default function MobileCheckoutClient() {
         newStatus = 'Restock Needed';
       }
 
-      // If everything is present, but an item is expired, flag it?
-      // Simple check:
       const hasExpired = finalContents.some(i => {
          if(!i.expirationDate) return false;
          return i.expirationDate < new Date();
@@ -504,12 +513,17 @@ export default function MobileCheckoutClient() {
                       const isLow = count < req;
                       
                       const tracksExp = requiresExpirationCheck(item);
-                      const currentExpStr = expirationUpdates[key] || '';
-                      const expStatus = getExpirationStatus(currentExpStr);
+                      
+                      // Active Logic
+                      const enteredDate = expirationUpdates[key];
+                      const expStatus = getExpirationStatus(enteredDate); 
                       const isExpMissing = missingExpirationKeys.has(key);
-
+                      
                       return (
-                        <Card key={key} className={`border ${isLow ? 'border-danger-200' : 'border-transparent'}`}>
+                        <Card 
+                            key={key} 
+                            className={`border transition-all ${isExpMissing ? 'border-danger ring-1 ring-danger' : isLow ? 'border-danger-200' : 'border-transparent'}`}
+                        >
                           <CardBody className="p-3">
                              <div className="flex flex-row items-center justify-between mb-2">
                                 <div className="flex-grow">
@@ -525,39 +539,43 @@ export default function MobileCheckoutClient() {
                                 </div>
                              </div>
 
-                             {/* --- EXPIRATION INPUT (Only if tracked) --- */}
+                             {/* --- EXPIRATION INPUT (BLIND CHECK) --- */}
                              {tracksExp && (
                                 <div className="mt-3 pt-3 border-t border-dashed border-gray-200 dark:border-zinc-700">
-                                   <div className="flex items-center gap-2 mb-1">
-                                      <CalendarDays size={14} className="text-gray-400" />
-                                      <span className="text-xs font-semibold text-gray-500">
-                                         Expiration Date
-                                         {item.requiredQuantity > 1 && (
-                                            <Tooltip content="For multiple items, input the EARLIEST date found.">
-                                              <Info size={12} className="inline ml-1 text-primary cursor-pointer"/>
-                                            </Tooltip>
-                                         )}
-                                      </span>
+                                   <div className="flex flex-col gap-1 mb-2">
+                                      <div className="flex items-center gap-2 text-xs font-semibold text-gray-600">
+                                        <CalendarDays size={14} className="text-primary" />
+                                        <span>Expiration Check Required</span>
+                                      </div>
+                                      {/* Helper for multiple items */}
+                                      {item.requiredQuantity > 1 && (
+                                        <div className="flex items-center gap-1 text-[10px] text-gray-400">
+                                            <Layers size={10} />
+                                            <span>Multiple items? Enter the <b>earliest</b> date found.</span>
+                                        </div>
+                                      )}
                                    </div>
+
                                    <div className="flex gap-2 items-center">
                                       <Input 
                                         type="date" 
                                         size="sm" 
                                         aria-label="Expiration Date"
                                         placeholder="YYYY-MM-DD"
-                                        value={currentExpStr}
+                                        value={enteredDate || ''}
                                         onValueChange={(val) => handleDateChange(globalIdx, val)}
-                                        className={(expStatus.status === 'expired' || isExpMissing) ? "text-danger font-bold" : ""}
+                                        color={isExpMissing ? "danger" : "default"}
+                                        description={isExpMissing ? "You must check the label" : undefined}
+                                        classNames={{
+                                            input: "text-right font-mono" // Helps alignment
+                                        }}
                                       />
-                                      {expStatus.status !== 'ok' && (
-                                        <Chip size="sm" color={expStatus.color} variant="flat" className="h-8">
+                                      {enteredDate && (
+                                        <Chip size="sm" color={expStatus.color} variant="flat" className="h-10 px-2 min-w-fit font-bold">
                                            {expStatus.label}
                                         </Chip>
                                       )}
                                    </div>
-                                   {isExpMissing && (
-                                     <p className="text-xs text-danger mt-1">Expiration date required.</p>
-                                   )}
                                 </div>
                              )}
                           </CardBody>
@@ -565,7 +583,7 @@ export default function MobileCheckoutClient() {
                       );
                    })}
                 </div>
-                <Button size="lg" color="primary" className="w-full mt-8 font-bold" onPress={handleFinishStep}>Finish Section</Button>
+                <Button size="lg" color="primary" className="w-full mt-8 font-bold shadow-lg" onPress={handleFinishStep}>Finish Section</Button>
              </div>
           )}
         </div>
@@ -573,7 +591,7 @@ export default function MobileCheckoutClient() {
     );
   }
 
-  // Dashboard View (Same as before)
+  // Dashboard View
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-zinc-950 pb-32">
       <div className="sticky top-0 z-20 bg-white dark:bg-zinc-900 shadow-sm">

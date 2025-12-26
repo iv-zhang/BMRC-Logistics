@@ -18,11 +18,10 @@ import Image from 'next/image';
 import { 
   Plus, BriefcaseMedical, AlertCircle, CheckCircle, 
   Trash2, ClipboardCheck, History, UserMinus, UserCheck, QrCode,
-  Package, Lock, Unlock, Calendar
+  Package, Lock, Unlock
 } from 'lucide-react';
 import { toDataURL } from 'qrcode';
 import { jsPDF } from 'jspdf';
-import { v4 as uuidv4 } from 'uuid'; // Ensure you have uuid installed or use a helper
 
 // --- Imports for Visualization ---
 import type { Statpack, InventoryItem, StatpackItem, StatpackLog, StatpackPocket, User, StatpackCompartment } from '@/app/types';
@@ -35,6 +34,31 @@ const BLANK_PACK: Partial<Statpack> = {
   contents: [],
   compartments: [], // Initialize compartments
   isCheckedOut: false
+};
+
+// --- Helper: Recursive Cleaner for Firestore ---
+// Firestore throws an error if fields are 'undefined'. 
+// This strips undefined keys deeply but preserves Dates.
+const cleanData = (data: any): any => {
+  if (Array.isArray(data)) {
+    return data.map(item => cleanData(item));
+  } else if (data !== null && typeof data === 'object') {
+    // Preserve Date objects
+    if (data instanceof Date) return data;
+    // Preserve Firestore Timestamps if they exist in state
+    if (data.toMillis && typeof data.toMillis === 'function') return data;
+
+    const newObj: any = {};
+    Object.keys(data).forEach(key => {
+      const val = data[key];
+      // Only copy if value is NOT undefined
+      if (val !== undefined) {
+        newObj[key] = cleanData(val);
+      }
+    });
+    return newObj;
+  }
+  return data;
 };
 
 export default function StatpacksPage() {
@@ -339,9 +363,6 @@ export default function StatpacksPage() {
       finalCompartmentId = undefined;
     }
 
-    // Check duplicates? (Optional: allow multiples or warn)
-    // if (currentPack.contents.some(i => i.itemId === selectedInventoryId && i.compartmentId === finalCompartmentId)) ...
-
     const masterItem = inventory.find(i => i.id === selectedInventoryId);
     if (!masterItem) return;
 
@@ -379,8 +400,14 @@ export default function StatpacksPage() {
     if (!currentPack.name || !user) return;
     setSaving(true);
     try {
-      const payload: Record<string, unknown> = { ...currentPack, updatedAt: serverTimestamp() };
+      // Use helper to remove undefined values from contents and compartments
+      const cleanedPack = cleanData(currentPack);
+
+      const payload: Record<string, unknown> = { ...cleanedPack, updatedAt: serverTimestamp() };
+      
+      // Simple shallow cleanup for top-level keys just in case, though cleanData handles deep
       Object.keys(payload).forEach(key => payload[key] === undefined && delete payload[key]);
+      
       const userName = user.displayName || user.email || 'Unknown User';
       
       const logEntry: StatpackLog = {
@@ -418,8 +445,11 @@ export default function StatpacksPage() {
       const userName = user.displayName || user.email || 'Unknown User';
       const newStatus: Statpack['status'] = 'In Use';
 
+      // Ensure contents are cleaned of undefined values (e.g. compartmentId)
+      const cleanedContents = cleanData(currentPack.contents);
+
       const updatePayload = {
-        contents: currentPack.contents,
+        contents: cleanedContents,
         status: newStatus,
         isCheckedOut: true,
         assignedToUserId: user.uid,
