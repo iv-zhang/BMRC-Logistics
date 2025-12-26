@@ -1,5 +1,5 @@
 'use client';
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button, 
   Input, Select, SelectItem, Switch, Textarea
@@ -44,6 +44,7 @@ const DEFAULT_STATE: InventoryFormState = {
   reorderThreshold: 5,
   isDisposable: true,
   description: '',
+  tracksExpiration: false,
   expirationDate: undefined
 };
 
@@ -54,9 +55,24 @@ export default function InventoryModal({
   onUpdateItem,
   initialData 
 }: InventoryModalProps) {
-  const [formData, setFormData] = useState<InventoryFormState>(() => (
-    initialData ? { ...initialData } : DEFAULT_STATE
-  ));
+  
+  // Initialize state. 
+  // We check if initialData exists; if so, we populate. 
+  // If tracksExpiration is undefined in DB, we infer it from presence of expirationDate.
+  const [formData, setFormData] = useState<InventoryFormState>(DEFAULT_STATE);
+
+  useEffect(() => {
+    if (isOpen) {
+      if (initialData) {
+        setFormData({
+            ...initialData,
+            tracksExpiration: initialData.tracksExpiration ?? (!!initialData.expirationDate)
+        });
+      } else {
+        setFormData(DEFAULT_STATE);
+      }
+    }
+  }, [isOpen, initialData]);
 
   const handleValueChange = (field: InventoryFormField) => (value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
@@ -72,8 +88,12 @@ export default function InventoryModal({
       reorderThreshold: Number(formData.reorderThreshold ?? 0),
       // Clean up room if location isn't HQ
       room: formData.location === 'HQ' ? formData.room : undefined,
-      // Ensure expiration date is a Date object (if present)
-      expirationDate: formData.expirationDate ? new Date(formData.expirationDate) : undefined
+      // Handle Expiration Logic
+      tracksExpiration: formData.tracksExpiration,
+      // If we track expiration, use the date. If not, set to null (handled in page.tsx as null) or undefined.
+      expirationDate: formData.tracksExpiration && formData.expirationDate 
+        ? new Date(formData.expirationDate) 
+        : undefined
     };
 
     if (initialData && initialData.id) {
@@ -92,6 +112,7 @@ export default function InventoryModal({
     if (!date) return '';
     // Handle both Firestore Timestamp (if leaked here) or JS Date
     const d = new Date(date); 
+    if (isNaN(d.getTime())) return '';
     return d.toISOString().split('T')[0];
   };
 
@@ -210,18 +231,39 @@ export default function InventoryModal({
                   onValueChange={handleValueChange('unit')}
                 />
 
-                <Input 
-                  type="date"
-                  label="Expiration Date (Optional)"
-                  placeholder="Select date"
-                  variant="bordered"
-                  name="expirationDate"
-                  value={getDateString(formData.expirationDate)}
-                  onValueChange={(value) => setFormData(prev => ({
-                    ...prev,
-                    expirationDate: value ? new Date(value) : undefined
-                  }))}
-                />
+                {/* Tracks Expiration Switch */}
+                <div className="flex items-center justify-between p-3 border-2 border-default-200 rounded-xl">
+                    <div className="flex flex-col">
+                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Tracks Expiration?</span>
+                        <span className="text-xs text-gray-500">Enable for meds/perishables</span>
+                    </div>
+                    <Switch 
+                        isSelected={formData.tracksExpiration ?? false} 
+                        onValueChange={(val) => setFormData({...formData, tracksExpiration: val})}
+                        color="warning"
+                    />
+                </div>
+
+                {/* Conditional Expiration Date Input */}
+                {formData.tracksExpiration ? (
+                    <Input 
+                    type="date"
+                    label="Expiration Date"
+                    placeholder="Select date"
+                    variant="bordered"
+                    name="expirationDate"
+                    value={getDateString(formData.expirationDate)}
+                    onValueChange={(value) => setFormData(prev => ({
+                        ...prev,
+                        expirationDate: value ? new Date(value) : undefined
+                    }))}
+                    className="md:col-span-2"
+                    />
+                ) : (
+                    <div className="md:col-span-2 text-xs text-gray-400 italic p-2">
+                        Expiration tracking disabled for this item.
+                    </div>
+                )}
 
                 <Input 
                   type="number" 

@@ -52,6 +52,7 @@ export interface InventoryItem {
   isDisposable: boolean;
 
   // --- NEW: Expiration Tracking ---
+  tracksExpiration: boolean;
   expirationDate?: Date;
   
   createdAt: Date;
@@ -60,12 +61,22 @@ export interface InventoryItem {
 
 export type StatpackPocket = 'main' | 'front_aux' | 'side_left' | 'side_right';
 
+export interface StatpackCompartment {
+  id: string;
+  name: string;           // e.g., "Airway Kit", "Trauma Module"
+  parentPocket: StatpackPocket; 
+  isSealed: boolean;      // If true, requires seal check
+  sealNumber?: string;    // The code/number on the plastic seal
+  expirationDate?: Date;  // If the whole kit expires
+}
+
 export interface StatpackItem {
   itemId: string;
   itemDetails?: InventoryItem;
   requiredQuantity: number; 
   currentQuantity: number; 
   pocket?: StatpackPocket; 
+  compartmentId?: string;
   expirationDate?: Date;
   lotNumber?: string;
 }
@@ -75,6 +86,7 @@ export interface Statpack {
   name: string;
   type: 'Primary' | 'Secondary' | 'Event Bag';
   status: 'Ready' | 'Restock Needed' | 'Expired Items' | 'In Use';
+  compartments: StatpackCompartment[];
   contents: StatpackItem[];
   isCheckedOut: boolean;
   assignedToUserId?: string;
@@ -82,6 +94,7 @@ export interface Statpack {
   checkedOutAt?: Date;
   lastCheckedBy?: string;
   lastCheckedAt?: Date;
+  currentEvent?: string;
 }
 
 export interface StatpackLog {

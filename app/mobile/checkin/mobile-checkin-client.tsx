@@ -6,12 +6,12 @@ import {
   Card,
   CardBody,
   Button,
-  Chip,
   Spinner,
   Progress,
   Input,
   Textarea,
-  Divider
+  Divider,
+  Chip
 } from '@heroui/react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import {
@@ -20,26 +20,31 @@ import {
   updateDoc,
   addDoc,
   collection,
-  serverTimestamp
+  serverTimestamp,
+  writeBatch,
+  increment
 } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
-import { Statpack, User } from '@/app/types';
+import { Statpack, StatpackItem } from '@/app/types';
 import {
   ArrowLeft,
-  ArrowRight,
   Save,
   Minus,
   Plus,
-  RefreshCw,
   CheckCircle2,
-  Stethoscope,
-  FileText
+  ShieldCheck,
+  PackageOpen,
+  BoxSelect,
+  AlertTriangle,
+  RefreshCw
 } from 'lucide-react';
 
-interface ItemState {
-  originalQty: number;
-  foundQty: number;
-  restocked: boolean;
+interface CheckinStep {
+  id: string;
+  name: string;
+  isSealed: boolean;
+  sealNumber?: string;
+  items: StatpackItem[];
 }
 
 export default function MobileCheckinClient() {
@@ -48,412 +53,360 @@ export default function MobileCheckinClient() {
   const router = useRouter();
 
   const [user, setUser] = useState<FirebaseUser | null>(null);
-  const [userRole, setUserRole] = useState<User['role'] | null>(null);
   const [pack, setPack] = useState<Statpack | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
 
-  const [activePocketIndex, setActivePocketIndex] = useState(0);
-  const [itemStates, setItemStates] = useState<Record<string, ItemState>>({});
-
-  const [incidentId, setIncidentId] = useState('');
-  const [notes, setNotes] = useState('');
+  // Workflow
+  const [activeStepIndex, setActiveStepIndex] = useState(0);
+  const [foundCounts, setFoundCounts] = useState<Record<string, number>>({});
+  
+  // Track seal status for current step in Check-in (True = Still Intact/Unused)
+  const [currentSealIntact, setCurrentSealIntact] = useState<boolean | undefined>(undefined);
+  
+  // New: Track if they restocked the bag during checkin
+  const [didRestock, setDidRestock] = useState(false);
+  const [usageCalculated, setUsageCalculated] = useState(false);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
       if (!u) {
-        const returnUrl = id ? `/mobile/checkin?id=${id}` : '/mobile/checkin';
-        router.push(`/login?returnUrl=${encodeURIComponent(returnUrl)}`);
+        router.push(`/login?returnUrl=/mobile/checkin?id=${id}`);
         return;
       }
       setUser(u);
-      try {
-        const userSnap = await getDoc(doc(db, 'users', u.uid));
-        const role = (userSnap.data() as User | undefined)?.role ?? 'member';
-        setUserRole(role);
-      } catch (e) {
-        console.error('Failed to load user role:', e);
-        setUserRole('member');
-      }
-
-      if (!isSuccess) {
-        await loadPack(id);
-      }
+      if (id) await loadPack(id);
     });
     return () => unsubscribe();
-  }, [id, router, isSuccess]);
+  }, [id, router]);
 
   const loadPack = async (packId: string) => {
-    if (!packId) {
-      setPack(null);
-      setLoading(false);
-      return;
-    }
     try {
       const snap = await getDoc(doc(db, 'statpacks', packId));
       if (snap.exists()) {
         const data = { id: snap.id, ...snap.data() } as Statpack;
         setPack(data);
 
-        const initialStates: Record<string, ItemState> = {};
+        // Pre-fill counts with 0 to force counting (unless sealed)
+        const init: Record<string, number> = {};
         data.contents?.forEach((item, idx) => {
-          const key = `${item.itemId}_${idx}`;
-          initialStates[key] = {
-            originalQty: item.currentQuantity || 0,
-            foundQty: item.currentQuantity || 0,
-            restocked: false
-          };
+          init[`${item.itemId}_${idx}`] = 0; 
         });
-        setItemStates(initialStates);
+        setFoundCounts(init);
       }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
   };
 
-  const pocketSteps = useMemo(() => {
+  const steps = useMemo<CheckinStep[]>(() => {
     if (!pack?.contents) return [];
-    const pockets = Array.from(new Set(pack.contents.map(i => i.pocket || 'Main')));
-    return pockets.sort((a, b) => {
-      if (a === 'Main') return -1;
-      if (b === 'Main') return 1;
-      return 0;
+    const result: CheckinStep[] = [];
+
+    // Compartments
+    pack.compartments?.forEach(comp => {
+      const items = pack.contents.filter(i => i.compartmentId === comp.id);
+      if (items.length > 0) {
+        result.push({
+          id: comp.id,
+          name: comp.name,
+          isSealed: comp.isSealed,
+          sealNumber: comp.sealNumber,
+          items
+        });
+      }
     });
+
+    // Loose
+    const loose = pack.contents.filter(i => !i.compartmentId);
+    if (loose.length > 0) {
+      const pockets = Array.from(new Set(loose.map(i => i.pocket || 'Main')));
+      pockets.forEach(p => {
+        result.push({
+          id: `loose_${p}`,
+          name: `${p} (Loose)`,
+          isSealed: false,
+          items: loose.filter(i => (i.pocket || 'Main') === p)
+        });
+      });
+    }
+    return result;
   }, [pack]);
 
-  const currentPocket = pocketSteps[activePocketIndex];
-  const isLastStep = activePocketIndex === pocketSteps.length;
+  const currentStep = steps[activeStepIndex];
 
-  const currentItems = useMemo(() => {
-    if (!pack?.contents || isLastStep) return [];
-    return pack.contents
-      .map((item, originalIndex) => ({ item, originalIndex }))
-      .filter(({ item }) => (item.pocket || 'Main') === currentPocket);
-  }, [pack, currentPocket, isLastStep]);
+  // Logic: Items used/missing
+  const missingItems = useMemo(() => {
+    if (!pack?.contents) return [];
+    return pack.contents.map((item, idx) => {
+      const found = foundCounts[`${item.itemId}_${idx}`] || 0;
+      const used = item.requiredQuantity - found;
+      return { ...item, found, used, originalIndex: idx };
+    }).filter(i => i.used > 0);
+  }, [pack, foundCounts]);
 
-  const updateFoundQty = (key: string, delta: number) => {
-    setItemStates(prev => {
-      const current = prev[key];
-      const newVal = Math.max(0, current.foundQty + delta);
-      return {
-        ...prev,
-        [key]: { ...current, foundQty: newVal }
-      };
-    });
-  };
 
-  const toggleRestock = (key: string) => {
-    setItemStates(prev => {
-      const current = prev[key];
-      return {
-        ...prev,
-        [key]: { ...current, restocked: !current.restocked }
-      };
-    });
+  // Handlers
+  const handleSealResponse = (isIntact: boolean) => {
+    setCurrentSealIntact(isIntact);
+    if (isIntact) {
+      setFoundCounts(prev => {
+        const next = { ...prev };
+        currentStep.items.forEach(item => {
+           const idx = pack?.contents.indexOf(item);
+           if (idx !== undefined && idx > -1) {
+             next[`${item.itemId}_${idx}`] = item.requiredQuantity; 
+           }
+        });
+        return next;
+      });
+      handleNext();
+    }
   };
 
   const handleNext = () => {
-    if (activePocketIndex < pocketSteps.length) {
-      setActivePocketIndex(prev => prev + 1);
+    if (activeStepIndex < steps.length - 1) {
+      setActiveStepIndex(prev => prev + 1);
+      setCurrentSealIntact(undefined);
       window.scrollTo(0, 0);
+    } else {
+      setUsageCalculated(true); // Move to Final Summary Screen
     }
   };
 
-  const handleBack = () => {
-    if (activePocketIndex > 0) setActivePocketIndex(prev => prev - 1);
-    else router.back();
+  const handleCountChange = (globalIdx: number, delta: number) => {
+    const key = `${pack?.contents[globalIdx].itemId}_${globalIdx}`;
+    setFoundCounts(prev => {
+      const cur = prev[key] || 0;
+      return { ...prev, [key]: Math.max(0, cur + delta) };
+    });
   };
 
   const handleCompleteCheckin = async () => {
     if (!pack || !user) return;
-    const isReturnAllowed = userRole === 'admin' || pack.assignedToUserId === user.uid;
-    if (!isReturnAllowed) {
-      alert('Only the assignee or an admin can return this bag.');
-      return;
-    }
     setSubmitting(true);
-
     try {
-      let overallStatus: Statpack['status'] = 'Ready';
+      const batch = writeBatch(db); // START BATCH
+
       const usageReport: string[] = [];
-      const restockReport: string[] = [];
-      const missingReport: string[] = [];
+      let status: Statpack['status'] = 'Ready';
 
       const updatedContents = pack.contents.map((item, idx) => {
-        const key = `${item.itemId}_${idx}`;
-        const state = itemStates[key];
-
-        const usedAmount = state.originalQty - state.foundQty;
-        if (usedAmount > 0) {
-          usageReport.push(`${usedAmount}x ${item.itemDetails?.name}`);
+        const found = foundCounts[`${item.itemId}_${idx}`] || 0;
+        const used = item.requiredQuantity - found; 
+        
+        if (used > 0) {
+          usageReport.push(`${item.itemDetails?.name}: Used ${used}`);
+          
+          // --- INVENTORY UPDATE LOGIC ---
+          // If they restocked, deduct the USED amount from Master Inventory
+          if (didRestock) {
+             const inventoryRef = doc(db, 'inventory', item.itemId);
+             batch.update(inventoryRef, {
+                totalStockQuantity: increment(-used)
+             });
+          }
         }
 
-        const finalQty = state.restocked ? item.requiredQuantity : state.foundQty;
-
-        if (state.restocked) {
-          restockReport.push(item.itemDetails?.name || 'Item');
-        }
+        // If restocked, bag is now full. If not, it stays at 'found' level.
+        const finalQty = didRestock ? item.requiredQuantity : found;
 
         if (finalQty < item.requiredQuantity) {
-          overallStatus = 'Restock Needed';
-          missingReport.push(`${item.itemDetails?.name} (${finalQty}/${item.requiredQuantity})`);
+          status = 'Restock Needed';
         }
 
         return { ...item, currentQuantity: finalQty };
       });
 
-      await updateDoc(doc(db, 'statpacks', pack.id), {
+      // Update Pack
+      const packRef = doc(db, 'statpacks', pack.id);
+      batch.update(packRef, {
         contents: updatedContents,
-        status: overallStatus,
+        status: status,
         isCheckedOut: false,
-        lastCheckedBy: user.uid,
-        lastCheckedAt: serverTimestamp(),
         assignedToUserId: null,
         assignedToUserName: null,
-        currentEvent: null
+        lastCheckedBy: user.uid,
+        lastCheckedAt: serverTimestamp()
       });
 
-      await addDoc(collection(db, 'statpack_logs'), {
+      // Log
+      const logRef = doc(collection(db, 'statpack_logs'));
+      batch.set(logRef, {
         statpackId: pack.id,
-        statpackName: pack.name,
         action: 'checkin',
         userId: user.uid,
-        userName: user.displayName || user.email,
         timestamp: serverTimestamp(),
-        notes: `Check-in Complete.\n\nUsage:\n${usageReport.join('\n') || 'None'}\n\nRestocked:\n${restockReport.join(', ') || 'None'}\n\nIncident ID: ${incidentId}\nNotes: ${notes}`
+        details: usageReport.length > 0 ? usageReport.join(', ') : 'No usage recorded',
+        notes: `Check-in complete. Status: ${status}. ${didRestock ? 'Inventory Restocked.' : 'No restock performed.'}`
       });
+
+      // COMMIT
+      await batch.commit();
 
       setIsSuccess(true);
       router.push(`/mobile?id=${pack.id}`);
+
     } catch (e) {
       console.error(e);
-      alert('Error processing check-in');
       setSubmitting(false);
     }
   };
 
-  if (loading || userRole === null) {
-    return (
-      <div className="h-screen flex items-center justify-center">
-        <Spinner size="lg" />
+  if (loading) return <div className="flex h-screen items-center justify-center"><Spinner /></div>;
+  if (!pack) return <div>Pack not found</div>;
+
+  // VIEW: FINAL SUMMARY
+  if (usageCalculated) {
+     const hasUsage = missingItems.length > 0;
+     
+     return (
+      <div className="min-h-screen bg-gray-50 dark:bg-zinc-950 p-4 pb-32">
+        <div className="max-w-md mx-auto space-y-6">
+           <Button variant="light" onPress={() => setUsageCalculated(false)} startContent={<ArrowLeft size={16}/>}>Back</Button>
+           
+           <div className="text-center">
+              <PackageOpen size={64} className="mx-auto text-primary mb-2" />
+              <h2 className="text-2xl font-bold">Shift Summary</h2>
+              <p className="text-gray-500">{hasUsage ? "Items used during shift:" : "No items used."}</p>
+           </div>
+
+           {hasUsage && (
+             <Card className="border border-warning-200 bg-warning-50 dark:bg-warning-900/10">
+                <CardBody>
+                   <div className="flex items-center gap-2 text-warning-700 font-bold mb-3">
+                      <AlertTriangle size={20} />
+                      <h3>Usage Detected</h3>
+                   </div>
+                   <ul className="space-y-2 mb-4">
+                      {missingItems.map((item, i) => (
+                         <li key={i} className="flex justify-between text-sm">
+                            <span>{item.itemDetails?.name}</span>
+                            <span className="font-bold text-red-500">Used {item.used}</span>
+                         </li>
+                      ))}
+                   </ul>
+
+                   <div className="bg-white dark:bg-zinc-900 p-3 rounded-lg border border-warning-200">
+                      <p className="text-sm font-bold mb-2">Restock Action</p>
+                      <p className="text-xs text-gray-500 mb-3">
+                         Did you refill these items from the Supply Closet?
+                      </p>
+                      <Button 
+                         className="w-full"
+                         color={didRestock ? "success" : "default"}
+                         variant={didRestock ? "solid" : "bordered"}
+                         startContent={didRestock ? <CheckCircle2 size={18}/> : <RefreshCw size={18}/>}
+                         onPress={() => setDidRestock(!didRestock)}
+                      >
+                         {didRestock ? "Yes, I Restocked Everything" : "No, Bag Left Empty"}
+                      </Button>
+                      {didRestock && <p className="text-[10px] text-green-600 mt-2 text-center">Inventory will be updated automatically.</p>}
+                   </div>
+                </CardBody>
+             </Card>
+           )}
+
+           <Button 
+              size="lg" 
+              color="primary" 
+              className="w-full font-bold shadow-lg"
+              isLoading={submitting}
+              onPress={handleCompleteCheckin}
+              startContent={<Save />}
+           >
+              Complete Check-In
+           </Button>
+        </div>
       </div>
-    );
+     );
   }
 
-  if (isSuccess) {
-    return (
-      <div className="h-screen flex flex-col items-center justify-center space-y-4 animate-fade-in">
-        <CheckCircle2 size={64} className="text-success" />
-        <h2 className="text-2xl font-bold">Check-In Complete</h2>
-        <p className="text-gray-500">Redirecting to dashboard...</p>
-      </div>
-    );
-  }
-
-  if (!pack) {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center gap-3 text-center p-6 bg-gray-50 dark:bg-zinc-950">
-        <p className="text-lg font-semibold">No statpack selected</p>
-        <p className="text-sm text-gray-500">Open this page with an id query parameter.</p>
-        <Button color="primary" onPress={() => router.push('/statpacks')}>View Statpacks</Button>
-      </div>
-    );
-  }
-
-  const isReturnAllowed = userRole === 'admin' || pack.assignedToUserId === user?.uid;
-  if (!isReturnAllowed) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-zinc-950 p-6">
-        <Card className="max-w-md w-full">
-          <CardBody className="space-y-3 text-center">
-            <h2 className="text-xl font-bold">Return Restricted</h2>
-            <p className="text-sm text-gray-500">
-              Only the assignee or an admin can return this bag.
-            </p>
-            <Button color="primary" onPress={() => router.push(`/mobile?id=${id}`)}>
-              Back to Bag
-            </Button>
-          </CardBody>
-        </Card>
-      </div>
-    );
-  }
-
-  const progressVal = ((activePocketIndex) / (pocketSteps.length)) * 100;
+  // VIEW: INSPECTION STEPS
+  const showSealCheck = currentStep.isSealed && currentSealIntact === undefined;
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-zinc-950 pb-28">
-      <div className="bg-white dark:bg-zinc-900 sticky top-0 z-20 shadow-sm">
+    <div className="min-h-screen bg-gray-50 dark:bg-zinc-950 pb-32">
+       <div className="sticky top-0 z-20 bg-white dark:bg-zinc-900 shadow-sm">
         <div className="px-4 py-3 flex items-center justify-between">
-          <Button isIconOnly size="sm" variant="light" onPress={handleBack}>
-            <ArrowLeft />
-          </Button>
+          <Button isIconOnly size="sm" variant="light" onPress={() => router.back()}><ArrowLeft/></Button>
           <div className="text-center">
-            <h1 className="font-bold text-sm uppercase tracking-wider">{pack.name}</h1>
-            <span className="text-xs text-gray-500">Check-In / Restock</span>
+            <h1 className="font-bold text-sm uppercase tracking-wider">{currentStep.name}</h1>
+            <span className="text-xs text-gray-500">Checking In</span>
           </div>
           <div className="w-8"></div>
         </div>
-        <Progress size="sm" value={progressVal} color="success" aria-label="progress" className="w-full" />
+        <Progress size="sm" value={((activeStepIndex) / steps.length) * 100} className="w-full" color="success"/>
       </div>
 
-      <div className="p-4 max-w-lg mx-auto">
-        {isLastStep ? (
-          <div className="space-y-6 animate-fade-in">
-            <div className="text-center space-y-2">
-              <RefreshCw size={48} className="mx-auto text-success" />
-              <h2 className="text-2xl font-bold">Summary</h2>
-              <p className="text-gray-500">Confirm usage and return bag to storage.</p>
-            </div>
-
-            <Card className="border shadow-sm">
-              <CardBody className="space-y-2">
-                <div className="flex items-center gap-2 font-bold text-gray-700 dark:text-gray-200">
-                  <Stethoscope size={18} />
-                  <span>Supplies Used</span>
-                </div>
-                <Divider />
-                <ul className="text-sm space-y-1 pl-2">
-                  {Object.entries(itemStates).map(([key, state]) => {
-                    if (state.originalQty > state.foundQty) {
-                      const idx = Number(key.split('_')[1]);
-                      const name = pack.contents[idx].itemDetails?.name;
-                      return (
-                        <li key={key} className="flex justify-between">
-                          <span>{name}</span>
-                          <span className="font-mono font-bold text-danger">-{state.originalQty - state.foundQty}</span>
-                        </li>
-                      );
-                    }
-                    return null;
-                  })}
-                  {!Object.values(itemStates).some(s => s.originalQty > s.foundQty) && (
-                    <li className="text-gray-400 italic">No usage recorded.</li>
-                  )}
-                </ul>
-              </CardBody>
-            </Card>
-
-            <div className="space-y-4">
-              <Input
-                label="Incident / PCR Number"
-                placeholder="e.g. 23-00512"
-                value={incidentId}
-                onValueChange={setIncidentId}
-                startContent={<FileText size={16} className="text-gray-400" />}
-              />
-              <Textarea
-                label="Shift Notes"
-                placeholder="Any issues with the bag or equipment?"
-                value={notes}
-                onValueChange={setNotes}
-              />
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-4 animate-fade-in">
-            <h2 className="text-2xl font-bold capitalize mb-4">{currentPocket?.replace('_', ' ')}</h2>
-
-            <div className="space-y-3">
-              {currentItems.map(({ item, originalIndex }) => {
-                const key = `${item.itemId}_${originalIndex}`;
-                const state = itemStates[key] || { foundQty: 0, restocked: false, originalQty: 0 };
-                const req = item.requiredQuantity;
-                const isFoundLow = state.foundQty < req;
-                const isRestocked = state.restocked;
-                const effectiveCount = isRestocked ? req : state.foundQty;
-
-                return (
-                  <Card key={key} className={`border transition-colors ${effectiveCount < req ? 'border-warning' : 'border-gray-200 dark:border-zinc-800'}`}>
-                    <CardBody className="p-3">
-                      <div className="flex justify-between items-start mb-3">
-                        <div>
-                          <p className="font-semibold text-sm">{item.itemDetails?.name}</p>
-                          <p className="text-xs text-gray-500">Required: {req}</p>
-                        </div>
-                        {isRestocked && <Chip size="sm" color="success" variant="flat">Restocked</Chip>}
-                      </div>
-
-                      <div className="flex items-center gap-4">
-                        <div className="flex items-center gap-2 bg-gray-50 dark:bg-zinc-800 rounded-lg p-1 border">
-                          <Button isIconOnly size="sm" variant="light" onPress={() => updateFoundQty(key, -1)}>
-                            <Minus size={14} />
-                          </Button>
-                          <div className="flex flex-col items-center w-8">
-                            <span className="font-bold text-lg leading-none">{state.foundQty}</span>
-                            <span className="text-[10px] text-gray-400 uppercase">Left</span>
-                          </div>
-                          <Button isIconOnly size="sm" variant="light" onPress={() => updateFoundQty(key, 1)}>
-                            <Plus size={14} />
-                          </Button>
-                        </div>
-
-                        {isFoundLow && (
-                          <div className="flex-grow flex justify-end">
-                            <Button
-                              size="sm"
-                              color={state.restocked ? 'success' : 'warning'}
-                              variant={state.restocked ? 'solid' : 'ghost'}
-                              onPress={() => toggleRestock(key)}
-                              startContent={state.restocked ? <CheckCircle2 size={14} /> : <RefreshCw size={14} />}
-                            >
-                              {state.restocked ? 'Filled' : 'Restock'}
-                            </Button>
-                          </div>
-                        )}
-                      </div>
-
-                      {state.originalQty > state.foundQty && (
-                        <p className="text-xs text-danger mt-2 flex items-center gap-1">
-                          <Minus size={10} /> Used {state.originalQty - state.foundQty} this shift
-                        </p>
-                      )}
-                    </CardBody>
-                  </Card>
-                );
-              })}
-            </div>
-          </div>
+      <div className="p-4 max-w-lg mx-auto space-y-6">
+        
+        {showSealCheck && (
+           <div className="text-center py-10 animate-fade-in">
+              <ShieldCheck size={80} className="mx-auto text-success mb-6" />
+              <h2 className="text-2xl font-bold mb-2">Usage Check</h2>
+              <p className="text-gray-500 mb-6">Is the seal still intact?</p>
+              
+              <div className="grid gap-4">
+                 <Button color="success" size="lg" className="h-16 font-bold" onPress={() => handleSealResponse(true)}>
+                    YES - Seal Intact
+                    <span className="text-xs font-normal opacity-70 block w-full">(No Items Used)</span>
+                 </Button>
+                 <Button color="warning" variant="flat" size="lg" className="h-16 font-bold" onPress={() => handleSealResponse(false)}>
+                    NO - Seal Broken
+                    <span className="text-xs font-normal opacity-70 block w-full">(I opened this kit)</span>
+                 </Button>
+              </div>
+           </div>
         )}
-      </div>
 
-      <div className="fixed bottom-0 left-0 right-0 p-4 bg-white dark:bg-zinc-900 border-t dark:border-zinc-800 z-30">
-        <div className="max-w-lg mx-auto flex gap-3">
-          <Button
-            variant="light"
-            onPress={handleBack}
-            isDisabled={activePocketIndex === 0}
-            className="flex-1"
-          >
-            Back
-          </Button>
+        {!showSealCheck && (
+           <div className="animate-fade-in">
+             {currentStep.isSealed && (
+               <div className="bg-blue-50 text-blue-700 p-3 rounded-lg mb-4 text-sm flex items-center gap-2">
+                 <PackageOpen size={18} />
+                 <span>Seal broken. Please count remaining items.</span>
+               </div>
+             )}
 
-          {isLastStep ? (
-            <Button
-              className="flex-[2] font-bold shadow-lg"
-              color="success"
-              size="lg"
-              onPress={handleCompleteCheckin}
-              isLoading={submitting}
-              startContent={<Save />}
-            >
-              Complete Check-In
-            </Button>
-          ) : (
-            <Button
-              className="flex-[2] font-bold"
-              color="primary"
-              size="lg"
-              onPress={handleNext}
-              endContent={<ArrowRight />}
-            >
-              Next Pocket
-            </Button>
-          )}
-        </div>
+             <div className="space-y-3">
+               {currentStep.items.map(item => {
+                 const globalIdx = pack.contents.indexOf(item);
+                 const key = `${item.itemId}_${globalIdx}`;
+                 const count = foundCounts[key] || 0;
+                 const req = item.requiredQuantity;
+                 const used = req - count;
+
+                 return (
+                   <Card key={key}>
+                      <CardBody className="flex items-center justify-between p-3">
+                         <div>
+                            <div className="font-bold text-sm">{item.itemDetails?.name}</div>
+                            {used > 0 && <span className="text-xs text-amber-600 font-bold">Used: {used}</span>}
+                         </div>
+                         <div className="flex items-center gap-3 bg-gray-100 dark:bg-zinc-800 rounded-lg p-1">
+                            <Button isIconOnly size="sm" variant="light" onPress={() => handleCountChange(globalIdx, -1)}><Minus size={16}/></Button>
+                            <span className="font-mono font-bold w-6 text-center">{count}</span>
+                            <Button isIconOnly size="sm" variant="light" onPress={() => handleCountChange(globalIdx, 1)}><Plus size={16}/></Button>
+                         </div>
+                      </CardBody>
+                   </Card>
+                 );
+               })}
+             </div>
+
+             <Button 
+                size="lg" 
+                color="primary" 
+                className="w-full mt-8 font-bold shadow-lg" 
+                onPress={handleNext}
+                isLoading={submitting}
+             >
+                Next Section
+             </Button>
+           </div>
+        )}
+
       </div>
     </div>
   );

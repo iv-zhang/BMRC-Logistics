@@ -38,6 +38,7 @@ const SEED_ITEMS: Array<Partial<InventoryItem>> = [
     unit: 'count',
     reorderThreshold: 1,
     isDisposable: false,
+    tracksExpiration: false,
   },
   {
     name: 'CPR Dummy',
@@ -50,6 +51,7 @@ const SEED_ITEMS: Array<Partial<InventoryItem>> = [
     unit: 'count',
     reorderThreshold: 0,
     isDisposable: false,
+    tracksExpiration: false,
   },
   {
     name: "Ivan's Toy",
@@ -62,6 +64,7 @@ const SEED_ITEMS: Array<Partial<InventoryItem>> = [
     unit: 'count',
     reorderThreshold: 0,
     isDisposable: false,
+    tracksExpiration: false,
   },
 ];
 
@@ -117,6 +120,7 @@ export default function InventoryPage() {
           reorderThreshold: data.reorderThreshold,
           isDisposable: data.isDisposable,
           
+          tracksExpiration: data.tracksExpiration ?? false,
           expirationDate: data.expirationDate ? getDate(data.expirationDate) : undefined,
 
           createdAt: getDate(data.createdAt),
@@ -184,6 +188,7 @@ export default function InventoryPage() {
         // We use '?? null' to ensure if it's undefined, it becomes null.
         expirationDate: newItemData.expirationDate ?? null,
         room: newItemData.room ?? null, 
+        tracksExpiration: newItemData.tracksExpiration ?? false,
         
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -246,8 +251,9 @@ export default function InventoryPage() {
     return 'text-green-600 dark:text-green-400';
   };
 
-  const getExpirationStatus = (date?: Date) => {
-    if (!date) return null;
+  const getExpirationStatus = (date?: Date, tracksExpiration?: boolean) => {
+    if (!tracksExpiration || !date) return null;
+    
     const now = new Date();
     const expiry = new Date(date);
     const diffTime = expiry.getTime() - now.getTime();
@@ -381,7 +387,7 @@ export default function InventoryPage() {
                 ) : (
                   <div className="space-y-4 mt-2">
                     {filteredInventory.map((item) => {
-                    const expStatus = getExpirationStatus(item.expirationDate);
+                    const expStatus = getExpirationStatus(item.expirationDate, item.tracksExpiration);
                     const isExpired = expStatus?.isExpired;
                     
                     const cardClasses = isExpired 
@@ -480,7 +486,7 @@ export default function InventoryPage() {
                 ) : (
                   <div className="space-y-4 mt-2">
                     {filteredLowStockItems.map((item) => {
-                    const expStatus = getExpirationStatus(item.expirationDate);
+                    const expStatus = getExpirationStatus(item.expirationDate, item.tracksExpiration);
                     return (
                       <Card 
                           key={item.id} 
