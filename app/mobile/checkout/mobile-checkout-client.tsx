@@ -10,9 +10,7 @@ import {
   Progress,
   Input,
   Textarea,
-  Chip,
-  Tooltip,
-  Badge
+  Chip
 } from '@heroui/react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import {
@@ -39,7 +37,6 @@ import {
   ListFilter,
   ArrowRight,
   CalendarDays,
-  History,
   Layers // Icon for 'batch'
 } from 'lucide-react';
 
@@ -78,10 +75,6 @@ export default function MobileCheckoutClient() {
   
   // Active Form State: Key: "itemId_index", Value: "YYYY-MM-DD" string (User input)
   const [expirationUpdates, setExpirationUpdates] = useState<Record<string, string>>({});
-  
-  // We keep lastKnownExps internally to detect significant deviations if needed later, 
-  // but we won't show it to the user to prevent cheating.
-  const [lastKnownExps, setLastKnownExps] = useState<Record<string, string>>({});
 
   const [missingExpirationKeys, setMissingExpirationKeys] = useState<Set<string>>(new Set());
   const [currentStepSealIntact, setCurrentStepSealIntact] = useState<boolean | undefined>(undefined);
@@ -104,7 +97,7 @@ export default function MobileCheckoutClient() {
       if (!pack) await loadPack(id);
     });
     return () => unsubscribe();
-  }, [id, router]);
+  }, [id, pack, router]);
 
   const loadPack = async (packId: string) => {
     if (!packId) return;
@@ -112,13 +105,15 @@ export default function MobileCheckoutClient() {
       const snap = await getDoc(doc(db, 'statpacks', packId));
       if (snap.exists()) {
         const rawData = snap.data();
-        const convertDates = (obj: any): any => {
+        const convertDates = (obj: unknown): unknown => {
            if (!obj) return obj;
            if (obj instanceof Timestamp) return obj.toDate();
            if (Array.isArray(obj)) return obj.map(convertDates);
            if (typeof obj === 'object') {
-             const newObj: any = {};
-             for (const key in obj) newObj[key] = convertDates(obj[key]);
+             const newObj: Record<string, unknown> = {};
+             Object.entries(obj as Record<string, unknown>).forEach(([key, value]) => {
+               newObj[key] = convertDates(value);
+             });
              return newObj;
            }
            return obj;
@@ -128,20 +123,13 @@ export default function MobileCheckoutClient() {
         setPack(data);
         
         const initialCounts: Record<string, number> = {};
-        const knownExps: Record<string, string> = {};
 
         data.contents?.forEach((item, idx) => {
           initialCounts[`${item.itemId}_${idx}`] = 0;
-          
-          const expSource = item.expirationDate ?? item.itemDetails?.expirationDate;
-          if (expSource instanceof Date) {
-            knownExps[`${item.itemId}_${idx}`] = expSource.toISOString().split('T')[0];
-          }
         });
         
         setCounts(initialCounts);
-        setLastKnownExps(knownExps); 
-        setExpirationUpdates({}); // ALWAYS start empty to force manual check
+        setExpirationUpdates({});
         setMissingExpirationKeys(new Set());
         setSealStatusByStep({});
       }

@@ -29,7 +29,7 @@ export default function ForgotPasswordPage() {
       
       setMessage({
         type: 'success',
-        text: 'Check your email for a link to reset your password. If it doesn’t appear within a few minutes, check your spam folder.'
+        text: 'Check your email for a link to reset your password. If it doesn\'t appear within a few minutes, check your spam folder.'
       });
       setEmail(''); // Clear input on success
     } catch (err: unknown) {
@@ -64,7 +64,7 @@ export default function ForgotPasswordPage() {
         <CardHeader className="flex flex-col gap-1 pb-4">
           <h1 className="text-2xl font-bold">Reset Password</h1>
           <p className="text-sm text-gray-500">
-            Enter your email address and we'll send you a link to reset your password.
+            Enter your email address and we&apos;ll send you a link to reset your password.
           </p>
         </CardHeader>
         

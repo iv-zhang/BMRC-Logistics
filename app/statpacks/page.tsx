@@ -39,18 +39,18 @@ const BLANK_PACK: Partial<Statpack> = {
 // --- Helper: Recursive Cleaner for Firestore ---
 // Firestore throws an error if fields are 'undefined'. 
 // This strips undefined keys deeply but preserves Dates.
-const cleanData = (data: any): any => {
+const cleanData = (data: unknown): unknown => {
   if (Array.isArray(data)) {
     return data.map(item => cleanData(item));
-  } else if (data !== null && typeof data === 'object') {
+  }
+  if (data !== null && typeof data === 'object') {
     // Preserve Date objects
     if (data instanceof Date) return data;
     // Preserve Firestore Timestamps if they exist in state
-    if (data.toMillis && typeof data.toMillis === 'function') return data;
+    if ('toMillis' in data && typeof (data as { toMillis?: unknown }).toMillis === 'function') return data;
 
-    const newObj: any = {};
-    Object.keys(data).forEach(key => {
-      const val = data[key];
+    const newObj: Record<string, unknown> = {};
+    Object.entries(data as Record<string, unknown>).forEach(([key, val]) => {
       // Only copy if value is NOT undefined
       if (val !== undefined) {
         newObj[key] = cleanData(val);

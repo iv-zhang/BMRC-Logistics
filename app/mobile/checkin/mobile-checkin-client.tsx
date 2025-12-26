@@ -7,18 +7,12 @@ import {
   CardBody,
   Button,
   Spinner,
-  Progress,
-  Input,
-  Textarea,
-  Divider,
-  Chip
+  Progress
 } from '@heroui/react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import {
   doc,
   getDoc,
-  updateDoc,
-  addDoc,
   collection,
   serverTimestamp,
   writeBatch,
@@ -34,7 +28,6 @@ import {
   CheckCircle2,
   ShieldCheck,
   PackageOpen,
-  BoxSelect,
   AlertTriangle,
   RefreshCw
 } from 'lucide-react';
@@ -56,7 +49,6 @@ export default function MobileCheckinClient() {
   const [pack, setPack] = useState<Statpack | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [isSuccess, setIsSuccess] = useState(false);
 
   // Workflow
   const [activeStepIndex, setActiveStepIndex] = useState(0);
@@ -244,7 +236,6 @@ export default function MobileCheckinClient() {
       // COMMIT
       await batch.commit();
 
-      setIsSuccess(true);
       router.push(`/mobile?id=${pack.id}`);
 
     } catch (e) {

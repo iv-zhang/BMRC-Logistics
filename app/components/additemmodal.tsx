@@ -1,5 +1,5 @@
 'use client';
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button, 
   Input, Select, SelectItem, Switch, Textarea
@@ -58,23 +58,16 @@ export default function InventoryModal({
   canToggleExpiration = false
 }: InventoryModalProps) {
   
-  // Initialize state. 
-  // We check if initialData exists; if so, we populate. 
-  // If an expiration date exists, ensure tracking is enabled.
-  const [formData, setFormData] = useState<InventoryFormState>(DEFAULT_STATE);
+  const getInitialFormData = (data?: InventoryItem | null): InventoryFormState => {
+    if (!data) return DEFAULT_STATE;
+    return {
+      ...data,
+      tracksExpiration: !!data.expirationDate || data.tracksExpiration || false
+    };
+  };
 
-  useEffect(() => {
-    if (isOpen) {
-      if (initialData) {
-        setFormData({
-            ...initialData,
-            tracksExpiration: !!initialData.expirationDate || initialData.tracksExpiration || false
-        });
-      } else {
-        setFormData(DEFAULT_STATE);
-      }
-    }
-  }, [isOpen, initialData]);
+  // Initialize state per mount; parent key remounts on open/close or item change.
+  const [formData, setFormData] = useState<InventoryFormState>(() => getInitialFormData(initialData));
 
   const handleValueChange = (field: InventoryFormField) => (value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
