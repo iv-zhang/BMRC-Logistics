@@ -17,8 +17,7 @@ export interface AuthResponse {
   error?: string;
 }
 
-// --- MASTER INVENTORY (The Supply Closet) ---
-
+// --- MASTER INVENTORY ---
 export type ItemCategory = 
   | 'Airway'       
   | 'Trauma'       
@@ -32,41 +31,40 @@ export type ItemCategory =
 export type LocationType = 'HQ' | 'CPR Closet' | 'Shed';
 export type HQRoom = 'Front' | 'Middle' | 'Back' | 'Office';
 
-// --- VARIATION LOGIC ---
-export interface InventoryVariant {
-  id: string;           
-  name: string;         // e.g. "Medium", "Large"
-  quantityPerUnit: number; // e.g. 100 (if box has 100 gloves)
-  stock: number;        // The number of units (e.g. 5 boxes)
-}
-
 export interface InventoryItem {
   id: string;
   name: string;
   category: ItemCategory;
   description?: string;
   
-  // Location Tracking
+  // Stock Levels
+  totalStockQuantity: number; 
+  reorderThreshold: number;   
+  
+  // Locations
   location: LocationType;
   room?: HQRoom;
-  shelf: string;
+  shelf?: string;
+  bin?: string;
 
-  // Master Supply Levels
-  totalStockQuantity: number; 
-  unit: string;
-  
-  // --- VARIATION SUPPORT ---
-  hasVariants: boolean;
-  variants?: InventoryVariant[];
-
-  // Restocking Logic
-  reorderThreshold: number; 
-  isDisposable: boolean;
-
-  // Expiration Tracking
-  tracksExpiration: boolean;
+  // Tracking
+  tracksExpiration: boolean; 
   expirationDate?: Date;
   
+  // Oxygen Specifics
+  isOxygen?: boolean;
+  oxygenPsi?: number;
+  maxOxygenPsi?: number;
+
+  // Box/Unit Logic
+  tracksOpenStock?: boolean;
+  quantityPerUnit?: number;
+  unopenedQuantity?: number;
+  openedQuantity?: number;
+  hasSecondaryExpiration?: boolean; 
+  secondaryExpirationDays?: number;
+  openedAt?: Date;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -109,16 +107,42 @@ export interface Statpack {
   checkedOutAt?: Date;
   lastCheckedBy?: string;
   lastCheckedAt?: Date;
-  currentEvent?: string;
+  currentEvent?: string; 
+  
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// --- LOGGING & ISSUES ---
+
+export interface IssueReport {
+  itemId: string;
+  itemName: string;
+  issueType: 'missing' | 'expired' | 'damaged' | 'other';
+  isReplaced: boolean;
+  replacedQuantity: number;
+  newExpirationDate?: string;
+  notes: string;
 }
 
 export interface StatpackLog {
-  id?: string;
+  id: string;
   statpackId: string;
   statpackName: string;
-  action: 'checkout' | 'checkin' | 'maintenance' | 'update';
+  action: 'checkout' | 'checkin' | 'restock' | 'created';
   userId: string;
   userName: string;
-  timestamp: Timestamp | Date | FieldValue; 
+  timestamp: Date;
   notes?: string;
+  
+  // Detailed Issue Tracking
+  issues?: {
+      sealChecks?: Record<string, boolean>;
+      oxygenReadings?: Record<string, string>;
+      issueReports?: Record<string, IssueReport>;
+      verifiedCount?: number;
+  };
+  
+  // Legacy/Simple tracking
+  itemsUsed?: Record<string, number>; 
 }

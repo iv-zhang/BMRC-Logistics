@@ -10,7 +10,17 @@ import {
   Progress,
   Input,
   Textarea,
-  Chip
+  Chip,
+  Divider,
+  Modal,
+  ModalContent,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
+  useDisclosure,
+  RadioGroup,
+  Radio,
+  Switch
 } from '@heroui/react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import {
@@ -19,8 +29,7 @@ import {
   collection,
   serverTimestamp,
   writeBatch,
-  increment,
-  Timestamp
+  increment
 } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
 import { Statpack, StatpackItem, StatpackPocket } from '@/app/types';
@@ -28,17 +37,32 @@ import { BagVisualizer } from '@/app/components/statpackvisualizer';
 import {
   ArrowLeft,
   CheckCircle2,
-  Minus,
-  Plus,
-  ClipboardCheck,
   ShieldCheck,
   AlertTriangle,
   Package,
   ListFilter,
-  ArrowRight,
+  Wind,
   CalendarDays,
-  Layers // Icon for 'batch'
+  ThermometerSnowflake, 
+  Layers,
+  Map as MapIcon,
+  Check,
+  Hand,
+  AlertOctagon,
+  Unlock,
+  Lock
 } from 'lucide-react';
+
+// --- Types ---
+interface IssueReport {
+  itemId: string;
+  itemName: string;
+  issueType: 'missing' | 'expired' | 'damaged' | 'other';
+  isReplaced: boolean;
+  replacedQuantity: number;
+  newExpirationDate?: string;
+  notes: string;
+}
 
 interface CheckoutStep {
   id: string;
@@ -51,617 +75,757 @@ interface CheckoutStep {
   items: StatpackItem[];
 }
 
-type ViewState = 'dashboard' | 'inspecting' | 'review';
+// --- Helpers ---
+const getDate = (ts: any): Date | undefined => {
+  if (!ts) return undefined;
+  if (typeof ts.toDate === 'function') return ts.toDate();
+  if (ts instanceof Date) return ts;
+  if (typeof ts === 'string' || typeof ts === 'number') return new Date(ts);
+  return undefined;
+};
+
+const toInputDate = (d?: Date): string => {
+    if (!d) return '';
+    try {
+        return d.toISOString().split('T')[0];
+    } catch (e) {
+        return '';
+    }
+};
 
 export default function MobileCheckoutClient() {
   const searchParams = useSearchParams();
   const id = searchParams.get('id') ?? '';
   const router = useRouter();
 
-  // -- Data --
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [pack, setPack] = useState<Statpack | null>(null);
   const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-
-  // -- Workflow State --
-  const [view, setView] = useState<ViewState>('dashboard');
-  const [activeStepId, setActiveStepId] = useState<string | null>(null);
-  const [completedSteps, setCompletedSteps] = useState<Set<string>>(new Set());
-  const [filterPocket, setFilterPocket] = useState<StatpackPocket | 'all'>('all');
-
-  // -- Inspection State --
-  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [error, setError] = useState('');
   
-  // Active Form State: Key: "itemId_index", Value: "YYYY-MM-DD" string (User input)
-  const [expirationUpdates, setExpirationUpdates] = useState<Record<string, string>>({});
+  // Checkout Navigation
+  const [view, setView] = useState<'intro' | 'steps' | 'review'>('intro');
+  const [activeStepIndex, setActiveStepIndex] = useState(0);
+  const [completedSteps, setCompletedSteps] = useState<Set<string>>(new Set());
+  const [submitting, setSubmitting] = useState(false);
+  
+  // Modals
+  const { isOpen: isMapOpen, onOpen: onMapOpen, onOpenChange: onMapChange } = useDisclosure();
+  const { isOpen: isIssueOpen, onOpen: onIssueOpen, onOpenChange: onIssueChange } = useDisclosure();
 
-  const [missingExpirationKeys, setMissingExpirationKeys] = useState<Set<string>>(new Set());
-  const [currentStepSealIntact, setCurrentStepSealIntact] = useState<boolean | undefined>(undefined);
-  const [sealStatusByStep, setSealStatusByStep] = useState<Record<string, boolean>>({});
-
-  // -- Form Data --
-  const [eventName, setEventName] = useState('');
+  // Data Collection
+  const [sealCheck, setSealCheck] = useState<Record<string, boolean>>({}); 
+  const [verifiedItems, setVerifiedItems] = useState<Record<string, boolean>>({}); 
+  const [issueReports, setIssueReports] = useState<Record<string, IssueReport>>({}); 
   const [notes, setNotes] = useState('');
-  const [didRestock, setDidRestock] = useState(false);
+  
+  // Inputs
+  const [oxygenReadings, setOxygenReadings] = useState<Record<string, string>>({});
+  const [sealExpirations, setSealExpirations] = useState<Record<string, string>>({}); 
+  const [itemExpirations, setItemExpirations] = useState<Record<string, string>>({}); 
 
-  // 1. Auth & Load
+  // Temporary State for Issue Modal
+  const [currentIssueItem, setCurrentIssueItem] = useState<StatpackItem | null>(null);
+  const [tempIssueData, setTempIssueData] = useState<Partial<IssueReport>>({
+      issueType: 'missing',
+      isReplaced: false,
+      replacedQuantity: 1,
+      newExpirationDate: '',
+      notes: ''
+  });
+
+  // --- Auth & Data Fetching ---
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (u) => {
-      if (!u) {
-        const returnUrl = id ? `/mobile/checkout?id=${id}` : '/mobile/checkout';
-        router.push(`/login?returnUrl=${encodeURIComponent(returnUrl)}`);
-        return;
-      }
-      setUser(u);
-      if (!pack) await loadPack(id);
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      if (u) setUser(u);
+      else router.push('/login');
     });
     return () => unsubscribe();
-  }, [id, pack, router]);
+  }, [router]);
 
-  const loadPack = async (packId: string) => {
-    if (!packId) return;
-    try {
-      const snap = await getDoc(doc(db, 'statpacks', packId));
-      if (snap.exists()) {
-        const rawData = snap.data();
-        const convertDates = (obj: unknown): unknown => {
-           if (!obj) return obj;
-           if (obj instanceof Timestamp) return obj.toDate();
-           if (Array.isArray(obj)) return obj.map(convertDates);
-           if (typeof obj === 'object') {
-             const newObj: Record<string, unknown> = {};
-             Object.entries(obj as Record<string, unknown>).forEach(([key, value]) => {
-               newObj[key] = convertDates(value);
-             });
-             return newObj;
-           }
-           return obj;
-        };
+  useEffect(() => {
+    if (!id || !user) return;
+    const fetchPack = async () => {
+      try {
+        const ref = doc(db, 'statpacks', id);
+        const snap = await getDoc(ref);
+        if (snap.exists()) {
+          const data = snap.data();
+          const packData = {
+             id: snap.id,
+             ...data,
+             checkedOutAt: getDate(data.checkedOutAt),
+             lastCheckedAt: getDate(data.lastCheckedAt),
+             compartments: (data.compartments || []).map((c: any) => ({
+                 ...c,
+                 expirationDate: getDate(c.expirationDate)
+             })),
+             contents: (data.contents || []).map((i: any) => ({
+                 ...i,
+                 expirationDate: getDate(i.expirationDate)
+             }))
+          } as Statpack;
 
-        const data = { id: snap.id, ...convertDates(rawData) } as Statpack;
-        setPack(data);
-        
-        const initialCounts: Record<string, number> = {};
+          setPack(packData);
+          
+          // Pre-fill expiration dates
+          const initialSealExps: Record<string, string> = {};
+          packData.compartments?.forEach(c => {
+              if (c.expirationDate) initialSealExps[c.id] = toInputDate(c.expirationDate);
+          });
+          setSealExpirations(initialSealExps);
 
-        data.contents?.forEach((item, idx) => {
-          initialCounts[`${item.itemId}_${idx}`] = 0;
-        });
-        
-        setCounts(initialCounts);
-        setExpirationUpdates({});
-        setMissingExpirationKeys(new Set());
-        setSealStatusByStep({});
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  };
+          const initialItemExps: Record<string, string> = {};
+          packData.contents?.forEach(i => {
+              if (i.expirationDate) initialItemExps[i.itemId] = toInputDate(i.expirationDate);
+          });
+          setItemExpirations(initialItemExps);
 
-  // Helper: Check Expiration Status (for visual coloring after input)
-  const getExpirationStatus = (dateString?: string) => {
-    if (!dateString) return { status: 'empty', label: 'Required', color: 'default' as const };
-    
-    const date = new Date(dateString);
-    const now = new Date();
-    date.setHours(0,0,0,0);
-    now.setHours(0,0,0,0);
-
-    const diffTime = date.getTime() - now.getTime();
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-    if (diffDays < 0) return { status: 'expired', label: `EXPIRED`, color: 'danger' as const };
-    if (diffDays <= 30) return { status: 'warning', label: `Exp < 30d`, color: 'warning' as const };
-    return { status: 'ok', label: `OK`, color: 'success' as const };
-  };
-
-  const requiresExpirationCheck = (item: StatpackItem) => {
-     // Strict check: Only required if the inventory item explicitly tracks it
-     return Boolean(item.itemDetails?.tracksExpiration || item.expirationDate);
-  };
-
-  const getVariantLabel = (item: StatpackItem) => {
-    if (item.variantName) return item.variantName;
-    if (item.variantId && item.itemDetails?.variants) {
-      const match = item.itemDetails.variants.find(v => v.id === item.variantId);
-      return match?.name;
-    }
-    return undefined;
-  };
-
-  const getMissingExpirationKeysForStep = (step: CheckoutStep) => {
-    if (!pack?.contents) return [];
-    if (step.isSealed && sealStatusByStep[step.id] === true) return [];
-
-    return step.items.reduce<string[]>((acc, item) => {
-      const globalIdx = pack.contents.indexOf(item);
-      if (globalIdx < 0) return acc;
-      
-      if (requiresExpirationCheck(item)) {
-        const key = `${item.itemId}_${globalIdx}`;
-        // CRITICAL: We only accept it if the user has physically entered a date string
-        if (!expirationUpdates[key] || expirationUpdates[key] === '') {
-          acc.push(key);
+        } else {
+          setError('Statpack not found.');
         }
+      } catch (err) {
+        console.error(err);
+        setError('Error loading statpack.');
+      } finally {
+        setLoading(false);
       }
-      return acc;
-    }, []);
-  };
+    };
+    fetchPack();
+  }, [id, user]);
 
-  // 2. Build Steps (Memoized)
   const steps = useMemo<CheckoutStep[]>(() => {
-    if (!pack?.contents) return [];
-    const result: CheckoutStep[] = [];
-
-    // Compartments
+    if (!pack) return [];
+    const _steps: CheckoutStep[] = [];
     if (pack.compartments) {
       pack.compartments.forEach(comp => {
-        const compItems = pack.contents.filter(i => i.compartmentId === comp.id);
-        if (compItems.length > 0) {
-          result.push({
-            id: comp.id,
-            name: comp.name,
-            type: 'compartment',
-            parentPocket: comp.parentPocket,
-            isSealed: comp.isSealed,
-            sealNumber: comp.sealNumber,
-            expirationDate: comp.expirationDate,
-            items: compItems
-          });
-        }
-      });
-    }
-
-    // Loose
-    const looseItems = pack.contents.filter(i => !i.compartmentId);
-    if (looseItems.length > 0) {
-      const pockets = Array.from(new Set(looseItems.map(i => i.pocket || 'main')));
-      pockets.forEach(pocket => {
-        const pocketItems = looseItems.filter(i => (i.pocket || 'main') === pocket);
-        result.push({
-          id: `loose_${pocket}`,
-          name: `${pocket.replace('_', ' ')} (Loose Items)`,
-          type: 'loose_pocket',
-          parentPocket: pocket as StatpackPocket,
-          isSealed: false, 
-          items: pocketItems
+        const itemsInComp = pack.contents?.filter(i => i.compartmentId === comp.id) || [];
+        _steps.push({
+          id: comp.id,
+          name: comp.name,
+          type: 'compartment',
+          parentPocket: comp.parentPocket,
+          isSealed: comp.isSealed,
+          sealNumber: comp.sealNumber,
+          expirationDate: comp.expirationDate,
+          items: itemsInComp
         });
       });
     }
-    return result.sort((a, b) => a.parentPocket.localeCompare(b.parentPocket));
+    const pockets: StatpackPocket[] = ['main', 'front_aux', 'side_left', 'side_right'];
+    pockets.forEach(pocket => {
+       const looseItems = pack.contents?.filter(i => i.pocket === pocket && !i.compartmentId) || [];
+       if (looseItems.length > 0) {
+         let niceName = 'Main Compartment (Loose)';
+         if (pocket === 'front_aux') niceName = 'Front Aux Pocket';
+         if (pocket === 'side_left') niceName = 'Left Side Pocket';
+         if (pocket === 'side_right') niceName = 'Right Side Pocket';
+         _steps.push({
+            id: `loose_${pocket}`,
+            name: niceName,
+            type: 'loose_pocket',
+            parentPocket: pocket,
+            isSealed: false,
+            items: looseItems
+         });
+       }
+    });
+    return _steps;
   }, [pack]);
 
-  const currentStep = useMemo(() => steps.find(s => s.id === activeStepId), [steps, activeStepId]);
-  
-  const filteredSteps = useMemo(() => {
-    if (filterPocket === 'all') return steps;
-    return steps.filter(s => s.parentPocket === filterPocket);
-  }, [steps, filterPocket]);
+  // --- Handlers ---
 
-  const progressValue = (completedSteps.size / steps.length) * 100;
-
-  // 3. Logic: Discrepancies
-  const discrepancies = useMemo(() => {
-    if (!pack?.contents) return [];
-    return pack.contents
-      .map((item, idx) => {
-        const current = counts[`${item.itemId}_${idx}`] || 0;
-        const delta = item.requiredQuantity - current;
-        return { ...item, currentCount: current, delta, originalIndex: idx };
-      })
-      .filter(d => d.delta > 0);
-  }, [pack, counts]);
-
-  // 4. Handlers
-  const handleStartStep = (stepId: string) => {
-    setActiveStepId(stepId);
-    setView('inspecting');
-    setCurrentStepSealIntact(undefined);
-    window.scrollTo(0,0);
+  const handleSealToggle = (compId: string, valid: boolean) => {
+    setSealCheck(prev => ({ ...prev, [compId]: valid }));
   };
 
-  const handleFinishStep = () => {
-    if (currentStep) {
-      const missingKeys = getMissingExpirationKeysForStep(currentStep);
-      if (missingKeys.length > 0) {
-        setMissingExpirationKeys(prev => new Set([...prev, ...missingKeys]));
-        alert('Verification Required: You must manually enter expiration dates for all tracked items.');
-        return;
+  const handleVerifyToggle = (itemId: string) => {
+      // Logic: If it has an issue, clicking verify clears the issue and verifies it.
+      // If it's verified, clicking un-verifies it.
+      
+      if (issueReports[itemId]) {
+          setIssueReports(prev => {
+              const copy = { ...prev };
+              delete copy[itemId];
+              return copy;
+          });
+          setVerifiedItems(prev => ({ ...prev, [itemId]: true }));
+          return;
       }
-    }
-    if (activeStepId) {
-      setCompletedSteps(prev => new Set(prev).add(activeStepId));
-      setView('dashboard');
-      setActiveStepId(null);
-    }
-  };
 
-  const handleSealResponse = (isIntact: boolean) => {
-    setCurrentStepSealIntact(isIntact);
-    if (currentStep?.id) {
-      setSealStatusByStep(prev => ({ ...prev, [currentStep.id]: isIntact }));
-    }
-    if (isIntact) {
-      setCounts(prev => {
-        const next = { ...prev };
-        currentStep?.items.forEach(item => {
-           const globalIdx = pack?.contents.indexOf(item);
-           if (globalIdx !== undefined && globalIdx > -1) {
-             next[`${item.itemId}_${globalIdx}`] = item.requiredQuantity;
-           }
-        });
-        return next;
-      });
-      setTimeout(() => handleFinishStep(), 500);
-    }
-  };
-
-  const handleCountChange = (globalIndex: number, delta: number) => {
-    const key = `${pack?.contents[globalIndex].itemId}_${globalIndex}`;
-    setCounts(prev => {
-      const current = prev[key] || 0;
-      return { ...prev, [key]: Math.max(0, current + delta) };
-    });
-  };
-
-  const handleDateChange = (globalIndex: number, newValue: string) => {
-    const key = `${pack?.contents[globalIndex].itemId}_${globalIndex}`;
-    setExpirationUpdates(prev => ({
-      ...prev,
-      [key]: newValue
-    }));
-    setMissingExpirationKeys(prev => {
-      if (!prev.has(key) || !newValue) return prev;
-      const next = new Set(prev);
-      next.delete(key);
-      return next;
-    });
-  };
-
-  const handleCompleteCheckout = async () => {
-    if (!pack || !user) return;
-    const missingKeys = steps.flatMap(getMissingExpirationKeysForStep);
-    if (missingKeys.length > 0) {
-      setMissingExpirationKeys(new Set(missingKeys));
-      alert('Incomplete: Please verify expiration dates for all items or confirm seals.');
-      return;
-    }
-    setSubmitting(true);
-
-    try {
-      const batch = writeBatch(db); 
-      
-      const missingItemsLog: string[] = [];
-      let newStatus: Statpack['status'] = 'In Use';
-      
-      const finalContents = pack.contents.map((item, idx) => {
-        const counted = counts[`${item.itemId}_${idx}`] || 0;
-        const missingAmount = item.requiredQuantity - counted;
-        
-        // Handle Expiration Logic
-        const dateStr = expirationUpdates[`${item.itemId}_${idx}`];
-        const existingExpDate = item.expirationDate ?? item.itemDetails?.expirationDate;
-        const newExpDate = dateStr ? new Date(dateStr) : existingExpDate;
-
-        if (missingAmount > 0) {
-          missingItemsLog.push(`${item.itemDetails?.name || 'Item'} (Found: ${counted}/${item.requiredQuantity})`);
-          if (didRestock) {
-             const inventoryRef = doc(db, 'inventory', item.itemId);
-             batch.update(inventoryRef, { 
-                totalStockQuantity: increment(-missingAmount) 
-             });
+      setVerifiedItems(prev => {
+          const isCurrentlyVerified = !!prev[itemId];
+          if (isCurrentlyVerified) {
+              const copy = { ...prev };
+              delete copy[itemId];
+              return copy;
+          } else {
+              return { ...prev, [itemId]: true };
           }
-        }
-        
-        const finalQty = didRestock ? item.requiredQuantity : counted;
-        
-        return { 
-          ...item, 
-          currentQuantity: finalQty,
-          expirationDate: newExpDate 
-        };
+      });
+  };
+
+  const openIssueModal = (item: StatpackItem) => {
+      setCurrentIssueItem(item);
+      if (issueReports[item.itemId]) {
+          setTempIssueData(issueReports[item.itemId]);
+      } else {
+          setTempIssueData({
+              issueType: 'missing',
+              isReplaced: false,
+              replacedQuantity: item.requiredQuantity || 1,
+              newExpirationDate: '',
+              notes: ''
+          });
+      }
+      onIssueOpen();
+  };
+
+  const saveIssueReport = () => {
+      if (!currentIssueItem) return;
+      
+      const report: IssueReport = {
+          itemId: currentIssueItem.itemId,
+          itemName: currentIssueItem.itemDetails?.name || 'Unknown Item',
+          issueType: tempIssueData.issueType || 'missing',
+          isReplaced: tempIssueData.isReplaced || false,
+          replacedQuantity: tempIssueData.replacedQuantity || 1,
+          newExpirationDate: tempIssueData.newExpirationDate,
+          notes: tempIssueData.notes || ''
+      };
+
+      setIssueReports(prev => ({ ...prev, [currentIssueItem.itemId]: report }));
+      
+      // Un-verify if it was verified
+      setVerifiedItems(prev => {
+          const copy = { ...prev };
+          delete copy[currentIssueItem.itemId];
+          return copy;
       });
 
-      if (missingItemsLog.length > 0 && !didRestock) {
-        newStatus = 'Restock Needed';
-      }
+      onIssueChange();
+  };
 
-      const hasExpired = finalContents.some(i => {
-         if(!i.expirationDate) return false;
-         return i.expirationDate < new Date();
-      });
-      if(hasExpired && newStatus === 'In Use') newStatus = 'Expired Items';
+  const handleOxygenChange = (itemId: string, value: string) => {
+    setOxygenReadings(prev => ({ ...prev, [itemId]: value }));
+  };
 
+  const handleSealExpirationChange = (compId: string, val: string) => {
+    setSealExpirations(prev => ({ ...prev, [compId]: val }));
+  };
 
-      if (missingItemsLog.length > 0) {
-        const logRef = doc(collection(db, 'statpack_logs'));
-        batch.set(logRef, {
-          statpackId: pack.id,
-          action: 'inventory_adjustment',
-          userId: user.uid,
-          timestamp: serverTimestamp(),
-          details: didRestock ? 'Items missing at check-out, RESTOCKED.' : 'Items missing.',
-          missingItems: missingItemsLog,
-          notes: `Discrepancy in ${missingItemsLog.length} items.`
-        });
-      }
+  const handleItemExpirationChange = (itemId: string, val: string) => {
+    setItemExpirations(prev => ({ ...prev, [itemId]: val }));
+  };
 
+  // --- Navigation & Finish ---
+
+  const handleStepComplete = () => {
+    const step = steps[activeStepIndex];
+    setCompletedSteps(prev => new Set(prev).add(step.id));
+    
+    if (activeStepIndex < steps.length - 1) {
+      setActiveStepIndex(prev => prev + 1);
+    } else {
+      setView('review');
+    }
+  };
+
+  const jumpToPocket = (pocket: StatpackPocket | 'all') => {
+    if (pocket === 'all') return;
+    const firstStepIndex = steps.findIndex(s => s.parentPocket === pocket);
+    if (firstStepIndex !== -1) {
+        setActiveStepIndex(firstStepIndex);
+        setView('steps');
+        if (isMapOpen) onMapChange(); 
+    } else {
+        alert("No items configured in this pocket.");
+    }
+  };
+
+  const handleFinish = async () => {
+    if (!pack || !user) return;
+    setSubmitting(true);
+    try {
+      const batch = writeBatch(db);
       const packRef = doc(db, 'statpacks', pack.id);
+      
+      // 1. Update Compartment Expirations (Seals) & Sanitize Undefined
+      const updatedCompartments = pack.compartments?.map(c => {
+          let newExp = c.expirationDate;
+          if (sealExpirations[c.id]) {
+              newExp = new Date(sealExpirations[c.id]);
+          }
+          return { 
+              ...c, 
+              expirationDate: newExp || null, // Convert undefined to null
+              sealNumber: c.sealNumber || null 
+          };
+      }) || [];
+
+      // 2. Update Content Expirations & Sanitize Undefined
+      const updatedContents = pack.contents?.map(i => {
+          let newExp = i.expirationDate;
+          const issue = issueReports[i.itemId];
+          
+          if (issue && issue.isReplaced && issue.newExpirationDate) {
+              newExp = new Date(issue.newExpirationDate);
+          } else if (itemExpirations[i.itemId]) {
+              newExp = new Date(itemExpirations[i.itemId]);
+          }
+
+          return { 
+              ...i, 
+              expirationDate: newExp || null, // Convert undefined to null
+              variantName: i.variantName || null,
+              lotNumber: i.lotNumber || null
+          };
+      }) || [];
+
+      // 3. Determine Status
+      const unresolvedIssues = Object.values(issueReports).some(r => !r.isReplaced);
+      const status = unresolvedIssues ? 'Restock Needed' : 'In Use';
+
+      // 4. Safe User Name logic
+      const safeUserName = (user as any).fullName || user.displayName || user.email || 'Unknown User';
+
       batch.update(packRef, {
-        contents: finalContents,
-        status: newStatus,
         isCheckedOut: true,
         assignedToUserId: user.uid,
-        assignedToUserName: user.displayName || user.email,
+        assignedToUserName: safeUserName,
         checkedOutAt: serverTimestamp(),
-        currentEvent: eventName
+        status: status,
+        currentEvent: 'Shift Start',
+        compartments: updatedCompartments,
+        contents: updatedContents
       });
 
-      const checkoutLogRef = doc(collection(db, 'statpack_logs'));
-      batch.set(checkoutLogRef, {
+      // 5. Log Entry
+      const logRef = doc(collection(db, 'statpack_logs'));
+      batch.set(logRef, {
         statpackId: pack.id,
+        statpackName: pack.name,
         action: 'checkout',
         userId: user.uid,
+        userName: safeUserName,
         timestamp: serverTimestamp(),
-        notes: `Checkout complete. Event: ${eventName}.`
+        notes: notes,
+        issues: {
+          sealChecks: sealCheck,
+          oxygenReadings,
+          issueReports,
+          verifiedCount: Object.keys(verifiedItems).length
+        }
+      });
+
+      // 6. Update Inventory
+      Object.entries(oxygenReadings).forEach(([itemId, psiStr]) => {
+          const psi = parseInt(psiStr);
+          if (!isNaN(psi)) {
+             const inventoryRef = doc(db, 'inventory', itemId);
+             batch.update(inventoryRef, { 
+                 oxygenPsi: psi,
+                 updatedAt: serverTimestamp()
+             });
+          }
+      });
+
+      Object.values(issueReports).forEach(report => {
+          if (report.isReplaced && report.replacedQuantity > 0) {
+              const inventoryRef = doc(db, 'inventory', report.itemId);
+              batch.update(inventoryRef, {
+                  totalStockQuantity: increment(-report.replacedQuantity),
+                  updatedAt: serverTimestamp()
+              });
+          }
       });
 
       await batch.commit();
-      router.push(`/mobile?id=${pack.id}`);
-    } catch (e) {
-      console.error(e);
+      router.push(`/mobile?id=${pack.id}`); 
+    } catch (err) {
+      console.error(err);
+      alert('Failed to submit checkout. See console for details.');
       setSubmitting(false);
     }
   };
 
-  // ... Render ...
-  if (loading) return <div className="h-screen flex items-center justify-center"><Spinner size="lg"/></div>;
-  if (!pack) return <div className="p-6">Pack not found</div>;
+  if (loading) return <div className="h-screen flex items-center justify-center"><Spinner size="lg" /></div>;
+  if (error) return <div className="p-6 text-center text-red-500">{error}</div>;
+  if (!pack) return null;
 
-  if (view === 'review') {
-    const hasIssues = discrepancies.length > 0;
-    return (
-      <div className="min-h-screen bg-gray-50 dark:bg-zinc-950 p-4 pb-32">
-        <div className="max-w-md mx-auto space-y-6">
-          <Button variant="light" onPress={() => setView('dashboard')} startContent={<ArrowLeft size={16}/>}>Back to Dashboard</Button>
+  const currentStep = steps[activeStepIndex];
+  const progressVal = (completedSteps.size / steps.length) * 100;
+
+  const isStepComplete = () => {
+      if (currentStep.isSealed) {
+          if (sealCheck[currentStep.id] === undefined) return false;
+          if (sealCheck[currentStep.id] === true) return true;
+      }
+      
+      return currentStep.items.every(item => {
+          const isVerified = verifiedItems[item.itemId];
+          const hasIssue = !!issueReports[item.itemId];
+          const isOxygen = item.itemDetails?.isOxygen;
           
-          <div className="text-center space-y-2">
-            <ClipboardCheck size={64} className={`mx-auto ${hasIssues ? 'text-warning' : 'text-success'}`} />
-            <h2 className="text-2xl font-bold">Final Review</h2>
-          </div>
-          
-          {hasIssues && (
-             <Card className="border-danger border bg-danger-50 dark:bg-danger-900/20">
-              <CardBody>
-                <div className="flex items-center gap-2 text-danger font-bold mb-2">
-                  <AlertTriangle size={20}/><h3>Discrepancies</h3>
-                </div>
-                <ul className="list-disc pl-5 space-y-1 mb-4 text-sm">
-                  {discrepancies.map((d, i) => (
-                    <li key={i}><b>{d.itemDetails?.name}</b>: {d.currentCount}/{d.requiredQuantity}</li>
-                  ))}
-                </ul>
-                <div className="bg-white dark:bg-zinc-900 p-3 rounded-lg border border-danger-200">
-                   <p className="text-sm font-bold mb-2">Did you restock these?</p>
-                   <Button 
-                      color={didRestock ? "success" : "danger"} 
-                      variant={didRestock ? "solid" : "flat"} 
-                      className="w-full font-bold"
-                      startContent={didRestock ? <CheckCircle2/> : undefined}
-                      onPress={() => setDidRestock(!didRestock)}
-                   >
-                      {didRestock ? "YES - Items Replaced" : "NO - Bag Incomplete"}
-                   </Button>
-                </div>
-              </CardBody>
-            </Card>
-          )}
+          if (isOxygen && !hasIssue) {
+              return isVerified && oxygenReadings[item.itemId] && parseInt(oxygenReadings[item.itemId]) >= 0;
+          }
+          return isVerified || hasIssue;
+      });
+  };
 
-          <Input label="Event Name" value={eventName} onValueChange={setEventName} isRequired placeholder="e.g. Football Game"/>
-          <Textarea label="Notes" value={notes} onValueChange={setNotes} />
-          <Button size="lg" color="primary" className="w-full font-bold shadow-lg" isDisabled={!eventName} isLoading={submitting} onPress={handleCompleteCheckout}>Confirm & Check Out</Button>
-        </div>
-      </div>
-    );
-  }
-
-  if (view === 'inspecting' && currentStep) {
-    const showSealCheck = currentStep.isSealed && currentStepSealIntact === undefined;
+  // --- VIEW: INTRO ---
+  if (view === 'intro') {
     return (
-      <div className="min-h-screen bg-gray-50 dark:bg-zinc-950 pb-32">
-        <div className="sticky top-0 z-20 bg-white dark:bg-zinc-900 shadow-sm px-4 py-3 flex items-center justify-between">
-            <Button isIconOnly size="sm" variant="light" onPress={() => setView('dashboard')}><ArrowLeft/></Button>
-            <div className="text-center">
-              <h1 className="font-bold text-sm uppercase tracking-wider">{currentStep.name}</h1>
-              <span className="text-xs text-gray-500 uppercase">{currentStep.type === 'compartment' ? 'Compartment' : 'Pocket'}</span>
+      <div className="min-h-screen bg-gray-50 dark:bg-slate-900 pb-20">
+         <div className="bg-white dark:bg-slate-800 px-4 py-3 sticky top-0 z-20 border-b border-gray-200 dark:border-slate-700 shadow-sm flex items-center gap-3">
+            <Button isIconOnly variant="light" onPress={() => router.back()} size="sm">
+               <ArrowLeft size={20} />
+            </Button>
+            <div className="flex flex-col">
+                <h1 className="text-sm font-bold leading-tight">{pack.name} Checkout</h1>
+                <p className="text-[10px] text-gray-500">Tap pocket or start below</p>
             </div>
-            <div className="w-8"></div>
-        </div>
-        <div className="p-4 max-w-lg mx-auto space-y-6">
-          {showSealCheck && (
-             <div className="text-center py-10 animate-fade-in">
-                <ShieldCheck size={80} className="mx-auto text-primary mb-6" />
-                <h2 className="text-2xl font-bold mb-2">Check Seal</h2>
-                <div className="bg-gray-200 dark:bg-zinc-800 px-6 py-2 rounded-full inline-block mb-4">
-                   <span className="font-mono text-xl tracking-widest font-bold">{currentStep.sealNumber || '----'}</span>
-                </div>
-                <p className="text-gray-500 mb-8">Is the seal intact?</p>
-                <div className="grid gap-4">
-                   <Button color="success" size="lg" className="h-14 font-bold text-white shadow-lg" onPress={() => handleSealResponse(true)}>YES - Seal Intact</Button>
-                   <Button color="danger" variant="flat" size="lg" className="h-14" onPress={() => handleSealResponse(false)}>NO - Seal Broken / Missing</Button>
-                </div>
-             </div>
-          )}
-          {!showSealCheck && (
-             <div className="animate-fade-in">
-                {currentStep.isSealed && currentStepSealIntact === false && (
-                  <div className="bg-warning-50 text-warning-700 p-3 rounded-lg mb-6 flex items-center gap-2 text-sm">
-                     <AlertTriangle size={18} /><span>Seal broken. Perform manual count.</span>
-                  </div>
-                )}
-                <div className="space-y-4">
-                   {currentStep.items.map((item) => {
-                      const globalIdx = pack.contents.indexOf(item);
-                      const key = `${item.itemId}_${globalIdx}`;
-                      const count = counts[key] || 0;
-                      const req = item.requiredQuantity;
-                      const isLow = count < req;
-                      
-                      const tracksExp = requiresExpirationCheck(item);
-                      
-                      // Active Logic
-                      const enteredDate = expirationUpdates[key];
-                      const expStatus = getExpirationStatus(enteredDate); 
-                      const isExpMissing = missingExpirationKeys.has(key);
-                      const variantLabel = getVariantLabel(item);
-                      
-                      return (
-                        <Card 
-                            key={key} 
-                            className={`border transition-all ${isExpMissing ? 'border-danger ring-1 ring-danger' : isLow ? 'border-danger-200' : 'border-transparent'}`}
-                        >
-                          <CardBody className="p-3">
-                             <div className="flex flex-row items-center justify-between mb-2">
-                                <div className="flex-grow">
-                                  <div className="font-semibold text-sm flex items-center gap-2">
-                                    {item.itemDetails?.name || 'Unknown Item'}
-                                  </div>
-                                  <div className="text-xs text-gray-500">Par Level: {req}</div>
-                                  {variantLabel && (
-                                    <div className="text-[10px] text-gray-400">
-                                      Variation: {variantLabel}
-                                    </div>
-                                  )}
-                                </div>
-                                <div className="flex items-center gap-3 bg-gray-100 dark:bg-zinc-800 rounded-lg p-1">
-                                  <Button isIconOnly size="sm" variant="light" onPress={() => handleCountChange(globalIdx, -1)}><Minus size={16}/></Button>
-                                  <span className={`font-mono font-bold w-6 text-center ${isLow ? 'text-danger' : ''}`}>{count}</span>
-                                  <Button isIconOnly size="sm" variant="light" onPress={() => handleCountChange(globalIdx, 1)}><Plus size={16}/></Button>
-                                </div>
-                             </div>
+         </div>
 
-                             {/* --- EXPIRATION INPUT (BLIND CHECK) --- */}
-                             {tracksExp && (
-                                <div className="mt-3 pt-3 border-t border-dashed border-gray-200 dark:border-zinc-700">
-                                   <div className="flex flex-col gap-1 mb-2">
-                                      <div className="flex items-center gap-2 text-xs font-semibold text-gray-600">
-                                        <CalendarDays size={14} className="text-primary" />
-                                        <span>Expiration Check Required</span>
-                                      </div>
-                                      {/* Helper for multiple items */}
-                                      {item.requiredQuantity > 1 && (
-                                        <div className="flex items-center gap-1 text-[10px] text-gray-400">
-                                            <Layers size={10} />
-                                            <span>Multiple items? Enter the <b>earliest</b> date found.</span>
-                                        </div>
-                                      )}
-                                   </div>
-
-                                   <div className="flex gap-2 items-center">
-                                      <Input 
-                                        type="date" 
-                                        size="sm" 
-                                        aria-label="Expiration Date"
-                                        placeholder="YYYY-MM-DD"
-                                        value={enteredDate || ''}
-                                        onValueChange={(val) => handleDateChange(globalIdx, val)}
-                                        color={isExpMissing ? "danger" : "default"}
-                                        description={isExpMissing ? "You must check the label" : undefined}
-                                        classNames={{
-                                            input: "text-right font-mono" // Helps alignment
-                                        }}
-                                      />
-                                      {enteredDate && (
-                                        <Chip size="sm" color={expStatus.color} variant="flat" className="h-10 px-2 min-w-fit font-bold">
-                                           {expStatus.label}
-                                        </Chip>
-                                      )}
-                                   </div>
-                                </div>
-                             )}
-                          </CardBody>
-                        </Card>
-                      );
-                   })}
-                </div>
-                <Button size="lg" color="primary" className="w-full mt-8 font-bold shadow-lg" onPress={handleFinishStep}>Finish Section</Button>
-             </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  // Dashboard View
-  return (
-    <div className="min-h-screen bg-gray-50 dark:bg-zinc-950 pb-32">
-      <div className="sticky top-0 z-20 bg-white dark:bg-zinc-900 shadow-sm">
-        <div className="px-4 py-3 flex items-center justify-between">
-          <Button isIconOnly size="sm" variant="light" onPress={() => router.back()}><ArrowLeft/></Button>
-          <div className="text-center">
-            <h1 className="font-bold text-sm uppercase tracking-wider">{pack.name}</h1>
-            <span className="text-xs text-gray-500">Checkout Dashboard</span>
-          </div>
-          <div className="w-8"></div>
-        </div>
-        <Progress size="sm" value={progressValue} color={progressValue === 100 ? "success" : "primary"} className="w-full"/>
-      </div>
-      <div className="max-w-lg mx-auto">
-        <div className="bg-white dark:bg-zinc-900 border-b border-gray-100 dark:border-zinc-800">
-           <BagVisualizer statpack={pack} selectedPocket={filterPocket} onSelectPocket={setFilterPocket} />
-        </div>
-        <div className="px-4 pt-4 flex items-center gap-2">
-           <ListFilter size={16} className="text-gray-500" />
-           <span className="text-sm font-semibold text-gray-600 uppercase">
-             {filterPocket === 'all' ? 'All Sections' : `${filterPocket.replace('_', ' ')} Sections`}
-           </span>
-        </div>
-        <div className="p-4 grid gap-3">
-           {filteredSteps.map(step => {
-              const isComplete = completedSteps.has(step.id);
-              return (
-                <Card 
-                  key={step.id} 
-                  isPressable 
-                  onPress={() => handleStartStep(step.id)}
-                  className={`border-l-4 ${isComplete ? 'border-l-success' : 'border-l-primary'}`}
-                >
-                   <CardBody className="flex flex-row items-center justify-between p-4">
-                      <div className="flex items-center gap-3">
-                         {isComplete 
-                            ? <CheckCircle2 className="text-success" size={22} />
-                            : <div className="w-5 h-5 rounded-full border-2 border-gray-300" />
-                         }
-                         <div>
-                            <div className="font-bold">{step.name}</div>
-                            <div className="text-xs text-gray-500 flex items-center gap-2">
-                               {step.isSealed ? <ShieldCheck size={12}/> : <Package size={12}/>}
-                               {step.items.length} Items
-                            </div>
-                         </div>
+         <div className="p-4 max-w-lg mx-auto">
+            <Card className="mb-6 border-none shadow-none bg-transparent overflow-visible">
+               <CardBody className="p-0 overflow-visible">
+                  <div className="relative pt-12 flex justify-center">
+                      <div className="absolute top-0 z-30 animate-bounce left-1/2 transform -translate-x-1/2">
+                          <div className="bg-blue-600 text-white text-xs px-4 py-2 rounded-full shadow-lg flex items-center gap-2 font-semibold ring-2 ring-white dark:ring-slate-800 whitespace-nowrap">
+                             <Hand size={14} />
+                             <span>Tap a pocket to jump!</span>
+                          </div>
                       </div>
-                      {!isComplete && <ArrowRight size={16} className="text-gray-400" />}
-                   </CardBody>
-                </Card>
-              );
-           })}
-           {filteredSteps.length === 0 && <div className="text-center py-8 text-gray-400 text-sm">No checkout steps found for this pocket.</div>}
-        </div>
-      </div>
-      <div className="fixed bottom-0 left-0 right-0 p-4 bg-white/90 backdrop-blur-sm border-t dark:bg-zinc-900/90 dark:border-zinc-800 z-30">
-         <div className="max-w-lg mx-auto">
-            <Button 
-               size="lg" 
-               color={completedSteps.size === steps.length ? "success" : "primary"}
-               className="w-full font-bold shadow-lg"
-               onPress={() => setView('review')}
-            >
-               {completedSteps.size === steps.length ? "Finish Checkout" : `Review Progress (${completedSteps.size}/${steps.length})`}
+                      <BagVisualizer statpack={pack} selectedPocket={'all'} onSelectPocket={jumpToPocket} />
+                  </div>
+               </CardBody>
+            </Card>
+
+            <Button size="lg" color="primary" className="w-full font-bold shadow-lg" onPress={() => setView('steps')}>
+              Start Linear Checkout
             </Button>
          </div>
       </div>
-    </div>
-  );
+    );
+  }
+
+  // --- VIEW: STEPS ---
+  if (view === 'steps') {
+    const isSealIntact = currentStep.isSealed && sealCheck[currentStep.id] === true;
+
+    return (
+      <div className="min-h-screen bg-gray-50 dark:bg-slate-900 flex flex-col">
+        <div className="bg-white dark:bg-slate-800 px-4 py-2 sticky top-0 z-20 border-b border-gray-200 dark:border-slate-700 shadow-sm flex items-center justify-between">
+           <div className="flex items-center gap-2 overflow-hidden">
+              <Button isIconOnly size="sm" variant="light" onPress={() => setView('intro')}><ArrowLeft size={18}/></Button>
+              <div className="flex flex-col truncate">
+                  <span className="font-bold text-sm">Step {activeStepIndex + 1}/{steps.length}</span>
+                  <span className="text-[10px] text-gray-500 truncate">{currentStep.name}</span>
+              </div>
+           </div>
+           <div className="flex gap-2 shrink-0">
+               <Button size="sm" variant="flat" color="secondary" onPress={onMapOpen} startContent={<MapIcon size={14}/>}>Map</Button>
+               <Button size="sm" variant="flat" onPress={() => setView('review')}>Review</Button>
+           </div>
+        </div>
+        
+        <Progress size="sm" value={progressVal} color="success" aria-label="Progress" className="rounded-none"/>
+
+        <div className="flex-1 overflow-y-auto p-4 max-w-lg mx-auto w-full pb-32">
+           <div className="flex justify-between items-start mb-4">
+               <div>
+                    <h2 className="text-xl font-bold mb-1">{currentStep.name}</h2>
+                    <p className="text-gray-500 text-sm flex items-center gap-2">
+                        {currentStep.type === 'compartment' ? <Layers size={14}/> : <Package size={14}/>}
+                        {currentStep.type === 'compartment' ? 'Sealed Compartment' : 'Loose Items'}
+                    </p>
+               </div>
+               {currentStep.parentPocket && (
+                   <Chip size="sm" variant="flat" color="primary" className="capitalize">
+                       {currentStep.parentPocket.replace('_', ' ')}
+                   </Chip>
+               )}
+           </div>
+
+           {/* SEAL CHECK */}
+           {currentStep.isSealed && (
+              <Card className={`mb-6 border-l-4 ${sealCheck[currentStep.id] === true ? 'border-l-green-500 bg-green-100 dark:bg-green-900/20' : 'border-l-amber-500'}`}>
+                 <CardBody className="flex flex-col gap-4">
+                    <div className="flex flex-row items-center justify-between">
+                        <div>
+                           <div className="font-bold text-foreground flex items-center gap-2">
+                              {sealCheck[currentStep.id] === true ? <Lock className="text-green-600"/> : <Unlock className="text-amber-600"/>}
+                              Seal Status
+                           </div>
+                           <div className="text-xs text-gray-500">Exp: {currentStep.sealNumber || 'N/A'}</div>
+                        </div>
+                        <div className="flex gap-2">
+                           <Button size="sm" color={sealCheck[currentStep.id] === false ? "danger" : "default"} variant={sealCheck[currentStep.id] === false ? "solid" : "bordered"} onPress={() => handleSealToggle(currentStep.id, false)}>Broken</Button>
+                           <Button size="sm" color={sealCheck[currentStep.id] === true ? "success" : "default"} variant={sealCheck[currentStep.id] === true ? "solid" : "bordered"} onPress={() => handleSealToggle(currentStep.id, true)}>Intact</Button>
+                        </div>
+                    </div>
+                    {sealCheck[currentStep.id] === true && (
+                        <p className="text-xs text-green-700 font-semibold flex items-center gap-1">
+                            <CheckCircle2 size={12}/> Contents Verified via Seal
+                        </p>
+                    )}
+                    
+                    <Divider />
+                    <div>
+                        <div className="text-xs font-semibold text-gray-500 mb-1 flex items-center gap-1"><CalendarDays size={12} /> Seal Expiration</div>
+                        <Input type="date" size="sm" aria-label="Seal Expiration" value={sealExpirations[currentStep.id] || ''} onValueChange={(val) => handleSealExpirationChange(currentStep.id, val)} />
+                    </div>
+                 </CardBody>
+              </Card>
+           )}
+
+           {/* ITEMS LIST */}
+           {(!currentStep.isSealed || !isSealIntact) ? (
+               <div className="space-y-3">
+                  {currentStep.items.map(item => {
+                     const hasIssue = !!issueReports[item.itemId];
+                     const isVerified = verifiedItems[item.itemId] && !hasIssue;
+                     const isOxygen = item.itemDetails?.isOxygen;
+                     const tracksExpiration = item.itemDetails?.tracksExpiration;
+
+                     return (
+                        <div 
+                            key={item.itemId} 
+                            onClick={() => handleVerifyToggle(item.itemId)}
+                            className="cursor-pointer"
+                        >
+                            <Card 
+                                className={`border-2 transition-all relative group ${
+                                    hasIssue ? 'border-amber-500 bg-amber-50 dark:bg-amber-900/10' : 
+                                    isVerified ? 'border-green-500 bg-green-50 dark:bg-green-900/10' : 
+                                    'border-gray-200 dark:border-slate-700 hover:border-gray-300'
+                                }`}
+                            >
+                               <CardBody className="flex flex-row items-start justify-between p-3 gap-3">
+                                  <div className="flex-1">
+                                     <div className="font-bold text-sm flex items-center gap-2">
+                                        {item.itemDetails?.name}
+                                        {isOxygen && <Chip size="sm" color="primary" variant="flat" startContent={<Wind size={10}/>} className="h-5 text-[10px]">O2</Chip>}
+                                     </div>
+                                     {item.variantName && <div className="text-[10px] text-gray-400">Var: {item.variantName}</div>}
+                                     <div className="text-xs text-gray-500 mt-1">Qty: {item.requiredQuantity} {item.itemDetails?.unit}</div>
+
+                                     {hasIssue && (
+                                         <div className="mt-2 text-xs text-amber-700 bg-amber-100 dark:bg-amber-900/30 p-1.5 rounded-lg inline-block border border-amber-200 dark:border-amber-800">
+                                             <div className="font-bold flex items-center gap-1 uppercase">
+                                                 <AlertTriangle size={10}/> {issueReports[item.itemId].issueType}
+                                             </div>
+                                             {issueReports[item.itemId].isReplaced && <div className="mt-0.5 ml-3.5">Replaced (+{issueReports[item.itemId].replacedQuantity})</div>}
+                                         </div>
+                                     )}
+
+                                     {/* Input wrapper with w-fit */}
+                                     {!hasIssue && tracksExpiration && (
+                                        <div className="mt-3 w-fit" onClick={(e) => e.stopPropagation()}>
+                                            <div className="text-[10px] uppercase text-gray-400 font-bold mb-1 flex items-center gap-1"><ThermometerSnowflake size={10} /> Earliest Expiration</div>
+                                            <Input type="date" size="sm" variant="faded" aria-label="Item Expiration" value={itemExpirations[item.itemId] || ''} onValueChange={(val) => handleItemExpirationChange(item.itemId, val)} className="max-w-[160px]" />
+                                        </div>
+                                     )}
+
+                                     {/* Input wrapper with w-fit */}
+                                     {isOxygen && !hasIssue && (
+                                        <div className="mt-3 w-fit max-w-[150px]" onClick={(e) => e.stopPropagation()}>
+                                            <div className="text-[10px] uppercase text-gray-400 font-bold mb-1">Current Level</div>
+                                            <Input type="number" size="sm" label="PSI" placeholder="0" variant="faded" startContent={<Wind size={14} className="text-gray-400"/>} value={oxygenReadings[item.itemId] || ''} onValueChange={(val) => handleOxygenChange(item.itemId, val)} color={parseInt(oxygenReadings[item.itemId]) < 500 ? "danger" : parseInt(oxygenReadings[item.itemId]) < 1000 ? "warning" : "success"} isRequired />
+                                        </div>
+                                     )}
+                                  </div>
+
+                                  <div className="flex flex-col items-center gap-3">
+                                     <div className={`p-1.5 rounded-full transition-colors ${isVerified ? 'text-green-600 bg-green-200 dark:bg-green-800' : 'text-gray-300 dark:text-gray-600'}`}>
+                                        <CheckCircle2 size={28} />
+                                     </div>
+                                     
+                                     <div onClick={(e) => e.stopPropagation()}>
+                                        <Button 
+                                            isIconOnly size="sm" 
+                                            color={hasIssue ? "warning" : "default"} 
+                                            variant={hasIssue ? "solid" : "light"} 
+                                            onPress={() => openIssueModal(item)}
+                                            className="opacity-60 hover:opacity-100"
+                                        >
+                                            <AlertTriangle size={18} />
+                                        </Button>
+                                     </div>
+                                  </div>
+                               </CardBody>
+                            </Card>
+                        </div>
+                     );
+                  })}
+               </div>
+           ) : (
+               <div className="flex flex-col items-center justify-center py-10 text-gray-400 bg-gray-100/50 dark:bg-slate-800/50 rounded-xl border-2 border-dashed border-gray-200 dark:border-slate-700">
+                   <Lock size={48} className="mb-2 opacity-50" />
+                   <p className="font-semibold">Compartment Sealed</p>
+                   <p className="text-xs">Individual item verification skipped.</p>
+               </div>
+           )}
+        </div>
+
+        {/* BOTTOM NAV */}
+        <div className="p-4 bg-white dark:bg-slate-800 border-t border-gray-200 dark:border-slate-700 fixed bottom-0 left-0 right-0 z-20 shadow-xl">
+            <div className="max-w-lg mx-auto flex gap-3">
+               <Button fullWidth variant="bordered" isDisabled={activeStepIndex === 0} onPress={() => setActiveStepIndex(prev => prev - 1)}>Back</Button>
+               <Button fullWidth color="primary" onPress={handleStepComplete} isDisabled={!isStepComplete()}>
+                 {activeStepIndex === steps.length - 1 ? 'Review' : 'Next Step'}
+               </Button>
+            </div>
+        </div>
+
+        {/* MAP MODAL */}
+        <Modal isOpen={isMapOpen} onOpenChange={onMapChange} placement="center" size="full" classNames={{ base: "m-0 rounded-none h-full", header: "border-b border-gray-200 dark:border-slate-700", body: "p-4 bg-gray-50 dark:bg-slate-900" }}>
+            <ModalContent>
+                {(onClose) => (
+                    <>
+                        <ModalHeader className="flex flex-col gap-1"><h3>Jump to Pocket</h3></ModalHeader>
+                        <ModalBody className="flex items-center justify-center">
+                             <BagVisualizer statpack={pack} selectedPocket={'all'} onSelectPocket={jumpToPocket} />
+                        </ModalBody>
+                        <ModalFooter><Button color="danger" variant="light" onPress={onClose}>Close Map</Button></ModalFooter>
+                    </>
+                )}
+            </ModalContent>
+        </Modal>
+
+        {/* ISSUE REPORT MODAL */}
+        <Modal isOpen={isIssueOpen} onOpenChange={onIssueChange} placement="center" size="sm" backdrop="blur">
+            <ModalContent>
+                {(onClose) => (
+                    <>
+                        <ModalHeader>Report Issue: {currentIssueItem?.itemDetails?.name}</ModalHeader>
+                        <ModalBody>
+                            <p className="text-sm text-gray-500 mb-2">What is wrong with this item?</p>
+                            <RadioGroup 
+                                value={tempIssueData.issueType} 
+                                onValueChange={(val) => setTempIssueData(prev => ({...prev, issueType: val as any}))}
+                            >
+                                <Radio value="missing" description="Item is not in the bag">Missing / Not Found</Radio>
+                                <Radio value="expired" description="Expiration date passed">Expired</Radio>
+                                <Radio value="damaged" description="Broken or open seal">Damaged / Compromised</Radio>
+                                <Radio value="other">Other Issue</Radio>
+                            </RadioGroup>
+
+                            <Divider className="my-2"/>
+
+                            <div className="flex items-center justify-between">
+                                <div className="flex flex-col">
+                                    <span className="font-bold text-sm">Did you replace it?</span>
+                                    <span className="text-xs text-gray-500">Available from inventory</span>
+                                </div>
+                                <Switch 
+                                    isSelected={tempIssueData.isReplaced} 
+                                    onValueChange={(val) => setTempIssueData(prev => ({...prev, isReplaced: val}))}
+                                />
+                            </div>
+
+                            {tempIssueData.isReplaced && (
+                                <div className="mt-2 bg-blue-50 dark:bg-blue-900/20 p-3 rounded-lg border border-blue-100 dark:border-blue-800 space-y-3">
+                                    <div>
+                                        <Input 
+                                            type="number" 
+                                            label="Quantity Replaced" 
+                                            placeholder="1" 
+                                            size="sm"
+                                            variant="bordered"
+                                            value={tempIssueData.replacedQuantity?.toString()}
+                                            onValueChange={(v) => setTempIssueData(prev => ({...prev, replacedQuantity: parseInt(v) || 0}))}
+                                        />
+                                        <p className="text-[10px] text-blue-600 mt-1 flex items-center gap-1"><AlertOctagon size={10}/> Stock will be automatically deducted.</p>
+                                    </div>
+
+                                    {currentIssueItem?.itemDetails?.tracksExpiration && (
+                                        <Input 
+                                            type="date"
+                                            label="New Item Expiration"
+                                            size="sm"
+                                            variant="bordered"
+                                            color="primary"
+                                            value={tempIssueData.newExpirationDate}
+                                            onValueChange={(v) => setTempIssueData(prev => ({...prev, newExpirationDate: v}))}
+                                            isRequired
+                                        />
+                                    )}
+                                </div>
+                            )}
+
+                            <Textarea 
+                                label="Notes" 
+                                placeholder="Details..." 
+                                minRows={2}
+                                value={tempIssueData.notes} 
+                                onValueChange={(v) => setTempIssueData(prev => ({...prev, notes: v}))} 
+                            />
+                        </ModalBody>
+                        <ModalFooter>
+                            <Button variant="light" color="danger" onPress={onClose}>Cancel</Button>
+                            <Button color="warning" onPress={saveIssueReport} className="font-bold shadow-md">Log Issue</Button>
+                        </ModalFooter>
+                    </>
+                )}
+            </ModalContent>
+        </Modal>
+
+      </div>
+    );
+  }
+
+  // --- VIEW: REVIEW ---
+  if (view === 'review') {
+    const issueCount = Object.keys(issueReports).length;
+    const unresolved = Object.values(issueReports).filter(r => !r.isReplaced).length;
+    
+    return (
+       <div className="min-h-screen bg-gray-50 dark:bg-slate-900 p-6 pb-24">
+          <div className="max-w-lg mx-auto">
+             <Button isIconOnly variant="light" onPress={() => setView('steps')} className="mb-4"><ArrowLeft /></Button>
+             <h1 className="text-2xl font-bold mb-6">Review Checkout</h1>
+             
+             {issueCount > 0 ? (
+                <div className={`p-4 rounded-xl mb-6 border ${unresolved > 0 ? 'bg-red-50 border-red-200 text-red-800' : 'bg-amber-50 border-amber-200 text-amber-800'}`}>
+                   <div className="flex items-center gap-2 font-bold mb-2">
+                      <AlertTriangle />
+                      <span>{issueCount} Issues Reported</span>
+                   </div>
+                   <div className="text-sm space-y-2">
+                       {Object.values(issueReports).map(issue => (
+                           <div key={issue.itemId} className="flex justify-between border-b border-black/5 pb-1">
+                               <span>{issue.itemName} ({issue.issueType})</span>
+                               <span className={`font-bold ${issue.isReplaced ? 'text-green-600' : 'text-red-600'}`}>{issue.isReplaced ? 'Replaced' : 'Not Replaced'}</span>
+                           </div>
+                       ))}
+                   </div>
+                   {unresolved > 0 ? <p className="text-xs mt-3 font-bold">Pack Status: Restock Needed</p> : <p className="text-xs mt-3 font-bold text-green-700">All issues resolved. Pack Status: In Use</p>}
+                </div>
+             ) : (
+                <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 p-4 rounded-xl mb-6">
+                   <div className="flex items-center gap-2 text-green-600 font-bold mb-2"><CheckCircle2 /><span>All Items Verified</span></div>
+                   <p className="text-sm text-gray-600 dark:text-gray-300">Pack is ready for service.</p>
+                </div>
+             )}
+
+             <Textarea label="Shift Notes" placeholder="Any damage or comments?" value={notes} onValueChange={setNotes} className="mb-6" />
+
+             <Button 
+                size="lg" 
+                color={unresolved > 0 ? "warning" : "success"} 
+                className="w-full font-bold shadow-lg"
+                onPress={handleFinish}
+                isLoading={submitting}
+             >
+                {unresolved > 0 ? 'Submit Report (Needs Restock)' : 'Complete Checkout'}
+             </Button>
+          </div>
+       </div>
+    );
+  }
+
+  return null;
 }

@@ -2,9 +2,10 @@
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
-  Card, CardBody, CardHeader, Tab, Tabs, Chip, Progress, Button, Spinner, Divider, useDisclosure, Input 
+  Card, CardBody, Chip, Progress, Button, Spinner, useDisclosure, Input, 
+  Select, SelectItem
 } from '@heroui/react';
-import { Boxes, Plus, Search } from 'lucide-react';
+import { Boxes, Plus, Search, Wind, PackageOpen, Filter, X } from 'lucide-react';
 
 // Firebase Imports
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
@@ -24,7 +25,11 @@ import { auth, db } from '@/firebase';
 import InventoryModal from '@/app/components/additemmodal';
 
 // Types
-import { InventoryItem, ItemCategory, User } from '@/app/types';
+import { InventoryItem, ItemCategory, LocationType, User } from '@/app/types';
+
+// Constants for Filters
+const CATEGORIES: ItemCategory[] = ['Airway', 'Trauma', 'Vitals', 'Meds', 'PPE', 'Splinting', 'Hygiene', 'Other'];
+const LOCATIONS: LocationType[] = ['HQ', 'CPR Closet', 'Shed'];
 
 export default function InventoryPage() {
   const router = useRouter();
@@ -35,19 +40,20 @@ export default function InventoryPage() {
   const { isOpen, onOpen, onOpenChange } = useDisclosure();
   
   const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
   const [userRole, setUserRole] = useState<User['role'] | null>(null);
   const isAdmin = userRole === 'admin';
 
-  // --- EFFECT 1: Handle Authentication ---
+  // --- SEARCH & FILTER STATE ---
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showFilters, setShowFilters] = useState(false);
+  const [filterCategory, setFilterCategory] = useState<string>('all');
+  const [filterLocation, setFilterLocation] = useState<string>('all');
+
+  // --- AUTH & ROLE LOGIC ---
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      if (currentUser) {
-        setUser(currentUser);
-      } else {
-        // If not logged in, redirect
-        router.push('/login');
-      }
+      if (currentUser) setUser(currentUser);
+      else router.push('/login');
     });
     return () => unsubscribe();
   }, [router]);
@@ -55,90 +61,60 @@ export default function InventoryPage() {
   useEffect(() => {
     if (!user) return;
     const userRef = doc(db, 'users', user.uid);
-    const unsubscribe = onSnapshot(
-      userRef,
-      (snapshot) => {
+    const unsubscribe = onSnapshot(userRef, (snapshot) => {
         const data = snapshot.data() as User | undefined;
         setUserRole(data?.role ?? 'member');
-      },
-      (error) => {
-        console.error('Error fetching user role:', error);
-        setUserRole('member');
-      }
-    );
+    });
     return () => unsubscribe();
   }, [user]);
 
-  // --- EFFECT 2: Handle Data Fetching (Only runs when 'user' is ready) ---
+  // --- DATA FETCHING ---
   useEffect(() => {
-    // STOP: Do not run this code if user is not logged in yet
     if (!user) return;
-
     const q = query(collection(db, 'inventory'), orderBy('name'));
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const items = snapshot.docs.map((doc) => {
         const data = doc.data();
-        const getDate = (ts: unknown) => (ts instanceof Timestamp ? ts.toDate() : new Date());
-        const expirationDate = data.expirationDate ? getDate(data.expirationDate) : undefined;
-        const tracksExpiration = data.tracksExpiration ?? !!expirationDate;
-        const variants = Array.isArray(data.variants) ? data.variants : [];
-        const hasVariants = data.hasVariants ?? variants.length > 0;
-
+        const getDate = (ts: unknown) => (ts instanceof Timestamp ? ts.toDate() : undefined);
+        
         return {
           id: doc.id,
-          name: data.name,
-          category: data.category,
-          description: data.description,
-          
+          ...data,
+          // Sanitization
           location: data.location || 'HQ',
-          room: data.room || undefined,
-          shelf: data.shelf || 'General Storage',
-
-          totalStockQuantity: data.totalStockQuantity,
-          unit: data.unit,
-          hasVariants,
-          variants,
-          reorderThreshold: data.reorderThreshold,
-          isDisposable: data.isDisposable,
+          totalStockQuantity: data.totalStockQuantity ?? 0,
+          unopenedQuantity: data.unopenedQuantity ?? 0,
+          openedQuantity: data.openedQuantity ?? 0,
+          quantityPerUnit: data.quantityPerUnit ?? 1,
+          oxygenPsi: data.oxygenPsi ?? 0,
+          maxOxygenPsi: data.maxOxygenPsi ?? 2000,
           
-          tracksExpiration,
-          expirationDate,
-
-          createdAt: getDate(data.createdAt),
-          updatedAt: getDate(data.updatedAt),
+          expirationDate: getDate(data.expirationDate),
+          openedAt: getDate(data.openedAt),
+          createdAt: getDate(data.createdAt) || new Date(),
+          updatedAt: getDate(data.updatedAt) || new Date(),
         } as InventoryItem;
       });
 
       setInventory(items);
       setLoading(false);
-    }, (error) => {
-      console.error("Inventory listener error:", error);
-    });
+    }, (error) => console.error("Inventory listener error:", error));
 
     return () => unsubscribe();
-  }, [user]); // <--- This dependency ensures we wait for 'user'
+  }, [user]);
 
   // --- CRUD HANDLERS ---
-
   const handleAddItem = async (newItemData: Partial<InventoryItem>) => {
     try {
-      const hasVariants = newItemData.hasVariants ?? false;
+      const cleanData = JSON.parse(JSON.stringify(newItemData)); 
       await addDoc(collection(db, 'inventory'), {
-        ...newItemData,
-        // FIX: Firestore cannot save 'undefined'. 
-        // We use '?? null' to ensure if it's undefined, it becomes null.
-        expirationDate: newItemData.expirationDate ?? null,
-        room: newItemData.room ?? null, 
-        tracksExpiration: newItemData.tracksExpiration ?? false,
-        hasVariants,
-        variants: hasVariants ? newItemData.variants ?? [] : [],
-        
+        ...cleanData,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
     } catch (error) {
-      console.error("Error adding document: ", error);
+      console.error("Error adding item: ", error);
       alert("Failed to add item.");
     }
   };
@@ -146,41 +122,21 @@ export default function InventoryPage() {
   const handleUpdateItem = async (id: string, updatedData: Partial<InventoryItem>) => {
     try {
       const itemRef = doc(db, 'inventory', id);
-      const hasVariants = updatedData.hasVariants ?? false;
-      const payload: Record<string, unknown> = {
-        ...updatedData,
-        expirationDate: updatedData.expirationDate ?? null,
-        room: updatedData.room ?? null,
-        hasVariants,
-        variants: hasVariants ? updatedData.variants ?? [] : [],
+      const cleanData = JSON.parse(JSON.stringify(updatedData));
+      await updateDoc(itemRef, {
+        ...cleanData,
         updatedAt: serverTimestamp(),
-      };
-
-      Object.keys(payload).forEach((key) => {
-        if (payload[key] === undefined) {
-          delete payload[key];
-        }
       });
-
-      await updateDoc(itemRef, payload);
     } catch (error) {
-      console.error("Error updating document: ", error);
+      console.error("Error updating item: ", error);
       alert("Failed to update item.");
     }
   };
 
-  const openAddModal = () => {
-    setSelectedItem(null);
-    onOpen();
-  };
+  const openAddModal = () => { setSelectedItem(null); onOpen(); };
+  const openEditModal = (item: InventoryItem) => { setSelectedItem(item); onOpen(); };
 
-  const openEditModal = (item: InventoryItem) => {
-    setSelectedItem(item); 
-    onOpen();
-  };
-
-  // --- RENDER HELPERS ---
-  
+  // --- HELPERS ---
   const getCategoryColor = (category: ItemCategory) => {
     switch (category) {
       case 'Meds': return 'danger';    
@@ -198,285 +154,236 @@ export default function InventoryPage() {
     return 'text-green-600 dark:text-green-400';
   };
 
-  const getExpirationStatus = (date?: Date, tracksExpiration?: boolean) => {
-    if (!tracksExpiration || !date) return null;
-    
+  const getEffectiveExpiration = (item: InventoryItem) => {
+    if (!item.tracksExpiration) return null;
+
+    let targetDate = item.expirationDate ? new Date(item.expirationDate) : null;
+    let labelPrefix = "Exp";
+
+    if (item.hasSecondaryExpiration && item.openedAt && item.secondaryExpirationDays) {
+       const openDate = new Date(item.openedAt);
+       const secondaryExpiry = new Date(openDate);
+       secondaryExpiry.setDate(openDate.getDate() + item.secondaryExpirationDays);
+
+       if (!targetDate || secondaryExpiry < targetDate) {
+           targetDate = secondaryExpiry;
+           labelPrefix = "Exp (Open)";
+       }
+    }
+
+    if (!targetDate) return null;
+
     const now = new Date();
-    const expiry = new Date(date);
-    const diffTime = expiry.getTime() - now.getTime();
+    const diffTime = targetDate.getTime() - now.getTime();
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
     if (diffDays < 0) return { label: 'EXPIRED', color: 'danger' as const, isExpired: true };
-    if (diffDays < 30) return { label: `Exp in ${diffDays}d`, color: 'warning' as const, isExpired: false };
-    return { label: `Exp: ${expiry.toLocaleDateString()}`, color: 'default' as const, isExpired: false };
+    if (diffDays < 30) return { label: `${labelPrefix} in ${diffDays}d`, color: 'warning' as const, isExpired: false };
+    return { label: `${labelPrefix}: ${targetDate.toLocaleDateString()}`, color: 'default' as const, isExpired: false };
   };
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
-        <Spinner />
-      </div>
-    );
-  }
+  // --- ADVANCED FILTERING LOGIC ---
+  const filteredInventory = inventory.filter(item => {
+     // 1. Text Search (Checks Name, Location, Shelf, Room, Description)
+     const query = searchQuery.toLowerCase().trim();
+     const matchesSearch = !query || 
+        item.name.toLowerCase().includes(query) ||
+        item.location.toLowerCase().includes(query) ||
+        (item.shelf && item.shelf.toLowerCase().includes(query)) ||
+        (item.room && item.room.toLowerCase().includes(query)) ||
+        (item.description && item.description.toLowerCase().includes(query));
 
-  const lowStockItems = inventory.filter(i => i.totalStockQuantity <= i.reorderThreshold);
-  const criticalStockItems = inventory.filter(i => i.totalStockQuantity === 0);
-  const normalizedQuery = searchQuery.trim().toLowerCase();
-  const matchesSearch = (item: InventoryItem) => {
-    if (!normalizedQuery) return true;
-    const haystack = [
-      item.name,
-      item.category,
-      item.description,
-      item.location,
-      item.room,
-      item.shelf,
-      item.unit,
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase();
+     // 2. Category Filter
+     const matchesCategory = filterCategory === 'all' || item.category === filterCategory;
 
-    return haystack.includes(normalizedQuery);
-  };
-  const filteredInventory = normalizedQuery ? inventory.filter(matchesSearch) : inventory;
-  const filteredLowStockItems = normalizedQuery ? lowStockItems.filter(matchesSearch) : lowStockItems;
-  const lowStockBadgeCount = normalizedQuery ? filteredLowStockItems.length : lowStockItems.length;
-  const emptyAllItemsMessage = normalizedQuery
-    ? `No items match "${searchQuery}".`
-    : 'No items found in inventory.';
-  const emptyLowStockMessage = normalizedQuery
-    ? `No restock items match "${searchQuery}".`
-    : 'No items currently need restock.';
+     // 3. Location Filter
+     const matchesLocation = filterLocation === 'all' || item.location === filterLocation;
+
+     return matchesSearch && matchesCategory && matchesLocation;
+  });
+
+  const lowStockItems = filteredInventory.filter(i => i.totalStockQuantity <= i.reorderThreshold);
+
+  if (loading) return <div className="h-screen flex items-center justify-center"><Spinner /></div>;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
       <div className="max-w-7xl mx-auto">
         
-        {/* Header */}
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-800 dark:text-white mb-1 flex items-center gap-2">
+        {/* Header Title */}
+        <div className="mb-6">
+            <h1 className="text-3xl font-bold text-gray-800 dark:text-white flex items-center gap-2">
               <Boxes className="text-indigo-600" size={28} />
               Master Inventory
             </h1>
             <p className="text-gray-600 dark:text-gray-400">Manage the supply closet</p>
-          </div>
-          
-          <Button 
-            onPress={openAddModal}
-            color="primary"
-            startContent={<Plus size={18} />}
-          >
-            Add Item
-          </Button>
-        </div>
-        <Divider />
-
-        {/* Stats Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-          <Card className="shadow-md bg-white/80 dark:bg-slate-800/80 border border-gray-200/70 dark:border-slate-700 rounded-xl">
-            <CardBody className="p-6">
-              <p className="text-gray-600 dark:text-gray-400 text-sm mb-2">Total SKUs</p>
-              <p className="text-3xl font-bold text-indigo-600 dark:text-indigo-400">{inventory.length}</p>
-            </CardBody>
-          </Card>
-          <Card className="shadow-md bg-white/80 dark:bg-slate-800/80 border border-gray-200/70 dark:border-slate-700 rounded-xl">
-            <CardBody className="p-6">
-              <p className="text-gray-600 dark:text-gray-400 text-sm mb-2">Reorder Needed</p>
-              <p className="text-3xl font-bold text-orange-500 dark:text-orange-400">{lowStockItems.length}</p>
-            </CardBody>
-          </Card>
-          <Card className="shadow-md bg-white/80 dark:bg-slate-800/80 border border-gray-200/70 dark:border-slate-700 rounded-xl">
-            <CardBody className="p-6">
-              <p className="text-gray-600 dark:text-gray-400 text-sm mb-2">Critical (Out)</p>
-              <p className="text-3xl font-bold text-red-600 dark:text-red-400">{criticalStockItems.length}</p>
-            </CardBody>
-          </Card>
-          <Card className="shadow-md bg-white/80 dark:bg-slate-800/80 border border-gray-200/70 dark:border-slate-700 rounded-xl">
-            <CardBody className="p-6">
-              <p className="text-gray-600 dark:text-gray-400 text-sm mb-2">Categories</p>
-              <p className="text-3xl font-bold text-purple-600 dark:text-purple-400">{new Set(inventory.map(i => i.category)).size}</p>
-            </CardBody>
-          </Card>
         </div>
 
-        {/* Main Content Tabs */}
-        <Card className="shadow-lg bg-white/80 dark:bg-slate-800/80 border border-gray-200/70 dark:border-slate-700 rounded-xl">
-          <CardHeader className="flex flex-col gap-2 p-6 border-b border-gray-200/70 dark:border-slate-700">
-            <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Supply Closet</h2>
-            <p className="text-sm text-gray-500 dark:text-gray-400">Browse and update items across storage locations.</p>
-          </CardHeader>
-          
-          <CardBody className="p-6">
-            <div className="flex flex-col md:flex-row md:items-end gap-4 mb-6">
-              <Input
-                label="Search inventory"
-                placeholder="Search by name, category, location, or shelf"
-                value={searchQuery}
-                onValueChange={setSearchQuery}
-                variant="bordered"
-                startContent={<Search size={16} className="text-gray-400" />}
-                className="md:max-w-md"
-              />
-              <div className="text-xs text-gray-500 dark:text-gray-400">
-                Showing {filteredInventory.length} of {inventory.length}
-              </div>
+        {/* Search & Actions Bar */}
+        <div className="flex flex-col md:flex-row gap-3 mb-4 items-stretch md:items-center">
+            <div className="flex-1 relative">
+                <Input
+                    placeholder="Search by name, location, shelf..."
+                    value={searchQuery}
+                    onValueChange={setSearchQuery}
+                    startContent={<Search size={18} className="text-gray-400" />}
+                    endContent={
+                        searchQuery && (
+                            <button onClick={() => setSearchQuery('')} className="text-gray-400 hover:text-gray-600">
+                                <X size={16} />
+                            </button>
+                        )
+                    }
+                    classNames={{
+                        inputWrapper: "bg-white dark:bg-slate-800 shadow-sm hover:shadow-md transition-shadow h-12"
+                    }}
+                />
             </div>
-            <Tabs aria-label="Inventory Options" variant="underlined" color="primary">
-              
-              {/* TAB 1: ALL ITEMS */}
-              <Tab key="all" title="All Items">
-                {filteredInventory.length === 0 ? (
-                  <div className="mt-6 rounded-xl border border-dashed border-gray-300/70 dark:border-slate-700 p-6 text-center text-sm text-gray-500 dark:text-gray-400">
-                    {emptyAllItemsMessage}
-                  </div>
-                ) : (
-                  <div className="space-y-4 mt-2">
-                    {filteredInventory.map((item) => {
-                    const expStatus = getExpirationStatus(item.expirationDate, item.tracksExpiration);
-                    const isExpired = expStatus?.isExpired;
-                    
-                    const cardClasses = isExpired 
-                      ? "w-full border border-red-300 dark:border-red-700 bg-red-50/70 dark:bg-red-900/20 rounded-xl transition-shadow cursor-pointer"
-                      : "w-full bg-white/80 dark:bg-slate-800/80 border border-gray-200/70 dark:border-slate-700 rounded-xl hover:shadow-md transition-shadow cursor-pointer";
+            
+            <Button 
+                isIconOnly={false} 
+                variant={showFilters ? "solid" : "bordered"} 
+                color={showFilters ? "primary" : "default"}
+                onPress={() => setShowFilters(!showFilters)}
+                className="h-12 px-4 bg-white dark:bg-slate-800 border-default-200"
+                startContent={<Filter size={18} />}
+            >
+                Filters
+            </Button>
 
-                    return (
-                        <Card 
-                            key={item.id} 
-                            isPressable
-                            onPress={() => openEditModal(item)}
-                            className={cardClasses}
-                        >
+            <Button 
+                onPress={openAddModal} 
+                color="primary" 
+                className="h-12 px-6 font-semibold shadow-md bg-indigo-600"
+                startContent={<Plus size={20} />}
+            >
+                Add Item
+            </Button>
+        </div>
+
+        {/* Expandable Filter Panel */}
+        {showFilters && (
+            <div className="mb-6 p-4 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-100 dark:border-slate-700 grid grid-cols-1 md:grid-cols-3 gap-4 animate-appearance-in">
+                <Select 
+                    label="Category" 
+                    size="sm"
+                    selectedKeys={[filterCategory]} 
+                    onChange={(e) => setFilterCategory(e.target.value)}
+                >
+                    <SelectItem key="all">All Categories</SelectItem>
+                    {CATEGORIES.map(c => <SelectItem key={c}>{c}</SelectItem>)}
+                </Select>
+
+                <Select 
+                    label="Location" 
+                    size="sm"
+                    selectedKeys={[filterLocation]} 
+                    onChange={(e) => setFilterLocation(e.target.value)}
+                >
+                    <SelectItem key="all">All Locations</SelectItem>
+                    {LOCATIONS.map(l => <SelectItem key={l}>{l}</SelectItem>)}
+                </Select>
+                
+                <div className="flex items-end">
+                    <Button size="sm" color="danger" variant="flat" onPress={() => {setFilterCategory('all'); setFilterLocation('all'); setSearchQuery('');}}>
+                        Clear All
+                    </Button>
+                </div>
+            </div>
+        )}
+
+        {/* Content */}
+        <div className="grid grid-cols-1 gap-4">
+            {filteredInventory.length === 0 && (
+                <div className="text-center py-10 text-gray-500">
+                    <p>No items found matching your search.</p>
+                </div>
+            )}
+            
+            {filteredInventory.map((item) => {
+                const expStatus = getEffectiveExpiration(item);
+                const isExpired = expStatus?.isExpired;
+                const cardClasses = isExpired 
+                    ? "border-red-300 bg-red-50/70 dark:bg-red-900/20"
+                    : "bg-white/80 dark:bg-slate-800/80 border-gray-200/70 dark:border-slate-700 hover:shadow-md";
+
+                return (
+                    <Card key={item.id} isPressable onPress={() => openEditModal(item)} className={`border rounded-xl transition-all ${cardClasses}`}>
                         <CardBody className="p-4">
-                            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                            {/* Left: Item Details */}
-                            <div className="flex-1 w-full">
-                                <div className="flex items-center gap-3 mb-2">
-                                    <h3 className="font-bold text-lg text-gray-800 dark:text-white">{item.name}</h3>
-                                    <Chip size="sm" color={getCategoryColor(item.category)} variant="flat">
-                                        {item.category}
-                                    </Chip>
+                            <div className="flex flex-col md:flex-row justify-between items-start gap-4">
+                                {/* Left Side: Info */}
+                                <div className="flex-1">
+                                    <div className="flex items-center gap-3 mb-2 flex-wrap">
+                                        <h3 className="font-bold text-lg text-gray-800 dark:text-white">{item.name}</h3>
+                                        <Chip size="sm" color={getCategoryColor(item.category)} variant="flat">{item.category}</Chip>
+                                        {expStatus && (
+                                            <Chip size="sm" color={expStatus.color} variant="flat" className="font-semibold">{expStatus.label}</Chip>
+                                        )}
+                                        {item.isOxygen && (
+                                            <Chip size="sm" color="primary" variant="dot" startContent={<Wind size={12} />}>Oxygen</Chip>
+                                        )}
+                                    </div>
+                                    <div className="text-xs text-gray-500 mb-1">
+                                        {item.location} {item.room ? `/ ${item.room}` : ''} - {item.shelf}
+                                    </div>
                                     
-                                    {/* EXPIRATION CHIP */}
-                                    {expStatus && (
-                                      <Chip 
-                                        size="sm" 
-                                        color={expStatus.color} 
-                                        variant="flat" 
-                                        className="font-semibold"
-                                      >
-                                        {expStatus.label}
-                                      </Chip>
+                                    {/* Detailed Stock Info for Box Tracking */}
+                                    {item.tracksOpenStock && (
+                                        <div className="flex items-center gap-2 mt-2 text-sm text-gray-700 dark:text-gray-300">
+                                            <PackageOpen size={16} className="text-purple-500" />
+                                            <span>
+                                                <span className="font-bold">{item.unopenedQuantity}</span> Sealed
+                                            </span>
+                                            <span className="text-gray-300">|</span>
+                                            <span>
+                                                <span className="font-bold">{item.openedQuantity}</span> / {item.quantityPerUnit} in Open Box
+                                            </span>
+                                        </div>
                                     )}
                                 </div>
 
-                                <div className="flex flex-wrap items-center gap-2 mb-2 text-xs">
-                                <Chip size="sm" variant="dot" color="default" className="bg-gray-100 dark:bg-slate-800 border-none">
-                                    <span className="font-semibold">{item.location}</span>
-                                </Chip>
-                                {item.location === 'HQ' && item.room && (
-                                    <>
-                                    <span className="text-gray-300">/</span>
-                                    <span className="text-gray-500 dark:text-gray-300 font-medium">{item.room}</span>
-                                    </>
-                                )}
-                                <span className="text-gray-300">/</span>
-                                <span className="text-gray-500 dark:text-gray-300">Shelf: {item.shelf}</span>
-                                </div>
-
-                                <p className="text-sm text-gray-500 dark:text-gray-400">
-                                Unit: {item.unit} - {item.isDisposable ? 'Disposable' : 'Reusable Asset'}
-                                </p>
-                            </div>
-
-                            {/* Right: Stock Levels */}
-                            <div className="text-right flex items-center gap-6 min-w-fit">
-                                <div>
-                                    <p className={`text-3xl font-bold ${getStockStatusColor(item.totalStockQuantity, item.reorderThreshold)}`}>
-                                    {item.totalStockQuantity}
-                                    </p>
-                                    <p className="text-xs text-gray-600 dark:text-gray-400 uppercase tracking-wider">
-                                        Available
-                                    </p>
+                                {/* Right Side: Stock & Gauges */}
+                                <div className="flex flex-col items-end min-w-[120px]">
+                                    {item.isOxygen ? (
+                                        <div className="w-32 text-right">
+                                            <p className="text-sm font-bold text-blue-600 mb-1">{item.oxygenPsi} PSI</p>
+                                            <Progress 
+                                                size="sm" 
+                                                value={(item.oxygenPsi / item.maxOxygenPsi) * 100} 
+                                                color={item.oxygenPsi < 500 ? "danger" : "primary"}
+                                                aria-label="Oxygen Level"
+                                            />
+                                            <p className="text-[10px] text-gray-400 mt-1">Capacity: {item.maxOxygenPsi}</p>
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <p className={`text-3xl font-bold ${getStockStatusColor(item.totalStockQuantity, item.reorderThreshold)}`}>
+                                                {item.totalStockQuantity}
+                                            </p>
+                                            <p className="text-xs text-gray-500 uppercase">Total Units</p>
+                                        </>
+                                    )}
                                 </div>
                             </div>
-                            </div>
-                            
-                            <div className="mt-4">
-                                <Progress 
-                                    size="sm" 
-                                    value={item.reorderThreshold > 0 ? (item.totalStockQuantity / (item.reorderThreshold * 2)) * 100 : 100} 
-                                    color={item.totalStockQuantity <= item.reorderThreshold ? "warning" : "success"}
-                                    aria-label="Stock level"
-                                />
-                            </div>
+
+                            {/* Standard Stock Progress Bar (if not Oxygen) */}
+                            {!item.isOxygen && (
+                                <div className="mt-3">
+                                    <Progress 
+                                        size="sm" 
+                                        value={item.reorderThreshold > 0 ? (item.totalStockQuantity / (item.reorderThreshold * 2)) * 100 : 100} 
+                                        color={item.totalStockQuantity <= item.reorderThreshold ? "warning" : "success"}
+                                        aria-label="Stock level"
+                                        className="h-1"
+                                    />
+                                </div>
+                            )}
                         </CardBody>
-                        </Card>
-                    );
-                  })}
-                  </div>
-                )}
-              </Tab>
+                    </Card>
+                );
+            })}
+        </div>
 
-              {/* TAB 2: LOW STOCK */}
-              <Tab key="low-stock" title={
-                  <div className="flex items-center gap-2">
-                    <span>Restock Needed</span>
-                    {lowStockBadgeCount > 0 && <Chip size="sm" color="danger" variant="solid">{lowStockBadgeCount}</Chip>}
-                  </div>
-              }>
-                {filteredLowStockItems.length === 0 ? (
-                  <div className="mt-6 rounded-xl border border-dashed border-gray-300/70 dark:border-slate-700 p-6 text-center text-sm text-gray-500 dark:text-gray-400">
-                    {emptyLowStockMessage}
-                  </div>
-                ) : (
-                  <div className="space-y-4 mt-2">
-                    {filteredLowStockItems.map((item) => {
-                    const expStatus = getExpirationStatus(item.expirationDate, item.tracksExpiration);
-                    return (
-                      <Card 
-                          key={item.id} 
-                          isPressable
-                          onPress={() => openEditModal(item)}
-                          className="w-full border border-red-200 dark:border-red-700 border-l-4 border-red-500 bg-white/80 dark:bg-slate-800/80 rounded-xl"
-                      >
-                        <CardBody className="p-4">
-                          <div className="flex justify-between items-start">
-                            <div>
-                                <h3 className="font-bold text-gray-800 dark:text-white">{item.name}</h3>
-                                <div className="flex items-center gap-2 mt-1">
-                                  <p className="text-red-500 text-sm font-semibold">
-                                    Below Threshold ({item.reorderThreshold})
-                                  </p>
-                                  {expStatus && (
-                                    <Chip size="sm" color={expStatus.color} variant="flat" className="text-xs h-5">
-                                      {expStatus.label}
-                                    </Chip>
-                                  )}
-                                </div>
-                                <div className="text-xs text-gray-500 mt-2">
-                                  {item.location} {item.room} - {item.shelf}
-                                </div>
-                            </div>
-                            <div className="text-right">
-                                <p className="text-2xl font-bold text-red-600">{item.totalStockQuantity}</p>
-                                <p className="text-xs text-gray-500">Current</p>
-                            </div>
-                          </div>
-                        </CardBody>
-                      </Card>
-                    );
-                  })}
-                  </div>
-                )}
-              </Tab>
-
-            </Tabs>
-          </CardBody>
-        </Card>
-
-        {/* Modal Component */}
         <InventoryModal 
             key={`${selectedItem?.id ?? 'new'}-${isOpen ? 'open' : 'closed'}`}
             isOpen={isOpen} 
@@ -486,7 +393,6 @@ export default function InventoryPage() {
             initialData={selectedItem}
             canToggleExpiration={isAdmin}
         />
-
       </div>
     </div>
   );

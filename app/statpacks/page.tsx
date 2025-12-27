@@ -7,7 +7,8 @@ import {
   Modal, ModalContent, ModalHeader, ModalBody, ModalFooter,
   Input, Select, SelectItem, useDisclosure,
   Table, TableHeader, TableColumn, TableBody, TableRow, TableCell,
-  Autocomplete, AutocompleteItem, Tooltip, Textarea, Checkbox
+  Autocomplete, AutocompleteItem, Tooltip, Textarea, Checkbox,
+  User as UserAvatar
 } from '@heroui/react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { 
@@ -18,7 +19,7 @@ import Image from 'next/image';
 import { 
   Plus, BriefcaseMedical, AlertCircle, CheckCircle, 
   Trash2, ClipboardCheck, History, UserMinus, UserCheck, QrCode,
-  Package, Lock, Unlock
+  Package, Lock, Unlock, CalendarDays
 } from 'lucide-react';
 import { toDataURL } from 'qrcode';
 import { jsPDF } from 'jspdf';
@@ -37,21 +38,16 @@ const BLANK_PACK: Partial<Statpack> = {
 };
 
 // --- Helper: Recursive Cleaner for Firestore ---
-// Firestore throws an error if fields are 'undefined'. 
-// This strips undefined keys deeply but preserves Dates.
 const cleanData = (data: unknown): unknown => {
   if (Array.isArray(data)) {
     return data.map(item => cleanData(item));
   }
   if (data !== null && typeof data === 'object') {
-    // Preserve Date objects
     if (data instanceof Date) return data;
-    // Preserve Firestore Timestamps if they exist in state
     if ('toMillis' in data && typeof (data as { toMillis?: unknown }).toMillis === 'function') return data;
 
     const newObj: Record<string, unknown> = {};
     Object.entries(data as Record<string, unknown>).forEach(([key, val]) => {
-      // Only copy if value is NOT undefined
       if (val !== undefined) {
         newObj[key] = cleanData(val);
       }
@@ -93,17 +89,13 @@ export default function StatpacksPage() {
   // --- Visualizer State ---
   const [viewPocket, setViewPocket] = useState<StatpackPocket | 'all'>('all');
 
-  // --- NEW: Compartment Management State ---
+  // --- Compartment Management State ---
   const [newCompName, setNewCompName] = useState('');
   const [newCompPocket, setNewCompPocket] = useState<StatpackPocket>('main');
   const [newCompSealed, setNewCompSealed] = useState(false);
   const [newCompSealNum, setNewCompSealNum] = useState('');
   const [newCompExpires, setNewCompExpires] = useState('');
-  
-  // Replaces the old "targetPocket" state
-  // This will hold either a Compartment ID OR a raw pocket string if we allow loose items
   const [targetLocationId, setTargetLocationId] = useState<string>(''); 
-
 
   // 1. Auth & Data
   useEffect(() => {
@@ -131,7 +123,6 @@ export default function StatpacksPage() {
         setUserRole('member');
       }
     );
-
     return () => unsubscribe();
   }, [user]);
 
@@ -155,7 +146,6 @@ export default function StatpacksPage() {
           ...d.data(),
           lastCheckedAt: d.data().lastCheckedAt?.toDate(),
           checkedOutAt: d.data().checkedOutAt?.toDate(),
-          // Ensure compartments exists
           compartments: d.data().compartments || []
         })) as Statpack[];
 
@@ -197,14 +187,77 @@ export default function StatpacksPage() {
         collection(db, 'statpack_logs'), 
         where('statpackId', '==', packId),
         orderBy('timestamp', 'desc'),
-        limit(20)
+        limit(25)
       );
       const snap = await getDocs(q);
-      const logData = snap.docs.map(d => ({ id: d.id, ...d.data() })) as StatpackLog[];
+      const logData = snap.docs.map(d => ({ 
+        id: d.id, 
+        ...d.data(),
+        timestamp: d.data().timestamp instanceof Timestamp ? d.data().timestamp.toDate() : new Date()
+      })) as StatpackLog[];
       setLogs(logData);
     } catch (e) {
       console.error("Log fetch error", e);
     }
+  };
+
+  // --- HELPER: RENDER LOG DETAILS (From Merged Code) ---
+  const renderLogDetails = (log: StatpackLog) => {
+    // 1. Show Issue Reports (Replacements, Missing, etc.)
+    if (log.issues?.issueReports) {
+      const reports = Object.values(log.issues.issueReports);
+      
+      if (reports.length === 0) {
+          // Check if there are just notes or seal checks
+          if(log.notes) return <div className="text-xs italic text-gray-500">"{log.notes}"</div>;
+          return <span className="text-gray-400 text-xs italic">Routine check - No issues</span>;
+      }
+
+      return (
+        <div className="flex flex-col gap-2">
+          {reports.map((r, idx) => (
+            <div key={idx} className="flex flex-col p-2 rounded-lg bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs">
+               <div className="flex justify-between items-start mb-1">
+                  <span className="font-semibold text-gray-800 dark:text-gray-200">{r.itemName}</span>
+                  {r.isReplaced ? (
+                      <Chip size="sm" color="success" variant="flat" className="h-4 text-[9px] px-1">Replaced (+{r.replacedQuantity})</Chip>
+                  ) : (
+                      <Chip size="sm" color="danger" variant="flat" className="h-4 text-[9px] px-1">Missing</Chip>
+                  )}
+               </div>
+               
+               <div className="flex items-center gap-2 text-gray-500">
+                  <span className="uppercase text-[9px] font-bold border border-gray-300 dark:border-gray-600 px-1 rounded">{r.issueType}</span>
+                  {r.newExpirationDate && (
+                      <span className="flex items-center gap-1 text-[9px]">
+                          <CalendarDays size={10}/> New Exp: {r.newExpirationDate}
+                      </span>
+                  )}
+               </div>
+               
+               {r.notes && <div className="mt-1 text-gray-500 italic">"{r.notes}"</div>}
+            </div>
+          ))}
+          {log.notes && <div className="text-xs italic text-gray-600 mt-1 border-t pt-1">Global Note: "{log.notes}"</div>}
+        </div>
+      );
+    }
+
+    // 2. Legacy / Check-in Usage
+    if (log.itemsUsed && Object.keys(log.itemsUsed).length > 0) {
+        return (
+            <div className="flex flex-col gap-1">
+                <span className="text-xs font-bold text-gray-500">Items Used:</span>
+                {Object.entries(log.itemsUsed).map(([key, count]) => (
+                    <div key={key} className="text-xs bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200 px-2 py-1 rounded">
+                        Item #{key.split('-')[1] || key}: <strong>{count}</strong>
+                    </div>
+                ))}
+            </div>
+        );
+    }
+
+    return <span className="text-gray-400 text-xs italic">{log.notes || "No notable events."}</span>;
   };
 
   // 2. Handlers: Open Modals
@@ -303,14 +356,11 @@ export default function StatpacksPage() {
     doc.save(`statpack-${safeName}-checkout-qr.pdf`);
   };
 
-  // --- NEW: Compartment Logic ---
+  // --- Compartment Logic ---
 
   const handleAddCompartment = () => {
     if (!newCompName) return;
-    
-    // Simple ID gen (in real app use uuid or similar)
     const newId = `comp_${Date.now()}`;
-    
     const newComp: StatpackCompartment = {
       id: newId,
       name: newCompName,
@@ -325,7 +375,6 @@ export default function StatpacksPage() {
       compartments: [...(prev.compartments || []), newComp]
     }));
 
-    // Reset Form
     setNewCompName('');
     setNewCompSealNum('');
     setNewCompExpires('');
@@ -336,8 +385,6 @@ export default function StatpacksPage() {
     setCurrentPack(prev => ({
       ...prev,
       compartments: prev.compartments?.filter(c => c.id !== compId),
-      // Set items in this compartment to 'undefined' compartment (loose in parent pocket? or remove?)
-      // Here we just un-assign the compartment but keep the pocket info
       contents: prev.contents?.map(item => 
         item.compartmentId === compId ? { ...item, compartmentId: undefined } : item
       )
@@ -348,7 +395,6 @@ export default function StatpacksPage() {
   const addItemToBag = () => {
     if (!selectedInventoryId || !targetLocationId || !currentPack.contents) return;
     
-    // Identify if targetLocationId is a Compartment ID or a Raw Pocket string
     const compartments = currentPack.compartments || [];
     const matchedCompartment = compartments.find(c => c.id === targetLocationId);
     
@@ -359,7 +405,6 @@ export default function StatpacksPage() {
       finalPocket = matchedCompartment.parentPocket;
       finalCompartmentId = matchedCompartment.id;
     } else {
-      // It's a raw pocket
       finalPocket = targetLocationId as StatpackPocket;
       finalCompartmentId = undefined;
     }
@@ -433,12 +478,9 @@ export default function StatpacksPage() {
     if (!currentPack.name || !user) return;
     setSaving(true);
     try {
-      // Use helper to remove undefined values from contents and compartments
       const cleanedPack = cleanData(currentPack);
-
       const payload: Record<string, unknown> = { ...cleanedPack, updatedAt: serverTimestamp() };
       
-      // Simple shallow cleanup for top-level keys just in case, though cleanData handles deep
       Object.keys(payload).forEach(key => payload[key] === undefined && delete payload[key]);
       
       const userName = user.displayName || user.email || 'Unknown User';
@@ -478,7 +520,6 @@ export default function StatpacksPage() {
       const userName = user.displayName || user.email || 'Unknown User';
       const newStatus: Statpack['status'] = 'In Use';
 
-      // Ensure contents are cleaned of undefined values (e.g. compartmentId)
       const cleanedContents = cleanData(currentPack.contents);
 
       const updatePayload = {
@@ -572,26 +613,14 @@ export default function StatpacksPage() {
     return 'warning'; 
   };
 
-  const formatLogTimestamp = (value: StatpackLog['timestamp']) => {
-    if (value instanceof Timestamp) {
-      return value.toDate().toLocaleString();
-    }
-    if (value instanceof Date) {
-      return value.toLocaleString();
-    }
-    return 'Just now';
-  };
-
   const canReturnPack = (pack: Statpack) => {
     if (!user) return false;
     return userRole === 'admin' || pack.assignedToUserId === user.uid;
   };
 
-  // Helper to generate selection options for adding items
   const getLocationOptions = () => {
     const opts: {key: string, label: string, group: string}[] = [];
     
-    // 1. Defined Compartments
     if (currentPack.compartments) {
        currentPack.compartments.forEach(c => {
           opts.push({ 
@@ -602,7 +631,6 @@ export default function StatpacksPage() {
        });
     }
 
-    // 2. Loose Pockets (Fallbacks)
     const pockets: StatpackPocket[] = ['main', 'front_aux', 'side_left', 'side_right'];
     pockets.forEach(p => {
        opts.push({ key: p, label: `${p.replace('_', ' ')} (Loose)`, group: 'LOOSE' });
@@ -731,7 +759,6 @@ export default function StatpacksPage() {
             <>
               <ModalHeader>Edit Configuration: {currentPack.name}</ModalHeader>
               <ModalBody>
-                 {/* Top Controls: Name, Type, Status */}
                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                   <Input label="Bag Name" value={currentPack.name} onValueChange={(val) => setCurrentPack(p => ({...p, name: val}))} />
                   <Select label="Type" selectedKeys={currentPack.type ? [currentPack.type] : []} onChange={(e) => setCurrentPack(p => ({...p, type: e.target.value as Statpack['type']}))}>
@@ -753,7 +780,6 @@ export default function StatpacksPage() {
                     <Package size={16} /> Configure Compartments
                   </h3>
                   
-                  {/* Compartment Creator Form */}
                   <div className="flex flex-wrap gap-3 items-end mb-4 bg-white dark:bg-zinc-900 p-3 rounded-md shadow-sm">
                     <Input 
                       label="Compartment Name" 
@@ -918,7 +944,6 @@ export default function StatpacksPage() {
                         </TableBody>
                     </Table>
 
-                    {/* UPDATED: Add Item Logic using Compartments */}
                     <div className="flex flex-col gap-2 p-4 bg-white/80 dark:bg-slate-800/80 rounded-lg border border-indigo-100 dark:border-indigo-900">
                        <span className="text-xs font-bold text-gray-500 uppercase">Add to Bag</span>
                        <div className="flex gap-2 items-end">
@@ -1120,31 +1145,71 @@ export default function StatpacksPage() {
         </ModalContent>
       </Modal>
 
-      {/* --- 3. HISTORY MODAL --- */}
-      <Modal isOpen={isHistoryOpen} onOpenChange={onHistoryChange} size="2xl" scrollBehavior="inside">
+      {/* --- 3. HISTORY MODAL (Updated with detailed Table) --- */}
+      <Modal 
+        isOpen={isHistoryOpen} 
+        onOpenChange={onHistoryChange} 
+        size="4xl" 
+        scrollBehavior="inside"
+        backdrop="blur"
+      >
         <ModalContent>
           {(onClose) => (
             <>
-              <ModalHeader>Audit Trail</ModalHeader>
-              <ModalBody>
-                {logs.length === 0 ? <p className="text-gray-500">No history available.</p> : (
-                  <ul className="space-y-4">
-                    {logs.map(log => (
-                      <li key={log.id} className="border-b pb-2">
-                        <div className="flex justify-between">
-                          <span className="font-bold capitalize">{log.action}</span>
-                          <span className="text-xs text-gray-400">
-                             {formatLogTimestamp(log.timestamp)}
-                          </span>
-                        </div>
-                        <p className="text-sm">{log.notes}</p>
-                        <p className="text-xs text-gray-500">by {log.userName}</p>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+              <ModalHeader className="flex flex-col gap-1 border-b border-gray-200 dark:border-slate-700">
+                <div className="text-xl font-bold">{currentPack.name} Audit Log</div>
+                <p className="text-sm font-normal text-gray-500">History of checkouts, returns, and inventory replacements.</p>
+              </ModalHeader>
+              <ModalBody className="p-0">
+                <Table aria-label="Log Table" removeWrapper classNames={{ base: "min-h-[400px]", th: "bg-gray-100 dark:bg-slate-800" }}>
+                  <TableHeader>
+                    <TableColumn>TIMESTAMP</TableColumn>
+                    <TableColumn>USER</TableColumn>
+                    <TableColumn>ACTION</TableColumn>
+                    <TableColumn width={400}>DETAILS / ISSUES</TableColumn>
+                  </TableHeader>
+                  <TableBody items={logs} emptyContent="No logs found for this statpack.">
+                    {(log) => (
+                      <TableRow key={log.id} className="border-b border-gray-100 dark:border-slate-800 last:border-0">
+                        <TableCell>
+                            <div className="flex flex-col">
+                              {/* Safely handle potential date conversion if not fully processed by fetchLogs */}
+                              <span className="font-bold text-sm">
+                                {log.timestamp instanceof Date ? log.timestamp.toLocaleDateString() : 'Invalid Date'}
+                              </span>
+                              <span className="text-xs text-gray-400">
+                                {log.timestamp instanceof Date ? log.timestamp.toLocaleTimeString() : ''}
+                              </span>
+                            </div>
+                        </TableCell>
+                        <TableCell>
+                            <UserAvatar 
+                              name={log.userName} 
+                              description={log.userId ? `ID: ${log.userId.substring(0,6)}` : 'System'}
+                              size="sm"
+                            />
+                        </TableCell>
+                        <TableCell>
+                            <Chip 
+                              size="sm" 
+                              variant="flat" 
+                              color={log.action === 'checkout' ? 'warning' : log.action === 'checkin' ? 'success' : 'default'}
+                              className="capitalize"
+                            >
+                              {log.action}
+                            </Chip>
+                        </TableCell>
+                        <TableCell>
+                            {renderLogDetails(log)}
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
               </ModalBody>
-              <ModalFooter><Button onPress={onClose}>Close</Button></ModalFooter>
+              <ModalFooter className="border-t border-gray-200 dark:border-slate-700">
+                <Button color="primary" onPress={onClose}>Done</Button>
+              </ModalFooter>
             </>
           )}
         </ModalContent>
