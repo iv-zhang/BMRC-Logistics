@@ -75,6 +75,7 @@ export default function DashboardPage() {
       }
     };
 
+    // Helper to safely convert Timestamps or return Dates/undefined
     const toDateIfTimestamp = (value: unknown) => {
       if (value instanceof Timestamp) {
         return value.toDate();
@@ -88,17 +89,20 @@ export default function DashboardPage() {
     const unsubscribePacks = onSnapshot(
       collection(db, 'statpacks'),
       (snapshot) => {
-        const packsData = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data(),
-          lastCheckedAt: doc.data().lastCheckedAt?.toDate(),
-          contents: Array.isArray(doc.data().contents)
-            ? doc.data().contents.map((item: StatpackItem) => ({
-                ...item,
-                expirationDate: toDateIfTimestamp(item.expirationDate)
-              }))
-            : []
-        })) as Statpack[];
+        const packsData = snapshot.docs.map(doc => {
+          const data = doc.data();
+          return {
+            id: doc.id,
+            ...data,
+            lastCheckedAt: toDateIfTimestamp(data.lastCheckedAt),
+            contents: Array.isArray(data.contents)
+              ? data.contents.map((item: StatpackItem) => ({
+                  ...item,
+                  expirationDate: toDateIfTimestamp(item.expirationDate)
+                }))
+              : []
+          };
+        }) as Statpack[];
 
         setStatpacks(packsData);
         packsReady = true;
@@ -114,14 +118,17 @@ export default function DashboardPage() {
     const unsubscribeInventory = onSnapshot(
       collection(db, 'inventory'),
       (snapshot) => {
-        const invData = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data(),
-          createdAt: doc.data().createdAt?.toDate(),
-          updatedAt: doc.data().updatedAt?.toDate(),
-          // IMPORTANT: Convert Firestore Timestamp to JS Date for expiration
-          expirationDate: doc.data().expirationDate?.toDate(), 
-        })) as InventoryItem[];
+        const invData = snapshot.docs.map(doc => {
+          const data = doc.data();
+          return {
+            id: doc.id,
+            ...data,
+            // UPDATED: Use the helper function instead of calling .toDate() directly
+            createdAt: toDateIfTimestamp(data.createdAt),
+            updatedAt: toDateIfTimestamp(data.updatedAt),
+            expirationDate: toDateIfTimestamp(data.expirationDate), 
+          };
+        }) as InventoryItem[];
 
         setInventory(invData);
         inventoryReady = true;
@@ -162,7 +169,9 @@ export default function DashboardPage() {
         const logsData = logsSnapshot.docs.map(doc => ({
           id: doc.id,
           ...doc.data(),
-          timestamp: doc.data().timestamp?.toDate ? doc.data().timestamp.toDate() : new Date()
+          timestamp: doc.data().timestamp instanceof Timestamp 
+            ? doc.data().timestamp.toDate() 
+            : new Date() // Fallback if timestamp is missing/invalid
         })) as StatpackLog[];
 
         setPackLogs(prev => ({ ...prev, [packId]: logsData }));
