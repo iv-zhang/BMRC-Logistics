@@ -12,7 +12,7 @@ import {
 } from '@heroui/react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { 
-  collection, addDoc, updateDoc, doc, serverTimestamp, query, where, orderBy, limit, onSnapshot, getDocs, Timestamp
+  collection, addDoc, updateDoc, doc, serverTimestamp, query, where, orderBy, limit, onSnapshot, getDocs, Timestamp, getDoc
 } from 'firebase/firestore';
 import { auth, db } from '@/firebase'; 
 import Image from 'next/image';
@@ -60,6 +60,36 @@ const cleanData = (data: unknown): unknown => {
 export default function StatpacksPage() {
   const router = useRouter();
   
+  function ResolvedUserAvatar({ userId, name, description }: { userId?: string; name?: string; description?: string | undefined }) {
+    const [resolved, setResolved] = useState<string | undefined>(name);
+    useEffect(() => {
+      let mounted = true;
+      if (!userId) return;
+      (async () => {
+        try {
+          const uRef = doc(db, 'users', userId);
+          const uSnap = await getDoc(uRef);
+          if (!mounted) return;
+          if (uSnap.exists()) {
+            const ud = uSnap.data() as Partial<User> | undefined;
+            if (ud?.fullName) setResolved(ud.fullName);
+          }
+        } catch (e) {
+          console.warn('Failed to resolve user name for log display', e);
+        }
+      })();
+      return () => { mounted = false; };
+    }, [userId, name]);
+
+    return (
+      <UserAvatar
+        name={resolved || name || 'Unknown User'}
+        description={description}
+        avatarProps={{ radius: 'sm' }}
+      />
+    );
+  }
+  
   // Modals Control
   const { isOpen: isEditOpen, onOpen: onEditOpen, onOpenChange: onEditChange } = useDisclosure();
   const { isOpen: isCheckoutOpen, onOpen: onCheckoutOpen, onOpenChange: onCheckoutChange } = useDisclosure();
@@ -80,6 +110,7 @@ export default function StatpacksPage() {
   const [currentPack, setCurrentPack] = useState<Partial<Statpack>>(BLANK_PACK);
   const [selectedInventoryId, setSelectedInventoryId] = useState<string>("");
   const [selectedVariantId, setSelectedVariantId] = useState<string>("");
+  const [selectedBatchId, setSelectedBatchId] = useState<string>("");
   const [checkoutNotes, setCheckoutNotes] = useState("");
   const [qrPack, setQrPack] = useState<Statpack | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState('');
@@ -416,20 +447,33 @@ export default function StatpacksPage() {
       ? masterItem.variants?.find(v => v.id === selectedVariantId) ?? masterItem.variants?.[0]
       : undefined;
 
+    const hasBatches = (masterItem.batches || []).length > 0;
+    const selectedBatch = hasBatches
+      ? masterItem.batches?.find(b => b.id === selectedBatchId) ?? masterItem.batches?.[0]
+      : undefined;
+
     const newItem: StatpackItem = {
       itemId: masterItem.id,
       itemDetails: masterItem,
       variantId: selectedVariant?.id,
       variantName: selectedVariant?.name,
-      requiredQuantity: 1,     
+      requiredQuantity: 1,
       currentQuantity: 0,
       pocket: finalPocket,
       compartmentId: finalCompartmentId
     };
 
+    // Attach batch details if batch selected
+    if (selectedBatch) {
+      newItem.batchId = selectedBatch.id;
+      newItem.expirationDate = selectedBatch.expirationDate;
+      newItem.lotNumber = selectedBatch.lotNumber;
+    }
+
     setCurrentPack(prev => ({ ...prev, contents: [...(prev.contents || []), newItem] }));
     setSelectedInventoryId(""); 
     setSelectedVariantId("");
+    setSelectedBatchId("");
   };
 
   const updateItemInList = (itemToUpdate: StatpackItem, field: string, val: number) => {
@@ -478,12 +522,22 @@ export default function StatpacksPage() {
     if (!currentPack.name || !user) return;
     setSaving(true);
     try {
-      const cleanedPack = cleanData(currentPack);
+      const cleanedPack = cleanData(currentPack) as Record<string, unknown>;
       const payload: Record<string, unknown> = { ...cleanedPack, updatedAt: serverTimestamp() };
       
       Object.keys(payload).forEach(key => payload[key] === undefined && delete payload[key]);
       
-      const userName = user.displayName || user.email || 'Unknown User';
+      let userName = user.displayName || user.email || 'Unknown User';
+      try {
+        const userRef = doc(db, 'users', user.uid);
+        const userSnap = await getDoc(userRef);
+        if (userSnap.exists()) {
+          const ud = userSnap.data() as Partial<User> | undefined;
+          if (ud?.fullName) userName = ud.fullName;
+        }
+      } catch (e) {
+        console.warn('Failed to read user profile for name resolution', e);
+      }
       
       const logEntry: StatpackLog = {
         statpackId: currentPack.id || 'new',
@@ -517,7 +571,17 @@ export default function StatpacksPage() {
     if (!currentPack.id || !user) return;
     setSaving(true);
     try {
-      const userName = user.displayName || user.email || 'Unknown User';
+      let userName = user.displayName || user.email || 'Unknown User';
+      try {
+        const userRef = doc(db, 'users', user.uid);
+        const userSnap = await getDoc(userRef);
+        if (userSnap.exists()) {
+          const ud = userSnap.data() as Partial<User> | undefined;
+          if (ud?.fullName) userName = ud.fullName;
+        }
+      } catch (e) {
+        console.warn('Failed to read user profile for name resolution', e);
+      }
       const newStatus: Statpack['status'] = 'In Use';
 
       const cleanedContents = cleanData(currentPack.contents);
@@ -557,7 +621,17 @@ export default function StatpacksPage() {
 
   const handleReturnBag = async (pack: Statpack) => {
     if (!user) return;
-    const userName = user.displayName || user.email || 'Unknown User';
+    let userName = user.displayName || user.email || 'Unknown User';
+    try {
+      const userRef = doc(db, 'users', user.uid);
+      const userSnap = await getDoc(userRef);
+      if (userSnap.exists()) {
+        const ud = userSnap.data() as Partial<User> | undefined;
+        if (ud?.fullName) userName = ud.fullName;
+      }
+    } catch (e) {
+      console.warn('Failed to read user profile for name resolution', e);
+    }
     const isReturnAllowed = userRole === 'admin' || pack.assignedToUserId === user?.uid;
     if (!isReturnAllowed) {
       alert('Only the assignee or an admin can return this bag.');
@@ -642,6 +716,8 @@ export default function StatpacksPage() {
   const selectedInventoryItem = inventory.find(i => i.id === selectedInventoryId);
   const availableVariants = selectedInventoryItem?.variants || [];
   const showVariantSelect = Boolean(selectedInventoryItem?.hasVariants && availableVariants.length > 0);
+  const availableBatches = selectedInventoryItem?.batches || [];
+  const showBatchSelect = Boolean(availableBatches.length > 0);
 
   if (loading) return <div className="h-screen flex items-center justify-center"><Spinner /></div>;
 
@@ -715,37 +791,15 @@ export default function StatpacksPage() {
                    {(pack.compartments?.length || 0) > 3 && <span className="text-xs text-gray-400">+{pack.compartments!.length - 3} more</span>}
                 </div>
               </CardBody>
-              <CardFooter className="bg-indigo-50/70 dark:bg-slate-800/60 flex gap-2">
-                {pack.isCheckedOut ? (
-                  <Tooltip 
-                    content="Only the assignee or an admin can return this bag." 
-                    isDisabled={canReturnPack(pack)}
-                  >
-                    <span className="w-full">
-                      <Button 
-                        fullWidth 
-                        color="warning" 
-                        variant="flat" 
-                        onPress={() => handleReturnBag(pack)}
-                        isDisabled={!canReturnPack(pack)}
-                      >
-                        Return / Check In
-                      </Button>
-                    </span>
-                  </Tooltip>
-                ) : (
-                  <Button fullWidth color="primary" onPress={() => handleOpenCheckout(pack)} startContent={<ClipboardCheck size={18} />}>
-                    Inspect & Check Out
-                  </Button>
-                )}
-                
-                <a 
-                  href={`/mobile?id=${pack.id}`} 
-                  target="_blank"
-                  className="text-[10px] text-blue-500 hover:text-blue-700 underline uppercase tracking-widest mt-1 text-center w-full"
+              <CardFooter className="bg-indigo-50/70 dark:bg-slate-800/60">
+                <Button
+                  fullWidth
+                  color="primary"
+                  onPress={() => window.open(`/mobile?id=${pack.id}`, '_blank')}
+                  startContent={<QrCode size={18} />}
                 >
-                  [DEV] Simulate QR Scan
-                </a>
+                  Simulate QR Scan
+                </Button>
               </CardFooter>
             </Card>
           ))}
@@ -978,6 +1032,11 @@ export default function StatpacksPage() {
                                   } else {
                                     setSelectedVariantId("");
                                   }
+                                  if (item?.batches && item.batches.length > 0) {
+                                    setSelectedBatchId(item.batches[0].id);
+                                  } else {
+                                    setSelectedBatchId("");
+                                  }
                                 }}
                               >
                                 {inventory.map((item) => <AutocompleteItem key={item.id}>{item.name}</AutocompleteItem>)}
@@ -1001,9 +1060,27 @@ export default function StatpacksPage() {
                               </Select>
                             </div>
                           )}
+                          {showBatchSelect && (
+                            <div className="w-48">
+                              <Select
+                                label="Batch / Exp"
+                                labelPlacement="outside"
+                                placeholder="Select"
+                                size="sm"
+                                selectedKeys={selectedBatchId ? [selectedBatchId] : []}
+                                onChange={(e) => setSelectedBatchId(e.target.value)}
+                              >
+                                {availableBatches.map(batch => (
+                                  <SelectItem key={batch.id} textValue={`${batch.lotNumber || 'Lot'} • ${batch.expirationDate ? new Date(batch.expirationDate).toLocaleDateString() : 'No Exp'}`}>
+                                    {batch.lotNumber || 'Lot'} • {batch.expirationDate ? new Date(batch.expirationDate).toLocaleDateString() : 'No Exp'}
+                                  </SelectItem>
+                                ))}
+                              </Select>
+                            </div>
+                          )}
                           <Button
                             onPress={addItemToBag}
-                            isDisabled={!selectedInventoryId || !targetLocationId || (showVariantSelect && !selectedVariantId)}
+                            isDisabled={!selectedInventoryId || !targetLocationId || (showVariantSelect && !selectedVariantId) || (showBatchSelect && !selectedBatchId)}
                             color="primary"
                             size="sm"
                             className="mb-[2px]"
@@ -1183,10 +1260,10 @@ export default function StatpacksPage() {
                             </div>
                         </TableCell>
                         <TableCell>
-                            <UserAvatar 
-                              name={log.userName} 
+                            <ResolvedUserAvatar
+                              userId={log.userId}
+                              name={log.userName}
                               description={log.userId ? `ID: ${log.userId.substring(0,6)}` : 'System'}
-                              size="sm"
                             />
                         </TableCell>
                         <TableCell>

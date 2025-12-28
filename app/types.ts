@@ -31,6 +31,32 @@ export type ItemCategory =
 export type LocationType = 'HQ' | 'CPR Closet' | 'Shed';
 export type HQRoom = 'Front' | 'Middle' | 'Back' | 'Office';
 
+export interface InventoryVariant {
+  id: string;
+  name: string;
+  quantityPerUnit: number;
+  stock: number;
+  lotNumber?: string;
+  expirationDate?: Date;
+  reorderThreshold?: number;
+}
+
+export interface InventoryBatch {
+  id: string;
+  lotNumber?: string;
+  expirationDate?: Date;
+  stock: number;
+  // optional metadata for a batch (receivedAt, supplier, notes)
+  receivedAt?: Date;
+  notes?: string;
+  // Optional per-location splits for the same batch (e.g., storage, statpacks)
+  locations?: {
+    id: string;
+    name: string; // freeform location label (e.g., "Back storage", "Statpack 3", "Front desk")
+    quantity: number;
+  }[];
+}
+
 export interface InventoryItem {
   id: string;
   name: string;
@@ -47,6 +73,14 @@ export interface InventoryItem {
   shelf?: string;
   bin?: string;
 
+  // UI / metadata
+  unit?: string; // e.g., 'box' or 'count'
+  isDisposable?: boolean;
+  hasVariants?: boolean;
+  variants?: InventoryVariant[];
+
+  // Batch/lots tracking for different expirations (separate from sizing `variants`)
+  batches?: InventoryBatch[];
   // Tracking
   tracksExpiration: boolean; 
   expirationDate?: Date;
@@ -90,6 +124,7 @@ export interface StatpackItem {
   currentQuantity: number; 
   pocket?: StatpackPocket; 
   compartmentId?: string;
+  batchId?: string;
   expirationDate?: Date;
   lotNumber?: string;
 }
@@ -126,13 +161,13 @@ export interface IssueReport {
 }
 
 export interface StatpackLog {
-  id: string;
+  id?: string;
   statpackId: string;
   statpackName: string;
-  action: 'checkout' | 'checkin' | 'restock' | 'created';
+  action: 'checkout' | 'checkin' | 'restock' | 'created' | 'maintenance';
   userId: string;
   userName: string;
-  timestamp: Date;
+  timestamp: Date | FieldValue;
   notes?: string;
   
   // Detailed Issue Tracking

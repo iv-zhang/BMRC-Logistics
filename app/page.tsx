@@ -1,9 +1,33 @@
-'use client';
+ 'use client';
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Button, Card, CardBody, Divider } from '@heroui/react';
+import { useRouter } from 'next/navigation';
+import { Button, Card, CardBody, Divider, Spinner } from '@heroui/react';
 import { Truck } from 'lucide-react';
+import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
+import { auth } from '@/firebase';
 
 export default function Home() {
+  const router = useRouter();
+  const [checkingAuth, setCheckingAuth] = useState(true);
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u: FirebaseUser | null) => {
+      if (u) {
+        router.replace('/dashboard');
+      } else {
+        setCheckingAuth(false);
+      }
+    });
+    return () => unsub();
+  }, [router]);
+
+  if (checkingAuth) return <div className="h-screen flex items-center justify-center"><Spinner size="lg" /></div>;
+
+  
+  
+  
+  
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
       <main className="max-w-5xl mx-auto space-y-6">

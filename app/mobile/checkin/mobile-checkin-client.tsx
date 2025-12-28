@@ -2,15 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import {
-  Card,
-  CardBody,
-  Button,
-  Spinner,
-  Progress,
-  Chip,
-  Input
-} from '@heroui/react';
+import { Button, Spinner, Progress } from '@heroui/react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import {
   doc,
@@ -21,19 +13,8 @@ import {
   increment
 } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
-import { Statpack, StatpackItem } from '@/app/types';
-import {
-  ArrowLeft,
-  Save,
-  Minus,
-  Plus,
-  CheckCircle2,
-  ShieldCheck,
-  PackageOpen,
-  AlertTriangle,
-  RefreshCw,
-  Wind
-} from 'lucide-react';
+import { Statpack, StatpackItem, User } from '@/app/types';
+import { ArrowLeft } from 'lucide-react';
 
 interface CheckinStep {
   id: string;
@@ -145,56 +126,88 @@ export default function MobileCheckinClient() {
   const handleFinish = async () => {
     if (!pack || !user) return;
     setSubmitting(true);
-    
+
     try {
-        const batch = writeBatch(db);
-        const packRef = doc(db, 'statpacks', pack.id);
-        
-        const totalUsed = Object.values(usageCounts).reduce((a, b) => a + b, 0);
-        
-        batch.update(packRef, {
-            isCheckedOut: false,
-            lastCheckedBy: user.fullName || user.email,
-            lastCheckedAt: serverTimestamp(),
-            status: totalUsed > 0 ? 'Restock Needed' : 'Ready',
-            assignedToUserId: null,
-            assignedToUserName: null
+      // Resolve user's preferred display name: prefer Firestore `users.{uid}.fullName`, then Firebase displayName, then email
+      let resolvedName = user.displayName || user.email || 'Unknown User';
+      try {
+        const userRef = doc(db, 'users', user.uid);
+        const userSnap = await getDoc(userRef);
+        if (userSnap.exists()) {
+          const d = userSnap.data() as Partial<User> | undefined;
+          if (d?.fullName) resolvedName = d.fullName;
+        }
+      } catch (e) {
+        console.warn('Failed to read user profile for name resolution', e);
+      }
+
+      const batch = writeBatch(db);
+      const packRef = doc(db, 'statpacks', pack.id);
+
+      const totalUsed = Object.values(usageCounts).reduce((a, b) => a + b, 0);
+
+      batch.update(packRef, {
+        isCheckedOut: false,
+        lastCheckedBy: resolvedName,
+        lastCheckedAt: serverTimestamp(),
+        status: totalUsed > 0 ? 'Restock Needed' : 'Ready',
+        assignedToUserId: null,
+        assignedToUserName: null,
+      });
+
+      // Log Entry
+      const logRef = doc(collection(db, 'statpack_logs'));
+      batch.set(logRef, {
+        statpackId: pack.id,
+        statpackName: pack.name,
+        action: 'checkin',
+        userId: user.uid,
+        userName: resolvedName,
+        timestamp: serverTimestamp(),
+        itemsUsed: usageCounts,
+        oxygenReadings,
+      });
+
+      // Update Master Inventory Oxygen Levels
+      Object.entries(oxygenReadings).forEach(([itemId, psiStr]) => {
+        const psi = parseInt(psiStr);
+        if (!isNaN(psi)) {
+          const inventoryRef = doc(db, 'inventory', itemId);
+          batch.update(inventoryRef, {
+            oxygenPsi: psi,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      });
+
+      // Update Master Inventory for used items (decrement stock)
+      // Build a mapping of itemId -> total used across steps
+      const perItemUsage: Record<string, number> = {};
+      steps.forEach((step, sIdx) => {
+        step.items.forEach((it, idx) => {
+          const key = `${sIdx}-${idx}`;
+          const used = Number(usageCounts[key] ?? 0);
+          if (used > 0) {
+            perItemUsage[it.itemId] = (perItemUsage[it.itemId] || 0) + used;
+          }
         });
+      });
 
-        // Log Entry
-        const logRef = doc(collection(db, 'statpack_logs'));
-        batch.set(logRef, {
-            statpackId: pack.id,
-            statpackName: pack.name,
-            action: 'checkin',
-            userId: user.uid,
-            userName: user.fullName || user.email,
-            timestamp: serverTimestamp(),
-            itemsUsed: usageCounts, 
-            oxygenReadings 
+      Object.entries(perItemUsage).forEach(([itemId, usedCount]) => {
+        const inventoryRef = doc(db, 'inventory', itemId);
+        batch.update(inventoryRef, {
+          totalStockQuantity: increment(-usedCount),
+          updatedAt: serverTimestamp(),
         });
+      });
 
-        // Update Master Inventory Oxygen Levels
-        Object.entries(oxygenReadings).forEach(([itemId, psiStr]) => {
-            const psi = parseInt(psiStr);
-            if (!isNaN(psi)) {
-               const inventoryRef = doc(db, 'inventory', itemId);
-               batch.update(inventoryRef, { 
-                   oxygenPsi: psi,
-                   updatedAt: serverTimestamp()
-               });
-            }
-        });
+      await batch.commit();
 
-        await batch.commit();
-        
-        // FIX: Correct redirect path to mobile dashboard
-        router.push(`/mobile?id=${pack.id}`);
-
+      router.push(`/mobile?id=${pack.id}`);
     } catch (e) {
-        console.error(e);
-        alert('Check-in failed');
-        setSubmitting(false);
+      console.error(e);
+      alert('Check-in failed');
+      setSubmitting(false);
     }
   };
 
@@ -202,7 +215,6 @@ export default function MobileCheckinClient() {
   if (!pack) return <div className="p-6">Pack not found</div>;
   if (steps.length === 0) return <div className="p-6">Empty pack configuration</div>;
 
-  const currentStep = steps[activeStepIndex];
   const progress = ((activeStepIndex) / steps.length) * 100;
 
   return (
@@ -219,83 +231,23 @@ export default function MobileCheckinClient() {
       </div>
 
       <div className="max-w-md mx-auto p-4">
-        
-        {/* Step Header */}
-        <div className="mb-6">
-            <h2 className="text-xl font-bold flex items-center gap-2">
-                {currentStep.isSealed ? <ShieldCheck className="text-amber-500"/> : <PackageOpen className="text-blue-500"/>}
-                {currentStep.name}
-            </h2>
-            <p className="text-gray-500 text-sm">Did you use any items from here?</p>
+        <div className="mb-6 text-center">
+          <h2 className="text-xl font-bold">{pack.name}</h2>
+          <p className="text-sm text-gray-500">Simulate a mobile QR scan to record a check-in.</p>
         </div>
 
         <div className="space-y-4">
-            {currentStep.items.map((item, idx) => {
-                const key = `${activeStepIndex}-${idx}`;
-                const used = usageCounts[key] || 0;
-                const isOxygen = item.itemDetails?.isOxygen;
-
-                return (
-                   <Card key={idx} className={`border ${used > 0 ? 'border-amber-400 bg-amber-50 dark:bg-amber-900/10' : 'border-gray-200 dark:border-slate-700'}`}>
-                      <CardBody className="flex flex-col gap-3">
-                         <div className="flex justify-between items-start">
-                             <div>
-                                <div className="font-bold text-sm flex items-center gap-2">
-                                    {item.itemDetails?.name}
-                                    {isOxygen && (
-                                       <Chip size="sm" color="primary" variant="flat" startContent={<Wind size={10}/>} className="h-5 text-[10px]">
-                                          Oxygen
-                                       </Chip>
-                                    )}
-                                </div>
-                                <div className="text-xs text-gray-500">
-                                    Pack Qty: {item.currentQuantity}
-                                </div>
-                             </div>
-                             
-                             {/* Usage Counter */}
-                             <div className="flex items-center gap-3 bg-gray-100 dark:bg-slate-800 rounded-lg p-1">
-                                <Button isIconOnly size="sm" variant="light" onPress={() => handleUsageChange(idx, -1)}><Minus size={16}/></Button>
-                                <span className={`font-mono font-bold w-6 text-center ${used > 0 ? 'text-amber-600' : 'text-gray-400'}`}>{used}</span>
-                                <Button isIconOnly size="sm" variant="light" onPress={() => handleUsageChange(idx, 1)}><Plus size={16}/></Button>
-                             </div>
-                         </div>
-
-                         {/* Oxygen Input during Check-in */}
-                         {isOxygen && (
-                            <div className="pt-2 border-t border-dashed border-gray-300 dark:border-slate-600">
-                                <Input
-                                    type="number"
-                                    label="Report O2 PSI"
-                                    placeholder="e.g. 1800"
-                                    size="sm"
-                                    variant="bordered"
-                                    startContent={<Wind size={14} className="text-blue-500"/>}
-                                    value={oxygenReadings[item.itemId] || ''}
-                                    onValueChange={(val) => handleOxygenChange(item.itemId, val)}
-                                    color="primary"
-                                />
-                            </div>
-                         )}
-                      </CardBody>
-                   </Card>
-                );
-            })}
+          <Button
+            fullWidth
+            size="lg"
+            color="primary"
+            className="font-bold shadow-md"
+            onPress={handleFinish}
+            isLoading={submitting}
+          >
+            Simulate QR Scan
+          </Button>
         </div>
-
-        <div className="mt-8">
-            <Button 
-                fullWidth 
-                size="lg" 
-                color="primary" 
-                className="font-bold shadow-md"
-                onPress={handleNext}
-                isLoading={submitting}
-            >
-                {activeStepIndex === steps.length - 1 ? 'Finish Check-in' : 'Next Section'}
-            </Button>
-        </div>
-
       </div>
     </div>
   );

@@ -1,12 +1,12 @@
 'use client';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button, 
   Input, Select, SelectItem, Switch, Textarea, Divider, Slider
 } from '@heroui/react';
-import { Trash2, Plus, Info, Box, Wind, CalendarClock } from 'lucide-react';
+import { Trash2, Plus, Info, Box, Wind, CalendarClock, GripVertical } from 'lucide-react';
 
-import { InventoryItem, ItemCategory, LocationType, HQRoom, InventoryVariant } from '@/app/types'; 
+import { InventoryItem, ItemCategory, LocationType, HQRoom, InventoryVariant, InventoryBatch } from '@/app/types'; 
 
 // Constants for Dropdowns
 const CATEGORIES: ItemCategory[] = ['Airway', 'Trauma', 'Vitals', 'Meds', 'PPE', 'Splinting', 'Hygiene', 'Other'];
@@ -27,6 +27,7 @@ type InventoryFormState = Partial<Omit<InventoryItem, 'totalStockQuantity' | 're
   totalStockQuantity?: number | string;
   reorderThreshold?: number | string;
   variants: InventoryVariant[];
+  batches?: InventoryBatch[];
   // New State Fields
   unopenedQuantity?: number | string;
   openedQuantity?: number | string;
@@ -62,6 +63,8 @@ const DEFAULT_STATE: InventoryFormState = {
   hasSecondaryExpiration: false,
   secondaryExpirationDays: 90,
   openedAt: undefined
+  ,
+  batches: []
 };
 
 export default function InventoryModal({ 
@@ -72,10 +75,13 @@ export default function InventoryModal({
   initialData,
   canToggleExpiration = false
 }: InventoryModalProps) {
+  // Helper for stable unique IDs (prefers crypto.randomUUID when available)
+  const uniqueId = () => (typeof crypto !== 'undefined' && (crypto as any).randomUUID ? (crypto as any).randomUUID() : `${Date.now().toString()}-${Math.random().toString(36).slice(2,9)}`);
   
   const getInitialFormData = (data?: InventoryItem | null): InventoryFormState => {
     if (!data) return DEFAULT_STATE;
     const variants = data.variants || [];
+    const batches = data.batches || [];
     return {
       ...DEFAULT_STATE,
       ...data,
@@ -93,6 +99,7 @@ export default function InventoryModal({
       hasSecondaryExpiration: data.hasSecondaryExpiration || false,
       secondaryExpirationDays: data.secondaryExpirationDays ?? 90,
       openedAt: data.openedAt ? new Date(data.openedAt) : undefined,
+      batches,
     };
   };
 
@@ -112,10 +119,11 @@ export default function InventoryModal({
   // --- VARIANT LOGIC ---
   const addVariant = () => {
     const newVariant: InventoryVariant = {
-      id: Date.now().toString(),
+      id: uniqueId(),
       name: '',
       quantityPerUnit: 1, 
-      stock: 0
+      stock: 0,
+      reorderThreshold: 0
     };
     setFormData(prev => ({
       ...prev,
@@ -142,11 +150,175 @@ export default function InventoryModal({
     }));
   };
 
+  // --- BATCH / LOT LOGIC ---
+  const addBatch = () => {
+    const newBatch: InventoryBatch = {
+      id: uniqueId(),
+      lotNumber: '',
+      expirationDate: undefined,
+      stock: 0,
+      locations: [],
+    } as InventoryBatch;
+    setFormData(prev => ({ ...prev, batches: [...(prev.batches || []), newBatch] }));
+  };
+
+  const removeBatch = (id: string) => {
+    setFormData(prev => ({ ...prev, batches: (prev.batches || []).filter(b => b.id !== id) }));
+  };
+
+  const updateBatch = (id: string, field: keyof InventoryBatch, value: any) => {
+    setFormData(prev => ({
+      ...prev,
+      batches: (prev.batches || []).map(b => b.id === id ? ({ ...b, [field]: value }) : b)
+    }));
+  };
+
+  const addBatchLocation = (batchId: string) => {
+    setFormData(prev => ({
+      ...prev,
+      batches: (prev.batches || []).map(b => {
+        if (b.id !== batchId) return b;
+        const locations = b.locations || [];
+        return {
+          ...b,
+          locations: [...locations, { id: uniqueId(), name: '', quantity: 0 }]
+        };
+      })
+    }));
+  };
+
+  const updateBatchLocation = (batchId: string, locId: string, field: 'name' | 'quantity', value: any) => {
+    setFormData(prev => ({
+      ...prev,
+      batches: (prev.batches || []).map(b => {
+        if (b.id !== batchId) return b;
+        const locations = (b.locations || []).map(l => l.id === locId ? ({ ...l, [field]: field === 'quantity' ? Number(value) : value }) : l);
+        return { ...b, locations };
+      })
+    }));
+  };
+
+  const removeBatchLocation = (batchId: string, locId: string) => {
+    setFormData(prev => ({
+      ...prev,
+      batches: (prev.batches || []).map(b => {
+        if (b.id !== batchId) return b;
+        return { ...b, locations: (b.locations || []).filter(l => l.id !== locId) };
+      })
+    }));
+  };
+
+  // --- DRAG & DROP FOR REORDERING VARIANTS ---
+  const dragIndex = useRef<number | null>(null);
+  const dragOverIndex = useRef<number | null>(null);
+  const [draggingIdx, setDraggingIdx] = useState<number | null>(null);
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+
+  const handleDragStart = (e: React.DragEvent, index: number) => {
+    dragIndex.current = index;
+    setDraggingIdx(index);
+    setDragOverIdx(null);
+    try { e.dataTransfer?.setData('text/plain', String(index)); } catch {}
+    e.dataTransfer!.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    dragOverIndex.current = index;
+    setDragOverIdx(index);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const from = dragIndex.current ?? Number(e.dataTransfer?.getData('text/plain'));
+    const to = dragOverIndex.current ?? from;
+    if (from == null || to == null) {
+      dragIndex.current = null;
+      dragOverIndex.current = null;
+      setDraggingIdx(null);
+      setDragOverIdx(null);
+      return;
+    }
+
+    setFormData(prev => {
+      const arr = [...prev.variants];
+      const [moved] = arr.splice(from, 1);
+      arr.splice(to, 0, moved);
+      return { ...prev, variants: arr };
+    });
+
+    dragIndex.current = null;
+    dragOverIndex.current = null;
+    setDraggingIdx(null);
+    setDragOverIdx(null);
+  };
+
+  const handleDragEnd = () => {
+    dragIndex.current = null;
+    dragOverIndex.current = null;
+    setDraggingIdx(null);
+    setDragOverIdx(null);
+  };
+
+  // --- OPEN/CONSUME BOX HELPERS ---
+  const [consumeCount, setConsumeCount] = useState<number>(1);
+
+  const computeTotalItems = (sealedBoxes: number, openItems: number, qtyPerBox: number) => {
+    return (sealedBoxes || 0) * (qtyPerBox || 1) + (openItems || 0);
+  };
+
+  const openBoxAction = () => {
+    setFormData(prev => {
+      const sealed = Number(prev.unopenedQuantity ?? 0);
+      if (sealed <= 0) return prev;
+      const qty = Number(prev.quantityPerUnit ?? 1);
+      return {
+        ...prev,
+        unopenedQuantity: sealed - 1,
+        openedQuantity: Number(prev.openedQuantity ?? 0) + qty,
+        openedAt: prev.openedAt ?? new Date()
+      };
+    });
+  };
+
+  const consumeItemsAction = (count: number) => {
+    setFormData(prev => {
+      let sealed = Number(prev.unopenedQuantity ?? 0);
+      let open = Number(prev.openedQuantity ?? 0);
+      const qtyPer = Number(prev.quantityPerUnit ?? 1);
+      let toConsume = Math.max(0, Math.floor(count));
+
+      // consume from open items first
+      const usedFromOpen = Math.min(open, toConsume);
+      open -= usedFromOpen;
+      toConsume -= usedFromOpen;
+
+      // open boxes as needed to satisfy remainder
+      while (toConsume > 0 && sealed > 0) {
+        sealed -= 1;
+        open += qtyPer;
+        const used = Math.min(open, toConsume);
+        open -= used;
+        toConsume -= used;
+      }
+
+      const openedAt = open > 0 ? (prev.openedAt ?? new Date()) : undefined;
+      return {
+        ...prev,
+        unopenedQuantity: sealed,
+        openedQuantity: open,
+        openedAt,
+      };
+    });
+  };
+
   // --- SUBMIT ---
   const handleSubmit = (onClose: () => void) => {
     if (!formData.name) return;
     
-    let finalStock = Number(formData.totalStockQuantity ?? 0);
+    // If batches exist, derive total from batches; otherwise use existing logic.
+    const batchTotal = (formData.batches || []).reduce((acc, b) => acc + Number((b as any).stock ?? 0), 0);
+    let finalStock = batchTotal > 0 ? batchTotal : Number(formData.totalStockQuantity ?? 0);
     
     // Logic 1: Variants override manual stock
     if (formData.hasVariants) {
@@ -187,10 +359,23 @@ export default function InventoryModal({
       openedAt: formData.openedAt ? new Date(formData.openedAt) : undefined,
 
       variants: formData.hasVariants ? formData.variants.map(v => ({
-        ...v, 
+        ...v,
         quantityPerUnit: Number(v.quantityPerUnit),
-        stock: Number(v.stock)
-      })) : []
+        stock: Number(v.stock),
+        reorderThreshold: Number(v.reorderThreshold ?? formData.reorderThreshold ?? 0)
+      })) : [],
+      // include batches if any (convert dates/numbers client-side)
+      batches: (formData.batches || []).map(b => ({
+        ...b,
+        stock: Number((b as any).stock ?? 0),
+        expirationDate: b.expirationDate ? new Date(b.expirationDate) : undefined,
+        receivedAt: b.receivedAt ? new Date(b.receivedAt) : undefined,
+        locations: (b.locations || []).map(loc => ({
+          ...loc,
+          quantity: Number(loc.quantity ?? 0),
+          name: loc.name ?? ''
+        }))
+      }))
     };
 
     if (initialData && initialData.id) {
@@ -217,7 +402,7 @@ export default function InventoryModal({
       onOpenChange={onOpenChange}
       placement="center"
       backdrop="blur"
-      size="3xl"
+      size="4xl"
       scrollBehavior="inside"
       classNames={{
         base: "dark:bg-slate-800",
@@ -383,14 +568,14 @@ export default function InventoryModal({
                         label="Sealed Boxes" 
                         placeholder="0" 
                         value={formData.unopenedQuantity?.toString()}
-                        onValueChange={(v) => setFormData({...formData, unopenedQuantity: v})}
+                        onValueChange={(v) => setFormData({...formData, unopenedQuantity: Number(v)})}
                       />
                       <Input 
                         type="number" 
                         label="Qty in Open Box" 
                         placeholder="0" 
                         value={formData.openedQuantity?.toString()}
-                        onValueChange={(v) => setFormData({...formData, openedQuantity: v})}
+                        onValueChange={(v) => setFormData({...formData, openedQuantity: Number(v)})}
                         endContent={<span className="text-xs text-gray-400">items</span>}
                       />
                       <Input 
@@ -399,8 +584,16 @@ export default function InventoryModal({
                         placeholder="100" 
                         className="col-span-2"
                         value={formData.quantityPerUnit?.toString()}
-                        onValueChange={(v) => setFormData({...formData, quantityPerUnit: v})}
+                        onValueChange={(v) => setFormData({...formData, quantityPerUnit: Number(v)})}
                       />
+                      <div className="col-span-2 flex items-center gap-2">
+                        <Button size="sm" color="primary" variant="flat" onPress={openBoxAction}>Open Box</Button>
+                        <Button size="sm" color="warning" variant="flat" onPress={() => consumeItemsAction(1)}>Consume 1</Button>
+                        <div className="flex items-center gap-2">
+                          <Input size="sm" type="number" value={String(consumeCount)} onValueChange={(v) => setConsumeCount(Number(v ?? 1))} className="w-20" />
+                          <Button size="sm" color="danger" variant="flat" onPress={() => consumeItemsAction(consumeCount)}>Consume</Button>
+                        </div>
+                      </div>
                   </div>
                 )}
 
@@ -426,14 +619,38 @@ export default function InventoryModal({
                               <Button size="sm" color="primary" variant="flat" onPress={addVariant} startContent={<Plus size={14} />}>Add Row</Button>
                            </div>
                            <div className="space-y-2">
-                             {formData.variants.map((v) => (
-                               <div key={v.id} className="grid grid-cols-12 gap-2 items-start">
-                                  <div className="col-span-5"><Input size="sm" placeholder="Name" value={v.name} onValueChange={(val) => updateVariant(v.id, 'name', val)} /></div>
-                                  <div className="col-span-3"><Input size="sm" type="number" placeholder="Qty/Unit" value={v.quantityPerUnit.toString()} onValueChange={(val) => updateVariant(v.id, 'quantityPerUnit', Number(val))} /></div>
-                                  <div className="col-span-3"><Input size="sm" type="number" placeholder="Stock" color="success" value={v.stock.toString()} onValueChange={(val) => updateVariant(v.id, 'stock', Number(val))} /></div>
-                                  <div className="col-span-1 flex justify-end"><Button isIconOnly size="sm" color="danger" variant="light" onPress={() => removeVariant(v.id)}><Trash2 size={16} /></Button></div>
+                             <div className="grid items-center gap-2 text-xs text-gray-500 font-semibold mb-1" style={{gridTemplateColumns: '40px 1fr 80px 80px 140px 40px'}}>
+                               <div />
+                               <div>Name</div>
+                               <div>Qty / Unit</div>
+                               <div>Stock</div>
+                               <div>Reorder Threshold</div>
+                               <div />
+                             </div>
+                             {formData.variants.map((v, idx) => {
+                               const isOver = dragOverIdx === idx;
+                               const isDragging = draggingIdx === idx;
+                               return (
+                                 <div
+                                 key={`${v.id}-${idx}`}
+                                 draggable
+                                 onDragStart={(e) => handleDragStart(e, idx)}
+                                 onDragOver={(e) => handleDragOver(e, idx)}
+                                 onDrop={handleDrop}
+                                 onDragEnd={handleDragEnd}
+                                 role="button"
+                                 aria-grabbed={isDragging}
+                                 className={`grid items-center gap-2 ${isDragging ? 'opacity-60' : ''} ${isOver ? 'bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 rounded-md' : ''}`}
+                                 style={{gridTemplateColumns: '40px 1fr 80px 80px 140px 40px'}}
+                               >
+                                  <div className="flex items-center justify-center cursor-grab"><GripVertical size={14} className="text-gray-400"/></div>
+                                  <div><Input size="sm" placeholder="Name" value={v.name} onValueChange={(val) => updateVariant(v.id, 'name', val)} /></div>
+                                  <div><Input size="sm" type="number" placeholder="Qty/Unit" value={String(v.quantityPerUnit ?? '')} onValueChange={(val) => updateVariant(v.id, 'quantityPerUnit', Number(val))} /></div>
+                                  <div><Input size="sm" type="number" placeholder="Stock" color="success" value={String(v.stock ?? '')} onValueChange={(val) => updateVariant(v.id, 'stock', Number(val))} /></div>
+                                  <div><Input size="sm" type="number" placeholder="Reorder" value={String(v.reorderThreshold ?? formData.reorderThreshold ?? 0)} onValueChange={(val) => updateVariant(v.id, 'reorderThreshold', Number(val))} /></div>
+                                  <div className="flex justify-end"><Button isIconOnly size="sm" color="danger" variant="light" onPress={() => removeVariant(v.id)}><Trash2 size={16} /></Button></div>
                                </div>
-                             ))}
+                             )})}
                            </div>
                         </div>
                     ) : (
@@ -481,14 +698,25 @@ export default function InventoryModal({
                             <span className="text-xs text-gray-400">Manufacturer expiration date</span>
                         </div>
                         <Switch 
-                            isSelected={formData.tracksExpiration ?? false} 
-                            onValueChange={(val) => setFormData({...formData, tracksExpiration: val})}
+                                isSelected={formData.tracksExpiration ?? false} 
+                                onValueChange={(val) => {
+                                  if (val) {
+                                    // enabling expiration tracking: move any top-level expiration into an initial batch
+                                    setFormData(prev => {
+                                      const existing = (prev.batches || []).length > 0 ? prev.batches : [{ id: uniqueId(), lotNumber: '', expirationDate: prev.expirationDate ?? undefined, stock: Number(prev.totalStockQuantity ?? 0), locations: [] } as InventoryBatch];
+                                      return { ...prev, tracksExpiration: true, batches: existing, expirationDate: undefined };
+                                    });
+                                  } else {
+                                    // disabling: keep batches but allow top-level expiration input to return
+                                    setFormData(prev => ({ ...prev, tracksExpiration: false }));
+                                  }
+                                }}
                             color="warning"
                             isDisabled={!canToggleExpiration}
                         />
                     </div>
                     
-                    {formData.tracksExpiration && (
+                    {!formData.tracksExpiration && (
                         <Input 
                         type="date"
                         label="Manufacturer Expiration"
@@ -520,13 +748,13 @@ export default function InventoryModal({
 
                     {formData.hasSecondaryExpiration && (
                         <div className="grid grid-cols-2 gap-4 mt-2">
-                             <Input 
+                              <Input 
                                 type="number"
                                 label="Valid Days After Opening"
                                 placeholder="90"
                                 value={formData.secondaryExpirationDays?.toString()}
-                                onValueChange={(v) => setFormData({...formData, secondaryExpirationDays: v})}
-                             />
+                                onValueChange={(v) => setFormData({...formData, secondaryExpirationDays: Number(v)})}
+                              />
                              <Input 
                                 type="date"
                                 label="Date Opened"
@@ -539,6 +767,53 @@ export default function InventoryModal({
                              />
                         </div>
                     )}
+                    {/* --- BATCH / LOTS --- */}
+                    <Divider className="my-2" />
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex flex-col">
+                          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Batches / Lots</span>
+                          <span className="text-xs text-gray-400">Track lot numbers, expirations and per-lot stock.</span>
+                        </div>
+                        <Button size="sm" color="primary" variant="flat" onPress={addBatch} startContent={<Plus size={12} />}>Add Batch</Button>
+                      </div>
+                      {(formData.batches || []).length === 0 && (
+                        <p className="text-xs text-gray-400">No batches added. Add a batch for lot-specific tracking.</p>
+                      )}
+                      <div className="space-y-2 mt-2">
+                        {(formData.batches || []).map((b, bidx) => (
+                          <div key={`${b.id}-${bidx}`} className="space-y-2 p-2 border rounded-md bg-gray-50 dark:bg-slate-800/40">
+                            <div className="grid grid-cols-1 md:grid-cols-6 gap-2 items-end">
+                              <Input size="sm" label="Lot # (optional)" value={b.lotNumber || ''} onValueChange={(v) => updateBatch(b.id, 'lotNumber', v)} />
+                              <Input size="sm" type="date" label="Expiration" value={getDateString(b.expirationDate as Date)} onValueChange={(v) => updateBatch(b.id, 'expirationDate', v ? new Date(v) : undefined)} />
+                              <Input size="sm" type="number" label="Qty Total" value={String((b as any).stock ?? 0)} onValueChange={(v) => updateBatch(b.id, 'stock', Number(v))} />
+                              <Input size="sm" type="date" label="Received" value={getDateString((b.receivedAt as Date) ?? undefined)} onValueChange={(v) => updateBatch(b.id, 'receivedAt', v ? new Date(v) : undefined)} />
+                              <Input size="sm" label="Notes" value={(b as any).notes ?? ''} onValueChange={(v) => updateBatch(b.id, 'notes', v)} />
+                              <div className="flex items-center justify-end"><Button size="sm" color="danger" variant="light" onPress={() => removeBatch(b.id)}><Trash2 size={14} /></Button></div>
+                            </div>
+                            <div className="bg-white dark:bg-slate-900/40 rounded-md p-2 border border-dashed border-gray-200 dark:border-slate-700">
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">Locations for this batch</span>
+                                <Button size="sm" variant="flat" color="secondary" onPress={() => addBatchLocation(b.id)} startContent={<Plus size={12} />}>Add Location</Button>
+                              </div>
+                              {(b.locations && b.locations.length > 0) ? (
+                                <div className="space-y-2">
+                                  {b.locations.map((loc, lidx) => (
+                                    <div key={`${loc.id}-${lidx}`} className="grid grid-cols-1 md:grid-cols-6 gap-2 items-end">
+                                      <Input size="sm" label="Location name" placeholder="Back storage / Statpack / Front desk" value={loc.name} onValueChange={(v) => updateBatchLocation(b.id, loc.id, 'name', v)} className="md:col-span-4" />
+                                      <Input size="sm" type="number" label="Qty here" value={String(loc.quantity ?? 0)} onValueChange={(v) => updateBatchLocation(b.id, loc.id, 'quantity', Number(v))} />
+                                      <div className="flex items-center justify-end"><Button size="sm" color="danger" variant="light" onPress={() => removeBatchLocation(b.id, loc.id)}><Trash2 size={14} /></Button></div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="text-[11px] text-gray-500">Use location rows to split this batch across spots (e.g., 3 in back storage, 2 in Statpack).</p>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                 </div>
 
                 <div className="md:col-span-2 mt-2">

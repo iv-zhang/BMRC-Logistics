@@ -32,7 +32,7 @@ import {
   increment
 } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
-import { Statpack, StatpackItem, StatpackPocket } from '@/app/types';
+import { Statpack, StatpackItem, StatpackPocket, User } from '@/app/types';
 import { BagVisualizer } from '@/app/components/statpackvisualizer';
 import {
   ArrowLeft,
@@ -108,6 +108,8 @@ export default function MobileCheckoutClient() {
   const [activeStepIndex, setActiveStepIndex] = useState(0);
   const [completedSteps, setCompletedSteps] = useState<Set<string>>(new Set());
   const [submitting, setSubmitting] = useState(false);
+    const [autoReviewMode, setAutoReviewMode] = useState(false);
+    const [stepOrder, setStepOrder] = useState<string[]>([]);
   
   // Modals
   const { isOpen: isMapOpen, onOpen: onMapOpen, onOpenChange: onMapChange } = useDisclosure();
@@ -144,7 +146,7 @@ export default function MobileCheckoutClient() {
   }, [router]);
 
   useEffect(() => {
-    if (!id || !user) return;
+        if (!id || !user) return;
     const fetchPack = async () => {
       try {
         const ref = doc(db, 'statpacks', id);
@@ -167,6 +169,13 @@ export default function MobileCheckoutClient() {
           } as Statpack;
 
           setPack(packData);
+
+                    // initialize step order when pack loads
+                    // (use IDs so order can be mutated independently of the computed `steps` array)
+                    setStepOrder((packData.compartments || []).map((c: any) => c.id).concat(
+                        (['main', 'front_aux', 'side_left', 'side_right'] as StatpackPocket[])
+                            .flatMap(pocket => (packData.contents || []).filter((i: any) => i.pocket === pocket && !i.compartmentId).length > 0 ? [`loose_${pocket}`] : [])
+                    ));
           
           // Pre-fill expiration dates
           const initialSealExps: Record<string, string> = {};
@@ -194,7 +203,7 @@ export default function MobileCheckoutClient() {
     fetchPack();
   }, [id, user]);
 
-  const steps = useMemo<CheckoutStep[]>(() => {
+    const steps = useMemo<CheckoutStep[]>(() => {
     if (!pack) return [];
     const _steps: CheckoutStep[] = [];
     if (pack.compartments) {
@@ -232,6 +241,19 @@ export default function MobileCheckoutClient() {
     });
     return _steps;
   }, [pack]);
+
+    // Resolve the current step from `stepOrder` index
+    const currentStep: CheckoutStep | undefined = useMemo(() => {
+        const id = stepOrder[activeStepIndex];
+        if (!id) return steps[activeStepIndex];
+        return steps.find(s => s.id === id) || steps[activeStepIndex];
+    }, [stepOrder, activeStepIndex, steps]);
+
+    // Ensure activeStepIndex is within bounds if stepOrder changes
+    useEffect(() => {
+        if (stepOrder.length === 0) return;
+        if (activeStepIndex >= stepOrder.length) setActiveStepIndex(Math.max(0, stepOrder.length - 1));
+    }, [stepOrder, activeStepIndex]);
 
   // --- Handlers ---
 
@@ -320,27 +342,71 @@ export default function MobileCheckoutClient() {
 
   // --- Navigation & Finish ---
 
-  const handleStepComplete = () => {
-    const step = steps[activeStepIndex];
-    setCompletedSteps(prev => new Set(prev).add(step.id));
-    
-    if (activeStepIndex < steps.length - 1) {
-      setActiveStepIndex(prev => prev + 1);
-    } else {
-      setView('review');
-    }
-  };
+    const handleStepComplete = () => {
+        const step = currentStep;
+        if (!step) return;
+        if (!isStepComplete(step)) {
+            alert('Please verify this step before continuing.');
+            return;
+        }
+
+        setCompletedSteps(prev => new Set(prev).add(step.id));
+
+        // If we're in auto-review mode, jump to the next incomplete step across the dynamic order
+        if (autoReviewMode) {
+            const nextIncompleteIndex = stepOrder.findIndex(id => {
+                const s = steps.find(ss => ss.id === id);
+                return !!s && !isStepComplete(s);
+            });
+            if (nextIncompleteIndex !== -1) {
+                setActiveStepIndex(nextIncompleteIndex);
+                return;
+            }
+            // All done
+            setAutoReviewMode(false);
+            setView('review');
+            return;
+        }
+
+        if (activeStepIndex < (stepOrder.length || steps.length) - 1) {
+            setActiveStepIndex(prev => prev + 1);
+        } else {
+            setView('review');
+        }
+    };
 
   const jumpToPocket = (pocket: StatpackPocket | 'all') => {
     if (pocket === 'all') return;
-    const firstStepIndex = steps.findIndex(s => s.parentPocket === pocket);
-    if (firstStepIndex !== -1) {
-        setActiveStepIndex(firstStepIndex);
-        setView('steps');
-        if (isMapOpen) onMapChange(); 
-    } else {
-        alert("No items configured in this pocket.");
-    }
+        // Reorder stepOrder so incomplete steps outside this pocket move to the end
+        const pocketIds = steps.filter(s => s.parentPocket === pocket).map(s => s.id);
+        if (pocketIds.length === 0) {
+            alert('No items configured in this pocket.');
+            return;
+        }
+
+        const incompleteOtherIds = stepOrder.filter(id => {
+            const s = steps.find(ss => ss.id === id);
+            return !!s && s.parentPocket !== pocket && !completedSteps.has(id);
+        });
+
+        const newOrder = stepOrder.filter(id => !incompleteOtherIds.includes(id)).concat(incompleteOtherIds);
+        setStepOrder(newOrder);
+
+        // Jump to first incomplete in pocket within the new order; fall back to pocket's first id
+        const firstIncompleteIndex = newOrder.findIndex(id => pocketIds.includes(id) && !isStepComplete(steps.find(s => s.id === id)!));
+        if (firstIncompleteIndex !== -1) {
+                setActiveStepIndex(firstIncompleteIndex);
+                setView('steps');
+                if (isMapOpen) onMapChange();
+                return;
+        }
+
+        const firstIndex = newOrder.findIndex(id => pocketIds.includes(id));
+        if (firstIndex !== -1) {
+                setActiveStepIndex(firstIndex);
+                setView('steps');
+                if (isMapOpen) onMapChange();
+        }
   };
 
   const handleFinish = async () => {
@@ -386,8 +452,18 @@ export default function MobileCheckoutClient() {
       const unresolvedIssues = Object.values(issueReports).some(r => !r.isReplaced);
       const status = unresolvedIssues ? 'Restock Needed' : 'In Use';
 
-      // 4. Safe User Name logic
-      const safeUserName = (user as any).fullName || user.displayName || user.email || 'Unknown User';
+            // 4. Safe User Name logic: prefer Firestore `users.{uid}.fullName` when available
+            let safeUserName = user.displayName || user.email || 'Unknown User';
+            try {
+                const userRef = doc(db, 'users', user.uid);
+                const userSnap = await getDoc(userRef);
+                if (userSnap.exists()) {
+                    const ud = userSnap.data() as Partial<User> | undefined;
+                    if (ud?.fullName) safeUserName = ud.fullName;
+                }
+            } catch (e) {
+                console.warn('Failed to read user profile for name resolution', e);
+            }
 
       batch.update(packRef, {
         isCheckedOut: true,
@@ -430,15 +506,94 @@ export default function MobileCheckoutClient() {
           }
       });
 
-      Object.values(issueReports).forEach(report => {
-          if (report.isReplaced && report.replacedQuantity > 0) {
-              const inventoryRef = doc(db, 'inventory', report.itemId);
-              batch.update(inventoryRef, {
-                  totalStockQuantity: increment(-report.replacedQuantity),
-                  updatedAt: serverTimestamp()
-              });
-          }
-      });
+            // For replaced items, prefer decrementing the specific inventory variant/lot that matches the provided expiration date.
+            for (const report of Object.values(issueReports)) {
+                if (!report.isReplaced || !report.replacedQuantity || report.replacedQuantity <= 0) continue;
+
+                const inventoryRef = doc(db, 'inventory', report.itemId);
+                try {
+                    const invSnap = await getDoc(inventoryRef);
+                    if (!invSnap.exists()) {
+                        // fallback: decrement master total
+                        batch.update(inventoryRef, { totalStockQuantity: increment(-report.replacedQuantity), updatedAt: serverTimestamp() });
+                        continue;
+                    }
+
+                    const invData: any = invSnap.data();
+                    const variants: any[] = Array.isArray(invData.variants) ? invData.variants.slice() : [];
+                    const batches: any[] = Array.isArray(invData.batches) ? invData.batches.slice() : [];
+                    let handled = false;
+
+                    // Normalize incoming date (compare only date part)
+                    let targetDate: Date | null = null;
+                    if (report.newExpirationDate) {
+                        try {
+                            targetDate = new Date(report.newExpirationDate);
+                            if (isNaN(targetDate.getTime())) targetDate = null;
+                        } catch (e) {
+                            targetDate = null;
+                        }
+                    }
+
+                    // 1) Prefer adjusting batches (expiration-tracking) when available
+                    if (!handled && batches.length > 0 && targetDate) {
+                        const sameDay = (a?: any, b?: Date) => {
+                            if (!a || !b) return false;
+                            const ad = (a instanceof Date) ? a : (a?.toDate ? a.toDate() : new Date(a));
+                            return ad.getFullYear() === b.getFullYear() && ad.getMonth() === b.getMonth() && ad.getDate() === b.getDate();
+                        };
+
+                        for (let i = 0; i < batches.length; i++) {
+                            const b = batches[i];
+                            if (sameDay(b.expirationDate, targetDate) || ((b.lotNumber || '') && (report as any).lotNumber && String(b.lotNumber) === String((report as any).lotNumber))) {
+                                batches[i] = { ...b, stock: Math.max(0, Number(b.stock ?? 0) - Number(report.replacedQuantity)) };
+                                const totalAfter = batches.reduce((acc, bb) => acc + Number(bb.stock ?? 0), 0) + variants.reduce((acc, vv) => acc + Number(vv.stock ?? 0), 0);
+                                batch.update(inventoryRef, { batches, totalStockQuantity: totalAfter, updatedAt: serverTimestamp() });
+                                handled = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    // 2) Legacy: if no batches matched, try matching variant expirations
+                    if (!handled && targetDate) {
+                        const sameDay = (a?: any, b?: Date) => {
+                            if (!a || !b) return false;
+                            const ad = (a instanceof Date) ? a : (a?.toDate ? a.toDate() : new Date(a));
+                            return ad.getFullYear() === b.getFullYear() && ad.getMonth() === b.getMonth() && ad.getDate() === b.getDate();
+                        };
+
+                        for (let i = 0; i < variants.length; i++) {
+                            const v = variants[i];
+                            if (sameDay(v.expirationDate, targetDate)) {
+                                // decrement this variant's stock
+                                const newStock = Math.max(0, Number(v.stock ?? 0) - Number(report.replacedQuantity));
+                                variants[i] = { ...v, stock: newStock };
+                                const totalAfter = (invData.totalStockQuantity ?? 0) - Number(report.replacedQuantity);
+                                batch.update(inventoryRef, { variants, totalStockQuantity: totalAfter, updatedAt: serverTimestamp() });
+                                handled = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!handled) {
+                        // No matching batch/variant found; fall back to decrementing master total and optionally set top-level expiration if provided
+                        const updatePayload: any = { totalStockQuantity: increment(-report.replacedQuantity), updatedAt: serverTimestamp() };
+                        if (report.newExpirationDate) {
+                            try {
+                                const d = new Date(report.newExpirationDate);
+                                if (!isNaN(d.getTime())) updatePayload.expirationDate = d;
+                            } catch (e) {}
+                        }
+                        batch.update(inventoryRef, updatePayload);
+                    }
+                } catch (err) {
+                    console.error('Error resolving inventory for replacement', err);
+                    // best-effort fallback
+                    batch.update(inventoryRef, { totalStockQuantity: increment(-report.replacedQuantity), updatedAt: serverTimestamp() });
+                }
+            }
 
       await batch.commit();
       router.push(`/mobile?id=${pack.id}`); 
@@ -453,20 +608,19 @@ export default function MobileCheckoutClient() {
   if (error) return <div className="p-6 text-center text-red-500">{error}</div>;
   if (!pack) return null;
 
-  const currentStep = steps[activeStepIndex];
-  const progressVal = (completedSteps.size / steps.length) * 100;
+    const progressVal = (completedSteps.size / (stepOrder.length || steps.length)) * 100;
 
-  const isStepComplete = () => {
-      if (currentStep.isSealed) {
-          if (sealCheck[currentStep.id] === undefined) return false;
-          if (sealCheck[currentStep.id] === true) return true;
+  const isStepComplete = (step: CheckoutStep) => {
+      if (step.isSealed) {
+          if (sealCheck[step.id] === undefined) return false;
+          if (sealCheck[step.id] === true) return true;
       }
-      
-      return currentStep.items.every(item => {
-          const isVerified = verifiedItems[item.itemId];
+
+      return step.items.every(item => {
+          const isVerified = !!verifiedItems[item.itemId];
           const hasIssue = !!issueReports[item.itemId];
           const isOxygen = item.itemDetails?.isOxygen;
-          
+
           if (isOxygen && !hasIssue) {
               return isVerified && oxygenReadings[item.itemId] && parseInt(oxygenReadings[item.itemId]) >= 0;
           }
@@ -518,16 +672,29 @@ export default function MobileCheckoutClient() {
     return (
       <div className="min-h-screen bg-gray-50 dark:bg-slate-900 flex flex-col">
         <div className="bg-white dark:bg-slate-800 px-4 py-2 sticky top-0 z-20 border-b border-gray-200 dark:border-slate-700 shadow-sm flex items-center justify-between">
-           <div className="flex items-center gap-2 overflow-hidden">
-              <Button isIconOnly size="sm" variant="light" onPress={() => setView('intro')}><ArrowLeft size={18}/></Button>
-              <div className="flex flex-col truncate">
-                  <span className="font-bold text-sm">Step {activeStepIndex + 1}/{steps.length}</span>
-                  <span className="text-[10px] text-gray-500 truncate">{currentStep.name}</span>
-              </div>
-           </div>
+        <div className="flex items-center gap-2 overflow-hidden">
+                  <Button isIconOnly size="sm" variant="light" onPress={() => setView('intro')}><ArrowLeft size={18}/></Button>
+                  <div className="flex flex-col truncate">
+                      <span className="font-bold text-sm">Step {activeStepIndex + 1}/{(stepOrder.length || steps.length)}</span>
+                      <span className="text-[10px] text-gray-500 truncate">{currentStep?.name}</span>
+                  </div>
+               </div>
            <div className="flex gap-2 shrink-0">
                <Button size="sm" variant="flat" color="secondary" onPress={onMapOpen} startContent={<MapIcon size={14}/>}>Map</Button>
-               <Button size="sm" variant="flat" onPress={() => setView('review')}>Review</Button>
+               <Button size="sm" variant="flat" onPress={() => {
+                   const firstIncomplete = stepOrder.findIndex(id => {
+                       const s = steps.find(ss => ss.id === id);
+                       return !!s && !isStepComplete(s);
+                   });
+                   if (firstIncomplete !== -1) {
+                       // Enter auto-review mode: jump to first incomplete and automatically walk remaining steps
+                       setAutoReviewMode(true);
+                       setActiveStepIndex(firstIncomplete);
+                       setView('steps');
+                   } else {
+                       setView('review');
+                   }
+               }}>Review</Button>
            </div>
         </div>
         
@@ -674,7 +841,7 @@ export default function MobileCheckoutClient() {
         <div className="p-4 bg-white dark:bg-slate-800 border-t border-gray-200 dark:border-slate-700 fixed bottom-0 left-0 right-0 z-20 shadow-xl">
             <div className="max-w-lg mx-auto flex gap-3">
                <Button fullWidth variant="bordered" isDisabled={activeStepIndex === 0} onPress={() => setActiveStepIndex(prev => prev - 1)}>Back</Button>
-               <Button fullWidth color="primary" onPress={handleStepComplete} isDisabled={!isStepComplete()}>
+                             <Button fullWidth color="primary" onPress={handleStepComplete} isDisabled={!isStepComplete(currentStep)}>
                  {activeStepIndex === steps.length - 1 ? 'Review' : 'Next Step'}
                </Button>
             </div>
@@ -705,7 +872,7 @@ export default function MobileCheckoutClient() {
                             <p className="text-sm text-gray-500 mb-2">What is wrong with this item?</p>
                             <RadioGroup 
                                 value={tempIssueData.issueType} 
-                                onValueChange={(val) => setTempIssueData(prev => ({...prev, issueType: val as any}))}
+                                onValueChange={(val: string) => setTempIssueData(prev => ({...prev, issueType: val as IssueReport['issueType']}))}
                             >
                                 <Radio value="missing" description="Item is not in the bag">Missing / Not Found</Radio>
                                 <Radio value="expired" description="Expiration date passed">Expired</Radio>
@@ -778,11 +945,19 @@ export default function MobileCheckoutClient() {
   }
 
   // --- VIEW: REVIEW ---
-  if (view === 'review') {
-    const issueCount = Object.keys(issueReports).length;
-    const unresolved = Object.values(issueReports).filter(r => !r.isReplaced).length;
-    
-    return (
+    if (view === 'review') {
+        const issueCount = Object.keys(issueReports).length;
+        const unresolved = Object.values(issueReports).filter(r => !r.isReplaced).length;
+        const allStepsVerified = (stepOrder.length || steps.length) > 0 ? (stepOrder.length ? stepOrder.every(id => {
+            const s = steps.find(ss => ss.id === id);
+            return !!s && isStepComplete(s);
+        }) : steps.every(isStepComplete)) : true;
+        const remaining = (stepOrder.length ? stepOrder.filter(id => {
+            const s = steps.find(ss => ss.id === id);
+            return !!s && !isStepComplete(s);
+        }).length : steps.filter(s => !isStepComplete(s)).length);
+
+        return (
        <div className="min-h-screen bg-gray-50 dark:bg-slate-900 p-6 pb-24">
           <div className="max-w-lg mx-auto">
              <Button isIconOnly variant="light" onPress={() => setView('steps')} className="mb-4"><ArrowLeft /></Button>
@@ -811,17 +986,35 @@ export default function MobileCheckoutClient() {
                 </div>
              )}
 
-             <Textarea label="Shift Notes" placeholder="Any damage or comments?" value={notes} onValueChange={setNotes} className="mb-6" />
+                 <Textarea label="Shift Notes" placeholder="Any damage or comments?" value={notes} onValueChange={setNotes} className="mb-6" />
 
-             <Button 
-                size="lg" 
-                color={unresolved > 0 ? "warning" : "success"} 
-                className="w-full font-bold shadow-lg"
-                onPress={handleFinish}
-                isLoading={submitting}
-             >
-                {unresolved > 0 ? 'Submit Report (Needs Restock)' : 'Complete Checkout'}
-             </Button>
+                 {!allStepsVerified && (
+                     <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 text-yellow-800 rounded">
+                         {remaining} step(s) remain incomplete. Please finish verification before completing checkout.
+                     </div>
+                 )}
+
+                 <Button 
+                     size="lg" 
+                     color={unresolved > 0 ? "warning" : "success"} 
+                     className="w-full font-bold shadow-lg"
+                     onPress={() => {
+                          if (!allStepsVerified) {
+                                const firstIncomplete = steps.findIndex(s => !isStepComplete(s));
+                                if (firstIncomplete !== -1) {
+                                     setActiveStepIndex(firstIncomplete);
+                                     setView('steps');
+                                }
+                                alert('Please complete all verification steps before finalizing checkout.');
+                                return;
+                          }
+                          handleFinish();
+                     }}
+                     isLoading={submitting}
+                     isDisabled={!allStepsVerified}
+                 >
+                     {unresolved > 0 ? 'Submit Report (Needs Restock)' : 'Complete Checkout'}
+                 </Button>
           </div>
        </div>
     );
