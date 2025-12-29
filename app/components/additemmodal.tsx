@@ -34,7 +34,6 @@ type InventoryFormState = Partial<Omit<InventoryItem, 'totalStockQuantity' | 're
   quantityPerUnit?: number | string;
   oxygenPsi?: number;
   maxOxygenPsi?: number;
-  secondaryExpirationDays?: number | string;
 };
 
 const DEFAULT_STATE: InventoryFormState = {
@@ -48,8 +47,6 @@ const DEFAULT_STATE: InventoryFormState = {
   reorderThreshold: 5,
   isDisposable: true,
   description: '',
-  tracksExpiration: false,
-  expirationDate: undefined,
   hasVariants: false,
   variants: [],
   // New Defaults
@@ -60,8 +57,7 @@ const DEFAULT_STATE: InventoryFormState = {
   isOxygen: false,
   oxygenPsi: 2000,
   maxOxygenPsi: 2000,
-  hasSecondaryExpiration: false,
-  secondaryExpirationDays: 90,
+  // expiration tracking removed at top-level; batch expirations are authoritative
   openedAt: undefined
   ,
   batches: []
@@ -85,7 +81,7 @@ export default function InventoryModal({
     return {
       ...DEFAULT_STATE,
       ...data,
-      tracksExpiration: !!data.expirationDate || data.tracksExpiration || false,
+      // do not infer top-level expiration; batches hold expirations
       variants,
       hasVariants: data.hasVariants || variants.length > 0,
       // Map new fields or fallback to defaults
@@ -96,8 +92,7 @@ export default function InventoryModal({
       isOxygen: data.isOxygen || false,
       oxygenPsi: data.oxygenPsi ?? 2000,
       maxOxygenPsi: data.maxOxygenPsi ?? 2000,
-      hasSecondaryExpiration: data.hasSecondaryExpiration || false,
-      secondaryExpirationDays: data.secondaryExpirationDays ?? 90,
+      // secondary expiration (per-item) removed
       openedAt: data.openedAt ? new Date(data.openedAt) : undefined,
       batches,
     };
@@ -345,17 +340,12 @@ export default function InventoryModal({
       reorderThreshold: Number(formData.reorderThreshold ?? 0),
       room: formData.location === 'HQ' ? formData.room : undefined,
       
-      tracksExpiration: formData.tracksExpiration,
-      expirationDate: formData.tracksExpiration && formData.expirationDate 
-        ? new Date(formData.expirationDate) 
-        : undefined,
 
       // Oxygen Data
       oxygenPsi: Number(formData.oxygenPsi),
       maxOxygenPsi: Number(formData.maxOxygenPsi),
       
-      // Secondary Expiration
-      secondaryExpirationDays: Number(formData.secondaryExpirationDays),
+      // openedAt retained for open-box tracking; expiration fields are only per-batch now
       openedAt: formData.openedAt ? new Date(formData.openedAt) : undefined,
 
       variants: formData.hasVariants ? formData.variants.map(v => ({
@@ -627,30 +617,16 @@ export default function InventoryModal({
                                <div>Reorder Threshold</div>
                                <div />
                              </div>
-                             {formData.variants.map((v, idx) => {
-                               const isOver = dragOverIdx === idx;
-                               const isDragging = draggingIdx === idx;
-                               return (
-                                 <div
-                                 key={`${v.id}-${idx}`}
-                                 draggable
-                                 onDragStart={(e) => handleDragStart(e, idx)}
-                                 onDragOver={(e) => handleDragOver(e, idx)}
-                                 onDrop={handleDrop}
-                                 onDragEnd={handleDragEnd}
-                                 role="button"
-                                 aria-grabbed={isDragging}
-                                 className={`grid items-center gap-2 ${isDragging ? 'opacity-60' : ''} ${isOver ? 'bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 rounded-md' : ''}`}
-                                 style={{gridTemplateColumns: '40px 1fr 80px 80px 140px 40px'}}
-                               >
-                                  <div className="flex items-center justify-center cursor-grab"><GripVertical size={14} className="text-gray-400"/></div>
-                                  <div><Input size="sm" placeholder="Name" value={v.name} onValueChange={(val) => updateVariant(v.id, 'name', val)} /></div>
-                                  <div><Input size="sm" type="number" placeholder="Qty/Unit" value={String(v.quantityPerUnit ?? '')} onValueChange={(val) => updateVariant(v.id, 'quantityPerUnit', Number(val))} /></div>
-                                  <div><Input size="sm" type="number" placeholder="Stock" color="success" value={String(v.stock ?? '')} onValueChange={(val) => updateVariant(v.id, 'stock', Number(val))} /></div>
-                                  <div><Input size="sm" type="number" placeholder="Reorder" value={String(v.reorderThreshold ?? formData.reorderThreshold ?? 0)} onValueChange={(val) => updateVariant(v.id, 'reorderThreshold', Number(val))} /></div>
-                                  <div className="flex justify-end"><Button isIconOnly size="sm" color="danger" variant="light" onPress={() => removeVariant(v.id)}><Trash2 size={16} /></Button></div>
+                             {formData.variants.map((v) => (
+                               <div key={v.id} className="grid items-center gap-2" style={{gridTemplateColumns: '40px 1fr 80px 80px 140px 40px'}}>
+                                 <div className="flex items-center justify-center cursor-grab"><GripVertical size={14} className="text-gray-400"/></div>
+                                 <div className="text-sm">{v.name}</div>
+                                 <div className="text-sm">{v.quantityPerUnit}</div>
+                                 <div className="text-sm">{v.stock}</div>
+                                 <div className="text-sm">{v.reorderThreshold ?? formData.reorderThreshold ?? 0}</div>
+                                 <div className="flex justify-end"><Button isIconOnly size="sm" color="danger" variant="light" onPress={() => removeVariant(v.id)}><Trash2 size={16} /></Button></div>
                                </div>
-                             )})}
+                             ))}
                            </div>
                         </div>
                     ) : (
@@ -687,86 +663,8 @@ export default function InventoryModal({
                   />
                 </div>
 
-                {/* --- EXPIRATION & SECONDARY EXPIRATION --- */}
                 <Divider className="md:col-span-2 my-2" />
-                
                 <div className="flex flex-col gap-4 md:col-span-2 border-2 border-default-200 rounded-xl p-4">
-                    {/* Primary Expiration */}
-                    <div className="flex items-center justify-between">
-                        <div className="flex flex-col">
-                            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Tracks Expiration?</span>
-                            <span className="text-xs text-gray-400">Manufacturer expiration date</span>
-                        </div>
-                        <Switch 
-                                isSelected={formData.tracksExpiration ?? false} 
-                                onValueChange={(val) => {
-                                  if (val) {
-                                    // enabling expiration tracking: move any top-level expiration into an initial batch
-                                    setFormData(prev => {
-                                      const existing = (prev.batches || []).length > 0 ? prev.batches : [{ id: uniqueId(), lotNumber: '', expirationDate: prev.expirationDate ?? undefined, stock: Number(prev.totalStockQuantity ?? 0), locations: [] } as InventoryBatch];
-                                      return { ...prev, tracksExpiration: true, batches: existing, expirationDate: undefined };
-                                    });
-                                  } else {
-                                    // disabling: keep batches but allow top-level expiration input to return
-                                    setFormData(prev => ({ ...prev, tracksExpiration: false }));
-                                  }
-                                }}
-                            color="warning"
-                            isDisabled={!canToggleExpiration}
-                        />
-                    </div>
-                    
-                    {!formData.tracksExpiration && (
-                        <Input 
-                        type="date"
-                        label="Manufacturer Expiration"
-                        variant="bordered"
-                        value={getDateString(formData.expirationDate)}
-                        onValueChange={(value) => setFormData(prev => ({
-                            ...prev,
-                            expirationDate: value ? new Date(value) : undefined
-                        }))}
-                        />
-                    )}
-
-                    <Divider className="my-1" />
-                    
-                    {/* Secondary Expiration */}
-                    <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                            <CalendarClock size={18} className={formData.hasSecondaryExpiration ? "text-orange-600" : "text-gray-400"} />
-                            <div className="flex flex-col">
-                                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Exp. Changes when Opened?</span>
-                                <span className="text-xs text-gray-400">e.g. Glucose strips expire 90 days after opening</span>
-                            </div>
-                        </div>
-                        <Switch 
-                            isSelected={formData.hasSecondaryExpiration ?? false} 
-                            onValueChange={(val) => setFormData({...formData, hasSecondaryExpiration: val})}
-                        />
-                    </div>
-
-                    {formData.hasSecondaryExpiration && (
-                        <div className="grid grid-cols-2 gap-4 mt-2">
-                              <Input 
-                                type="number"
-                                label="Valid Days After Opening"
-                                placeholder="90"
-                                value={formData.secondaryExpirationDays?.toString()}
-                                onValueChange={(v) => setFormData({...formData, secondaryExpirationDays: Number(v)})}
-                              />
-                             <Input 
-                                type="date"
-                                label="Date Opened"
-                                description="Set this when you open a fresh box."
-                                value={getDateString(formData.openedAt)}
-                                onValueChange={(value) => setFormData(prev => ({
-                                    ...prev,
-                                    openedAt: value ? new Date(value) : undefined
-                                }))}
-                             />
-                        </div>
-                    )}
                     {/* --- BATCH / LOTS --- */}
                     <Divider className="my-2" />
                     <div>

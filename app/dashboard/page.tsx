@@ -211,27 +211,26 @@ export default function DashboardPage() {
       });
     });
 
-    // B. Check Master Inventory Items (Shelves)
+    // B. Check Master Inventory Items (Shelves) using batch expirations
     inv.forEach(item => {
-      if (item.expirationDate) {
-        const expDate = item.expirationDate;
-        const diffTime = expDate.getTime() - today.getTime();
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-        if (diffDays <= 30) {
-          // Construct a location string to display in place of "Bag Name"
-          let locationStr = item.location;
-          if (item.room) locationStr += ` (${item.room})`;
-          if (item.shelf) locationStr += ` - ${item.shelf}`;
-
-          alerts.push({
-            bagName: locationStr, 
-            itemName: item.name,
-            expiryDate: expDate,
-            daysRemaining: diffDays,
-            source: 'inventory'
-          });
-        }
+      if (!item.batches || item.batches.length === 0) return;
+      const dates = (item.batches || []).map((b: any) => b.expirationDate ? new Date(b.expirationDate) : null).filter(Boolean) as Date[];
+      if (dates.length === 0) return;
+      // pick the nearest expiration
+      const expDate = dates.reduce((a, b) => a < b ? a : b);
+      const diffTime = expDate.getTime() - today.getTime();
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      if (diffDays <= 30) {
+        let locationStr = item.location;
+        if (item.room) locationStr += ` (${item.room})`;
+        if (item.shelf) locationStr += ` - ${item.shelf}`;
+        alerts.push({
+          bagName: locationStr,
+          itemName: item.name,
+          expiryDate: expDate,
+          daysRemaining: diffDays,
+          source: 'inventory'
+        });
       }
     });
 

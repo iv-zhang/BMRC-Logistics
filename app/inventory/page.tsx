@@ -5,7 +5,7 @@ import {
   Card, CardBody, Chip, Progress, Button, Spinner, useDisclosure, Input, 
   Select, SelectItem
 } from '@heroui/react';
-import { Boxes, Plus, Minus, Search, Wind, PackageOpen, Filter, X } from 'lucide-react';
+import { Boxes, Plus, Minus, Search, Wind, PackageOpen, Filter, X, Edit2, ChevronDown } from 'lucide-react';
 
 // Firebase Imports
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
@@ -143,7 +143,7 @@ export default function InventoryPage() {
         // If any batch has an expirationDate, preserve batch-level tracking.
         // Also preserve batches if the item explicitly tracksExpiration.
         // Otherwise treat batches as static stock and aggregate into master counts.
-        const hasBatchExpirations = Boolean(data.tracksExpiration) || batches.some(b => !!b.expirationDate || !!b.lotNumber);
+        const hasBatchExpirations = batches.some(b => !!b.expirationDate || !!b.lotNumber);
         if (hasBatchExpirations) {
           // Keep batches intact for lot-level UI; do not map batches into `variants`.
           // Variants remain reserved for size/option variations.
@@ -170,7 +170,6 @@ export default function InventoryPage() {
           variants,
           batches,
 
-          expirationDate: getDate(data.expirationDate),
           openedAt: getDate(data.openedAt),
           createdAt: getDate(data.createdAt) || new Date(),
           updatedAt: getDate(data.updatedAt) || new Date(),
@@ -281,26 +280,7 @@ export default function InventoryPage() {
             return;
           }
 
-          // If payload has a top-level expirationDate but no explicit batches, treat as a single batch
-          if (payload.expirationDate) {
-            const pExp = payload.expirationDate instanceof Date ? payload.expirationDate : new Date(payload.expirationDate);
-            let merged = false;
-            for (let i = 0; i < existingBatches.length; i++) {
-              const eb = existingBatches[i];
-              const ebExp = eb.expirationDate ? (eb.expirationDate instanceof Date ? eb.expirationDate : (eb.expirationDate?.toDate ? eb.expirationDate.toDate() : new Date(eb.expirationDate))) : null;
-              if (ebExp && sameDay(ebExp, pExp)) {
-                existingBatches[i].stock = Number(existingBatches[i].stock ?? 0) + Number(payload.totalStockQuantity ?? 0);
-                merged = true;
-                break;
-              }
-            }
-            if (!merged) {
-              existingBatches.push({ id: uniqueId(), lotNumber: payload.lotNumber ?? '', expirationDate: pExp, stock: Number(payload.totalStockQuantity ?? 0), receivedAt: undefined, notes: '' });
-            }
-            const totalStock = existingBatches.reduce((acc, b) => acc + Number(b.stock ?? 0), 0) + existingVariants.reduce((acc, v) => acc + Number(v.stock ?? 0), 0);
-            await updateDoc(itemRef, { batches: existingBatches, totalStockQuantity: totalStock, updatedAt: serverTimestamp() });
-            return;
-          }
+            // No top-level expiration handling here; batch expirations are used exclusively.
 
           // No variants or expirations: increment master total
           const incTotal = Number(data.totalStockQuantity ?? 0) + Number(payload.totalStockQuantity ?? 0);
@@ -342,15 +322,7 @@ export default function InventoryPage() {
   function preparePayload(data: Partial<InventoryItem> | any) {
     const payload: any = { ...(data || {}) };
 
-    // Normalize top-level dates
-    if (payload.expirationDate) {
-      if (typeof payload.expirationDate === 'string') {
-        const d = new Date(payload.expirationDate);
-        payload.expirationDate = isNaN(d.getTime()) ? null : d;
-      } else if (!(payload.expirationDate instanceof Date)) {
-        payload.expirationDate = null;
-      }
-    }
+    // Note: top-level expirationDate is no longer used — batch expirations are authoritative.
     if (payload.openedAt) {
       if (typeof payload.openedAt === 'string') {
         const d = new Date(payload.openedAt);
@@ -411,18 +383,7 @@ export default function InventoryPage() {
       }
     }
 
-    // If expiration tracking is enabled but no batches were provided, create a single batch
-    // from the top-level expirationDate and totalStockQuantity so items that track
-    // expiration always have per-lot entries.
-    if (payload.tracksExpiration && (!Array.isArray(payload.batches) || payload.batches.length === 0)) {
-      payload.batches = [{
-        id: payload.id ?? uniqueId(),
-        lotNumber: '',
-        expirationDate: payload.expirationDate ?? null,
-        stock: Number(payload.totalStockQuantity ?? 0),
-        receivedAt: payload.receivedAt ?? undefined
-      }];
-    }
+    // Do not synthesize batches from a top-level expiration; only explicit batches carry expirations.
 
     // Batches -> normalize and also map into variants for backward compatibility
     if (Array.isArray(payload.batches)) {
@@ -447,10 +408,8 @@ export default function InventoryPage() {
       });
       payload.batches = normBatches;
 
-      // If batches exist, ensure variants contain corresponding entries so UI and merge logic works
-      // Decide whether batches represent true expirations or just static splits.
-      // If the item explicitly tracks expiration, always preserve batch-level tracking.
-      const hasBatchExpirations = Boolean(payload.tracksExpiration) || normBatches.some((b: any) => !!b.expirationDate);
+      // If batches contain expirations, treat them as batch-expirations; otherwise aggregate as static splits.
+      const hasBatchExpirations = normBatches.some((b: any) => !!b.expirationDate);
       if (hasBatchExpirations) {
         // Preserve batch-level tracking and derive total from batches.
         payload.totalStockQuantity = normBatches.reduce((acc: number, b: any) => acc + Number(b.stock ?? 0), 0);
@@ -463,11 +422,7 @@ export default function InventoryPage() {
       }
     }
 
-    // If this item tracks expiration, prefer per-batch expirations.
-    // Remove any top-level expiration to avoid treating it as a standalone expiry.
-    if (payload.tracksExpiration) {
-      delete payload.expirationDate;
-    }
+    // Top-level expiration fields are ignored; only batch expirations persist.
 
     // Remove any undefined fields (including nested) to avoid Firestore errors
     const removeUndefinedDeep = (obj: any) => {
@@ -510,6 +465,23 @@ export default function InventoryPage() {
 
   const isItemExpanded = (id: string) => !!expandedItems[id];
 
+  // Batch modal state
+  const [batchModalOpen, setBatchModalOpen] = useState(false);
+  const [batchModalItem, setBatchModalItem] = useState<InventoryItem | null>(null);
+
+  const openBatchModal = (item: InventoryItem) => { setBatchModalItem(item); setBatchModalOpen(true); };
+  const closeBatchModal = () => { setBatchModalOpen(false); setBatchModalItem(null); };
+  const toggleBatchModal = (item: InventoryItem) => {
+    if (batchModalOpen && batchModalItem?.id === item.id) {
+      // collapse
+      setBatchModalOpen(false);
+      setBatchModalItem(null);
+    } else {
+      setBatchModalItem(item);
+      setBatchModalOpen(true);
+    }
+  };
+
   // --- HELPERS ---
   const getCategoryColor = (category: ItemCategory) => {
     switch (category) {
@@ -528,32 +500,47 @@ export default function InventoryPage() {
     return 'text-green-600 dark:text-green-400';
   };
 
+  const getStatus = (item: InventoryItem) => {
+    const exp = getEffectiveExpiration(item);
+    if (exp?.isExpired) return { emoji: '🔴', label: 'Critical/Expired', color: 'danger' };
+    const qty = Number(item.totalStockQuantity ?? 0);
+    const threshold = Number(item.reorderThreshold ?? 0);
+    if (qty <= 0) return { emoji: '🔴', label: 'Out', color: 'danger' };
+    if (threshold > 0 && qty <= threshold) return { emoji: '🟡', label: 'Low Stock', color: 'warning' };
+    return { emoji: '🟢', label: 'Good', color: 'success' };
+  };
+
+  const formatPar = (item: InventoryItem) => {
+    const par = Number(item.reorderThreshold ?? 0);
+    if (!par || par <= 0) return '—';
+    return `${par} ${item.unit ?? 'units'}`;
+  };
+
+  const expColorClass = (date?: Date | null) => {
+    if (!date) return 'text-gray-500';
+    const d = new Date(date);
+    const diff = Math.ceil((d.getTime() - Date.now()) / (1000*60*60*24));
+    if (diff < 0) return 'text-red-600';
+    if (diff < 30) return 'text-orange-500';
+    return 'text-green-600';
+  };
+
   const getEffectiveExpiration = (item: InventoryItem) => {
-    if (!item.tracksExpiration) return null;
-
-    let targetDate = item.expirationDate ? new Date(item.expirationDate) : null;
-    let labelPrefix = "Exp";
-
-    if (item.hasSecondaryExpiration && item.openedAt && item.secondaryExpirationDays) {
-       const openDate = new Date(item.openedAt);
-       const secondaryExpiry = new Date(openDate);
-       secondaryExpiry.setDate(openDate.getDate() + item.secondaryExpirationDays);
-
-       if (!targetDate || secondaryExpiry < targetDate) {
-           targetDate = secondaryExpiry;
-           labelPrefix = "Exp (Open)";
-       }
-    }
-
-    if (!targetDate) return null;
+    // Determine nearest batch expiration (if any). Top-level expiration is ignored.
+    if (!item.batches || item.batches.length === 0) return null;
+    const dates = (item.batches || [])
+      .map((b: any) => b.expirationDate ? new Date(b.expirationDate) : null)
+      .filter(Boolean) as Date[];
+    if (dates.length === 0) return null;
+    let targetDate = dates.reduce((a, b) => a < b ? a : b);
 
     const now = new Date();
     const diffTime = targetDate.getTime() - now.getTime();
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
     if (diffDays < 0) return { label: 'EXPIRED', color: 'danger' as const, isExpired: true };
-    if (diffDays < 30) return { label: `${labelPrefix} in ${diffDays}d`, color: 'warning' as const, isExpired: false };
-    return { label: `${labelPrefix}: ${targetDate.toLocaleDateString()}`, color: 'default' as const, isExpired: false };
+    if (diffDays < 30) return { label: `Exp in ${diffDays}d`, color: 'warning' as const, isExpired: false };
+    return { label: `Exp: ${targetDate.toLocaleDateString()}`, color: 'default' as const, isExpired: false };
   };
 
   // --- CSV Export / Import ---
@@ -846,7 +833,7 @@ export default function InventoryPage() {
             </Button>
             <Button
               onPress={() => router.push('/mobile/quick-count')}
-              variant="outline"
+              variant="bordered"
               className="h-12 px-4"
             >
               Quick Count (mobile)
@@ -874,7 +861,7 @@ export default function InventoryPage() {
                     onChange={(e) => setFilterCategory(e.target.value)}
                 >
                     <SelectItem key="all">All Categories</SelectItem>
-                    {CATEGORIES.map(c => <SelectItem key={c}>{c}</SelectItem>)}
+                    {(CATEGORIES.map(c => <SelectItem key={c}>{c}</SelectItem>) as unknown) as any}
                 </Select>
 
                 <Select 
@@ -884,7 +871,7 @@ export default function InventoryPage() {
                     onChange={(e) => setFilterLocation(e.target.value)}
                 >
                     <SelectItem key="all">All Locations</SelectItem>
-                    {LOCATIONS.map(l => <SelectItem key={l}>{l}</SelectItem>)}
+                    {(LOCATIONS.map(l => <SelectItem key={l}>{l}</SelectItem>) as unknown) as any}
                 </Select>
                 
                 <div className="flex items-end">
@@ -912,7 +899,8 @@ export default function InventoryPage() {
                 const expanded = isItemExpanded(item.id);
 
                 return (
-                  <Card key={item.id} isPressable onPress={() => openEditModal(item)} className={`border rounded-xl transition-all ${cardClasses}`}>
+                  <div key={item.id} className={`relative cursor-pointer` } onClick={() => toggleBatchModal(item)}>
+                    <Card className={`border rounded-xl transition-all ${cardClasses}`}>
                         <CardBody className="p-4">
                             <div className="flex flex-col md:flex-row justify-between items-start gap-4">
                                 {/* Left Side: Info */}
@@ -931,18 +919,7 @@ export default function InventoryPage() {
                                         {item.location} {item.room ? `/ ${item.room}` : ''} - {item.shelf}
                                     </div>
                                     {/** combine feature removed */}
-                                    {/* Details toggle: stops propagation so card press opens edit modal instead */}
-                                    <div className="mt-2">
-                                      <div
-                                        role="button"
-                                        tabIndex={0}
-                                        onClick={(e) => { e.stopPropagation(); toggleExpand(item.id); }}
-                                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); toggleExpand(item.id); } }}
-                                        className="inline-flex items-center px-2 py-1 text-sm rounded-md bg-gray-100 dark:bg-slate-700 text-gray-700 hover:bg-gray-200 cursor-pointer"
-                                      >
-                                        Details
-                                      </div>
-                                    </div>
+                                    {/* Details button removed; entire card is clickable to toggle batches */}
                                     
                                     {/* Detailed Stock Info for Box Tracking */}
                                     {item.tracksOpenStock && (
@@ -957,27 +934,41 @@ export default function InventoryPage() {
                                             </span>
                                         </div>
                                     )}
-                                    {expanded && item.batches && item.batches.length > 0 && (
+                                    {expanded && (
                                       <div className="mt-3">
-                                        <div className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Batches / Lots</div>
-                                        <div className="flex flex-wrap gap-2">
-                                          {item.batches.map((b: any, bidx: number) => (
-                                            <div key={`${b.id}-${bidx}`} className="px-3 py-2 border rounded-md bg-white/60 dark:bg-slate-800/60 min-w-[180px]">
-                                              <div className="text-xs text-gray-500">{b.lotNumber || 'No lot #'}</div>
-                                              <div className="font-bold text-sm">{b.stock} units</div>
-                                              <div className="text-xs text-gray-400">{b.expirationDate ? new Date(b.expirationDate).toLocaleDateString() : 'No exp set'}</div>
-                                              {b.locations && b.locations.length > 0 && (
-                                                <div className="mt-1 space-y-1">
-                                                  {b.locations.map((loc: any, lidx: number) => (
-                                                    <div key={`${loc.id}-${lidx}`} className="text-[11px] text-gray-500 flex justify-between gap-2">
-                                                      <span className="truncate">{loc.name || 'Location'}</span>
-                                                      <span className="font-semibold text-gray-700 dark:text-gray-200">{loc.quantity}</span>
+                                        <div className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Batches / Locations</div>
+                                        <div className="w-full overflow-x-auto">
+                                          <div className="grid grid-cols-4 gap-2 text-xs text-gray-500 font-semibold border-b pb-2">
+                                            <div>Location</div>
+                                            <div>Expiration</div>
+                                            <div className="text-right">Quantity</div>
+                                            <div>Lot #</div>
+                                          </div>
+                                          <div className="divide-y">
+                                            {item.batches && item.batches.length > 0 ? (
+                                              item.batches.map((b: any) => (
+                                                (b.locations && b.locations.length > 0) ? (
+                                                  b.locations.map((loc: any) => (
+                                                    <div key={loc.id} className="grid grid-cols-4 gap-2 items-center py-2 text-sm text-gray-700">
+                                                      <div className="truncate">{loc.name || item.location || 'Location'}</div>
+                                                      <div className={`${expColorClass(b.expirationDate)} text-sm`}>{b.expirationDate ? new Date(b.expirationDate).toLocaleDateString() : '—'}</div>
+                                                      <div className="text-right font-semibold">{loc.quantity}</div>
+                                                      <div className="truncate">{b.lotNumber || '—'}</div>
                                                     </div>
-                                                  ))}
-                                                </div>
-                                              )}
-                                            </div>
-                                          ))}
+                                                  ))
+                                                ) : (
+                                                  <div key={b.id} className="grid grid-cols-4 gap-2 items-center py-2 text-sm text-gray-700">
+                                                    <div className="truncate">{item.location || 'Location'}</div>
+                                                    <div className={`${expColorClass(b.expirationDate)} text-sm`}>{b.expirationDate ? new Date(b.expirationDate).toLocaleDateString() : '—'}</div>
+                                                    <div className="text-right font-semibold">{b.stock}</div>
+                                                    <div className="truncate">{b.lotNumber || '—'}</div>
+                                                  </div>
+                                                )
+                                              ))
+                                            ) : (
+                                              <div className="py-2 text-sm text-gray-600">No batches / locations for this item.</div>
+                                            )}
+                                          </div>
                                         </div>
                                       </div>
                                     )}
@@ -986,6 +977,11 @@ export default function InventoryPage() {
                                 {/* Right Side: Stock & Gauges (compact when collapsed) */}
                                 {expanded ? (
                                   <div className="flex flex-col items-end min-w-[120px]">
+                                      <div className="flex items-center gap-2 mb-2">
+                                          <div className="text-xs text-gray-400 mr-2">Par: {formatPar(item)}</div>
+                                          <div className="text-xs"><span className="ml-1 text-sm font-medium">{getStatus(item).label}</span></div>
+                                          <Button isIconOnly size="sm" variant="light" onPress={(e:any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); openEditModal(item); }} className="ml-2"><Edit2 size={14} /></Button>
+                                      </div>
                                       {item.isOxygen ? (
                                           <div className="w-32 text-right">
                                               <p className="text-sm font-bold text-blue-600 mb-1">{item.oxygenPsi} PSI</p>
@@ -1083,6 +1079,11 @@ export default function InventoryPage() {
                                   </div>
                                 ) : (
                                   <div className="flex flex-col items-end min-w-[120px]">
+                                    <div className="flex items-center gap-2 mb-2">
+                                      <div className="text-xs text-gray-400">Par: {formatPar(item)}</div>
+                                      <div className="text-xs">{getStatus(item).label}</div>
+                                      <Button isIconOnly size="sm" variant="light" onPress={(e:any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); openEditModal(item); }} className="ml-2"><Edit2 size={14} /></Button>
+                                    </div>
                                     <div className="w-16 flex items-center justify-center">
                                       <p className={`text-3xl font-bold ${getStockStatusColor(item.totalStockQuantity, item.reorderThreshold)}`}>{item.totalStockQuantity}</p>
                                     </div>
@@ -1103,8 +1104,58 @@ export default function InventoryPage() {
                                 />
                               </div>
                             )}
+                        <div className="flex justify-center mt-3">
+                          <Button isIconOnly size="sm" variant="ghost" onPress={(e:any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); toggleBatchModal(item); }} className={`transform transition-transform duration-200 ${batchModalOpen && batchModalItem?.id === item.id ? 'rotate-180' : 'rotate-0'}`}><ChevronDown size={16} /></Button>
+                        </div>
                         </CardBody>
                     </Card>
+
+                    {/* Inline Batch Dropdown (in document flow so it pushes content) */}
+                    {batchModalOpen && batchModalItem?.id === item.id && (
+                      <div className="mt-3" onClick={(e:any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); }}>
+                        <Card className="bg-white dark:bg-slate-800 rounded-xl shadow-lg border p-0 transform origin-top animate-appearance-in transition-all duration-200">
+                          <CardBody className="p-4">
+                            <div className="flex items-center justify-between mb-3">
+                              <h4 className="font-semibold">Batches — {batchModalItem.name}</h4>
+                              <Button size="sm" variant="flat" onPress={(e:any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); closeBatchModal(); }}>Close</Button>
+                            </div>
+                            <div className="space-y-3 max-h-64 overflow-y-auto">
+                              {batchModalItem.batches && batchModalItem.batches.length > 0 ? (
+                                batchModalItem.batches.map((b: any) => (
+                                  <Card key={b.id} className="border rounded-md p-0 bg-gray-50 dark:bg-slate-900">
+                                    <CardBody className="p-3">
+                                      <div className="flex justify-between items-start">
+                                        <div>
+                                          <div className="font-semibold text-gray-800 dark:text-white">{b.lotNumber || 'Lot: —'}</div>
+                                          <div className="text-sm text-gray-500">Expiration: {b.expirationDate ? new Date(b.expirationDate).toLocaleDateString() : '—'}</div>
+                                        </div>
+                                        <div className="text-right">
+                                          <div className="font-bold text-gray-800 dark:text-white">{b.stock ?? 0}</div>
+                                          <div className="text-sm text-gray-500">Total</div>
+                                        </div>
+                                      </div>
+                                      {b.locations && b.locations.length > 0 && (
+                                        <div className="mt-3 grid grid-cols-2 gap-2 text-sm text-gray-700">
+                                          {b.locations.map((loc: any) => (
+                                            <div key={loc.id} className="flex justify-between">
+                                              <div className="truncate">{loc.name}</div>
+                                              <div className="font-semibold">{loc.quantity}</div>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </CardBody>
+                                  </Card>
+                                ))
+                              ) : (
+                                <div className="text-sm text-gray-600">No batches / locations for this item.</div>
+                              )}
+                            </div>
+                          </CardBody>
+                        </Card>
+                      </div>
+                    )}
+                  </div>
                 );
             })}
         </div>
@@ -1118,6 +1169,8 @@ export default function InventoryPage() {
             initialData={selectedItem}
             canToggleExpiration={isAdmin}
         />
+
+        {/* global modal removed; batches are shown inline per-card */}
       </div>
     </div>
   );

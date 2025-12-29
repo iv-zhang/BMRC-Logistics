@@ -580,12 +580,7 @@ export default function MobileCheckoutClient() {
                     if (!handled) {
                         // No matching batch/variant found; fall back to decrementing master total and optionally set top-level expiration if provided
                         const updatePayload: any = { totalStockQuantity: increment(-report.replacedQuantity), updatedAt: serverTimestamp() };
-                        if (report.newExpirationDate) {
-                            try {
-                                const d = new Date(report.newExpirationDate);
-                                if (!isNaN(d.getTime())) updatePayload.expirationDate = d;
-                            } catch (e) {}
-                        }
+                        // top-level expiration is no longer used; ignore any provided newExpirationDate
                         batch.update(inventoryRef, updatePayload);
                     }
                 } catch (err) {
