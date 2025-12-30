@@ -1,0 +1,384 @@
+"use client";
+import React, { useEffect, useMemo, useState } from 'react';
+import { Spinner, Button, Input, Card, CardBody, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from '@heroui/react';
+import { Plus, Camera } from 'lucide-react';
+import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
+import {
+  collection,
+  doc,
+  getDoc,
+  onSnapshot,
+  orderBy,
+  query,
+  updateDoc,
+  addDoc,
+  serverTimestamp,
+  setDoc,
+  deleteDoc
+} from 'firebase/firestore';
+import { auth, db } from '@/firebase';
+import type { InventoryItem } from '@/app/types';
+import { parseGs1Barcode } from '@/app/lib/gs1';
+import BarcodeScanner from '@/app/components/barcode-scanner';
+import { Timestamp } from 'firebase/firestore';
+
+type Props = { zone: string; zoneLabel?: string; onClose?: () => void };
+
+export default function StackAuditClient({ zone, zoneLabel, onClose }: Props) {
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [items, setItems] = useState<InventoryItem[]>([]);
+  const [index, setIndex] = useState(0);
+  const [locked, setLocked] = useState<{ by?: string; byName?: string } | null>(null);
+
+  // Local staged edits keyed by item id
+  const [staged, setStaged] = useState<Record<string, any>>({});
+  // Found items (quick-capture)
+  const [foundItems, setFoundItems] = useState<any[]>([]);
+  const [barcode, setBarcode] = useState('');
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const touchStartX = React.useRef<number | null>(null);
+
+  // Variance review modal
+  const [showReview, setShowReview] = useState(false);
+
+  // Auth
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => { if (u) setUser(u); });
+    return () => unsub();
+  }, []);
+
+  // Load audit items (filtered by room/zone client-side)
+  useEffect(() => {
+    const q = query(collection(db, 'inventory'), orderBy('name'));
+    const unsub = onSnapshot(q, (snap) => {
+      const arr = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) } as InventoryItem));
+      const zoneItems = arr.filter(i => (i.isAuditRequired) && ((i.room || 'HQ') === zone || i.location === zone));
+      setItems(zoneItems);
+      setLoading(false);
+    }, (err) => { console.error('stack audit listener', err); setLoading(false); });
+    return () => unsub();
+  }, [zone]);
+
+  // Zone locking: try to create lock doc on mount and remove on unmount
+  useEffect(() => {
+    let active = true;
+    async function lockZone() {
+      if (!user) return;
+      const lockRef = doc(db, 'audit_locks', zone);
+      const snap = await getDoc(lockRef);
+      if (snap.exists()) {
+        const data = snap.data() as any;
+        // locked by someone else
+        if (data.lockedBy && data.lockedBy !== user.uid) {
+          setLocked({ by: data.lockedBy, byName: data.lockedByName });
+          return;
+        }
+      }
+      // take lock
+      await setDoc(lockRef, { lockedBy: user.uid, lockedByName: (user as any)?.email ?? null, lockedAt: serverTimestamp() });
+      setLocked({ by: user.uid, byName: (user as any)?.email ?? null });
+    }
+    lockZone();
+    return () => {
+      // release lock
+      (async () => {
+        try {
+          const lockRef = doc(db, 'audit_locks', zone);
+          const snap = await getDoc(lockRef);
+          if (snap.exists()) {
+            const data = snap.data() as any;
+            if (data.lockedBy === (user as any)?.uid) {
+              await deleteDoc(lockRef);
+            }
+          }
+        } catch (e) { /* ignore */ }
+      })();
+    };
+  }, [zone, user]);
+
+  const current = items[index];
+
+  const toInputDate = (val: any) => {
+    if (!val && val !== 0) return '';
+    try {
+      if (val instanceof Date) {
+        if (isNaN(val.getTime())) return '';
+        return val.toISOString().slice(0, 10);
+      }
+      // Firestore Timestamp
+      if (val && typeof val.toDate === 'function') {
+        const d = val.toDate();
+        if (isNaN(d.getTime())) return '';
+        return d.toISOString().slice(0, 10);
+      }
+      if (typeof val === 'number') {
+        const d = new Date(val);
+        if (isNaN(d.getTime())) return '';
+        return d.toISOString().slice(0, 10);
+      }
+      if (typeof val === 'string') {
+        // accept YYYY-MM-DD directly
+        if (/^\d{4}-\d{2}-\d{2}$/.test(val)) return val;
+        const d = new Date(val);
+        if (isNaN(d.getTime())) return '';
+        return d.toISOString().slice(0, 10);
+      }
+    } catch (e) {
+      return '';
+    }
+    return '';
+  };
+
+  const updateStaged = (id: string, patch: any) => {
+    setStaged(s => ({ ...s, [id]: { ...(s[id] || {}), ...patch } }));
+  };
+
+  const handleCountChange = (id: string, value: number) => {
+    updateStaged(id, { counted: Number(value) });
+    // force condition check by clearing condition so user must confirm
+    updateStaged(id, { conditionPrompt: true });
+  };
+
+  const cycleCondition = (id: string, v: 'Good'|'Damaged'|'Expired') => {
+    updateStaged(id, { condition: v, conditionPrompt: false });
+  };
+
+  const addFoundItem = (payload: any) => {
+    setFoundItems(f => [...f, payload]);
+  };
+
+  const next = () => { if (index < items.length - 1) setIndex(i => i + 1); };
+  const prev = () => { if (index > 0) setIndex(i => i - 1); };
+
+  const onTouchStart = (e: any) => { touchStartX.current = e.touches?.[0]?.clientX ?? null; };
+  const onTouchEnd = (e: any) => {
+    if (touchStartX.current == null) return;
+    const endX = e.changedTouches?.[0]?.clientX ?? 0;
+    const delta = endX - (touchStartX.current || 0);
+    if (delta > 60) prev();
+    else if (delta < -60) next();
+    touchStartX.current = null;
+  };
+
+  const openReview = () => setShowReview(true);
+
+  const submitAll = async () => {
+    // Prepare ops
+    try {
+      const ops: Promise<any>[] = [];
+      const logs: Promise<any>[] = [];
+      for (const [id, entry] of Object.entries(staged)) {
+        const it = items.find(x => x.id === id);
+        if (!it) continue;
+        const newCount = Number(entry.counted ?? it.totalStockQuantity ?? 0);
+        ops.push(updateDoc(doc(db, 'inventory', id), {
+          totalStockQuantity: newCount,
+          auditVerified: true,
+          auditCondition: entry.condition ?? 'Good',
+          auditNotes: entry.notes ?? null,
+          updatedAt: serverTimestamp()
+        }));
+        logs.push(addDoc(collection(db, 'inventory_logs'), {
+          action: 'audit_count_update', itemId: id, itemName: it.name, userId: user?.uid ?? null, timestamp: serverTimestamp(), notes: `Counted ${newCount}`
+        }));
+      }
+      // create found items
+      for (const f of foundItems) {
+        const payload: any = { ...(f || {}) };
+        payload.isLegacyItem = true;
+        payload.isAuditRequired = false;
+        payload.reviewNeeded = true;
+        payload.totalStockQuantity = Number(payload.totalStockQuantity ?? 0);
+        payload.createdAt = serverTimestamp();
+        payload.updatedAt = serverTimestamp();
+        ops.push(addDoc(collection(db, 'inventory'), payload));
+      }
+      await Promise.all([...ops, ...logs]);
+      // release lock
+      try { await deleteDoc(doc(db, 'audit_locks', zone)); } catch (e) { }
+      setShowReview(false);
+      alert('Zone counts submitted.');
+      if (onClose) onClose();
+    } catch (err) {
+      console.error('submitAll failed', err);
+      alert('Failed to submit counts.');
+    }
+  };
+
+  if (loading) return <div className="h-56 flex items-center justify-center"><Spinner /></div>;
+
+  if (locked && locked.by && locked.by !== (user as any)?.uid) {
+    return (
+      <Card className="p-4">
+        <CardBody>
+          <h3 className="font-semibold">Zone Locked</h3>
+          <p className="text-sm">This zone is currently locked by {locked.byName || locked.by}. Try another zone or wait.</p>
+        </CardBody>
+      </Card>
+    );
+  }
+
+  if (!current) return <div className="p-4">No items to audit in this zone.</div>;
+
+  const stagedForCurrent = staged[current.id] || {};
+
+  return (
+    <div onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+      <div className="mb-3 flex items-center justify-between">
+        <div>
+          <h3 className="text-lg font-semibold">{zoneLabel || zone} — Stack Mode</h3>
+          <div className="text-sm text-gray-500">Item {index + 1} of {items.length}</div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Chip size="sm" color="primary">{current.name}</Chip>
+        </div>
+      </div>
+
+      <Card className="mb-3">
+        <CardBody className="p-4">
+          <div className="text-xl font-bold mb-2">{current.name}</div>
+          <div className="mb-2 text-sm text-gray-500">System: {current.totalStockQuantity ?? 0}</div>
+
+          <Input label="Count" type="number" value={String(stagedForCurrent.counted ?? '')} onValueChange={(v) => handleCountChange(current.id, Number(v || 0))} className="text-4xl font-mono" />
+
+          <div className="mt-3">
+            <div className="flex gap-2">
+              <Input label="Scan Barcode (optional)" placeholder="Scan GS1 barcode" value={stagedForCurrent._barcode ?? ''} onValueChange={(v) => {
+                updateStaged(current.id, { _barcode: v });
+                const parsed = parseGs1Barcode(v || '');
+                if (parsed.expiration) updateStaged(current.id, { expiration: parsed.expiration });
+                if (parsed.lot) updateStaged(current.id, { lot: parsed.lot });
+              }} />
+              <Button size="sm" onPress={() => setScannerOpen(true)}>Scan</Button>
+            </div>
+            <label className="block text-sm mb-1">Expiration</label>
+            <div className="flex items-center gap-2">
+              <Input type="date" value={toInputDate(stagedForCurrent.expiration ?? (current.expirationDate ?? ''))} onValueChange={(v) => updateStaged(current.id, { expiration: v })} />
+              <Button size="sm" onPress={() => {
+                // +1 year
+                const cur = stagedForCurrent.expiration ?? current.expirationDate ?? new Date();
+                const base = (cur && typeof cur === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(cur)) ? new Date(cur) : (cur && typeof cur.toDate === 'function' ? cur.toDate() : (cur instanceof Date ? cur : new Date()));
+                base.setFullYear(base.getFullYear() + 1);
+                updateStaged(current.id, { expiration: base.toISOString().slice(0, 10) });
+              }}>+1y</Button>
+              <Button size="sm" onPress={() => { const cur = stagedForCurrent.expiration ?? current.expirationDate ?? new Date(); const base = (cur && typeof cur === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(cur)) ? new Date(cur) : (cur && typeof cur.toDate === 'function' ? cur.toDate() : (cur instanceof Date ? cur : new Date())); base.setFullYear(base.getFullYear() + 2); updateStaged(current.id, { expiration: base.toISOString().slice(0, 10) }); }}>+2y</Button>
+              <Button size="sm" onPress={() => { const cur = stagedForCurrent.expiration ?? current.expirationDate ?? new Date(); const base = (cur && typeof cur === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(cur)) ? new Date(cur) : (cur && typeof cur.toDate === 'function' ? cur.toDate() : (cur instanceof Date ? cur : new Date())); base.setFullYear(base.getFullYear() + 3); updateStaged(current.id, { expiration: base.toISOString().slice(0, 10) }); }}>+3y</Button>
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <label className="block text-sm mb-1">Condition</label>
+            <div className="flex items-center gap-2">
+              <Button color={stagedForCurrent.condition === 'Good' ? 'success' : 'default'} onPress={() => cycleCondition(current.id, 'Good')}>Good</Button>
+              <Button color={stagedForCurrent.condition === 'Damaged' ? 'warning' : 'default'} onPress={() => cycleCondition(current.id, 'Damaged')}>Damaged</Button>
+              <Button color={stagedForCurrent.condition === 'Expired' ? 'danger' : 'default'} onPress={() => cycleCondition(current.id, 'Expired')}>Expired</Button>
+            </div>
+          </div>
+
+          {stagedForCurrent.conditionPrompt && (
+            <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded">
+              <div className="text-sm">You changed the count — is the condition still good?</div>
+              <div className="mt-2 flex gap-2">
+                <Button size="sm" color="success" onPress={() => cycleCondition(current.id, 'Good')}>Yes — Good</Button>
+                <Button size="sm" color="warning" onPress={() => cycleCondition(current.id, 'Damaged')}>No — Damaged</Button>
+                <Button size="sm" color="danger" onPress={() => cycleCondition(current.id, 'Expired')}>Expired</Button>
+              </div>
+            </div>
+          )}
+
+          <div className="mt-4 flex items-center gap-2">
+            <Button onPress={prev} isDisabled={index === 0}>Previous</Button>
+            <Button onPress={next} isDisabled={index >= items.length - 1}>Next</Button>
+            <Button color="primary" onPress={() => updateStaged(current.id, { counted: stagedForCurrent.counted ?? current.totalStockQuantity, condition: stagedForCurrent.condition ?? 'Good' })}>Save</Button>
+          </div>
+        </CardBody>
+      </Card>
+
+      {/* Quick-capture */}
+      <Card className="mb-3">
+        <CardBody>
+          <div className="flex items-center justify-between mb-2">
+            <div className="font-semibold">Found Item (Quick Capture)</div>
+            <div className="text-sm text-gray-500">Add minimal info and continue</div>
+          </div>
+          <QuickCapture onAdd={addFoundItem} />
+        </CardBody>
+      </Card>
+
+      <div className="flex justify-end gap-2">
+        <Button variant="light" onPress={() => { if (onClose) onClose(); }}>Close</Button>
+        <Button color="danger" onPress={openReview}><Plus /> Finish Zone</Button>
+      </div>
+
+      {/* Review modal */}
+      <Modal isOpen={showReview} onOpenChange={setShowReview}>
+        <ModalContent>
+          <ModalHeader>Review Variances</ModalHeader>
+          <ModalBody>
+            <div className="space-y-2">
+              {Object.entries(staged).map(([id, s]) => {
+                const it = items.find(x => x.id === id);
+                if (!it) return null;
+                const sys = Number(it.totalStockQuantity ?? 0);
+                const counted = Number(s.counted ?? sys);
+                const diff = counted - sys;
+                return (
+                  <div key={id} className="p-2 border rounded">
+                    <div className="font-semibold">{it.name}</div>
+                    <div className="text-sm">System: {sys} — You: {counted} — Delta: {diff>0? `+${diff}`: diff}</div>
+                  </div>
+                );
+              })}
+              {foundItems.length > 0 && (
+                <div className="pt-2">
+                  <div className="font-semibold">Found Items</div>
+                  {foundItems.map((f, i) => <div key={i} className="text-sm">{f.name} — {f.totalStockQuantity}</div>)}
+                </div>
+              )}
+            </div>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="light" onPress={() => setShowReview(false)}>Cancel</Button>
+            <Button color="primary" onPress={submitAll}>Confirm & Submit</Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+      <BarcodeScanner isOpen={scannerOpen} onClose={() => setScannerOpen(false)} onDetected={(val) => { updateStaged(current.id, { _barcode: val }); const parsed = parseGs1Barcode(val); if (parsed.expiration) updateStaged(current.id, { expiration: parsed.expiration }); if (parsed.lot) updateStaged(current.id, { lot: parsed.lot }); setScannerOpen(false); }} />
+    </div>
+  );
+}
+
+function QuickCapture({ onAdd }: { onAdd: (p: any) => void }) {
+  const [name, setName] = useState('');
+  const [qty, setQty] = useState<number>(1);
+  const [exp, setExp] = useState('');
+  const [barcode, setBarcode] = useState('');
+  const [photo, setPhoto] = useState<File | null>(null);
+
+  const submit = () => {
+    if (!name) { alert('Name required'); return; }
+    onAdd({ name, totalStockQuantity: Number(qty || 0), expirationDate: exp || undefined, photoName: photo?.name, barcode: barcode || undefined });
+    setName(''); setQty(1); setExp(''); setPhoto(null);
+  };
+
+  return (
+    <div className="space-y-2">
+      <Input label="Name" value={name} onValueChange={setName} />
+      <Input label="Scan Barcode (optional)" placeholder="Scan GS1 barcode" value={barcode} onValueChange={(v) => {
+        setBarcode(v);
+        const parsed = parseGs1Barcode(v || '');
+        if (parsed.expiration) setExp(parsed.expiration);
+      }} />
+      <Input label="Qty" type="number" value={String(qty)} onValueChange={(v) => setQty(Number(v || 0))} />
+      <Input label="Expiration" type="date" value={exp} onValueChange={setExp} />
+      <div className="flex items-center gap-2">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <Camera /> <span className="text-sm">Photo</span>
+          <input type="file" accept="image/*" onChange={(e) => setPhoto(e.target.files?.[0] ?? null)} className="hidden" />
+        </label>
+        <Button color="primary" onPress={submit}>Add</Button>
+      </div>
+    </div>
+  );
+}

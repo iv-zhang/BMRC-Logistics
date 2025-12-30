@@ -38,6 +38,8 @@ export default function MobileCheckinClient() {
   const [activeStepIndex, setActiveStepIndex] = useState(0);
   const [usageCounts, setUsageCounts] = useState<Record<string, number>>({});
   const [oxygenReadings, setOxygenReadings] = useState<Record<string, string>>({});
+  const [assetChecksMap, setAssetChecksMap] = useState<Record<string, any>>({});
+  const [inventorySerials, setInventorySerials] = useState<Record<string, string[]>>({});
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
@@ -64,6 +66,31 @@ export default function MobileCheckinClient() {
     };
     fetchPack();
   }, [id]);
+
+  // When pack is loaded, prefetch inventory serials for asset items
+  useEffect(() => {
+    if (!pack) return;
+    const itemIds = Array.from(new Set((pack.contents || []).map(c => c.itemId)));
+    itemIds.forEach(async (iid) => {
+      try {
+        const ref = doc(db, 'inventory', iid);
+        const snap = await getDoc(ref);
+        if (snap.exists()) {
+          const data = snap.data() as any;
+          // collect serials from batches
+          const serials: string[] = [];
+          if (Array.isArray(data.batches)) {
+            data.batches.forEach((b: any) => {
+              if (Array.isArray(b.serialNumbers)) serials.push(...b.serialNumbers.filter(Boolean));
+            });
+          }
+          setInventorySerials(prev => ({ ...prev, [iid]: serials }));
+        }
+      } catch (e) {
+        console.warn('Failed to fetch inventory for serials', iid, e);
+      }
+    });
+  }, [pack]);
 
   // Group items into steps
   const steps = useMemo<CheckinStep[]>(() => {
@@ -112,6 +139,10 @@ export default function MobileCheckinClient() {
 
   const handleOxygenChange = (itemId: string, val: string) => {
       setOxygenReadings(prev => ({ ...prev, [itemId]: val }));
+  };
+
+  const handleAssetCheckChange = (statpackItemId: string, patch: Partial<any>) => {
+    setAssetChecksMap(prev => ({ ...prev, [statpackItemId]: { ...(prev[statpackItemId] || {}), ...patch } }));
   };
 
   const handleNext = () => {
@@ -166,6 +197,7 @@ export default function MobileCheckinClient() {
         timestamp: serverTimestamp(),
         itemsUsed: usageCounts,
         oxygenReadings,
+        assetChecks: assetChecksMap,
       });
 
       // Update Master Inventory Oxygen Levels
@@ -200,6 +232,54 @@ export default function MobileCheckinClient() {
           updatedAt: serverTimestamp(),
         });
       });
+
+      // Update inventory asset checks for AEDs / assets that were checked present
+      for (const [statpackItemId, checks] of Object.entries(assetChecksMap)) {
+        try {
+          // find the statpack item to get mapping to inventory itemId
+          const spi = (pack.contents || []).find(i => {
+            const key = (i as any).id ?? `${i.itemId}-${i.compartmentId ?? 'loose'}`;
+            return key === statpackItemId || i.itemId === statpackItemId;
+          });
+          if (!spi) continue;
+
+          // Prefer itemDetails if provided; otherwise fetch inventory doc to check assetCategory
+          let isAED = false;
+          if ((spi as any).itemDetails) {
+            isAED = Boolean((spi as any).itemDetails?.assetCategory === 'AED');
+          } else {
+            try {
+              const invSnap = await getDoc(doc(db, 'inventory', spi.itemId));
+              if (invSnap.exists()) {
+                const d = invSnap.data() as any;
+                isAED = Boolean(d?.assetCategory === 'AED');
+              }
+            } catch (e) {
+              // ignore fetch errors and skip
+            }
+          }
+
+          if (!isAED) continue;
+
+          const inventoryRef = doc(db, 'inventory', spi.itemId);
+          // If present, update inventory assetChecks and lastChecked
+          if (checks.present) {
+            batch.update(inventoryRef, {
+              assetLastChecked: serverTimestamp(),
+              assetChecks: checks,
+              updatedAt: serverTimestamp(),
+            });
+          } else {
+            // If missing, mark status to Not Ready (do not decrement asset counts here)
+            batch.update(inventoryRef, {
+              assetStatus: 'Not Ready',
+              updatedAt: serverTimestamp(),
+            });
+          }
+        } catch (e) {
+          console.warn('Failed to schedule inventory asset update', e);
+        }
+      }
 
       await batch.commit();
 

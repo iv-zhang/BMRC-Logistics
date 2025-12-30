@@ -7,8 +7,12 @@ import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { collection, query, orderBy, onSnapshot, doc, getDoc, updateDoc, serverTimestamp, addDoc } from 'firebase/firestore';
 import { db, auth } from '@/firebase';
 import type { InventoryItem } from '@/app/types';
+import { parseGs1Barcode } from '@/app/lib/gs1';
+import BarcodeScanner from '@/app/components/barcode-scanner';
 
-export default function MobileQuickCount() {
+type Props = { auditVerify?: boolean };
+
+export default function MobileQuickCount({ auditVerify = false }: Props) {
   const router = useRouter();
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [loading, setLoading] = useState(true);
@@ -17,6 +21,8 @@ export default function MobileQuickCount() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [lot, setLot] = useState('');
   const [expiration, setExpiration] = useState('');
+  const [barcode, setBarcode] = useState('');
+  const [scannerOpen, setScannerOpen] = useState(false);
   const [locationName, setLocationName] = useState('');
   const [quantity, setQuantity] = useState<number>(1);
   const uniqueId = () => (typeof crypto !== 'undefined' && (crypto as any).randomUUID ? (crypto as any).randomUUID() : `${Date.now().toString()}-${Math.random().toString(36).slice(2,9)}`);
@@ -71,7 +77,16 @@ export default function MobileQuickCount() {
 
       const total = batches.reduce((acc: number, b: any) => acc + Number(b.stock ?? 0), 0) + (Number(data.totalStockQuantity ?? 0) - (Array.isArray(data.batches) ? data.batches.reduce((a:any,b:any)=>a+Number(b.stock||0),0):0));
 
-      await updateDoc(itemRef, { batches, totalStockQuantity: total, updatedAt: serverTimestamp() });
+      const payload: any = { batches, totalStockQuantity: total, updatedAt: serverTimestamp() };
+      if (auditVerify) payload.auditVerified = true;
+      await updateDoc(itemRef, payload);
+      await addDoc(collection(db, 'inventory_logs'), {
+        action: auditVerify ? 'audit_quickcount' : 'quick_count',
+        itemId: selectedId,
+        userId: user?.uid ?? null,
+        timestamp: serverTimestamp(),
+        notes: 'quick-count'
+      });
       alert('Quick count saved');
       // Reset
       setLot(''); setExpiration(''); setLocationName(''); setQuantity(1);
@@ -96,12 +111,22 @@ export default function MobileQuickCount() {
       </div>
 
       <div className="mt-4 space-y-2">
+        <div className="flex gap-2">
+          <Input label="Scan Barcode (optional)" placeholder="Scan GS1 barcode" value={barcode} onValueChange={(v) => {
+            setBarcode(v);
+            const parsed = parseGs1Barcode(v || '');
+            if (parsed.lot) setLot(parsed.lot);
+            if (parsed.expiration) setExpiration(parsed.expiration);
+          }} />
+          <Button size="sm" onPress={() => setScannerOpen(true)}>Scan</Button>
+        </div>
         <Input label="Lot / Batch # (optional)" value={lot} onValueChange={setLot} />
         <Input type="date" label="Expiration (optional)" value={expiration} onValueChange={setExpiration} />
         <Input label="Location name" placeholder="Back storage / Statpack" value={locationName} onValueChange={setLocationName} />
         <Input type="number" label="Quantity" value={String(quantity)} onValueChange={(v) => setQuantity(Number(v))} />
         <Button color="primary" onPress={onSave} className="w-full">Save Count</Button>
       </div>
+      <BarcodeScanner isOpen={scannerOpen} onClose={() => setScannerOpen(false)} onDetected={(val) => { setBarcode(val); const parsed = parseGs1Barcode(val); if (parsed.lot) setLot(parsed.lot); if (parsed.expiration) setExpiration(parsed.expiration); setScannerOpen(false); }} />
     </div>
   );
 }

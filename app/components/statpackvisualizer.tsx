@@ -7,12 +7,14 @@ interface BagVisualizerProps {
   statpack: Statpack;
   selectedPocket: StatpackPocket | 'all';
   onSelectPocket: (pocket: StatpackPocket | 'all') => void;
+  completedPockets?: Set<StatpackPocket>;
 }
 
 export const BagVisualizer: React.FC<BagVisualizerProps> = ({ 
   statpack, 
   selectedPocket, 
-  onSelectPocket 
+  onSelectPocket,
+  completedPockets
 }) => {
 
   // --- STATE FOR O2 TANK POSITION ---
@@ -28,13 +30,15 @@ export const BagVisualizer: React.FC<BagVisualizerProps> = ({
 
   const getCardProps = (pocket: StatpackPocket) => {
     const isSelected = selectedPocket === pocket;
+    const isCompleted = !!completedPockets && completedPockets.has(pocket);
+    const completedClass = isCompleted ? 'border-green-400 bg-green-50 dark:bg-green-900/20' : '';
     return {
       isPressable: true,
       onPress: () => onSelectPocket(pocket),
       className: `transition-all duration-200 border-2 shadow-sm hover:shadow-md ${
         isSelected 
           ? 'border-primary bg-primary-50 dark:bg-primary-900/20 scale-[1.02] z-10' 
-          : 'border-default-200 bg-white dark:bg-slate-800 hover:border-primary-200'
+          : `border-default-200 bg-white dark:bg-slate-800 hover:border-primary-200 ${completedClass}`
       }`
     };
   };
@@ -146,15 +150,15 @@ export const BagVisualizer: React.FC<BagVisualizerProps> = ({
         
         {/* Left Side Pocket */}
         <Card {...getCardProps('side_left')} className={`${getCardProps('side_left').className} w-14 flex flex-col justify-center`}>
-            <CardBody className="p-1 flex flex-col items-center justify-center gap-1 overflow-hidden">
-               <span className="writing-vertical-rl rotate-180 text-[10px] font-bold text-default-400 uppercase tracking-wider whitespace-nowrap">
-                  Left Side
-               </span>
-               <Circle className="text-default-300" size={16} />
-               <Chip size="sm" variant="flat" color="primary" className="h-5 text-[10px] px-1">
-                 {getPocketCount('side_left')}
-               </Chip>
-            </CardBody>
+                <CardBody className="p-1 flex flex-col items-center justify-center gap-1 overflow-hidden">
+                  <span className="writing-vertical-rl rotate-180 text-[10px] font-bold text-default-400 uppercase tracking-wider whitespace-nowrap">
+                    Left Side
+                  </span>
+                  {completedPockets && completedPockets.has('side_left') ? <CheckCircle2 className="text-green-500" size={16} /> : <Circle className="text-default-300" size={16} />}
+                  <Chip size="sm" variant="flat" color="primary" className="h-5 text-[10px] px-1">
+                    {getPocketCount('side_left')}
+                  </Chip>
+                </CardBody>
         </Card>
 
         {/* Center: Main & Front */}
@@ -179,7 +183,7 @@ export const BagVisualizer: React.FC<BagVisualizerProps> = ({
 
                     {/* Center Info Zone */}
                     <div className="flex flex-col items-center justify-center z-10 flex-1">
-                        <CheckCircle2 className="text-default-300 mb-1" size={24} />
+                        {completedPockets && completedPockets.has('main') ? <CheckCircle2 className="text-green-500 mb-1" size={24} /> : <CheckCircle2 className="text-default-300 mb-1" size={24} />}
                         <Chip size="sm" variant="shadow" color={selectedPocket === 'main' ? "primary" : "default"} className="h-6 px-1">
                             {getPocketCount('main')}
                         </Chip>
@@ -206,6 +210,7 @@ export const BagVisualizer: React.FC<BagVisualizerProps> = ({
                 <Chip size="sm" variant="flat" className="h-5 text-[10px] px-1">
                   {getPocketCount('front_aux')}
                 </Chip>
+                {completedPockets && completedPockets.has('front_aux') && <CheckCircle2 className="text-green-500 ml-2" size={14} />}
              </CardBody>
            </Card>
         </div>
@@ -216,7 +221,7 @@ export const BagVisualizer: React.FC<BagVisualizerProps> = ({
               <span className="writing-vertical-rl rotate-180 text-[10px] font-bold text-default-400 uppercase tracking-wider whitespace-nowrap">
                 Right Side
               </span>
-              <Circle className="text-default-300" size={16} />
+              {completedPockets && completedPockets.has('side_right') ? <CheckCircle2 className="text-green-500" size={16} /> : <Circle className="text-default-300" size={16} />}
               <Chip size="sm" variant="flat" color="primary" className="h-5 text-[10px] px-1">
                 {getPocketCount('side_right')}
               </Chip>

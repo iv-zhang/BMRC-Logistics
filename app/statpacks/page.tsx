@@ -452,6 +452,12 @@ export default function StatpacksPage() {
       ? masterItem.batches?.find(b => b.id === selectedBatchId) ?? masterItem.batches?.[0]
       : undefined;
 
+    // CRITICAL: StatpackItem must reference a specific batch (cannot add generic item)
+    // If no batch exists, force user to create one or use a placeholder
+    const batchId = selectedBatch?.id ?? `placeholder-${Date.now()}`;
+    const effectiveBatchExp = selectedBatch?.expirationDate;
+    const effectiveLot = selectedBatch?.lotNumber;
+
     const newItem: StatpackItem = {
       itemId: masterItem.id,
       itemDetails: masterItem,
@@ -460,14 +466,15 @@ export default function StatpacksPage() {
       requiredQuantity: 1,
       currentQuantity: 0,
       pocket: finalPocket,
-      compartmentId: finalCompartmentId
+      compartmentId: finalCompartmentId,
+      batchId: batchId, // REQUIRED
+      expirationDate: effectiveBatchExp,
+      lotNumber: effectiveLot
     };
 
-    // Attach batch details if batch selected
-    if (selectedBatch) {
-      newItem.batchId = selectedBatch.id;
-      newItem.expirationDate = selectedBatch.expirationDate;
-      newItem.lotNumber = selectedBatch.lotNumber;
+    // Note: if batch doesn't exist, this creates a placeholder - UI should warn user
+    if (!selectedBatch && hasBatches === false) {
+      console.warn('No batch available for item. Using placeholder batchId. User should create batch first.');
     }
 
     setCurrentPack(prev => ({ ...prev, contents: [...(prev.contents || []), newItem] }));

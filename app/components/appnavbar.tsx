@@ -123,7 +123,6 @@ export default function AppNavbar() {
             </Link>
           </NavbarItem>
 
-          {/* ADDED: Roster Link */}
           <NavbarItem isActive={isActive('/roster')}>
             <Link 
               href="/roster" 
@@ -133,6 +132,25 @@ export default function AppNavbar() {
               Roster
             </Link>
           </NavbarItem>
+
+          <NavbarItem isActive={isActive('/audit')}>
+            <Link
+              href="/audit"
+              color={isActive('/audit') ? "primary" : "foreground"}
+              className={isActive('/audit') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}
+            >
+              Audit
+            </Link>
+          </NavbarItem>
+        </div>
+
+        {/* Mobile links (visible on small screens) */}
+        <div className="flex sm:hidden gap-3 ml-3">
+          <Link href="/dashboard" className={isActive('/dashboard') ? "font-semibold text-indigo-600" : "text-gray-500 dark:text-gray-400"}>Dashboard</Link>
+          <Link href="/statpacks" className={isActive('/statpacks') ? "font-semibold text-indigo-600" : "text-gray-500 dark:text-gray-400"}>Statpacks</Link>
+          <Link href="/inventory" className={isActive('/inventory') ? "font-semibold text-indigo-600" : "text-gray-500 dark:text-gray-400"}>Inventory</Link>
+          <Link href="/roster" className={isActive('/roster') ? "font-semibold text-indigo-600" : "text-gray-500 dark:text-gray-400"}>Roster</Link>
+          <Link href="/audit" className={isActive('/audit') ? "font-semibold text-indigo-600" : "text-gray-500 dark:text-gray-400"}>Audit</Link>
         </div>
       </NavbarBrand>
 
