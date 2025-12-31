@@ -20,7 +20,7 @@ export default function MapModal({ isOpen, onOpenChange, pack, onSelectPocket }:
           <>
             <ModalHeader className="flex flex-col gap-1"><h3>Jump to Pocket</h3></ModalHeader>
             <ModalBody className="flex items-center justify-center">
-              <BagVisualizer statpack={pack} selectedPocket={'all'} onSelectPocket={onSelectPocket} />
+              {pack ? <BagVisualizer statpack={pack} selectedPocket={'all'} onSelectPocket={onSelectPocket} /> : <div className="text-sm text-gray-500">No pack data</div>}
             </ModalBody>
             <ModalFooter><Button color="danger" variant="light" onPress={onClose}>Close Map</Button></ModalFooter>
           </>

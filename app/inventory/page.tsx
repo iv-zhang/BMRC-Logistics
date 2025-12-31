@@ -319,6 +319,29 @@ export default function InventoryPage() {
     try {
       const itemRef = doc(db, 'inventory', id);
       const payload = preparePayload(updatedData);
+      // Sanitize any invalid Date objects (Invalid Date throws on toISOString during serialization)
+      const sanitizeDatesDeep = (obj: any) => {
+        if (obj === null || obj === undefined) return;
+        if (Array.isArray(obj)) {
+          for (let i = 0; i < obj.length; i++) {
+            const v = obj[i];
+            if (v instanceof Date) {
+              if (isNaN(v.getTime())) obj[i] = null;
+            } else if (typeof v === 'object' && v !== null) sanitizeDatesDeep(v);
+          }
+          return;
+        }
+        if (typeof obj === 'object') {
+          Object.keys(obj).forEach((k) => {
+            const v = obj[k];
+            if (v instanceof Date) {
+              if (isNaN(v.getTime())) obj[k] = null;
+            } else if (typeof v === 'object' && v !== null) sanitizeDatesDeep(v);
+          });
+        }
+      };
+
+      sanitizeDatesDeep(payload);
       await updateDoc(itemRef, {
         ...payload,
         updatedAt: serverTimestamp(),

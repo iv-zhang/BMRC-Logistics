@@ -111,6 +111,7 @@ export default function StatpacksPage() {
   const [selectedInventoryId, setSelectedInventoryId] = useState<string>("");
   const [selectedVariantId, setSelectedVariantId] = useState<string>("");
   const [selectedBatchId, setSelectedBatchId] = useState<string>("");
+  const [selectedSerialId, setSelectedSerialId] = useState<string>("");
   const [checkoutNotes, setCheckoutNotes] = useState("");
   const [qrPack, setQrPack] = useState<Statpack | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState('');
@@ -156,6 +157,20 @@ export default function StatpacksPage() {
     );
     return () => unsubscribe();
   }, [user]);
+
+  // Toggle app inertness when any modal is open to avoid aria-hidden focus conflicts
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const anyOpen = !!(isEditOpen || isCheckoutOpen || isHistoryOpen || isQrOpen);
+      (window as any).setAppInert?.(anyOpen);
+    } catch (e) {
+      // ignore
+    }
+    return () => {
+      try { (window as any).setAppInert?.(false); } catch(_) {}
+    };
+  }, [isEditOpen, isCheckoutOpen, isHistoryOpen, isQrOpen]);
 
   useEffect(() => {
     if (!user) return;
@@ -454,9 +469,17 @@ export default function StatpacksPage() {
 
     // CRITICAL: StatpackItem must reference a specific batch (cannot add generic item)
     // If no batch exists, force user to create one or use a placeholder
-    const batchId = selectedBatch?.id ?? `placeholder-${Date.now()}`;
-    const effectiveBatchExp = selectedBatch?.expirationDate;
-    const effectiveLot = selectedBatch?.lotNumber;
+    let batchId = selectedBatch?.id ?? `placeholder-${Date.now()}`;
+    let effectiveBatchExp = selectedBatch?.expirationDate;
+    let effectiveLot = selectedBatch?.lotNumber;
+
+    // If this master item is an asset (unit-tracked) and no batch selected,
+    // prefer to use the selected asset serial as an identifier so statpack references the specific device.
+    if (masterItem.isAsset && !selectedBatch && selectedSerialId) {
+      batchId = `asset-${selectedSerialId}`;
+      effectiveBatchExp = undefined;
+      effectiveLot = undefined;
+    }
 
     const newItem: StatpackItem = {
       itemId: masterItem.id,
@@ -468,12 +491,13 @@ export default function StatpacksPage() {
       pocket: finalPocket,
       compartmentId: finalCompartmentId,
       batchId: batchId, // REQUIRED
+      serialNumber: selectedSerialId || undefined,
       expirationDate: effectiveBatchExp,
       lotNumber: effectiveLot
     };
 
-    // Note: if batch doesn't exist, this creates a placeholder - UI should warn user
-    if (!selectedBatch && hasBatches === false) {
+    // Note: if batch doesn't exist, this creates a placeholder - for assets prefer using selected serial
+    if (!selectedBatch && hasBatches === false && !masterItem.isAsset) {
       console.warn('No batch available for item. Using placeholder batchId. User should create batch first.');
     }
 
@@ -504,6 +528,13 @@ export default function StatpacksPage() {
           ? { ...i, variantId: match?.id, variantName: match?.name }
           : i
       )
+    }));
+  };
+
+  const updateItemSerial = (itemToUpdate: StatpackItem, serial: string) => {
+    setCurrentPack(prev => ({
+      ...prev,
+      contents: prev.contents?.map(i => (i === itemToUpdate ? { ...i, serialNumber: serial } : i))
     }));
   };
 
@@ -725,6 +756,51 @@ export default function StatpacksPage() {
   const showVariantSelect = Boolean(selectedInventoryItem?.hasVariants && availableVariants.length > 0);
   const availableBatches = selectedInventoryItem?.batches || [];
   const showBatchSelect = Boolean(availableBatches.length > 0);
+  const chosenBatch = availableBatches.find(b => b.id === selectedBatchId);
+  // Gather possible serials from batch.serialNumbers, batch.assetInstances, or top-level item.assets
+  const chosenBatchSerials: string[] = (() => {
+    if (chosenBatch) {
+      if (Array.isArray(chosenBatch.serialNumbers) && chosenBatch.serialNumbers.length > 0) return chosenBatch.serialNumbers.slice();
+      if (Array.isArray(chosenBatch.assetInstances) && chosenBatch.assetInstances.length > 0) return chosenBatch.assetInstances.map(ai => (ai.serial || ai.assetTag || ai.id)).filter((s): s is string => Boolean(s));
+    }
+    if (selectedInventoryItem && Array.isArray(selectedInventoryItem.assets) && selectedInventoryItem.assets.length > 0) {
+      return selectedInventoryItem.assets.map(a => (a.serial || a.assetTag || a.id)).filter((s): s is string => Boolean(s));
+    }
+    return [];
+  })();
+  const selectedBatchHasSerials = chosenBatchSerials.length > 0;
+  const needSerialSelection = selectedBatchHasSerials && !selectedSerialId;
+  const assetLabels: Record<string, string> = {};
+  const assetSerials: string[] = (() => {
+    const list: string[] = [];
+    if (!selectedInventoryItem) return list;
+
+    if (Array.isArray(selectedInventoryItem.assets) && selectedInventoryItem.assets.length > 0) {
+      selectedInventoryItem.assets.forEach(a => {
+        const idVal = (a.serial || a.assetTag || a.id) as string | undefined;
+        if (!idVal) return;
+        if (!list.includes(idVal)) list.push(idVal);
+        const tag = a.assetTag ? `Tag ${a.assetTag}` : undefined;
+        const shortId = a.id ? `ID ${String(a.id).slice(0,6)}` : undefined;
+        assetLabels[idVal] = tag ? (shortId ? `${tag} — ${shortId}` : tag) : (shortId || idVal);
+      });
+    }
+
+    const fromBatches = availableBatches.flatMap(b => (b.assetInstances || []).map(ai => ai).filter(Boolean));
+    fromBatches.forEach((ai: any) => {
+      const idVal = (ai.serial || ai.assetTag || ai.id) as string | undefined;
+      if (!idVal) return;
+      if (!list.includes(idVal)) list.push(idVal);
+      const tag = ai.assetTag ? `Tag ${ai.assetTag}` : undefined;
+      const shortId = ai.id ? `ID ${String(ai.id).slice(0,6)}` : undefined;
+      assetLabels[idVal] = tag ? (shortId ? `${tag} — ${shortId}` : tag) : (shortId || idVal);
+    });
+
+    return list;
+  })();
+  // Treat items with `assets` present as asset-tracked even if `isAsset` flag missing
+  const isAssetLike = Boolean(selectedInventoryItem && ((selectedInventoryItem.isAsset) || (Array.isArray(selectedInventoryItem.assets) && selectedInventoryItem.assets.length > 0)));
+  const showAssetSelect = Boolean(isAssetLike && assetSerials.length > 0);
 
   if (loading) return <div className="h-screen flex items-center justify-center"><Spinner /></div>;
 
@@ -815,7 +891,7 @@ export default function StatpacksPage() {
 
       {/* --- 1. EDIT CONFIGURATION MODAL --- */}
       <Modal isOpen={isEditOpen} onOpenChange={onEditChange} size="5xl" scrollBehavior="inside">
-        <ModalContent>
+        <ModalContent className="max-w-7xl w-[95%]">
           {(onClose) => (
             <>
               <ModalHeader>Edit Configuration: {currentPack.name}</ModalHeader>
@@ -938,6 +1014,7 @@ export default function StatpacksPage() {
                         <TableHeader>
                           <TableColumn>ITEM</TableColumn>
                           <TableColumn>VARIATION</TableColumn>
+                          <TableColumn>ASSET</TableColumn>
                           <TableColumn>LOCATION</TableColumn>
                           <TableColumn width={100}>REQ QTY</TableColumn>
                           <TableColumn width={50}>DEL</TableColumn>
@@ -945,10 +1022,60 @@ export default function StatpacksPage() {
                         <TableBody emptyContent="No items in this pocket.">
                           {getVisibleItems().map((item, idx) => {
                               const comp = currentPack.compartments?.find(c => c.id === item.compartmentId);
-                              const itemDetails = item.itemDetails || inventory.find(i => i.id === item.itemId);
+                              // Prefer the authoritative inventory document (freshest data)
+                              const itemDetails = inventory.find(i => i.id === item.itemId) || item.itemDetails;
                               const variants = itemDetails?.variants || [];
                               const hasVariants = Boolean(itemDetails?.hasVariants && variants.length > 0);
                               const variantLabel = getVariantLabel(item);
+                              // Gather serials for this specific statpack item
+                              const itemAssetSerials: string[] = (() => {
+                                if (!itemDetails) return [];
+                                const out: string[] = [];
+                                // include top-level assetSerial or assetTag from the inventory record
+                                const topId = (itemDetails.assetSerial || (itemDetails as any).assetTag) as string | undefined;
+                                if (topId) out.push(topId);
+
+                                if (Array.isArray(itemDetails.assets) && itemDetails.assets.length > 0) {
+                                  itemDetails.assets.forEach((a: any) => {
+                                    const idVal = (a.serial || a.assetTag || a.id) as string | undefined;
+                                    if (idVal) out.push(idVal);
+                                  });
+                                }
+
+                                const fromBatches = (itemDetails.batches || []).flatMap((b: any) => {
+                                  const sns: string[] = [];
+                                  if (Array.isArray(b.serialNumbers)) sns.push(...b.serialNumbers.filter(Boolean));
+                                  if (Array.isArray(b.assetInstances)) sns.push(...b.assetInstances.map((ai: any) => (ai.serial || ai.assetTag || ai.id)).filter(Boolean));
+                                  return sns;
+                                });
+                                out.push(...fromBatches);
+
+                                // Deduplicate and return
+                                return Array.from(new Set(out.filter(Boolean) as string[]));
+                              })();
+                              const isItemAssetLike = itemAssetSerials.length > 0 || Boolean(itemDetails?.isAsset);
+                              // Build labels for this row so the Select shows Tag/ID instead of empty serials
+                              const itemAssetLabels: Record<string, string> = {};
+                              if (itemDetails) {
+                                if (Array.isArray(itemDetails.assets)) {
+                                  itemDetails.assets.forEach((a: any) => {
+                                    const idVal = (a.serial || a.assetTag || a.id) as string | undefined;
+                                    if (!idVal) return;
+                                    const tag = a.assetTag ? `Tag ${a.assetTag}` : undefined;
+                                    const shortId = a.id ? `ID ${String(a.id).slice(0,6)}` : undefined;
+                                    itemAssetLabels[idVal] = tag ? (shortId ? `${tag} — ${shortId}` : tag) : (shortId || idVal);
+                                  });
+                                }
+                                (itemDetails.batches || []).forEach((b: any) => {
+                                  (b.assetInstances || []).forEach((ai: any) => {
+                                    const idVal = (ai.serial || ai.assetTag || ai.id) as string | undefined;
+                                    if (!idVal) return;
+                                    const tag = ai.assetTag ? `Tag ${ai.assetTag}` : undefined;
+                                    const shortId = ai.id ? `ID ${String(ai.id).slice(0,6)}` : undefined;
+                                    itemAssetLabels[idVal] = tag ? (shortId ? `${tag} — ${shortId}` : tag) : (shortId || idVal);
+                                  });
+                                });
+                              }
                               return (
                                 <TableRow key={`${item.itemId}_${idx}`}>
                                   <TableCell>
@@ -971,6 +1098,22 @@ export default function StatpacksPage() {
                                           <SelectItem key={variant.id} textValue={variant.name}>
                                             {variant.name}
                                           </SelectItem>
+                                        ))}
+                                      </Select>
+                                    ) : (
+                                      <span className="text-xs text-gray-400">—</span>
+                                    )}
+                                  </TableCell>
+                                  <TableCell>
+                                    {isItemAssetLike ? (
+                                      <Select
+                                        size="sm"
+                                        placeholder="Select Asset"
+                                        selectedKeys={item.serialNumber ? [item.serialNumber] : []}
+                                        onChange={(e) => updateItemSerial(item, e.target.value)}
+                                      >
+                                        {itemAssetSerials.map(sn => (
+                                          <SelectItem key={sn} textValue={sn}>{sn}</SelectItem>
                                         ))}
                                       </Select>
                                     ) : (
@@ -1041,8 +1184,21 @@ export default function StatpacksPage() {
                                   }
                                   if (item?.batches && item.batches.length > 0) {
                                     setSelectedBatchId(item.batches[0].id);
+                                    const first = item.batches[0];
+                                    // Prefer batch.serialNumbers, then batch.assetInstances.serial, then fallback to item.assets
+                                    if (Array.isArray(first.serialNumbers) && first.serialNumbers.length > 0) {
+                                      setSelectedSerialId(first.serialNumbers[0]);
+                                    } else if (Array.isArray(first.assetInstances) && first.assetInstances.length > 0) {
+                                      setSelectedSerialId(first.assetInstances[0].serial ?? "");
+                                    } else if (Array.isArray(item.assets) && item.assets.length > 0) {
+                                      setSelectedSerialId(item.assets[0].serial ?? "");
+                                    } else {
+                                      setSelectedSerialId("");
+                                    }
                                   } else {
                                     setSelectedBatchId("");
+                                    if (item && Array.isArray(item.assets) && item.assets.length > 0) setSelectedSerialId(item.assets[0].serial ?? "");
+                                    else setSelectedSerialId("");
                                   }
                                 }}
                               >
@@ -1075,19 +1231,69 @@ export default function StatpacksPage() {
                                 placeholder="Select"
                                 size="sm"
                                 selectedKeys={selectedBatchId ? [selectedBatchId] : []}
-                                onChange={(e) => setSelectedBatchId(e.target.value)}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setSelectedBatchId(val);
+                                  const chosen = availableBatches.find(b => b.id === val);
+                                  if (chosen && Array.isArray(chosen.serialNumbers) && chosen.serialNumbers.length > 0) {
+                                    setSelectedSerialId(chosen.serialNumbers[0]);
+                                  } else {
+                                    setSelectedSerialId("");
+                                  }
+                                }}
                               >
                                 {availableBatches.map(batch => (
                                   <SelectItem key={batch.id} textValue={`${batch.lotNumber || 'Lot'} • ${batch.expirationDate ? new Date(batch.expirationDate).toLocaleDateString() : 'No Exp'}`}>
-                                    {batch.lotNumber || 'Lot'} • {batch.expirationDate ? new Date(batch.expirationDate).toLocaleDateString() : 'No Exp'}
+                                    {batch.lotNumber || 'Lot'} • {batch.expirationDate ? new Date(batch.expirationDate).toLocaleDateString() : 'No Exp'}{Array.isArray(batch.serialNumbers) && batch.serialNumbers.length > 0 ? ` • ${batch.serialNumbers.length} serial(s)` : ''}
                                   </SelectItem>
+                                ))}
+                              </Select>
+                            </div>
+                          )}
+                          {/* Serial selector for serialized batches (e.g., individual AED assets) */}
+                          {showBatchSelect && selectedBatchId && selectedBatchHasSerials && (
+                            <div className="w-48">
+                              <Select
+                                label="Serial"
+                                labelPlacement="outside"
+                                size="sm"
+                                selectedKeys={selectedSerialId ? [selectedSerialId] : []}
+                                onChange={(e) => setSelectedSerialId(e.target.value)}
+                              >
+                                {chosenBatchSerials.map((sn: string) => (
+                                  <SelectItem key={sn} textValue={sn}>{sn}</SelectItem>
+                                ))}
+                              </Select>
+                            </div>
+                          )}
+                          {/* Asset selector for asset-type items (no batches) */}
+                          {showAssetSelect && (
+                            <div className="w-48">
+                              <Select
+                                label="Asset"
+                                labelPlacement="outside"
+                                size="sm"
+                                selectedKeys={selectedSerialId ? [selectedSerialId] : []}
+                                onChange={(e) => setSelectedSerialId(e.target.value)}
+                              >
+                                {assetSerials.map(sn => (
+                                  <SelectItem key={sn} textValue={sn}>{sn}</SelectItem>
                                 ))}
                               </Select>
                             </div>
                           )}
                           <Button
                             onPress={addItemToBag}
-                            isDisabled={!selectedInventoryId || !targetLocationId || (showVariantSelect && !selectedVariantId) || (showBatchSelect && !selectedBatchId)}
+                            isDisabled={
+                              !selectedInventoryId ||
+                              !targetLocationId ||
+                              (showVariantSelect && !selectedVariantId) ||
+                              (showBatchSelect && !selectedBatchId) ||
+                              // If the selected batch contains serials, require selecting a serial
+                              needSerialSelection ||
+                              // If item is an asset, require selecting a specific asset serial
+                              (showAssetSelect && !selectedSerialId)
+                            }
                             color="primary"
                             size="sm"
                             className="mb-[2px]"
@@ -1095,6 +1301,7 @@ export default function StatpacksPage() {
                             Add
                           </Button>
                        </div>
+                      
                     </div>
                   </div>
                 </div>

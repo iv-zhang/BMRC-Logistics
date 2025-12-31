@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@heroui/react": "^2.8.7",
+      "wicg-inert": "^3.1.0",
     "firebase": "^12.7.0",
     "framer-motion": "^12.23.26",
     "jspdf": "^3.0.4",

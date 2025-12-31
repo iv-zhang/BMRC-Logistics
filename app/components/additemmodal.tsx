@@ -43,6 +43,8 @@ type InventoryFormState = Partial<Omit<InventoryItem, 'totalStockQuantity' | 're
   assetLastChecked?: Date | string;
   assetNextExpiration?: Date | string;
   isAuditRequired?: boolean;
+  // When true, this item must have its expiration confirmed before use
+  requiresExpirationCheck?: boolean;
   // AED-specific per-unit fields are stored on `assets[]`; do not keep top-level pad/battery dates here.
 };
 
@@ -67,6 +69,7 @@ const DEFAULT_STATE: InventoryFormState = {
   isOxygen: false,
   oxygenPsi: 2000,
   maxOxygenPsi: 2000,
+  oxygenModel: '',
   // expiration tracking removed at top-level; batch expirations are authoritative
   openedAt: undefined
   ,
@@ -74,6 +77,7 @@ const DEFAULT_STATE: InventoryFormState = {
   ,
   assets: []
   ,
+  requiresExpirationCheck: false,
   
 };
 
@@ -164,6 +168,7 @@ export default function InventoryModal({
       isOxygen: data.isOxygen || false,
       oxygenPsi: data.oxygenPsi ?? 2000,
       maxOxygenPsi: data.maxOxygenPsi ?? 2000,
+      oxygenModel: (data as any).oxygenModel ?? '',
       // secondary expiration (per-item) removed
       openedAt: data.openedAt ? new Date(data.openedAt) : undefined,
       batches,
@@ -174,6 +179,7 @@ export default function InventoryModal({
       assetLastChecked: (data as any).assetLastChecked ? new Date((data as any).assetLastChecked) : undefined,
       assetNextExpiration: (data as any).assetNextExpiration ? new Date((data as any).assetNextExpiration) : undefined,
         isAuditRequired: (data as any).isAuditRequired ?? true,
+        requiresExpirationCheck: (data as any).requiresExpirationCheck ?? false,
         assetCategory: (data as any).assetCategory ?? undefined,
         assetModel: (data as any).assetModel ?? undefined,
     };
@@ -598,6 +604,7 @@ export default function InventoryModal({
       // Oxygen Data
       oxygenPsi: Number(formData.oxygenPsi),
       maxOxygenPsi: Number(formData.maxOxygenPsi),
+      oxygenModel: formData.oxygenModel || undefined,
       
       // openedAt retained for open-box tracking; expiration fields are only per-batch now
       openedAt: safeParseDate(formData.openedAt as any),
@@ -610,6 +617,7 @@ export default function InventoryModal({
       assignedToId: (formData as any).assignedToId ?? undefined,
       // Per-asset checks live on each entry in `assets[]` for AEDs; remove top-level fields
       isAuditRequired: formData.isAuditRequired ?? true,
+      requiresExpirationCheck: !!formData.requiresExpirationCheck,
 
       // Reagent and Legacy tracking
       isReagent: !!(formData as any).isReagent,
@@ -618,6 +626,7 @@ export default function InventoryModal({
 
         variants: formData.hasVariants ? (formData.variants || []).map(v => ({
         ...v,
+        requiresExpirationCheck: v.requiresExpirationCheck ?? formData.requiresExpirationCheck ?? false,
         quantityPerUnit: Number(v.quantityPerUnit),
         stock: Number(v.stock),
         reorderThreshold: Number(v.reorderThreshold ?? formData.reorderThreshold ?? 0),
@@ -824,6 +833,14 @@ export default function InventoryModal({
                   <Switch isSelected={formData.isAuditRequired ?? true} onValueChange={(val) => setFormData({...formData, isAuditRequired: val})} />
                 </div>
 
+                <div className="flex items-center justify-between p-3 border-2 border-default-200 rounded-xl">
+                  <div className="flex flex-col">
+                    <span className="text-sm text-gray-600 dark:text-gray-400">Require Expiration Confirmation?</span>
+                    <span className="text-xs text-gray-400">When enabled, users must confirm expiration date during checkout for this item.</span>
+                  </div>
+                  <Switch isSelected={!!formData.requiresExpirationCheck} onValueChange={(val) => setFormData({...formData, requiresExpirationCheck: val})} />
+                </div>
+
                 {/* --- LOCATION --- */}
                 <h3 className="md:col-span-2 text-sm font-bold text-gray-500 uppercase mt-4">Location</h3>
                 
@@ -881,6 +898,7 @@ export default function InventoryModal({
                       </div>
                       {formData.isOxygen && (
                         <div className="space-y-4 pt-2">
+                           <Input label="Tank Model (optional)" size="sm" placeholder="e.g., Luxfer 3000" value={String(formData.oxygenModel ?? '')} onValueChange={(v) => setFormData({...formData, oxygenModel: v})} />
                            <div>
                               <div className="flex justify-between text-xs mb-1">
                                 <span>Current Pressure</span>

@@ -42,6 +42,8 @@ export interface InventoryVariant {
   reorderThreshold?: number;
   // Optional per-variant batch tracking for expirations/lot-specific stock
   batches?: InventoryBatch[];
+  // When true, this specific variant must always have its expiration checked before use
+  requiresExpirationCheck?: boolean;
 }
 
 export interface InventoryBatch {
@@ -123,6 +125,8 @@ export interface InventoryItem {
 
   // Batch/lots tracking for different expirations (separate from sizing `variants`)
   batches?: InventoryBatch[];
+  // When true, this item must always have its expiration date checked before use (UI/enforcement can honor this)
+  requiresExpirationCheck?: boolean;
   // Tracking
   tracksExpiration: boolean; 
   expirationDate?: Date;
@@ -133,6 +137,8 @@ export interface InventoryItem {
   isOxygen?: boolean;
   oxygenPsi?: number;
   maxOxygenPsi?: number;
+  // Optional model/name for oxygen tanks
+  oxygenModel?: string;
 
   // Box/Unit Logic
   tracksOpenStock?: boolean;
@@ -187,6 +193,8 @@ export interface StatpackItem {
   expirationDate?: Date; // Derived from batch for UI convenience
   lotNumber?: string; // Derived from batch for UI convenience
   effectiveExpiration?: Date; // Computed from batch.expirationDate or batch.openDate + daysValid
+  // Convenience flag copied from linked `InventoryItem`/variant to indicate expirations must be confirmed
+  requiresExpirationCheck?: boolean;
 }
 
 export interface Statpack {

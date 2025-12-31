@@ -139,6 +139,9 @@ export default function MobileCheckoutClient() {
   const [oxygenReadings, setOxygenReadings] = useState<Record<string, string>>({});
   const [sealExpirations, setSealExpirations] = useState<Record<string, string>>({}); 
   const [itemExpirations, setItemExpirations] = useState<Record<string, string>>({}); 
+  const [expirationMismatches, setExpirationMismatches] = useState<Record<string, { entered?: string; system?: string }>>({});
+  const { isOpen: isMismatchOpen, onOpen: onMismatchOpen, onOpenChange: onMismatchChange } = useDisclosure();
+  const [mismatchModalData, setMismatchModalData] = useState<{ itemId?: string; entered?: string; system?: string }>({});
 
   // Temporary State for Issue Modal
   const [currentIssueItem, setCurrentIssueItem] = useState<StatpackItem | null>(null);
@@ -365,7 +368,67 @@ export default function MobileCheckoutClient() {
   };
 
   const handleItemExpirationChange = (itemId: string, val: string) => {
+    // If this is a critical item (AED or epipen), validate against system value and prompt user
+    const findPackItem = () => pack?.contents?.find((i: any) => i.itemId === itemId) as any | undefined;
+    const isCriticalItem = (it: any) => {
+      if (!it) return false;
+      if (it.itemDetails?.assetCategory === 'AED') return true;
+      const name = String(it.itemDetails?.name || it.itemDetails?.displayName || it.itemName || '').toLowerCase();
+      if (name.includes('epi') || name.includes('epipen') || name.includes('epinephrine')) return true;
+      return false;
+    };
+
+    const packItem = findPackItem();
+    if (packItem && isCriticalItem(packItem) && val) {
+      const systemVal = packItem.expirationDate ? toInputDate(getDate(packItem.expirationDate)) : '';
+      const entered = val || '';
+      if (systemVal && entered !== systemVal) {
+        // Open a modal to require recheck or allow proceeding and flagging for admin review
+        setMismatchModalData({ itemId, entered, system: systemVal });
+        onMismatchOpen();
+        return;
+      }
+    }
+
+    // Default behavior: just set the value and clear any mismatch if it now matches
     setItemExpirations(prev => ({ ...prev, [itemId]: val }));
+    if (pack) {
+      const pi = pack.contents?.find((i: any) => i.itemId === itemId);
+      const sys = pi?.expirationDate ? toInputDate(getDate(pi.expirationDate)) : '';
+      if (sys && sys === val) {
+        setExpirationMismatches(prev => {
+          const copy = { ...prev };
+          delete copy[itemId];
+          return copy;
+        });
+      }
+    }
+  };
+
+  const handleMismatchRecheck = () => {
+    const itemId = mismatchModalData.itemId;
+    if (itemId) {
+      setItemExpirations(prev => ({ ...prev, [itemId]: '' }));
+      setExpirationMismatches(prev => {
+        const copy = { ...prev };
+        delete copy[itemId];
+        return copy;
+      });
+    }
+    setMismatchModalData({});
+    onMismatchChange();
+  };
+
+  const handleMismatchProceed = () => {
+    const itemId = mismatchModalData.itemId;
+    const entered = mismatchModalData.entered || '';
+    const system = mismatchModalData.system || '';
+    if (itemId) {
+      setExpirationMismatches(prev => ({ ...prev, [itemId]: { entered, system } }));
+      setItemExpirations(prev => ({ ...prev, [itemId]: entered }));
+    }
+    setMismatchModalData({});
+    onMismatchChange();
   };
 
   // --- Navigation & Finish ---
@@ -512,7 +575,8 @@ export default function MobileCheckoutClient() {
           oxygenReadings,
                     issueReports,
                     verifiedCount: Object.keys(verifiedItems).length,
-                    aedChecks
+                    aedChecks,
+                    expirationMismatches
         }
       });
 
@@ -639,7 +703,7 @@ export default function MobileCheckoutClient() {
           const isOxygen = item.itemDetails?.isOxygen;
           const isAED = item.itemDetails?.isAsset && item.itemDetails?.assetCategory === 'AED';
 
-          // If AED, require AED-specific checks (power on + pads sealed and not expired) unless there's an issue replacement
+            // If AED, require AED-specific checks (power on + pads sealed and not expired) unless there's an issue replacement
           if (isAED && !hasIssue) {
               const checks = aedChecks[item.itemId];
               if (!checks) return false;
@@ -659,10 +723,25 @@ export default function MobileCheckoutClient() {
               return true;
           }
 
-          if (isOxygen && !hasIssue) {
+            if (isOxygen && !hasIssue) {
               return isVerified && oxygenReadings[item.itemId] && parseInt(oxygenReadings[item.itemId]) >= 0;
-          }
-          return isVerified || hasIssue;
+            }
+
+            // If this item requires expiration confirmation, allow completion when either:
+            // - the user explicitly verified the item, OR
+            // - an issue was reported for it, OR
+            // - the user proceeded despite an expiration mismatch (logged in `expirationMismatches`), OR
+            // - the entered expiration matches the system expiration
+            const requiresExpCheck = !!((item as any).requiresExpirationCheck || item.itemDetails?.requiresExpirationCheck);
+            if (requiresExpCheck) {
+              const entered = itemExpirations[item.itemId];
+              const system = item.itemDetails?.expirationDate ? toInputDate(getDate(item.itemDetails.expirationDate)) : '';
+              const mismatchFlag = !!expirationMismatches[item.itemId];
+              const enteredMatches = !!entered && !!system && entered === system;
+              return isVerified || hasIssue || mismatchFlag || enteredMatches;
+            }
+
+            return isVerified || hasIssue;
       });
   };
 
@@ -726,215 +805,234 @@ export default function MobileCheckoutClient() {
     return (
       <div className="min-h-screen bg-gray-50 dark:bg-slate-900 flex flex-col">
         <div className="bg-white dark:bg-slate-800 px-4 py-2 sticky top-0 z-20 border-b border-gray-200 dark:border-slate-700 shadow-sm flex items-center justify-between">
-        <div className="flex items-center gap-2 overflow-hidden">
-          <Button isIconOnly size="sm" variant="light" onPress={() => setView('intro')}><ArrowLeft size={18}/></Button>
-          <div className="flex flex-col truncate">
-            <span className="font-bold text-sm">Step {activeStepIndex + 1}/{(stepOrder.length || steps.length)}</span>
-            <span className="text-[10px] text-gray-500 truncate">{currentStep?.name}</span>
+          <div className="flex items-center gap-2 overflow-hidden">
+            <Button isIconOnly size="sm" variant="light" onPress={() => setView('intro')}><ArrowLeft size={18}/></Button>
+            <div className="flex flex-col truncate">
+              <span className="font-bold text-sm">Step {activeStepIndex + 1}/{(stepOrder.length || steps.length)}</span>
+              <span className="text-[10px] text-gray-500 truncate">{currentStep?.name}</span>
+            </div>
           </div>
-        </div>
-           <div className="flex gap-2 shrink-0">
-              <Button size="sm" variant="flat" color="secondary" onPress={onMapOpen} startContent={<MapIcon size={14}/>}>Map</Button>
-              <Button size="sm" variant="flat" onPress={() => {
-                  const firstIncomplete = stepOrder.findIndex(id => {
+            <div className="flex gap-2 shrink-0">
+                <Button size="sm" variant="flat" color="secondary" onPress={onMapOpen} startContent={<MapIcon size={14}/>}>Map</Button>
+                <Button size="sm" variant="flat" onPress={() => {
+                    const firstIncomplete = stepOrder.findIndex(id => {
                       const s = steps.find(ss => ss.id === id);
                       return !!s && !isStepComplete(s);
-                  });
-                  if (firstIncomplete !== -1) {
+                    });
+                    if (firstIncomplete !== -1) {
                       // Enter auto-review mode: jump to first incomplete and automatically walk remaining steps
                       setAutoReviewMode(true);
                       setActiveStepIndex(firstIncomplete);
                       setView('steps');
-                  } else {
+                    } else {
                       setView('review');
-                  }
-              }}>Review
-              </Button>
-           </div>
-        </div>
-        
-        <Progress size="sm" value={progressVal} color="success" aria-label="Progress" className="rounded-none"/>
-
-        <div className="flex-1 overflow-y-auto p-4 max-w-lg mx-auto w-full pb-32">
-          <div className="flex justify-between items-start mb-4">
-            <div>
-              <h2 className="text-xl font-bold mb-1">{currentStep.name}</h2>
-              <p className="text-gray-500 text-sm flex items-center gap-2">
-                {currentStep.type === 'compartment' ? <Layers size={14}/> : <Package size={14}/>}
-                {currentStep.type === 'compartment' ? 'Sealed Compartment' : 'Loose Items'}
-              </p>
+                    }
+                }}>
+                  Review
+                </Button>
             </div>
-              {currentStep.parentPocket && (
-                <Chip size="sm" variant="flat" color="primary" className="capitalize">
-                  {currentStep.parentPocket.replace('_', ' ')}
-                </Chip>
-              )}
           </div>
+          
+          <Progress size="sm" value={progressVal} color="success" aria-label="Progress" className="rounded-none"/>
 
-          {/* SEAL CHECK */}
-          {currentStep.isSealed && (
-            <Card className={`mb-6 border-l-4 ${sealCheck[currentStep.id] === true ? 'border-l-green-500 bg-green-100 dark:bg-green-900/20' : 'border-l-amber-500'}`}>
-              <CardBody className="flex flex-col gap-4">
-                <div className="flex flex-row items-center justify-between">
-                  <div>
-                      <div className="font-bold text-foreground flex items-center gap-2">
-                        {sealCheck[currentStep.id] === true ? <Lock className="text-green-600"/> : <Unlock className="text-amber-600"/>}
-                        Seal Status
-                      </div>
-                      <div className="text-xs text-gray-500">Exp: {currentStep.sealNumber || 'N/A'}</div>
-                  </div>
-                  <div className="flex gap-2">
-                      <Button size="sm" color={sealCheck[currentStep.id] === false ? "danger" : "default"} variant={sealCheck[currentStep.id] === false ? "solid" : "bordered"} onPress={() => handleSealToggle(currentStep.id, false)}>Broken</Button>
-                      <Button size="sm" color={sealCheck[currentStep.id] === true ? "success" : "default"} variant={sealCheck[currentStep.id] === true ? "solid" : "bordered"} onPress={() => handleSealToggle(currentStep.id, true)}>Intact</Button>
-                  </div>
-                </div>
-                {sealCheck[currentStep.id] === true && (
-                  <p className="text-xs text-green-700 font-semibold flex items-center gap-1">
-                      <CheckCircle2 size={12}/> Contents Verified via Seal
-                  </p>
+          <div className="flex-1 overflow-y-auto p-4 max-w-lg mx-auto w-full pb-32">
+            <div className="flex justify-between items-start mb-4">
+              <div>
+                <h2 className="text-xl font-bold mb-1">{currentStep.name}</h2>
+                <p className="text-gray-500 text-sm flex items-center gap-2">
+                  {currentStep.type === 'compartment' ? <Layers size={14}/> : <Package size={14}/>}
+                  {currentStep.type === 'compartment' ? 'Sealed Compartment' : 'Loose Items'}
+                </p>
+              </div>
+                {currentStep.parentPocket && (
+                  <Chip size="sm" variant="flat" color="primary" className="capitalize">
+                    {currentStep.parentPocket.replace('_', ' ')}
+                  </Chip>
                 )}
-                <Divider />
-                <div>
-                  <div className="text-xs font-semibold text-gray-500 mb-1 flex items-center gap-1"><CalendarDays size={12} /> Seal Expiration</div>
-                  <Input type="date" size="sm" aria-label="Seal Expiration" value={sealExpirations[currentStep.id] || ''} onValueChange={(val) => handleSealExpirationChange(currentStep.id, val)} />
-                </div>
-              </CardBody>
-            </Card>
-          )}
-
-          {/* ITEMS LIST */}
-          <div className="relative">
-            <div className="space-y-3">
-              {currentStep.items.map(item => {
-                const hasIssue = !!issueReports[item.itemId];
-                const isVerified = verifiedItems[item.itemId] && !hasIssue;
-                const isOxygen = item.itemDetails?.isOxygen;
-                const isAED = item.itemDetails?.isAsset && item.itemDetails?.assetCategory === 'AED';
-                const tracksExpiration = item.itemDetails?.tracksExpiration;
-                const sealedLocked = isSealIntact; // when true, item interactions should be disabled
-                return (
-                  <div 
-                    key={item.itemId} 
-                    onClick={() => { if (!isAED && !sealedLocked) handleVerifyToggle(item.itemId); }}
-                    className={`cursor-pointer ${sealedLocked ? 'opacity-70 cursor-not-allowed' : ''}`}
-                  >
-                    <Card 
-                      className={`border-2 transition-all relative group ${
-                        hasIssue ? 'border-amber-500 bg-amber-50 dark:bg-amber-900/10' : 
-                        isVerified ? 'border-green-500 bg-green-50 dark:bg-green-900/10' : 
-                        'border-gray-200 dark:border-slate-700 hover:border-gray-300'
-                      }`}
-                    >
-                      <CardBody className="flex flex-row items-start justify-between p-3 gap-3">
-                        <div className="flex-1">
-                          <div className="font-bold text-sm flex items-center gap-2">
-                            {item.itemDetails?.name}
-                            {isOxygen && <Chip size="sm" color="primary" variant="flat" startContent={<Wind size={10}/>} className="h-5 text-[10px]">O2</Chip>}
-                          </div>
-                          {item.variantName && <div className="text-[10px] text-gray-400">Var: {item.variantName}</div>}
-                          <div className="text-xs text-gray-500 mt-1">
-                            Qty: {item.requiredQuantity} {item.itemDetails?.unit}
-                          </div>
-                          {hasIssue && (
-                            <div className="mt-2 text-xs text-amber-700 bg-amber-100 dark:bg-amber-900/30 p-1.5 rounded-lg inline-block border border-amber-200 dark:border-amber-800">
-                              <div className="font-bold flex items-center gap-1 uppercase">
-                                <AlertTriangle size={10}/> {issueReports[item.itemId].issueType}
-                              </div>
-                              {issueReports[item.itemId].isReplaced && <div className="mt-0.5 ml-3.5">Replaced (+{issueReports[item.itemId].replacedQuantity})</div>}
-                            </div>
-                          )}
-                          {/* Input wrapper with w-fit */}
-                          {!hasIssue && tracksExpiration && (
-                            <div className="mt-3 w-fit" onClick={(e) => e.stopPropagation()}>
-                              <div className="text-[10px] uppercase text-gray-400 font-bold mb-1 flex items-center gap-1"><ThermometerSnowflake size={10} /> Earliest Expiration</div>
-                              <Input type="date" size="sm" variant="faded" aria-label="Item Expiration" value={itemExpirations[item.itemId] || ''} onValueChange={(val) => handleItemExpirationChange(item.itemId, val)} className="max-w-[160px]" disabled={sealedLocked} />
-                            </div>
-                          )}
-                          {/* Input wrapper with w-fit */}
-                          {isOxygen && !hasIssue && (
-                            <div className="mt-3 w-fit max-w-[150px]" onClick={(e) => e.stopPropagation()}>
-                              <div className="text-[10px] uppercase text-gray-400 font-bold mb-1">Current Level</div>
-                              <Input type="number" size="sm" label="PSI" placeholder="0" variant="faded" startContent={<Wind size={14} className="text-gray-400"/>} value={oxygenReadings[item.itemId] || ''} onValueChange={(val) => handleOxygenChange(item.itemId, val)} color={parseInt(oxygenReadings[item.itemId]) < 500 ? "danger" : parseInt(oxygenReadings[item.itemId]) < 1000 ? "warning" : "success"} isRequired disabled={sealedLocked} />
-                            </div>
-                          )}
-                          {/* AED controls: always visible inside card like oxygen */}
-                          {isAED && !hasIssue && (
-                            <div className="mt-3" onClick={(e) => e.stopPropagation()}>
-                              <div className="text-[10px] uppercase text-gray-400 font-bold mb-1">AED Checks</div>
-                              <div className="flex items-center gap-2 mb-2">
-                                <Button size="sm" variant={aedChecks[item.itemId]?.powerOn ? 'solid' : 'bordered'} color={aedChecks[item.itemId]?.powerOn ? 'success' : 'default'} onPress={() => handleAedToggle(item.itemId, 'powerOn', !(aedChecks[item.itemId]?.powerOn))} isDisabled={sealedLocked}>Power On OK</Button>
-                                <Button size="sm" variant={aedChecks[item.itemId]?.padsSealed ? 'solid' : 'bordered'} color={aedChecks[item.itemId]?.padsSealed ? 'success' : 'default'} onPress={() => handleAedToggle(item.itemId, 'padsSealed', !(aedChecks[item.itemId]?.padsSealed))} isDisabled={sealedLocked}>Pads Present & Sealed</Button>
-                              </div>
-                              <div className="flex items-center gap-2 mb-2">
-                                <div className="text-[10px] text-gray-400">Pad Exp</div>
-                                <Input type="date" size="sm" value={aedChecks[item.itemId]?.padExpiration || ''} onValueChange={(v) => handleAedExpirationChange(item.itemId, 'padExpiration', v)} className="max-w-[140px]" disabled={sealedLocked} />
-                                <div className="text-[10px] text-gray-400 ml-2">Battery Exp</div>
-                                <Input type="date" size="sm" value={aedChecks[item.itemId]?.batteryExpiration || ''} onValueChange={(v) => handleAedExpirationChange(item.itemId, 'batteryExpiration', v)} className="max-w-[140px]" disabled={sealedLocked} />
-                              </div>
-                              <Input size="sm" variant="flat" placeholder="Notes (optional)" value={aedChecks[item.itemId]?.notes || ''} onValueChange={(v) => setAedChecks(prev => ({ ...prev, [item.itemId]: { ...(prev[item.itemId] || {}), notes: v } }))} disabled={sealedLocked} />
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex flex-col items-center gap-3">
-                          <div className={`p-1.5 rounded-full transition-colors ${isVerified ? 'text-green-600 bg-green-200 dark:bg-green-800' : 'text-gray-300 dark:text-gray-600'}`}>
-                            <CheckCircle2 size={28} />
-                          </div>
-                          <div onClick={(e) => e.stopPropagation()}>
-                            <Button 
-                              isIconOnly size="sm" 
-                              color={hasIssue ? "warning" : "default"} 
-                              variant={hasIssue ? "solid" : "light"} 
-                              onPress={() => { if (!sealedLocked) openIssueModal(item); }}
-                              isDisabled={sealedLocked}
-                              className="opacity-60 hover:opacity-100"
-                            >
-                              <AlertTriangle size={18} />
-                            </Button>
-                          </div>
-                        </div>
-                      </CardBody>
-                    </Card>
-                  </div>
-                );
-              })}
             </div>
-            {isSealIntact && (
-                <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/60 dark:bg-slate-900/60 backdrop-blur pointer-events-auto">
-                    <div className="text-center p-4 rounded-md border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800/70 shadow">
-                        <div className="flex items-center justify-center mb-2 text-green-700">
-                            <Lock size={32} />
+
+            {/* SEAL CHECK */}
+            {currentStep.isSealed && (
+              <Card className={`mb-6 border-l-4 ${sealCheck[currentStep.id] === true ? 'border-l-green-500 bg-green-100 dark:bg-green-900/20' : 'border-l-amber-500'}`}>
+                <CardBody className="flex flex-col gap-4">
+                  <div className="flex flex-row items-center justify-between">
+                    <div>
+                        <div className="font-bold text-foreground flex items-center gap-2">
+                          {sealCheck[currentStep.id] === true ? <Lock className="text-green-600"/> : <Unlock className="text-amber-600"/>}
+                          Seal Status
                         </div>
-                        <div className="font-bold">Compartment Sealed</div>
-                        <div className="text-sm text-gray-600">Contents are sealed — verification disabled</div>
+                        <div className="text-xs text-gray-500">Exp: {currentStep.sealNumber || 'N/A'}</div>
                     </div>
-                </div>
+                    <div className="flex gap-2">
+                        <Button size="sm" color={sealCheck[currentStep.id] === false ? "danger" : "default"} variant={sealCheck[currentStep.id] === false ? "solid" : "bordered"} onPress={() => handleSealToggle(currentStep.id, false)}>Broken</Button>
+                        <Button size="sm" color={sealCheck[currentStep.id] === true ? "success" : "default"} variant={sealCheck[currentStep.id] === true ? "solid" : "bordered"} onPress={() => handleSealToggle(currentStep.id, true)}>Intact</Button>
+                    </div>
+                  </div>
+                  {sealCheck[currentStep.id] === true && (
+                    <p className="text-xs text-green-700 font-semibold flex items-center gap-1">
+                        <CheckCircle2 size={12}/> Contents Verified via Seal
+                    </p>
+                  )}
+                  <Divider />
+                  <div>
+                    <div className="text-xs font-semibold text-gray-500 mb-1 flex items-center gap-1"><CalendarDays size={12} /> Seal Expiration</div>
+                    <Input type="date" size="sm" aria-label="Seal Expiration" value={sealExpirations[currentStep.id] || ''} onValueChange={(val) => handleSealExpirationChange(currentStep.id, val)} />
+                  </div>
+                </CardBody>
+              </Card>
             )}
-          </div>
-          {/* BOTTOM NAV */}
-          <div className="p-4 bg-white dark:bg-slate-800 border-t border-gray-200 dark:border-slate-700 fixed bottom-0 left-0 right-0 z-20 shadow-xl">
-            <div className="max-w-lg mx-auto flex gap-3">
-              <Button fullWidth variant="bordered" isDisabled={activeStepIndex === 0} onPress={() => setActiveStepIndex(prev => prev - 1)}>
-                Back
-              </Button>
-              <Button fullWidth color="primary" onPress={handleStepComplete} isDisabled={!isStepComplete(currentStep)}>
-                {activeStepIndex === steps.length - 1 ? 'Review' : 'Complete Pocket'}
-              </Button>
+
+            {/* ITEMS LIST */}
+            <div className="relative">
+              <div className="space-y-3">
+                {currentStep.items.map(item => {
+                  const hasIssue = !!issueReports[item.itemId];
+                  const isVerified = verifiedItems[item.itemId] && !hasIssue;
+                  const isOxygen = item.itemDetails?.isOxygen;
+                  const isAED = item.itemDetails?.isAsset && item.itemDetails?.assetCategory === 'AED';
+                  const tracksExpiration = item.itemDetails?.tracksExpiration;
+                  const sealedLocked = isSealIntact; // when true, item interactions should be disabled
+                  return (
+                    <div 
+                      key={item.itemId} 
+                      onClick={() => { if (!isAED && !sealedLocked) handleVerifyToggle(item.itemId); }}
+                      className={`cursor-pointer ${sealedLocked ? 'opacity-70 cursor-not-allowed' : ''}`}
+                    >
+                      <Card 
+                        className={`border-2 transition-all relative group ${
+                          hasIssue ? 'border-amber-500 bg-amber-50 dark:bg-amber-900/10' : 
+                          isVerified ? 'border-green-500 bg-green-50 dark:bg-green-900/10' : 
+                          'border-gray-200 dark:border-slate-700 hover:border-gray-300'
+                        }`}
+                      >
+                        <CardBody className="flex flex-row items-start justify-between p-3 gap-3">
+                          <div className="flex-1">
+                            <div className="font-bold text-sm flex items-center gap-2">
+                              {item.itemDetails?.name}
+                              {isOxygen && <Chip size="sm" color="primary" variant="flat" startContent={<Wind size={10}/>} className="h-5 text-[10px]">O2</Chip>}
+                            </div>
+                            {item.variantName && <div className="text-[10px] text-gray-400">Var: {item.variantName}</div>}
+                            <div className="text-xs text-gray-500 mt-1">
+                              Qty: {item.requiredQuantity} {item.itemDetails?.unit}
+                            </div>
+                            {hasIssue && (
+                              <div className="mt-2 text-xs text-amber-700 bg-amber-100 dark:bg-amber-900/30 p-1.5 rounded-lg inline-block border border-amber-200 dark:border-amber-800">
+                                <div className="font-bold flex items-center gap-1 uppercase">
+                                  <AlertTriangle size={10}/> {issueReports[item.itemId].issueType}
+                                </div>
+                                {issueReports[item.itemId].isReplaced && <div className="mt-0.5 ml-3.5">Replaced (+{issueReports[item.itemId].replacedQuantity})</div>}
+                              </div>
+                            )}
+                            {/* Input wrapper with w-fit */}
+                            {!hasIssue && tracksExpiration && (
+                              <div className="mt-3 w-fit" onClick={(e) => e.stopPropagation()}>
+                                <div className="text-[10px] uppercase text-gray-400 font-bold mb-1 flex items-center gap-1"><ThermometerSnowflake size={10} /> Earliest Expiration</div>
+                                <Input type="date" size="sm" variant="faded" aria-label="Item Expiration" value={itemExpirations[item.itemId] || ''} onValueChange={(val) => handleItemExpirationChange(item.itemId, val)} className="max-w-[160px]" disabled={sealedLocked} />
+                              </div>
+                            )}
+                            {/* Input wrapper with w-fit */}
+                            {isOxygen && !hasIssue && (
+                              <div className="mt-3 w-fit max-w-[150px]" onClick={(e) => e.stopPropagation()}>
+                                <div className="text-[10px] uppercase text-gray-400 font-bold mb-1">Current Level</div>
+                                <Input type="number" size="sm" label="PSI" placeholder="0" variant="faded" startContent={<Wind size={14} className="text-gray-400"/>} value={oxygenReadings[item.itemId] || ''} onValueChange={(val) => handleOxygenChange(item.itemId, val)} color={parseInt(oxygenReadings[item.itemId]) < 500 ? "danger" : parseInt(oxygenReadings[item.itemId]) < 1000 ? "warning" : "success"} isRequired disabled={sealedLocked} />
+                              </div>
+                            )}
+                            {/* AED controls: always visible inside card like oxygen */}
+                            {isAED && !hasIssue && (
+                              <div className="mt-3" onClick={(e) => e.stopPropagation()}>
+                                <div className="text-[10px] uppercase text-gray-400 font-bold mb-1">AED Checks</div>
+                                <div className="flex items-center gap-2 mb-2">
+                                  <Button size="sm" variant={aedChecks[item.itemId]?.powerOn ? 'solid' : 'bordered'} color={aedChecks[item.itemId]?.powerOn ? 'success' : 'default'} onPress={() => handleAedToggle(item.itemId, 'powerOn', !(aedChecks[item.itemId]?.powerOn))} isDisabled={sealedLocked}>Power On OK</Button>
+                                  <Button size="sm" variant={aedChecks[item.itemId]?.padsSealed ? 'solid' : 'bordered'} color={aedChecks[item.itemId]?.padsSealed ? 'success' : 'default'} onPress={() => handleAedToggle(item.itemId, 'padsSealed', !(aedChecks[item.itemId]?.padsSealed))} isDisabled={sealedLocked}>Pads Present & Sealed</Button>
+                                </div>
+                                <div className="flex items-center gap-2 mb-2">
+                                  <div className="text-[10px] text-gray-400">Pad Exp</div>
+                                  <Input type="date" size="sm" value={aedChecks[item.itemId]?.padExpiration || ''} onValueChange={(v) => handleAedExpirationChange(item.itemId, 'padExpiration', v)} className="max-w-[140px]" disabled={sealedLocked} />
+                                  <div className="text-[10px] text-gray-400 ml-2">Battery Exp</div>
+                                  <Input type="date" size="sm" value={aedChecks[item.itemId]?.batteryExpiration || ''} onValueChange={(v) => handleAedExpirationChange(item.itemId, 'batteryExpiration', v)} className="max-w-[140px]" disabled={sealedLocked} />
+                                </div>
+                                <Input size="sm" variant="flat" placeholder="Notes (optional)" value={aedChecks[item.itemId]?.notes || ''} onValueChange={(v) => setAedChecks(prev => ({ ...prev, [item.itemId]: { ...(prev[item.itemId] || {}), notes: v } }))} disabled={sealedLocked} />
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex flex-col items-center gap-3">
+                            <div className={`p-1.5 rounded-full transition-colors ${isVerified ? 'text-green-600 bg-green-200 dark:bg-green-800' : 'text-gray-300 dark:text-gray-600'}`}>
+                              <CheckCircle2 size={28} />
+                            </div>
+                            <div onClick={(e) => e.stopPropagation()}>
+                              <Button 
+                                isIconOnly size="sm" 
+                                color={hasIssue ? "warning" : "default"} 
+                                variant={hasIssue ? "solid" : "light"} 
+                                onPress={() => { if (!sealedLocked) openIssueModal(item); }}
+                                isDisabled={sealedLocked}
+                                className="opacity-60 hover:opacity-100"
+                              >
+                                <AlertTriangle size={18} />
+                              </Button>
+                            </div>
+                          </div>
+                        </CardBody>
+                      </Card>
+                    </div>
+                  );
+                })}
+              </div>
+              {isSealIntact && (
+                <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/60 dark:bg-slate-900/60 backdrop-blur pointer-events-auto">
+                  <div className="text-center p-4 rounded-md border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800/70 shadow">
+                    <div className="flex items-center justify-center mb-2 text-green-700">
+                      <Lock size={32} />
+                    </div>
+                    <div className="font-bold">Compartment Sealed</div>
+                    <div className="text-sm text-gray-600">Contents are sealed — verification disabled</div>
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
-          <MapModal isOpen={isMapOpen} onOpenChange={onMapChange} pack={pack} onSelectPocket={jumpToPocket} />
+            {/* BOTTOM NAV */}
+            <div className="p-4 bg-white dark:bg-slate-800 border-t border-gray-200 dark:border-slate-700 fixed bottom-0 left-0 right-0 z-20 shadow-xl">
+              <div className="max-w-lg mx-auto flex gap-3">
+                <Button fullWidth variant="bordered" isDisabled={activeStepIndex === 0} onPress={() => setActiveStepIndex(prev => prev - 1)}>
+                  Back
+                </Button>
+                <Button fullWidth color="primary" onPress={handleStepComplete} isDisabled={!isStepComplete(currentStep)}>
+                  {activeStepIndex === steps.length - 1 ? 'Review' : 'Complete Pocket'}
+                </Button>
+              </div>
+            </div>
+            <MapModal isOpen={isMapOpen} onOpenChange={onMapChange} pack={pack} onSelectPocket={jumpToPocket} />
 
-          <IssueModal 
-            isOpen={isIssueOpen} 
-            onOpenChange={onIssueChange} 
-            currentIssueItem={currentIssueItem} 
-            tempIssueData={tempIssueData} 
-            setTempIssueData={setTempIssueData} 
-            saveIssueReport={saveIssueReport} 
-            aedChecks={aedChecks}
-            handleAedToggle={handleAedToggle}
-            handleAedExpirationChange={handleAedExpirationChange}
-          />
-
+            <IssueModal 
+              isOpen={isIssueOpen} 
+              onOpenChange={onIssueChange} 
+              currentIssueItem={currentIssueItem} 
+              tempIssueData={tempIssueData} 
+              setTempIssueData={setTempIssueData} 
+              saveIssueReport={saveIssueReport} 
+              aedChecks={aedChecks}
+              handleAedToggle={handleAedToggle}
+              handleAedExpirationChange={handleAedExpirationChange}
+            />
+            <Modal isOpen={isMismatchOpen} onOpenChange={onMismatchChange}>
+              <ModalContent>
+                <ModalHeader>Expiration Mismatch</ModalHeader>
+                <ModalBody>
+                  <div className="space-y-2">
+                    <div className="text-sm">System record: <strong>{mismatchModalData.system || '—'}</strong></div>
+                    <div className="text-sm">Entered value: <strong>{mismatchModalData.entered || '—'}</strong></div>
+                    <div className="text-xs text-gray-500">The entered expiration does not match the system record. Please re-check the item's expiration date. You may re-enter the value or proceed and flag this checkout for admin review.</div>
+                  </div>
+                </ModalBody>
+                <ModalFooter>
+                  <div className="flex gap-2">
+                    <Button variant="flat" onPress={handleMismatchRecheck}>Recheck</Button>
+                    <Button color="warning" onPress={handleMismatchProceed}>Proceed and Flag</Button>
+                  </div>
+                </ModalFooter>
+              </ModalContent>
+            </Modal>
+        </div>
       </div>
     );
   }
