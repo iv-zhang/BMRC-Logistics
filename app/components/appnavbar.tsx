@@ -133,13 +133,25 @@ export default function AppNavbar() {
             </Link>
           </NavbarItem>
 
-          <NavbarItem isActive={isActive('/audit')}>
+          {/* Audit link moved into Inventory page header */}
+
+          <NavbarItem isActive={isActive('/restock')}>
             <Link
-              href="/audit"
-              color={isActive('/audit') ? "primary" : "foreground"}
-              className={isActive('/audit') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}
+              href="/restock"
+              color={isActive('/restock') ? "primary" : "foreground"}
+              className={isActive('/restock') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}
             >
-              Audit
+              Restock
+            </Link>
+          </NavbarItem>
+
+          <NavbarItem isActive={isActive('/restock-stats')}>
+            <Link
+              href="/restock-stats"
+              color={isActive('/restock-stats') ? "primary" : "foreground"}
+              className={isActive('/restock-stats') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}
+            >
+              Restock Stats
             </Link>
           </NavbarItem>
         </div>
@@ -151,6 +163,8 @@ export default function AppNavbar() {
           <Link href="/inventory" className={isActive('/inventory') ? "font-semibold text-indigo-600" : "text-gray-500 dark:text-gray-400"}>Inventory</Link>
           <Link href="/roster" className={isActive('/roster') ? "font-semibold text-indigo-600" : "text-gray-500 dark:text-gray-400"}>Roster</Link>
           <Link href="/audit" className={isActive('/audit') ? "font-semibold text-indigo-600" : "text-gray-500 dark:text-gray-400"}>Audit</Link>
+          <Link href="/restock" className={isActive('/restock') ? "font-semibold text-indigo-600" : "text-gray-500 dark:text-gray-400"}>Restock</Link>
+          <Link href="/restock-stats" className={isActive('/restock-stats') ? "font-semibold text-indigo-600" : "text-gray-500 dark:text-gray-400"}>Restock Stats</Link>
         </div>
       </NavbarBrand>
 

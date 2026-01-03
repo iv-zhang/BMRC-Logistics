@@ -7,6 +7,8 @@ import {
 import { Trash2, Plus, Info, Box, Wind, CalendarClock, GripVertical } from 'lucide-react';
 
 import { InventoryItem, ItemCategory, LocationType, HQRoom, InventoryVariant, InventoryBatch, AssetInstance } from '@/app/types'; 
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '@/firebase';
 
 // Constants for Dropdowns
 const CATEGORIES: ItemCategory[] = ['Airway', 'Trauma', 'Vitals', 'Meds', 'PPE', 'Splinting', 'Hygiene', 'Other'];
@@ -230,6 +232,7 @@ export default function InventoryModal({
   };
 
   const [formData, setFormData] = useState<InventoryFormState>(() => getInitialFormData(initialData));
+  const [assignedNames, setAssignedNames] = useState<Record<string,string>>({});
   const [legacyMode, setLegacyMode] = useState(false); // Quick-Add mode for found items
 
   // Reset or update form when modal opens/closes or initialData changes
@@ -238,6 +241,30 @@ export default function InventoryModal({
         setFormData(getInitialFormData(initialData));
     }
   }, [isOpen, initialData]);
+
+  // Resolve assignedToId -> statpack name when possible to show a friendly label
+  useEffect(() => {
+    const ids = (formData.assets || []).map(a => a.assignedToId).filter(Boolean) as string[];
+    const uniq = Array.from(new Set(ids));
+    if (uniq.length === 0) return;
+    let mounted = true;
+    (async () => {
+      const map: Record<string,string> = {};
+      for (const id of uniq) {
+        try {
+          const snap = await getDoc(doc(db, 'statpacks', id));
+          if (snap.exists()) {
+            const data = snap.data() as any;
+            if (data && data.name) map[id] = String(data.name);
+          }
+        } catch (e) {
+          // ignore fetch errors
+        }
+      }
+      if (mounted) setAssignedNames(prev => ({ ...prev, ...map }));
+    })();
+    return () => { mounted = false; };
+  }, [formData.assets]);
 
   // Whether master item location should be treated as authoritative
   const masterHasBatches = ((formData.batches || []).length > 0) || ((formData.variants || []).some(v => Array.isArray(v.batches) && v.batches.length > 0));
@@ -1236,7 +1263,7 @@ export default function InventoryModal({
                                   </div>
                                 </div>
                                 <div className="mt-2 grid grid-cols-1 md:grid-cols-3 gap-2">
-                                  <Input size="sm" label="Assigned To (Statpack/Location)" value={a.assignedToId ?? ''} onValueChange={(v) => updateAssetField(idx, 'assignedToId', v)} />
+                                  <Input size="sm" label="Assigned To (Statpack/Location)" value={assignedNames[a.assignedToId as string] ?? a.currentLocation ?? a.assignedToId ?? ''} onValueChange={(v) => updateAssetField(idx, 'assignedToId', v)} />
                                   <Input size="sm" label="Current Location" value={a.currentLocation ?? ''} onValueChange={(v) => updateAssetField(idx, 'currentLocation', v)} />
                                   <Input size="sm" type="date" label="Last Checked" value={getDateString(a.lastChecked as any)} onValueChange={(v) => updateAssetField(idx, 'lastChecked', v ? new Date(v) : undefined)} />
                                 </div>

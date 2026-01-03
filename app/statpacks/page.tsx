@@ -590,11 +590,92 @@ export default function StatpacksPage() {
       if (currentPack.id) {
         await updateDoc(doc(db, 'statpacks', currentPack.id), payload);
         await addDoc(collection(db, 'statpack_logs'), { ...logEntry, statpackId: currentPack.id });
+        // After updating pack config, ensure any asset instances referenced by this pack are assigned in inventory
+        try {
+          const savedId = currentPack.id;
+          for (const content of currentPack.contents || []) {
+            const serial = content.serialNumber || '';
+            if (!serial && !(content.itemDetails?.isAsset)) continue;
+            try {
+              const invRef = doc(db, 'inventory', content.itemId);
+              const invSnap = await getDoc(invRef);
+              if (!invSnap.exists()) continue;
+              const invData: any = invSnap.data();
+              const assets: any[] = Array.isArray(invData.assets) ? invData.assets.slice() : Array.isArray(invData.assetInstances) ? invData.assetInstances.slice() : [];
+              let changed = false;
+              for (let i = 0; i < assets.length; i++) {
+                const a = assets[i] || {};
+                if (serial && ((a.serial && String(a.serial) === String(serial)) || (a.assetTag && String(a.assetTag) === String(serial)) || (a.id && String(a.id) === String(serial)))) {
+                  assets[i] = { ...a, assignedToId: savedId, currentLocation: currentPack.name };
+                  changed = true;
+                }
+              }
+              // If inventory item itself is a single asset record, update top-level assignedToId when serial matches or when single asset
+              const updatePayload: any = {};
+              if (changed) {
+                // Preserve the original field shape: write back to `assets` if present,
+                // otherwise write to `assetInstances` so existing consumers continue to see changes.
+                if (Array.isArray(invData.assets)) updatePayload.assets = assets;
+                else if (Array.isArray(invData.assetInstances)) updatePayload.assetInstances = assets;
+                else updatePayload.assets = assets;
+                updatePayload.updatedAt = serverTimestamp();
+                if (invData.isAsset) {
+                  const topMatches = (!!invData.assetSerial && serial && String(invData.assetSerial) === String(serial)) || (!serial && assets.length === 1);
+                  if (topMatches) updatePayload.assignedToId = savedId;
+                }
+                await updateDoc(invRef, updatePayload);
+              }
+            } catch (err) {
+              console.warn('Failed to assign asset in inventory for statpack config', content.itemId, err);
+            }
+          }
+        } catch (err) {
+          console.warn('Asset assignment pass failed during statpack save', err);
+        }
       } else {
         delete payload.id; 
         payload.createdAt = serverTimestamp();
         const docRef = await addDoc(collection(db, 'statpacks'), payload);
         await addDoc(collection(db, 'statpack_logs'), { ...logEntry, statpackId: docRef.id });
+        // For newly created statpack, also assign assets referenced by contents
+        try {
+          const savedId = docRef.id;
+          for (const content of currentPack.contents || []) {
+            const serial = content.serialNumber || '';
+            if (!serial && !(content.itemDetails?.isAsset)) continue;
+            try {
+              const invRef = doc(db, 'inventory', content.itemId);
+              const invSnap = await getDoc(invRef);
+              if (!invSnap.exists()) continue;
+              const invData: any = invSnap.data();
+              const assets: any[] = Array.isArray(invData.assets) ? invData.assets.slice() : Array.isArray(invData.assetInstances) ? invData.assetInstances.slice() : [];
+              let changed = false;
+              for (let i = 0; i < assets.length; i++) {
+                const a = assets[i] || {};
+                if (serial && ((a.serial && String(a.serial) === String(serial)) || (a.assetTag && String(a.assetTag) === String(serial)) || (a.id && String(a.id) === String(serial)))) {
+                  assets[i] = { ...a, assignedToId: savedId, currentLocation: currentPack.name };
+                  changed = true;
+                }
+              }
+              const updatePayload: any = {};
+              if (changed) {
+                if (Array.isArray(invData.assets)) updatePayload.assets = assets;
+                else if (Array.isArray(invData.assetInstances)) updatePayload.assetInstances = assets;
+                else updatePayload.assets = assets;
+                updatePayload.updatedAt = serverTimestamp();
+                if (invData.isAsset) {
+                  const topMatches = (!!invData.assetSerial && serial && String(invData.assetSerial) === String(serial)) || (!serial && assets.length === 1);
+                  if (topMatches) updatePayload.assignedToId = savedId;
+                }
+                await updateDoc(invRef, updatePayload);
+              }
+            } catch (err) {
+              console.warn('Failed to assign asset in inventory for new statpack', content.itemId, err);
+            }
+          }
+        } catch (err) {
+          console.warn('Asset assignment pass failed during statpack create', err);
+        }
       }
 
       onClose();

@@ -1,9 +1,9 @@
 'use client';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
   Card, CardBody, Chip, Progress, Button, Spinner, useDisclosure, Input, 
-  Select, SelectItem
+  Select, SelectItem, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter
 } from '@heroui/react';
 import { Boxes, Plus, Minus, Search, Wind, PackageOpen, Filter, X, Edit2, ChevronDown } from 'lucide-react';
 
@@ -12,6 +12,7 @@ import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { 
   collection, 
   addDoc,
+  setDoc,
   doc,
   updateDoc, 
   deleteDoc,
@@ -39,14 +40,56 @@ export default function InventoryPage() {
   const router = useRouter();
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const [opLoading, setOpLoading] = useState(false);
   
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [batchMismatches, setBatchMismatches] = useState<any[]>([]);
+
+  async function syncMismatches() {
+    if (!batchMismatches || batchMismatches.length === 0) {
+      alert('No mismatches to sync');
+      return;
+    }
+    if (!confirm(`Sync totals for ${batchMismatches.length} item(s)? This will overwrite stored totals with batch sums.`)) return;
+    setOpLoading(true);
+    try {
+      for (const m of batchMismatches) {
+        const ref = doc(db, 'inventory', m.id);
+        // safety backup: record previous total before overwriting
+        try {
+          await addDoc(collection(db, 'inventory_corrections'), {
+            itemId: m.id,
+            name: m.name || null,
+            previousTotal: m.persistedTotal,
+            batchSum: m.batchSum,
+            userId: (user as any)?.uid ?? null,
+            createdAt: serverTimestamp()
+          });
+        } catch (e) {
+          console.warn('Failed to write inventory_corrections backup for', m.id, e);
+        }
+        await updateDoc(ref, { totalStockQuantity: m.batchSum, updatedAt: serverTimestamp() });
+        console.debug('Synced inventory total for', m.id, '->', m.batchSum);
+      }
+      setBatchMismatches([]);
+      alert(`Synced ${batchMismatches.length} item(s).`);
+    } catch (e) {
+      console.error('Failed to sync mismatches', e);
+      alert('Sync failed: ' + String(e));
+    }
+    setOpLoading(false);
+  }
   const { isOpen, onOpen, onOpenChange } = useDisclosure();
   
   const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null);
   const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
   const [userRole, setUserRole] = useState<User['role'] | null>(null);
   const isAdmin = userRole === 'admin';
+  // CSV import modal state
+  const [csvModalOpen, setCsvModalOpen] = useState(false);
+  const [csvMode, setCsvMode] = useState<'add' | 'override'>('add');
+  const [csvDragOver, setCsvDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // --- SEARCH & FILTER STATE ---
   const [searchQuery, setSearchQuery] = useState('');
@@ -79,6 +122,7 @@ export default function InventoryPage() {
     const q = query(collection(db, 'inventory'), orderBy('name'));
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
+      const mismatches: any[] = [];
       const items = snapshot.docs.map((doc) => {
         const data = doc.data();
         const getDate = (ts: unknown) => {
@@ -156,6 +200,12 @@ export default function InventoryPage() {
           // Variants remain reserved for size/option variations.
           // Ensure totalStockQuantity reflects batch sums when batches exist.
           const batchSum = batches.reduce((acc, b) => acc + Number(b.stock ?? 0), 0);
+          // If the persisted total differs from the batch sum, record a mismatch for debugging
+          const persistedTotal = Number(data.totalStockQuantity ?? 0);
+          if (persistedTotal !== batchSum) {
+            mismatches.push({ id: doc.id, name: data.name, persistedTotal, batchSum });
+            console.warn(`Inventory mismatch for ${doc.id} (${data.name}): totalStockQuantity=${persistedTotal} vs batchSum=${batchSum}`);
+          }
           data.totalStockQuantity = data.totalStockQuantity ?? batchSum;
         } else {
           // Aggregate static batches into the master total (don't expose per-lot UI)
@@ -187,6 +237,7 @@ export default function InventoryPage() {
       });
 
       setInventory(items);
+      setBatchMismatches(mismatches);
       setLoading(false);
     }, (error) => console.error("Inventory listener error:", error));
 
@@ -699,11 +750,80 @@ export default function InventoryPage() {
     return undefined;
   };
 
-  const handleCSVImport = async (file?: File) => {
+  const handleCSVImport = async (file?: File, overrideMode?: boolean) => {
     if (!file) return;
     const text = await file.text();
     const rows = parseCSV(text);
-    // Expected (normalized lowercase) headers include: room, area, shelf (or locationname)
+    // Resolve mode: prefer explicit parameter (from modal), otherwise fallback to confirm
+    let useOverride = overrideMode;
+    if (typeof useOverride === 'undefined') {
+      useOverride = confirm('Import CSV:\n\nClick OK to OVERRIDE current inventory (replace).\nClick Cancel to ADD on (merge) into existing inventory.');
+    }
+
+    if (useOverride) {
+      if (!confirm('This will DELETE all existing inventory items and replace them with the CSV data.\n\nClick OK to proceed.')) return;
+      setOpLoading(true);
+      try {
+        // Delete existing inventory (use local state snapshot)
+        for (const it of inventory) {
+          try { await deleteDoc(doc(db, 'inventory', it.id)); } catch (e) { console.warn('Failed to delete inventory item', it.id, e); }
+        }
+
+        // Group rows by item id or name to preserve multiple batch rows per item
+        const grouped = new Map<string, any>();
+        for (const r of rows) {
+          try {
+            const itemName = ((r.itemname || r.name || r.item_name) || '').toString().trim();
+            const itemId = (r.itemid || r.id || '').toString().trim() || undefined;
+            const lot = ((r.lotnumber || r.batchid || r.lot || r.batch_id) || '').toString().trim();
+            const exp = parseFlexibleDate(r.expirationdate || r.expiry || r.expiration || r.exp_date);
+            const batchStock = Number(r.batchstock ?? r.batchqty ?? r.batch_quantity ?? r.qty ?? 0) || 0;
+            const roomField = (r.room || r.location || r.locationname || '').toString().trim();
+            const areaField = (r.area || r.subroom || r.zone || '').toString().trim();
+            const shelfField = (r.shelf || r.box || r.slot || '').toString().trim();
+            const locParts = [roomField, areaField, shelfField].filter(p => p && p.length > 0);
+            const locName = locParts.length > 0 ? locParts.join(' / ') : undefined;
+            const locQty = Number(r.locationquantity ?? r.location_qty ?? r.qty ?? 0) || 0;
+            const notes = (r.notes || r.note || '').toString();
+            const receivedAt = parseFlexibleDate(r.receivedat || r.received_at || r.received);
+
+            const batch = { id: r.batchid || r.batch_id || uniqueId(), lotNumber: lot || undefined, expirationDate: exp, stock: batchStock || locQty || 0, notes, receivedAt, locations: locName ? [{ id: uniqueId(), name: locName, quantity: locQty || batchStock || 0 }] : [] };
+
+            const key = itemId ? `id:${itemId}` : `name:${(itemName||'').toLowerCase()}`;
+            if (!grouped.has(key)) {
+              grouped.set(key, { name: itemName || undefined, id: itemId || undefined, location: roomField || undefined, batches: [batch] });
+            } else {
+              grouped.get(key).batches.push(batch);
+            }
+          } catch (err) {
+            console.error('CSV row import failed (grouping)', err, r);
+          }
+        }
+
+        // Persist grouped items
+        for (const [, p] of grouped) {
+          try {
+            const payload = preparePayload(p);
+            if (p.id) {
+              await setDoc(doc(db, 'inventory', p.id), { ...payload, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+            } else {
+              await addDoc(collection(db, 'inventory'), { ...payload, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+            }
+          } catch (err) {
+            console.error('Failed to write grouped inventory item', p, err);
+          }
+        }
+
+        alert('CSV import completed (override applied).');
+      } catch (err) {
+        console.error('CSV override import failed', err);
+        alert('CSV import failed: ' + String(err));
+      }
+      setOpLoading(false);
+      return;
+    }
+
+    // Default: add/merge behavior (existing behavior)
     for (const r of rows) {
       try {
         const itemName = ((r.itemname || r.name || r.item_name) || '').toString().trim();
@@ -711,7 +831,6 @@ export default function InventoryPage() {
         const lot = ((r.lotnumber || r.batchid || r.lot || r.batch_id) || '').toString().trim();
         const exp = parseFlexibleDate(r.expirationdate || r.expiry || r.expiration || r.exp_date);
         const batchStock = Number(r.batchstock ?? r.batchqty ?? r.batch_quantity ?? r.qty ?? 0) || 0;
-        // Combine room/area/shelf into a single location label for internal storage
         const roomField = (r.room || r.location || r.locationname || '').toString().trim();
         const areaField = (r.area || r.subroom || r.zone || '').toString().trim();
         const shelfField = (r.shelf || r.box || r.slot || '').toString().trim();
@@ -721,7 +840,6 @@ export default function InventoryPage() {
         const notes = (r.notes || r.note || '').toString();
         const receivedAt = parseFlexibleDate(r.receivedat || r.received_at || r.received);
 
-        // Build payload: name + batches
         const payload: any = {
           name: itemName || undefined,
           id: itemId || undefined,
@@ -1096,10 +1214,38 @@ export default function InventoryPage() {
   };
 
   if (loading) return <div className="h-screen flex items-center justify-center"><Spinner /></div>;
+  // Debug panel: show any inventory items where `totalStockQuantity` disagrees with sum of batch stocks
+  const debugPanel = (
+    <div className="max-w-7xl mx-auto mb-4">
+      {batchMismatches.length > 0 ? (
+        <div className="p-3 bg-red-50 text-sm text-red-800 rounded">
+          <div className="flex items-center justify-between">
+            <div>
+              <strong>Inventory batch mismatches detected:</strong>
+              <ul className="mt-2 list-disc pl-5">
+                {batchMismatches.map(m => (
+                  <li key={m.id}>{m.name || m.id}: stored={m.persistedTotal} batchesSum={m.batchSum}</li>
+                ))}
+              </ul>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="text-xs">Please inspect these items; console contains warnings with IDs.</div>
+              <Button color="primary" onPress={syncMismatches} isLoading={opLoading}>Sync totals</Button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="p-3 bg-green-50 text-sm text-green-800 rounded">
+          No inventory batch mismatches detected.
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
       <div className="max-w-7xl mx-auto">
+        {debugPanel}
         
         {/* Header Title */}
         <div className="mb-6">
@@ -1164,11 +1310,64 @@ export default function InventoryPage() {
             >
               Export CSV
             </Button>
-            <label className="h-12 flex items-center px-4 bg-white dark:bg-slate-800 border-default-200 rounded-md cursor-pointer">
-              <input id="csv-import" type="file" accept="text/csv" onChange={(e) => handleCSVImport(e.target.files?.[0])} style={{display: 'none'}} />
-              <span className="text-sm">Import CSV</span>
-            </label>
+            <Button onPress={() => setCsvModalOpen(true)} variant="flat" className="h-12 px-4">Import CSV</Button>
+            <Button onPress={() => router.push('/audit')} variant="outline" className="h-12 px-4">Audit</Button>
         </div>
+
+        {/* CSV Import Modal (HeroUI) */}
+        <Modal isOpen={csvModalOpen} onOpenChange={() => setCsvModalOpen(false)} size="sm">
+          <ModalContent className="max-w-md w-[95%]">
+            <ModalHeader className="flex flex-col gap-1">Import CSV</ModalHeader>
+            <ModalBody>
+              <p className="text-sm text-gray-600 dark:text-gray-300 mb-4">Drop a CSV file here or select one. Choose whether to override or add to inventory.</p>
+
+              <div
+                onDragOver={(e) => { e.preventDefault(); setCsvDragOver(true); }}
+                onDragLeave={() => setCsvDragOver(false)}
+                onDrop={async (e) => {
+                  e.preventDefault(); setCsvDragOver(false);
+                  const f = e.dataTransfer?.files?.[0];
+                  if (f) {
+                    setCsvModalOpen(false);
+                    await handleCSVImport(f, csvMode === 'override');
+                  }
+                }}
+                className={`border-2 ${csvDragOver ? 'border-indigo-500 bg-indigo-50/40' : 'border-dashed border-gray-300'} rounded-md p-6 text-center mb-4 cursor-pointer`}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <input ref={(el) => (fileInputRef.current = el)} type="file" accept="text/csv" style={{ display: 'none' }} onChange={async (e) => {
+                  const f = e.target.files?.[0];
+                  if (f) {
+                    setCsvModalOpen(false);
+                    await handleCSVImport(f, csvMode === 'override');
+                  }
+                }} />
+                <div className="text-sm text-gray-700 dark:text-gray-200">Drop CSV here, or click to select file</div>
+                <div className="text-xs text-gray-500 mt-2">Accepts: text/csv</div>
+              </div>
+
+              <div className="mb-4">
+                <div className="flex gap-2">
+                  <Button variant={csvMode === 'add' ? 'flat' : 'ghost'} onPress={() => setCsvMode('add')}>Add / Merge</Button>
+                  <Button color="danger" variant={csvMode === 'override' ? 'flat' : 'ghost'} onPress={() => setCsvMode('override')}>Override (replace)</Button>
+                </div>
+                {csvMode === 'override' && <div className="text-sm text-red-600 mt-2">Warning: override will remove all existing inventory items before importing.</div>}
+              </div>
+            </ModalBody>
+            <ModalFooter>
+              <div className="w-full flex justify-end space-x-2">
+                <Button variant="ghost" onPress={() => setCsvModalOpen(false)}>Cancel</Button>
+                <Button color={csvMode === 'override' ? 'danger' : 'primary'} onPress={async () => {
+                  const el = fileInputRef.current as HTMLInputElement | null;
+                  const f = el?.files?.[0];
+                  if (!f) { alert('Please choose a CSV file (drop or select).'); return; }
+                  setCsvModalOpen(false);
+                  await handleCSVImport(f, csvMode === 'override');
+                }}>{csvMode === 'override' ? 'Import & Replace' : 'Import & Merge'}</Button>
+              </div>
+            </ModalFooter>
+          </ModalContent>
+        </Modal>
 
         {/* Expandable Filter Panel */}
         {showFilters && (
@@ -1232,7 +1431,7 @@ export default function InventoryPage() {
                                 <div className="flex-1">
                                     <div className="flex items-center gap-3 mb-2 flex-wrap">
                                         <h3 className="font-bold text-lg text-gray-800 dark:text-white">{item.name}</h3>
-                                        <Chip size="sm" color={getCategoryColor(item.category)} variant="flat">{item.category}</Chip>
+                                        {/* category chip removed per UI request */}
                                         {item.isAsset && item.assetCategory === 'AED' && (
                                           <Chip size="sm" color="danger" variant="flat">AED{item.assetModel ? ` • ${item.assetModel}` : ''}</Chip>
                                         )}
@@ -1249,6 +1448,9 @@ export default function InventoryPage() {
                                         ) : (
                                           <span>{item.location} {item.room ? `/ ${item.room}` : ''} {item.shelf ? `- ${item.shelf}` : ''}</span>
                                         )}
+                                    </div>
+                                    <div className="mt-1">
+                                      <Chip size="sm" color={getCategoryColor(item.category)} variant="flat">{item.category}</Chip>
                                     </div>
                                     {/** combine feature removed */}
                                     {/* Details button removed; entire card is clickable to toggle batches */}

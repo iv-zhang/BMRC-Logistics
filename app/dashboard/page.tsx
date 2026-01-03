@@ -9,10 +9,11 @@ import {
   Chip,
   Divider,
   Spinner,
-  ScrollShadow
+  ScrollShadow,
+  Textarea
 } from '@heroui/react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
-import { collection, onSnapshot, query, where, orderBy, limit, getDocs, Timestamp } from 'firebase/firestore';
+import { collection, onSnapshot, query, where, orderBy, limit, getDocs, Timestamp, addDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
 import { 
   AlertTriangle, 
@@ -28,7 +29,7 @@ import type { Statpack, InventoryItem, StatpackLog, StatpackItem } from '@/app/t
 interface ExpiryAlert {
   bagName: string; // Used for Bag Name OR Location String
   itemName: string;
-  expiryDate: Date;
+  expiryDate?: Date;
   daysRemaining: number;
   source: 'kit' | 'inventory'; // Added to distinguish source if needed for styling
 }
@@ -37,7 +38,6 @@ export default function DashboardPage() {
   const router = useRouter();
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [loading, setLoading] = useState(true);
-
   // --- Domain State ---
   const [statpacks, setStatpacks] = useState<Statpack[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
@@ -417,6 +417,39 @@ export default function DashboardPage() {
                 </div>
               );
             })}
+
+            {/* Reports widget card: shows recent unresolved reports and a simulation form */}
+            <div className="col-span-1 md:col-span-2 lg:col-span-1">
+              <Card className="h-full bg-white/80 dark:bg-slate-800/80">
+                <CardHeader className="flex justify-between items-center">
+                  <span className="font-semibold">Reports & Alerts</span>
+                  <Button size="sm" variant="light" onPress={() => router.push('/reports')}>Open</Button>
+                </CardHeader>
+                <CardBody>
+                  <div id="reports-widget" className="space-y-3">
+                    <div className="text-sm text-gray-600">Recent unresolved restock reports</div>
+                    <div id="reports-list" className="space-y-2">
+                      {/* Lightweight client-only fetch of a few reports */}
+                      <ReportsWidgetPreview />
+                    </div>
+
+                    <div className="mt-3 border-t pt-3">
+                      <div className="text-sm font-medium mb-2">Simulate Report</div>
+                      <div className="flex items-center">
+                        <Button
+                          color="primary"
+                          onPress={() => window.open('/mobile/scan-report', '_blank')}
+                          startContent={<AlertTriangle />}
+                        >
+                          Report Low Stock (Mobile)
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </CardBody>
+              </Card>
+            </div>
+
           </div>
         </section>
 
@@ -516,3 +549,40 @@ export default function DashboardPage() {
     </div>
   );
 }
+
+// --- Reports widget preview (client-only) ---
+function ReportsWidgetPreview() {
+  const [reports, setReports] = React.useState<any[]>([]);
+
+  React.useEffect(() => {
+    const q = query(collection(db, 'restock_reports'), orderBy('createdAt', 'desc'));
+    const unsub = onSnapshot(q, snap => {
+      const out: any[] = [];
+      let count = 0;
+      snap.forEach(s => {
+        const d = { id: s.id, ...(s.data() as any) };
+        if (!d.resolved && count < 5) { out.push(d); count++; }
+      });
+      setReports(out);
+    }, err => {
+      console.error('reports preview error', err);
+    });
+    return () => unsub();
+  }, []);
+
+  if (reports.length === 0) return <div className="text-xs text-gray-500">No recent unresolved reports.</div>;
+
+  return (
+    <div className="space-y-2">
+      {reports.map(r => (
+        <div key={r.id} className="p-2 bg-gray-50 rounded border">
+          <div className="text-sm font-medium">{r.statpackName || r.statpackId}</div>
+          <div className="text-xs text-gray-500">{r.reporter || r.reporterId} • {(() => { try { const d = r.createdAt?.toDate ? r.createdAt.toDate() : new Date(r.createdAt); return d.toLocaleString(); } catch(e) { return String(r.createdAt); } })()}</div>
+          <div className="text-xs text-gray-700 mt-1">{(r.items || []).slice(0,2).map((it:any)=>it.name).join(', ')}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// SimulateReportForm removed — replaced by a mobile report button above.
