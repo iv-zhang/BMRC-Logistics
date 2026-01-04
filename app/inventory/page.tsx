@@ -24,9 +24,11 @@ import {
   getDoc
 } from 'firebase/firestore';
 import { auth, db } from '@/firebase'; 
+import { recordAuditEvent } from '../lib/audit';
 
 import InventoryModal from '@/app/components/additemmodal';
 import { getOldestValidBatch, getSmartPickInstructions, isBatchExpired } from '@/app/utils/batchHelpers';
+import { preparePayload } from '@/app/utils/inventoryNormalization';
 
 // Types
 import { InventoryItem, ItemCategory, LocationType, User } from '@/app/types';
@@ -403,163 +405,8 @@ export default function InventoryPage() {
     }
   };
 
-  // Prepare payload: convert ISO strings to Date for known date fields and normalize numbers
-  function preparePayload(data: Partial<InventoryItem> | any) {
-    const payload: any = { ...(data || {}) };
+  // preparePayload is now provided by shared util `app/utils/inventoryNormalization`
 
-    // Note: top-level expirationDate is no longer used — batch expirations are authoritative.
-    if (payload.openedAt) {
-      if (typeof payload.openedAt === 'string') {
-        const d = new Date(payload.openedAt);
-        payload.openedAt = isNaN(d.getTime()) ? null : d;
-      } else if (!(payload.openedAt instanceof Date)) {
-        payload.openedAt = null;
-      }
-    }
-
-    // Normalize numeric fields
-    payload.totalStockQuantity = Number(payload.totalStockQuantity ?? 0);
-    payload.reorderThreshold = Number(payload.reorderThreshold ?? 0);
-    payload.unopenedQuantity = Number(payload.unopenedQuantity ?? 0);
-    payload.openedQuantity = Number(payload.openedQuantity ?? 0);
-    payload.quantityPerUnit = Number(payload.quantityPerUnit ?? 1);
-
-    // Variants
-    if (Array.isArray(payload.variants)) {
-      payload.variants = payload.variants.map((v: any) => {
-        const out: any = { ...v };
-        if (out.expirationDate) {
-          if (typeof out.expirationDate === 'string') {
-            const d = new Date(out.expirationDate);
-            out.expirationDate = isNaN(d.getTime()) ? null : d;
-          } else if (!(out.expirationDate instanceof Date)) {
-            out.expirationDate = null;
-          }
-        }
-        out.quantityPerUnit = Number(out.quantityPerUnit ?? 1);
-        out.stock = Number(out.stock ?? 0);
-        out.reorderThreshold = Number(out.reorderThreshold ?? payload.reorderThreshold ?? 0);
-        // remove any undefined fields inside variant
-        Object.keys(out).forEach(k => out[k] === undefined && delete out[k]);
-        return out;
-      });
-      // Convert any variant entries that include expiration/lot info into batches
-      const convertedBatches: any[] = [];
-      const keptVariants: any[] = [];
-      (payload.variants || []).forEach((v: any) => {
-        if (v.expirationDate || v.lotNumber) {
-          const b = {
-            id: v.id ?? uniqueId(),
-            lotNumber: v.lotNumber ?? '',
-            expirationDate: v.expirationDate ?? null,
-            stock: Number(v.stock ?? 0),
-            receivedAt: undefined,
-            notes: `Converted from variant ${v.name ?? ''}`,
-            locations: []
-          };
-          convertedBatches.push(b);
-        } else {
-          keptVariants.push(v);
-        }
-      });
-      payload.variants = keptVariants;
-      if (convertedBatches.length > 0) {
-        payload.batches = [...(payload.batches || []), ...convertedBatches];
-      }
-      // Also accept any `batches` nested on variants (created by the UI) and flatten them into top-level batches
-      const variantNestedBatches: any[] = [];
-      payload.variants = (payload.variants || []).map((vv: any) => {
-        if (Array.isArray(vv.batches) && vv.batches.length > 0) {
-          vv.batches.forEach((vb: any) => {
-            variantNestedBatches.push({ ...vb, notes: vb.notes ?? `Variant: ${vv.name ?? ''}` });
-          });
-        }
-        // remove nested batches from variant to keep storage backward-compatible
-        const out = { ...vv };
-        delete out.batches;
-        return out;
-      });
-      if (variantNestedBatches.length > 0) {
-        payload.batches = [...(payload.batches || []), ...variantNestedBatches];
-      }
-    }
-
-    // Do not synthesize batches from a top-level expiration; only explicit batches carry expirations.
-
-    // Batches -> normalize and also map into variants for backward compatibility
-    // Only normalize batches when they are provided and non-empty. If an empty
-    // array is passed it likely means "no change" or an intentional empty,
-    // so avoid overwriting a user-specified `totalStockQuantity` with zeros.
-    if (Array.isArray(payload.batches) && payload.batches.length > 0) {
-      const normBatches = payload.batches.map((b: any) => {
-        const out: any = { ...b };
-        if (out.expirationDate) {
-          if (typeof out.expirationDate === 'string') {
-            const d = new Date(out.expirationDate);
-            out.expirationDate = isNaN(d.getTime()) ? null : d;
-          } else if (!(out.expirationDate instanceof Date)) {
-            out.expirationDate = null;
-          }
-        }
-        out.stock = Number(out.stock ?? 0);
-        out.receivedAt = out.receivedAt ? (out.receivedAt instanceof Date ? out.receivedAt : new Date(out.receivedAt)) : undefined;
-        out.locations = Array.isArray(out.locations) ? out.locations.map((l: any) => ({
-          id: l.id ?? uniqueId(),
-          name: l.name ?? '',
-          quantity: Number(l.quantity ?? 0)
-        })) : [];
-        return out;
-      });
-      payload.batches = normBatches;
-
-      // If batches contain expirations or serialized data, treat them as batch-tracked;
-      // otherwise aggregate as static splits. Serialized batches must be preserved.
-      const hasBatchExpirations = normBatches.some((b: any) => !!b.expirationDate || !!b.lotNumber || !!b.serialized || (Array.isArray(b.serialNumbers) && b.serialNumbers.length > 0));
-      if (hasBatchExpirations) {
-        // Preserve batch-level tracking and derive total from batches.
-        payload.totalStockQuantity = normBatches.reduce((acc: number, b: any) => acc + Number(b.stock ?? 0), 0);
-        // Do NOT map batches into `variants` — variants are for sizing/options.
-      } else {
-        // No expirations found on batches: treat as static aggregated stock
-        payload.totalStockQuantity = normBatches.reduce((acc: number, b: any) => acc + Number(b.stock ?? 0), 0);
-        // Remove batches so UI and storage treat this as a static-tracked item
-        delete payload.batches;
-      }
-    }
-
-    // Top-level expiration fields are ignored; only batch expirations persist.
-
-    // Remove any undefined fields (including nested) to avoid Firestore errors
-    const removeUndefinedDeep = (obj: any) => {
-      if (obj === null || obj === undefined) return;
-      if (Array.isArray(obj)) {
-        for (let i = obj.length - 1; i >= 0; i--) {
-          const v = obj[i];
-          if (v === undefined) {
-            obj.splice(i, 1);
-          } else if (typeof v === 'object' && v !== null) {
-            removeUndefinedDeep(v);
-          }
-        }
-        return;
-      }
-      if (typeof obj === 'object') {
-        Object.keys(obj).forEach((k) => {
-          const v = obj[k];
-          if (v === undefined) {
-            delete obj[k];
-          } else if (typeof v === 'object' && v !== null) {
-            removeUndefinedDeep(v);
-            // If object became empty, leave as-is (Firestore accepts empty objects)
-          }
-        });
-      }
-    };
-
-    removeUndefinedDeep(payload);
-
-    return payload;
-  }
 
   const openAddModal = () => { setSelectedItem(null); onOpen(); };
   const openEditModal = (item: InventoryItem) => { setSelectedItem(item); onOpen(); };
@@ -1053,6 +900,20 @@ export default function InventoryPage() {
           timestamp: serverTimestamp(),
           notes: `Restocked Forward Staging (unit-level)`
         });
+        try {
+          await recordAuditEvent({
+            eventType: 'restock_forward',
+            source: 'web_ui',
+            actor: { userId: user?.uid ?? null, userName: (user as any)?.email ?? null },
+            targets: [{ collection: 'inventory', docId: item.id }],
+            before: { totalStockQuantity: current },
+            after: { totalStockQuantity: newTotal },
+            delta: { total: newTotal - current, count: movedCount },
+            details: { serials: idxs.map(i => serializedUnits[i].serial), batchIds: Array.from(new Set(idxs.map(i => serializedUnits[i].batchId))) }
+          });
+        } catch (err) {
+          console.warn('Failed to write auditEvent for restock_forward', err);
+        }
         return;
       }
 

@@ -145,6 +145,16 @@ export default function AppNavbar() {
             </Link>
           </NavbarItem>
 
+          <NavbarItem isActive={isActive('/audit/events')}>
+            <Link
+              href="/audit/events"
+              color={isActive('/audit/events') ? "primary" : "foreground"}
+              className={isActive('/audit/events') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}
+            >
+              Logs
+            </Link>
+          </NavbarItem>
+
           <NavbarItem isActive={isActive('/restock-stats')}>
             <Link
               href="/restock-stats"

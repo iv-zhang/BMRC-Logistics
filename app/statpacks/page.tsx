@@ -15,6 +15,7 @@ import {
   collection, addDoc, updateDoc, doc, serverTimestamp, query, where, orderBy, limit, onSnapshot, getDocs, Timestamp, getDoc
 } from 'firebase/firestore';
 import { auth, db } from '@/firebase'; 
+import { recordAuditEvent } from '../lib/audit';
 import Image from 'next/image';
 import { 
   Plus, BriefcaseMedical, AlertCircle, CheckCircle, 
@@ -729,6 +730,19 @@ export default function StatpacksPage() {
         notes: checkoutNotes || `Bag checked out for use`
       };
       await addDoc(collection(db, 'statpack_logs'), logEntry);
+      try {
+        await recordAuditEvent({
+          eventType: 'statpack_checkout',
+          source: 'web_ui',
+          actor: { userId: user.uid, userName },
+          targets: [{ collection: 'statpacks', docId: currentPack.id }],
+          before: undefined,
+          after: updatePayload,
+          details: { notes: checkoutNotes }
+        });
+      } catch (err) {
+        console.warn('Failed to write auditEvent for checkout', err);
+      }
 
       onClose();
     } catch (e) {

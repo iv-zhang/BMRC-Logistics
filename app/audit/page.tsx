@@ -20,7 +20,8 @@ import {
   ModalBody,
   ModalFooter,
   useDisclosure,
-  Spinner
+  Spinner,
+  Textarea
 } from '@heroui/react';
 import { ClipboardCheck, ShieldAlert, ScanLine, Plus, FileWarning, Search, RefreshCw } from 'lucide-react';
 
@@ -44,6 +45,8 @@ import InventoryModal from '@/app/components/additemmodal';
 import type { InventoryItem, User as AppUser } from '@/app/types';
 import MobileQuickCount from '@/app/mobile/quick-count-client';
 import StackAuditClient from '@/app/audit/stack-audit-client';
+import BarcodeScanner from '@/app/components/barcode-scanner';
+import { parseGs1Barcode } from '@/app/lib/gs1';
 
 export default function AuditPage() {
   const router = useRouter();
@@ -63,6 +66,10 @@ export default function AuditPage() {
   // Verify-by-scan state
   const [scanQuery, setScanQuery] = useState('');
   const [verifying, setVerifying] = useState(false);
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [verifyModalOpen, setVerifyModalOpen] = useState(false);
+  const [currentVerifyItem, setCurrentVerifyItem] = useState<InventoryItem | null>(null);
+  const [verifyNotes, setVerifyNotes] = useState('');
 
   // Auth
   useEffect(() => {
@@ -137,28 +144,57 @@ export default function AuditPage() {
     if (!q) return;
     setVerifying(true);
     try {
-      // Simple matching by name or id; can expand to barcode later
-      const matched = auditItems.find(i => (i.name || '').toLowerCase().includes(q) || i.id === q);
+      // Try direct id or name match first
+      let matched = auditItems.find(i => i.id === q) || auditItems.find(i => (i.name || '').toLowerCase().includes(q));
+      // If not found, attempt GS1 parse (barcode containing lot/expiration) and match by lot
+      if (!matched) {
+        const parsed = parseGs1Barcode(q);
+        if (parsed.lot) {
+          matched = auditItems.find(i => Array.isArray(i.batches) && i.batches.some(b => String(b.lotNumber || b.batchId || b.id || '').toLowerCase() === parsed.lot?.toLowerCase()));
+        }
+      }
+
       if (!matched) {
         alert('No matching item requiring audit found.');
         return;
       }
-      const ref = doc(db, 'inventory', matched.id);
-      await updateDoc(ref, { auditVerified: true });
-      await addDoc(collection(db, 'inventory_logs'), {
-        action: 'audit_verify',
-        itemId: matched.id,
-        itemName: matched.name,
-        userId: user?.uid ?? null,
-        userName: (user as any)?.email ?? null,
-        timestamp: serverTimestamp()
-      });
-      setScanQuery('');
+
+      // Open the verification modal to allow inspection/edit before marking verified
+      setCurrentVerifyItem(matched);
+      setVerifyNotes('');
+      setVerifyModalOpen(true);
     } catch (err) {
       console.error('Verify failed', err);
       alert('Failed to verify item.');
     } finally {
       setVerifying(false);
+    }
+  };
+
+  const confirmVerifyItem = async (markCondition?: 'Good'|'Damaged'|'Expired') => {
+    if (!currentVerifyItem) return;
+    try {
+      const ref = doc(db, 'inventory', currentVerifyItem.id);
+      const payload: any = { auditVerified: true, lastAuditDate: serverTimestamp() };
+      if (markCondition) payload.auditCondition = markCondition;
+      if (verifyNotes) payload.auditNotes = verifyNotes;
+      await updateDoc(ref, payload);
+      await addDoc(collection(db, 'inventory_logs'), {
+        action: 'audit_verify',
+        itemId: currentVerifyItem.id,
+        itemName: currentVerifyItem.name,
+        userId: user?.uid ?? null,
+        userName: (user as any)?.email ?? null,
+        notes: verifyNotes || null,
+        timestamp: serverTimestamp()
+      });
+      // close modal and clear
+      setCurrentVerifyItem(null);
+      setVerifyModalOpen(false);
+      setScanQuery('');
+    } catch (e) {
+      console.error('Confirm verify failed', e);
+      alert('Failed to mark item verified.');
     }
   };
 
@@ -250,6 +286,41 @@ export default function AuditPage() {
     }
   };
 
+  const handleUpdateItem = async (id: string, updatedData: Partial<InventoryItem>) => {
+    try {
+      const ref = doc(db, 'inventory', id);
+      const payload: any = { ...(updatedData || {}) };
+
+      // Deep-clean payload: remove keys with `undefined` values (Firestore rejects undefined)
+      const clean = (v: any): any => {
+        if (v === undefined) return undefined;
+        if (v === null) return null;
+        if (v instanceof Date) return v;
+        if (Array.isArray(v)) {
+          const arr = v.map((x) => clean(x)).filter((x) => x !== undefined);
+          return arr;
+        }
+        if (typeof v === 'object') {
+          const out: any = {};
+          Object.keys(v).forEach((k) => {
+            const cv = clean(v[k]);
+            if (cv !== undefined) out[k] = cv;
+          });
+          return out;
+        }
+        return v;
+      };
+
+      const cleanedPayload = clean(payload) || {};
+      cleanedPayload.updatedAt = serverTimestamp();
+      await updateDoc(ref, cleanedPayload);
+      setVerifyModalOpen(false);
+    } catch (e) {
+      console.error('Update failed', e);
+      alert('Failed to update item.');
+    }
+  };
+
   if (loading) return <div className="h-screen flex items-center justify-center"><Spinner /></div>;
 
   return (
@@ -304,12 +375,58 @@ export default function AuditPage() {
                 endContent={<Search size={16} className="text-gray-400" />}
                 classNames={{ inputWrapper: 'bg-white dark:bg-slate-800 shadow-sm h-12' }}
               />
-              <Button color="primary" className="h-12" onPress={handleVerify} isDisabled={verifying}>
-                Verify
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button variant="ghost" onPress={() => setScannerOpen(true)} className="h-12">Scan</Button>
+                <Button color="primary" className="h-12" onPress={handleVerify} isDisabled={verifying}>Verify</Button>
+              </div>
             </div>
           </CardBody>
         </Card>
+
+        {/* Verification modal for inspected item */}
+        <Modal isOpen={verifyModalOpen} onOpenChange={(v) => { if (!v) { setVerifyModalOpen(false); setCurrentVerifyItem(null); } }}>
+          <ModalContent>
+            <ModalHeader>Verify Item</ModalHeader>
+            <ModalBody>
+              {currentVerifyItem ? (
+                <div className="space-y-3">
+                  <div className="font-semibold text-lg">{currentVerifyItem.name}</div>
+                  <div className="text-sm text-gray-500">Location: {currentVerifyItem.location || 'HQ'} {((currentVerifyItem as any).room) ? `— ${(currentVerifyItem as any).room}` : ''}</div>
+                  <div className="text-sm">System Qty: {Number(currentVerifyItem.totalStockQuantity ?? 0)}</div>
+                  <div>
+                    <div className="text-sm font-medium">Batches / Lots</div>
+                    <div className="mt-2 space-y-2">
+                      {Array.isArray(currentVerifyItem.batches) && currentVerifyItem.batches.length > 0 ? currentVerifyItem.batches.map((b: any) => (
+                        <Card key={b.id} className="p-0">
+                          <CardBody className="flex items-center justify-between p-2">
+                            <div>
+                              <div className="text-sm font-semibold">{b.lotNumber || '—'}</div>
+                              <div className="text-xs text-gray-500">Exp: {b.expirationDate ? (new Date(b.expirationDate).toLocaleDateString()) : '—'}</div>
+                            </div>
+                            <Chip size="sm" variant="flat">Qty: {Number(b.stock ?? 0)}</Chip>
+                          </CardBody>
+                        </Card>
+                      )) : <Chip size="sm" variant="flat" className="text-sm">No batch-level data</Chip>}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm mb-1">Notes (optional)</label>
+                    <Textarea value={verifyNotes} onValueChange={setVerifyNotes} placeholder="Optional note about condition or location" />
+                  </div>
+                </div>
+              ) : <div>No item selected.</div>}
+            </ModalBody>
+            <ModalFooter className="flex items-center gap-2 flex-row flex-nowrap">
+              <Button variant="ghost" onPress={() => { if (currentVerifyItem) { setQuickAddInitial(currentVerifyItem); openQuickAdd(); } }} className="whitespace-nowrap">Edit</Button>
+              <Button color="warning" onPress={() => confirmVerifyItem('Damaged')} className="whitespace-nowrap">Damaged</Button>
+              <Button color="danger" onPress={() => confirmVerifyItem('Expired')} className="whitespace-nowrap">Expired</Button>
+              <div className="flex-1" />
+              <Button color="primary" onPress={() => confirmVerifyItem()} className="whitespace-nowrap">Verify</Button>
+            </ModalFooter>
+          </ModalContent>
+        </Modal>
+
+        <BarcodeScanner isOpen={scannerOpen} onClose={() => setScannerOpen(false)} onDetected={(val) => { setScanQuery(val); setScannerOpen(false); setTimeout(() => handleVerify(), 200); }} />
 
         {/* Zone Lobby */}
         <Card className="bg-white/80 dark:bg-slate-800/80 border-gray-200/70 dark:border-slate-700 mb-6">
@@ -380,7 +497,7 @@ export default function AuditPage() {
           isOpen={isQuickAddOpen}
           onOpenChange={onQuickAddChange}
           onAddItem={handleAddItem}
-          onUpdateItem={() => {}}
+          onUpdateItem={handleUpdateItem}
           initialData={quickAddInitial as any}
           canToggleExpiration={isAdmin}
         />

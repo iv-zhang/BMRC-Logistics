@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "migrate:batch-locations": "node ./scripts/migrate-batch-locations.js --dry-run"
+    "migrate:batch-locations": "node ./scripts/migrate-batch-locations.js --dry-run",
+    "migrate:normalize-inventory": "node ./scripts/normalize-inventory.cjs --dry-run"
   },
   "dependencies": {
     "@heroui/react": "^2.8.7",

@@ -9,6 +9,7 @@ import { Trash2, Plus, Info, Box, Wind, CalendarClock, GripVertical } from 'luci
 import { InventoryItem, ItemCategory, LocationType, HQRoom, InventoryVariant, InventoryBatch, AssetInstance } from '@/app/types'; 
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '@/firebase';
+import { safeParseDate } from '@/app/utils/inventoryNormalization';
 
 // Constants for Dropdowns
 const CATEGORIES: ItemCategory[] = ['Airway', 'Trauma', 'Vitals', 'Meds', 'PPE', 'Splinting', 'Hygiene', 'Other'];
@@ -192,20 +193,7 @@ export default function InventoryModal({
     return /\b(aed|defib|defibrillator|philips|frx|lifeline)\b/i.test(name);
   };
 
-  const safeParseDate = (v?: Date | string | null) => {
-    if (v === undefined || v === null || v === '') return undefined;
-    // Firestore Timestamps have a `toDate()` method
-    if (typeof (v as any)?.toDate === 'function') {
-      try {
-        const d = (v as any).toDate();
-        return d instanceof Date && !isNaN(d.getTime()) ? d : undefined;
-      } catch {
-        return undefined;
-      }
-    }
-    const d = new Date(v as any);
-    return isNaN(d.getTime()) ? undefined : d;
-  };
+  
 
   const addVariantBatch = (variantId: string) => {
     const newBatch: InventoryBatch = { id: uniqueId(), lotNumber: '', expirationDate: undefined, stock: 0, locations: [] } as InventoryBatch;
