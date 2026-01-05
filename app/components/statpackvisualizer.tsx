@@ -10,6 +10,31 @@ interface BagVisualizerProps {
   completedPockets?: Set<StatpackPocket>;
 }
 
+// --- DROP ZONE COMPONENT (declared outside render) ---
+const DropZone: React.FC<{
+  children?: React.ReactNode;
+  side?: 'left' | 'right';
+  isDragging: boolean;
+  onDragOver: (e: React.DragEvent) => void;
+  onDrop: (e: React.DragEvent) => void;
+}> = ({ children, side, isDragging, onDragOver, onDrop }) => {
+  const isOccupied = children !== undefined;
+  return (
+    <div
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      className={`
+                flex-1 flex items-center justify-center h-full rounded-xl transition-all
+                ${isDragging && !isOccupied ? 'bg-blue-50 dark:bg-blue-900/30 border-2 border-dashed border-blue-300' : ''}
+                ${isDragging && isOccupied ? 'opacity-50' : 'opacity-100'}
+            `}
+    >
+      {isDragging && !isOccupied && <span className="text-[10px] text-blue-400 font-semibold pointer-events-none">Drop</span>}
+      {children}
+    </div>
+  );
+};
+
 export const BagVisualizer: React.FC<BagVisualizerProps> = ({ 
   statpack, 
   selectedPocket, 
@@ -123,24 +148,7 @@ export const BagVisualizer: React.FC<BagVisualizerProps> = ({
   };
 
   // --- DROP ZONE COMPONENT ---
-  const DropZone = ({ side, children }: { side: 'left' | 'right', children?: React.ReactNode }) => {
-    const isOccupied = children !== undefined;
-    
-    return (
-        <div 
-            onDragOver={handleDragOver} 
-            onDrop={handleDrop(side)}
-            className={`
-                flex-1 flex items-center justify-center h-full rounded-xl transition-all
-                ${isDragging && !isOccupied ? 'bg-blue-50 dark:bg-blue-900/30 border-2 border-dashed border-blue-300' : ''}
-                ${isDragging && isOccupied ? 'opacity-50' : 'opacity-100'}
-            `}
-        >
-            {isDragging && !isOccupied && <span className="text-[10px] text-blue-400 font-semibold pointer-events-none">Drop</span>}
-            {children}
-        </div>
-    );
-  };
+    // NOTE: DropZone component moved outside render to satisfy static-components rule.
 
   return (
     <div className="flex flex-col items-center gap-3 py-2 w-full select-none max-w-sm mx-auto">
@@ -176,9 +184,9 @@ export const BagVisualizer: React.FC<BagVisualizerProps> = ({
                     
                     {/* Left Drop Zone */}
                     <div className="w-14 h-full">
-                        <DropZone side="left">
-                            {o2Item && tankSide === 'left' && renderTankBox()}
-                        </DropZone>
+                      <DropZone side="left" isDragging={isDragging} onDragOver={handleDragOver} onDrop={handleDrop('left')}>
+                        {o2Item && tankSide === 'left' && renderTankBox()}
+                      </DropZone>
                     </div>
 
                     {/* Center Info Zone */}
@@ -190,11 +198,11 @@ export const BagVisualizer: React.FC<BagVisualizerProps> = ({
                     </div>
 
                     {/* Right Drop Zone */}
-                    <div className="w-14 h-full">
-                         <DropZone side="right">
-                            {o2Item && tankSide === 'right' && renderTankBox()}
+                      <div className="w-14 h-full">
+                         <DropZone side="right" isDragging={isDragging} onDragOver={handleDragOver} onDrop={handleDrop('right')}>
+                           {o2Item && tankSide === 'right' && renderTankBox()}
                          </DropZone>
-                    </div>
+                      </div>
                  </div>
 
               </CardBody>

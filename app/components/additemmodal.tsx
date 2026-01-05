@@ -7,9 +7,11 @@ import {
 import { Trash2, Plus, Info, Box, Wind, CalendarClock, GripVertical } from 'lucide-react';
 
 import { InventoryItem, ItemCategory, LocationType, HQRoom, InventoryVariant, InventoryBatch, AssetInstance } from '@/app/types'; 
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, collection as coll, query as q, where, limit, getDocs, writeBatch } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { safeParseDate } from '@/app/utils/inventoryNormalization';
+import { addAuditEventToBatch } from '@/app/lib/audit';
+import { useToast } from '@heroui/toast';
 
 // Constants for Dropdowns
 const CATEGORIES: ItemCategory[] = ['Airway', 'Trauma', 'Vitals', 'Meds', 'PPE', 'Splinting', 'Hygiene', 'Other'];
@@ -29,6 +31,8 @@ interface InventoryModalProps {
 
 // Extend state to hold new fields
 type InventoryFormState = Partial<Omit<InventoryItem, 'totalStockQuantity' | 'reorderThreshold'>> & {
+  sku?: string;
+  barcode?: string;
   totalStockQuantity?: number | string;
   reorderThreshold?: number | string;
   variants: InventoryVariant[];
@@ -53,6 +57,8 @@ type InventoryFormState = Partial<Omit<InventoryItem, 'totalStockQuantity' | 're
 
 const DEFAULT_STATE: InventoryFormState = {
   name: '',
+  sku: '',
+  barcode: '',
   category: 'Other',
   location: 'HQ',
   room: 'Back Room',
@@ -222,6 +228,45 @@ export default function InventoryModal({
   const [formData, setFormData] = useState<InventoryFormState>(() => getInitialFormData(initialData));
   const [assignedNames, setAssignedNames] = useState<Record<string,string>>({});
   const [legacyMode, setLegacyMode] = useState(false); // Quick-Add mode for found items
+  const [duplicates, setDuplicates] = useState<any[]>([]);
+  const [checkingDuplicates, setCheckingDuplicates] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
+  const debounceRef = useRef<any>(null);
+
+  let toast: any = null;
+  try {
+    toast = (useToast as any)();
+  } catch {
+    toast = null;
+  }
+  const notify = (opts: { title: string; description?: string; variant?: string }) => {
+    try {
+      (toast as any)?.push?.(opts);
+    } catch {
+      // fallback to alert when toast provider is missing
+      // eslint-disable-next-line no-alert
+      alert(`${opts.title}${opts.description ? ': ' + opts.description : ''}`);
+    }
+  };
+
+  // Simple Levenshtein distance for fuzzy matching
+  const levenshtein = (a: string, b: string) => {
+    const as = a.toLowerCase().trim();
+    const bs = b.toLowerCase().trim();
+    if (as === bs) return 0;
+    const m = as.length, n = bs.length;
+    const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+    for (let i = 0; i <= m; i++) dp[i][0] = i;
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        const cost = as[i - 1] === bs[j - 1] ? 0 : 1;
+        dp[i][j] = Math.min(dp[i-1][j] + 1, dp[i][j-1] + 1, dp[i-1][j-1] + cost);
+      }
+    }
+    return dp[m][n];
+  };
 
   // Reset or update form when modal opens/closes or initialData changes
   useEffect(() => {
@@ -253,6 +298,85 @@ export default function InventoryModal({
     })();
     return () => { mounted = false; };
   }, [formData.assets]);
+  
+  const prefillFromExisting = (item: any) => {
+    if (!item) return;
+    setFormData(prev => ({
+      ...prev,
+      category: prev.category || item.category || prev.category,
+      location: prev.location || item.location || prev.location,
+      unit: prev.unit || item.unit || prev.unit,
+      reorderThreshold: prev.reorderThreshold ?? item.reorderThreshold ?? prev.reorderThreshold
+    }));
+    setShowAdvanced(true);
+  };
+
+  // Duplicate detection: prefix search + SKU/barcode queries + fuzzy Levenshtein
+  useEffect(() => {
+    if (!isOpen) return;
+    const name = String(formData.name ?? '').trim();
+    const sku = String(formData.sku ?? '').trim();
+    const barcode = String(formData.barcode ?? '').trim();
+    if ((!name || name.length < 2) && !sku && !barcode) {
+      setDuplicates([]);
+      return;
+    }
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      setCheckingDuplicates(true);
+      try {
+        const collected: Record<string, any> = {};
+        // Name prefix query (fast)
+        if (name && name.length >= 2) {
+          const prefix = name.slice(0, 3);
+          const start = prefix;
+          const end = prefix + '\uf8ff';
+          const qref = q(coll(db, 'inventory'), where('name', '>=', start), where('name', '<=', end), limit(12));
+          const snaps = await getDocs(qref);
+          for (const s of snaps.docs) collected[s.id] = { id: s.id, ...(s.data() as any) };
+        }
+        // Exact SKU match
+        if (sku) {
+          try {
+            const qsku = q(coll(db, 'inventory'), where('sku', '==', sku), limit(10));
+            const snaps = await getDocs(qsku);
+            for (const s of snaps.docs) collected[s.id] = { id: s.id, ...(s.data() as any) };
+          } catch {
+            // ignore
+          }
+        }
+        // Exact barcode match
+        if (barcode) {
+          try {
+            const qb = q(coll(db, 'inventory'), where('barcode', '==', barcode), limit(10));
+            const snaps = await getDocs(qb);
+            for (const s of snaps.docs) collected[s.id] = { id: s.id, ...(s.data() as any) };
+          } catch {
+            // ignore
+          }
+        }
+
+        // Convert to array and apply fuzzy filter + scoring
+        const results = Object.values(collected) as any[];
+        const scored = results.map(r => {
+          const rname = String(r.name || '');
+          const nameScore = name ? levenshtein(name, rname) : Infinity;
+          const skuMatch = sku && r.sku && String(r.sku).toLowerCase() === sku.toLowerCase();
+          const barcodeMatch = barcode && r.barcode && String(r.barcode).toLowerCase() === barcode.toLowerCase();
+          return { r, score: Math.min(nameScore, skuMatch ? 0 : Infinity, barcodeMatch ? 0 : Infinity), skuMatch, barcodeMatch };
+        });
+        // Select candidates: exact sku/barcode first, then low distance names
+        const exacts = scored.filter(s => s.skuMatch || s.barcodeMatch).map(s => s.r);
+        const fuzzy = scored.filter(s => !s.skuMatch && !s.barcodeMatch && s.score <= Math.max(2, Math.floor((String(formData.name || '').length || 4) * 0.25))).sort((a,b) => a.score - b.score).map(s => s.r);
+        const merged = [...exacts, ...fuzzy].slice(0, 8);
+        setDuplicates(merged);
+      } catch (e) {
+        setDuplicates([]);
+      }
+      setCheckingDuplicates(false);
+    }, 300);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [formData.name, formData.sku, formData.barcode, isOpen]);
 
   // Whether master item location should be treated as authoritative
   const masterHasBatches = ((formData.batches || []).length > 0) || ((formData.variants || []).some(v => Array.isArray(v.batches) && v.batches.length > 0));
@@ -558,7 +682,7 @@ export default function InventoryModal({
   };
 
   // --- SUBMIT ---
-  const handleSubmit = (onClose: () => void) => {
+  const handleSubmit = async (onClose: () => void) => {
     if (!formData.name) return;
     // Enforce: when item has variants, top-level batches must be assigned to a specific variant
     if (formData.hasVariants) {
@@ -738,12 +862,50 @@ export default function InventoryModal({
 
     if (initialData && initialData.id) {
       onUpdateItem(initialData.id, payload);
+      notify({ title: 'Item updated', description: `${String(payload.name)} updated`, variant: 'success' });
     } else {
-      onAddItem(payload);
+      // Create item + audit atomically using a write batch
+      try {
+        const batch = writeBatch(db);
+        const newRef = doc(coll(db, 'inventory'));
+        batch.set(newRef, payload as any);
+        // Add audit event referencing the new inventory doc
+        addAuditEventToBatch(batch, {
+          eventType: 'inventory.create',
+          source: 'inventory',
+          sourceId: newRef.id,
+          after: { name: payload.name, sku: payload.sku, barcode: payload.barcode, totalStockQuantity: payload.totalStockQuantity }
+        });
+        await batch.commit();
+        // Notify UI and call onAddItem so parent can update local state
+        notify({ title: 'Item added', description: `${String(payload.name)} added`, variant: 'success' });
+        onAddItem({ ...(payload as any), id: newRef.id });
+      } catch (err) {
+        console.error('create item batch failed', err);
+        // eslint-disable-next-line no-alert
+        alert('Failed to create item. Please try again.');
+      }
     }
-    
+
     onClose();
   };
+
+    // Keyboard shortcuts: Enter to submit, Esc to cancel when modal open
+    useEffect(() => {
+      if (!isOpen) return;
+      const handler = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') {
+          onOpenChange();
+        } else if (e.key === 'Enter') {
+          // basic guard to avoid accidental submits when focus is on textarea or buttons
+          const active = document.activeElement as HTMLElement | null;
+          if (active && (active.tagName === 'TEXTAREA')) return;
+          handleSubmit(() => onOpenChange());
+        }
+      };
+      document.addEventListener('keydown', handler);
+      return () => document.removeEventListener('keydown', handler);
+    }, [isOpen, formData]);
 
   const getDateString = (date?: Date | string) => {
     if (!date) return '';
@@ -784,18 +946,62 @@ export default function InventoryModal({
                 
                 {/* --- BASIC INFO --- */}
                 <h3 className="md:col-span-2 text-sm font-bold text-gray-500 uppercase mt-2">Item Details</h3>
-                
+                <div className="md:col-span-2 flex items-center justify-end gap-2">
+                  <span className="text-xs text-gray-500">Show advanced</span>
+                  <Switch isSelected={showAdvanced} onValueChange={(v) => setShowAdvanced(v)} />
+                </div>
+
                 <Input 
                   label="Item Name" 
                   placeholder="e.g., Nitrile Gloves" 
                   variant="bordered"
                   value={formData.name}
+                  autoFocus
                   onValueChange={(v) => {
                     setFormData(prev => ({ ...prev, name: v }));
                     // If name looks like an AED and user hasn't indicated asset/AED, show prompt (UI handled below)
                   }}
                   className="md:col-span-2"
                 />
+
+                <Input
+                  label="SKU (optional)"
+                  placeholder="e.g., GLV-100"
+                  variant="bordered"
+                  value={formData.sku}
+                  onValueChange={handleValueChange('sku')}
+                  className="md:col-span-1"
+                />
+                <Input
+                  label="Barcode (optional)"
+                  placeholder="e.g., 0123456789012"
+                  variant="bordered"
+                  value={formData.barcode}
+                  onValueChange={handleValueChange('barcode')}
+                  className="md:col-span-1"
+                />
+
+                {/* Duplicate suggestions */}
+                <div className="md:col-span-2">
+                  {checkingDuplicates ? (
+                    <div className="text-xs text-gray-500">Checking for similar items...</div>
+                  ) : (duplicates && duplicates.length > 0) ? (
+                    <div className="mt-2 p-2 border rounded-md bg-yellow-50 dark:bg-yellow-900/10 text-sm">
+                      <div className="font-semibold text-xs mb-1">Similar items found</div>
+                      <div className="space-y-1">
+                        {duplicates.map(d => (
+                          <div key={d.id} className="flex items-center justify-between">
+                            <div className="text-xs">{String(d.name)} {d.unit ? `• ${d.unit}` : ''} <span className="text-gray-400">({d.id})</span></div>
+                            <div className="flex items-center gap-2">
+                              <Button size="sm" variant="flat" onPress={() => prefillFromExisting(d)}>Prefill</Button>
+                              <Button size="sm" variant="light" color="primary" onPress={() => { if (d.id) onUpdateItem(d.id, {}); }}>Open</Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
 
                 {/* Heuristic: suggest marking item as AED if name looks like AED */}
                 {isLikelyAED(typeof formData.name === 'string' ? formData.name : '') && !formData.isAsset && !((formData as any).assetCategory === 'AED') && (
@@ -899,9 +1105,10 @@ export default function InventoryModal({
                 />
 
                 {/* --- SPECIAL TRACKING: OXYGEN & BOXES --- */}
-                <Divider className="md:col-span-2 my-2" />
-                
-                <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+                {(showAdvanced || formData.isAsset || formData.tracksOpenStock || formData.isOxygen || formData.hasVariants || ((formData.batches || []).length > 0)) && (
+                  <>
+                    <Divider className="md:col-span-2 my-2" />
+                    <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
                   {/* Oxygen Switch */}
                   <div className={`p-3 border-2 rounded-xl transition-all ${formData.isOxygen ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-default-200'}`}>
                       <div className="flex justify-between items-center mb-2">
@@ -987,7 +1194,9 @@ export default function InventoryModal({
                       </div>
                       <p className="text-xs text-gray-500">Quick-add mode for uncatalogued items. Hides vendor/cost fields, simplifies entry.</p>
                   </div>
-                </div>
+                  </div>
+                  </>
+                )}
 
                 {/* --- STOCK INPUTS --- */}
                 <h3 className="md:col-span-2 text-sm font-bold text-gray-500 uppercase mt-4">Stock Levels</h3>
@@ -1299,8 +1508,10 @@ export default function InventoryModal({
                   />
                 </div>
 
-                <Divider className="md:col-span-2 my-2" />
-                <div className="flex flex-col gap-4 md:col-span-2 border-2 border-default-200 rounded-xl p-4">
+                {(showAdvanced || formData.hasVariants || ((formData.batches || []).length > 0)) && (
+                  <>
+                    <Divider className="md:col-span-2 my-2" />
+                    <div className="flex flex-col gap-4 md:col-span-2 border-2 border-default-200 rounded-xl p-4">
                     {/* --- BATCH / LOTS --- */}
                     <Divider className="my-2" />
                     <div>
@@ -1408,7 +1619,9 @@ export default function InventoryModal({
                         ))}
                       </div>
                     </div>
-                </div>
+                    </div>
+                  </>
+                )}
 
                 <div className="md:col-span-2 mt-2">
                      <Textarea

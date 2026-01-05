@@ -177,7 +177,40 @@ async function main() {
     process.exit(0);
   }
   for (const op of operations) {
-    await db.collection('inventory').doc(op.id).set(op.normalized, { merge: false });
+    // Pre-write validations to avoid accidental numeric changes / metadata loss
+    const norm = op.normalized || {};
+    const batches = Array.isArray(norm.batches) ? norm.batches : [];
+    const batchSum = batches.reduce((acc, b) => acc + Number(b.stock ?? 0), 0);
+    const issues = [];
+    if (batches.length > 0 && Number(norm.totalStockQuantity ?? 0) !== batchSum) {
+      issues.push({ type: 'total_mismatch', expected: batchSum, actual: Number(norm.totalStockQuantity ?? 0) });
+    }
+    batches.forEach((b) => {
+      if (b.serialized && Array.isArray(b.serialNumbers)) {
+        if (Number(b.stock ?? 0) !== b.serialNumbers.length) {
+          issues.push({ type: 'serialized_count_mismatch', batchId: b.id, stock: Number(b.stock ?? 0), serialCount: b.serialNumbers.length });
+        }
+      }
+    });
+
+    if (issues.length > 0) {
+      // Don't perform a full replace for docs with invariant issues. Emit a warning and skip.
+      console.warn('Skipping update for', op.id, 'due to validation issues:', issues);
+      // Append to an issues report for manual review
+      try {
+        const reportPath = path.join(__dirname, 'normalization_issues.json');
+        let existing = [];
+        if (fs.existsSync(reportPath)) existing = JSON.parse(fs.readFileSync(reportPath, 'utf8')) || [];
+        existing.push({ id: op.id, issues, before: op.before || null, after: op.normalized });
+        fs.writeFileSync(reportPath, JSON.stringify(existing, null, 2), 'utf8');
+      } catch (e) {
+        console.error('Failed to write issues report for', op.id, e);
+      }
+      continue;
+    }
+
+    // Use merge:true to avoid accidentally dropping unrelated fields (assets, metadata)
+    await db.collection('inventory').doc(op.id).set(op.normalized, { merge: true });
     console.log('Updated', op.id);
   }
   console.log('Normalization applied to', operations.length, 'documents.');

@@ -1,4 +1,4 @@
-import { addDoc, collection, serverTimestamp, doc, WriteBatch } from 'firebase/firestore';
+import { addDoc, collection, serverTimestamp, doc, WriteBatch, DocumentData } from 'firebase/firestore';
 import { db } from '@/firebase';
 
 export type AuditEvent = {
@@ -11,13 +11,13 @@ export type AuditEvent = {
     userEmail?: string | null;
     role?: string | null;
   };
-  timestamp?: any;
+  timestamp?: unknown;
   targets?: Array<{ collection: string; docId: string; fieldPath?: string }>;
-  before?: any;
-  after?: any;
-  delta?: any;
-  details?: any;
-  relatedLogs?: any[];
+  before?: unknown;
+  after?: unknown;
+  delta?: unknown;
+  details?: unknown;
+  relatedLogs?: unknown[];
 };
 
 /**
@@ -25,9 +25,9 @@ export type AuditEvent = {
  * Adds a serverTimestamp if none provided.
  */
 export async function recordAuditEvent(event: Partial<AuditEvent>) {
-  const payload: any = { ...event };
+  const payload: Partial<AuditEvent> = { ...event };
   if (!payload.timestamp) payload.timestamp = serverTimestamp();
-  return await addDoc(collection(db, 'auditEvents'), payload);
+  return await addDoc(collection(db, 'auditEvents'), payload as DocumentData);
 }
 
 /**
@@ -36,10 +36,11 @@ export async function recordAuditEvent(event: Partial<AuditEvent>) {
  */
 export function addAuditEventToBatch(batch: WriteBatch, event: Partial<AuditEvent>) {
   const ref = doc(collection(db, 'auditEvents'));
-  const payload: any = { ...event };
+  const payload: Partial<AuditEvent> = { ...event };
   if (!payload.timestamp) payload.timestamp = serverTimestamp();
-  batch.set(ref, payload);
+  batch.set(ref, payload as DocumentData);
   return ref;
 }
 
-export default { recordAuditEvent, addAuditEventToBatch };
+const audit = { recordAuditEvent, addAuditEventToBatch };
+export default audit;

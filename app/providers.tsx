@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { HeroUIProvider } from "@heroui/react";
+// toast provider intentionally not included to avoid runtime mismatch with static export
 import { useRouter } from 'next/navigation';
 import { ThemeProvider as NextThemesProvider } from "next-themes";
 

@@ -322,7 +322,7 @@ export default function RestockPage() {
                 {inventoryOptions.map((i: any) => {
                   const label = i.name + (typeof i.quantity !== 'undefined' ? ' (qty ' + i.quantity + ')' : '');
                   return <SelectItem key={i.id} textValue={label}>{label}</SelectItem>;
-                })}
+                }) as any}
               </Select>
               <div className="grid grid-cols-2 gap-2">
                 <Select label="Location" selectedKeys={[location]} onSelectionChange={(keys: any) => { const v = Array.from(keys)[0] as string; setLocation(v); setLocationDetail(LOCATION_MAP[v]?.[0] || ''); }}>
@@ -421,9 +421,9 @@ export default function RestockPage() {
                         {availableBatches.map((b: any) => {
                           const exp = b.expirationDate ? new Date(b.expirationDate).toLocaleDateString() : 'no exp';
                           const label = `${b.lotNumber || b.id || 'batch'} — exp: ${exp}`;
-                          const val = b.id || b.batchId || '';
+                          const val = b.id || '';
                           return <SelectItem key={val} textValue={label}>{label}</SelectItem>;
-                        })}
+                        }) as any}
                       </Select>
                     ) : null}
                     <Input label="Quantity" type="number" value={String(restockQty)} onValueChange={(v: any) => setRestockQty(Number(v) || 0)} />
@@ -449,7 +449,7 @@ export default function RestockPage() {
                   <Input label="Shelf Name" value={activeShelf?.name || ''} onValueChange={(v: any) => setActiveShelf((s: any) => ({ ...s, name: v }))} />
                   <Select label="Inventory Item (optional)" selectedKeys={activeShelf?.itemId ? [activeShelf.itemId] : []} onSelectionChange={(keys: any) => { const v = Array.from(keys)[0] as string | undefined; setActiveShelf((s: any) => ({ ...s, itemId: v || null })); }}>
                     <SelectItem key="none" textValue="-- none --">-- none --</SelectItem>
-                    {inventoryOptions.map((i: any) => <SelectItem key={i.id} textValue={i.name}>{i.name}</SelectItem>)}
+                    {inventoryOptions.map((i: any) => <SelectItem key={i.id} textValue={i.name}>{i.name}</SelectItem>) as any}
                   </Select>
                   <div className="grid grid-cols-2 gap-x-6 gap-y-3">
                     <Select label="Location" selectedKeys={[activeShelf?.location || LOCATIONS[0]]} onSelectionChange={(keys: any) => { const v = Array.from(keys)[0] as string; setActiveShelf((s: any) => ({ ...s, location: v })); }}>

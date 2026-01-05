@@ -513,7 +513,7 @@ export default function MobileCheckoutClient() {
           // Collect problems and show modal so user can correct them
           const problems: string[] = [];
           // Check compartments
-          const compartmentsInPocket = pack.compartments?.filter(c => c.parentPocket === step.parentPocket) || [];
+          const compartmentsInPocket = pack?.compartments?.filter(c => c.parentPocket === step.parentPocket) || [];
           for (const comp of compartmentsInPocket) {
             if (comp.isSealed && sealCheck[comp.id] === undefined) {
               problems.push(`Seal not checked for ${comp.name}`);
@@ -521,14 +521,14 @@ export default function MobileCheckoutClient() {
             const compItems = step.items.filter(i => i.compartmentId === comp.id);
             for (const it of compItems) {
               const reasons = getItemFailureReasons(it);
-              reasons.forEach(r => problems.push(`${it.itemDetails?.name || it.itemName}: ${r}`));
+              reasons.forEach(r => problems.push(`${it.itemDetails?.name || (it as any).itemName}: ${r}`));
             }
           }
           // Loose items
           const looseItems = step.items.filter(i => !i.compartmentId);
           for (const it of looseItems) {
             const reasons = getItemFailureReasons(it);
-            reasons.forEach(r => problems.push(`${it.itemDetails?.name || it.itemName}: ${r}`));
+            reasons.forEach(r => problems.push(`${it.itemDetails?.name || (it as any).itemName}: ${r}`));
           }
 
           if (problems.length === 0) problems.push('Step incomplete — please verify items.');

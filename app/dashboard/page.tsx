@@ -530,7 +530,7 @@ export default function DashboardPage() {
                             : `Expires in ${alert.daysRemaining} days`}
                         </p>
                         <p className="text-xs text-gray-400">
-                          {alert.expiryDate.toLocaleDateString()}
+                          {alert.expiryDate ? new Date(alert.expiryDate).toLocaleDateString() : '—'}
                         </p>
                       </div>
                     </div>

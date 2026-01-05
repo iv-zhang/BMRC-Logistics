@@ -1172,7 +1172,7 @@ export default function InventoryPage() {
               Export CSV
             </Button>
             <Button onPress={() => setCsvModalOpen(true)} variant="flat" className="h-12 px-4">Import CSV</Button>
-            <Button onPress={() => router.push('/audit')} variant="outline" className="h-12 px-4">Audit</Button>
+            <Button onPress={() => router.push('/audit')} variant="flat" className="h-12 px-4">Audit</Button>
         </div>
 
         {/* CSV Import Modal (HeroUI) */}
@@ -1196,7 +1196,7 @@ export default function InventoryPage() {
                 className={`border-2 ${csvDragOver ? 'border-indigo-500 bg-indigo-50/40' : 'border-dashed border-gray-300'} rounded-md p-6 text-center mb-4 cursor-pointer`}
                 onClick={() => fileInputRef.current?.click()}
               >
-                <input ref={(el) => (fileInputRef.current = el)} type="file" accept="text/csv" style={{ display: 'none' }} onChange={async (e) => {
+                <input ref={(el) => { fileInputRef.current = el; }} type="file" accept="text/csv" style={{ display: 'none' }} onChange={async (e) => {
                   const f = e.target.files?.[0];
                   if (f) {
                     setCsvModalOpen(false);

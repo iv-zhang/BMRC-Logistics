@@ -1,5 +1,20 @@
 "use client";
 import React, { useEffect, useRef, useState } from 'react';
+// Minimal ambient types to avoid `any` when interacting with optional browser APIs
+declare global {
+  interface BarcodeDetectionResult {
+    rawValue?: string;
+    displayValue?: string;
+  }
+  interface BarcodeDetectorConstructor {
+    new (options?: { formats?: string[] }): {
+      detect(target: ImageBitmap | HTMLVideoElement | HTMLImageElement): Promise<BarcodeDetectionResult[]>;
+    };
+  }
+  interface Window {
+    BarcodeDetector?: BarcodeDetectorConstructor;
+  }
+}
 import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button } from '@heroui/react';
 
 type Props = {
@@ -20,7 +35,7 @@ export default function BarcodeScanner({ isOpen, onClose, onDetected }: Props) {
     let stop = false;
     const start = async () => {
       try {
-        const hasBarcode = (window as any).BarcodeDetector !== undefined;
+        const hasBarcode = typeof window.BarcodeDetector !== 'undefined';
         setSupported(!!hasBarcode);
         const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
         streamRef.current = stream;
@@ -28,8 +43,9 @@ export default function BarcodeScanner({ isOpen, onClose, onDetected }: Props) {
         videoRef.current?.play();
         setScanning(true);
 
-        if (hasBarcode) {
-          const detector = new (window as any).BarcodeDetector({ formats: ['qr_code', 'data_matrix', 'code_128', 'ean_13', 'ean_8', 'upc_a', 'upc_e'] });
+        if (hasBarcode && window.BarcodeDetector) {
+          const Detector = window.BarcodeDetector;
+          const detector = new Detector({ formats: ['qr_code', 'data_matrix', 'code_128', 'ean_13', 'ean_8', 'upc_a', 'upc_e'] });
           const poll = async () => {
             if (stop) return;
             try {
@@ -41,12 +57,14 @@ export default function BarcodeScanner({ isOpen, onClose, onDetected }: Props) {
                   onDetected(raw.toString());
                   stop = true;
                   setScanning(false);
-                  try { stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+                  try { stream.getTracks().forEach(t => t.stop()); } catch {
+                    // ignore
+                  }
                   onClose();
                   return;
                 }
               }
-            } catch (e) {
+            } catch {
               // ignore detection errors
             }
             requestAnimationFrame(poll);
@@ -62,7 +80,9 @@ export default function BarcodeScanner({ isOpen, onClose, onDetected }: Props) {
     return () => {
       stop = true;
       setScanning(false);
-      try { streamRef.current?.getTracks().forEach(t => t.stop()); } catch (e) {}
+      try { streamRef.current?.getTracks().forEach(t => t.stop()); } catch {
+        // ignore
+      }
     };
   }, [isOpen, onClose, onDetected]);
 
@@ -74,6 +94,7 @@ export default function BarcodeScanner({ isOpen, onClose, onDetected }: Props) {
           <div className="w-full h-64 bg-black flex items-center justify-center">
             <video ref={videoRef} className="w-full h-full object-cover" playsInline muted />
           </div>
+          {scanning && <div className="mt-2 text-sm text-gray-500">Scanning…</div>}
           {supported === false && (
             <div className="mt-2 text-sm text-gray-500">BarcodeDetector not supported in this browser. You can type/paste the barcode instead, or upload an image below.</div>
           )}
@@ -85,12 +106,12 @@ export default function BarcodeScanner({ isOpen, onClose, onDetected }: Props) {
               setMessage('Processing image...');
               try {
                 // create image bitmap
-                const imgBitmap = await createImageBitmap(f as any);
+                const imgBitmap = await createImageBitmap(f as Blob);
                 // try native BarcodeDetector on image
-                if ((window as any).BarcodeDetector) {
+                if (window.BarcodeDetector) {
                   try {
-                    const detector = new (window as any).BarcodeDetector();
-                    const results = await detector.detect(imgBitmap as any);
+                    const detector = new window.BarcodeDetector();
+                    const results = await detector.detect(imgBitmap);
                     if (results && results.length) {
                       const raw = results[0].rawValue || results[0].displayValue;
                       if (raw) {
@@ -101,26 +122,43 @@ export default function BarcodeScanner({ isOpen, onClose, onDetected }: Props) {
                       }
                     }
                   } catch (e) {
+                    void e;
                     // fallthrough to zxing
                   }
                 }
 
                 // dynamic import ZXing if available (optional dependency)
                 try {
-                  const ZXing = await import('@zxing/library');
-                  const { BrowserQRCodeReader, BrowserMultiFormatReader, BinaryBitmap, HybridBinarizer, RGBLuminanceSource } = ZXing;
-                  // Use BrowserMultiFormatReader decodeFromImage
-                  const reader = new (ZXing as any).BrowserMultiFormatReader();
-                  // create temporary img element
-                  const img = document.createElement('img');
-                  img.src = URL.createObjectURL(f);
-                  await new Promise((res) => { img.onload = res; });
-                  const result = await reader.decodeFromImageElement(img);
-                  if (result && result.getText) {
-                    onDetected(result.getText());
-                    setMessage(null);
-                    onClose();
-                    return;
+                  const ZXingModule = await import('@zxing/library');
+                  const ZXing = ZXingModule as unknown as {
+                    BrowserMultiFormatReader?: new () => { decodeFromImageElement: (el: HTMLImageElement) => Promise<unknown> };
+                    BrowserQRCodeReader?: new () => { decodeFromImageElement: (el: HTMLImageElement) => Promise<unknown> };
+                  };
+                  const ReaderCtor = ZXing.BrowserMultiFormatReader || ZXing.BrowserQRCodeReader;
+                  if (ReaderCtor) {
+                    const reader = new ReaderCtor() as { decodeFromImageElement: (el: HTMLImageElement) => Promise<unknown> };
+                    const img = document.createElement('img');
+                    img.src = URL.createObjectURL(f);
+                    await new Promise((res) => { img.onload = res; });
+                    const result = await reader.decodeFromImageElement(img);
+                    if (result && typeof result === 'object' && result !== null) {
+                      const r = result as Record<string, unknown>;
+                      const maybeGetText = r['getText'];
+                      const maybeText = r['text'];
+                      if (typeof maybeGetText === 'function') {
+                        const fn = maybeGetText as (...args: unknown[]) => unknown;
+                        const text = String(fn.call(r));
+                        onDetected(text);
+                        setMessage(null);
+                        onClose();
+                        return;
+                      } else if (typeof maybeText === 'string') {
+                        onDetected(maybeText);
+                        setMessage(null);
+                        onClose();
+                        return;
+                      }
+                    }
                   }
                 } catch (zxE) {
                   console.warn('ZXing decode failed or not installed', zxE);

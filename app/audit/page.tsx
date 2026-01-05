@@ -150,7 +150,7 @@ export default function AuditPage() {
       if (!matched) {
         const parsed = parseGs1Barcode(q);
         if (parsed.lot) {
-          matched = auditItems.find(i => Array.isArray(i.batches) && i.batches.some(b => String(b.lotNumber || b.batchId || b.id || '').toLowerCase() === parsed.lot?.toLowerCase()));
+          matched = auditItems.find(i => Array.isArray(i.batches) && i.batches.some(b => String(b.lotNumber || b.id || '').toLowerCase() === parsed.lot?.toLowerCase()));
         }
       }
 
