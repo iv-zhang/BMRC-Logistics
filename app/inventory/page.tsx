@@ -173,22 +173,27 @@ export default function InventoryPage() {
 
         // Normalize batches (legacy or explicit batch storage) into both `batches` and `variants` for UI
         const rawBatches = (data.batches || []) as any[];
-        const batches = rawBatches.map(b => ({
-          id: b.id,
-          lotNumber: b.lotNumber ?? b.lot ?? '',
-          expirationDate: getDate(b.expirationDate),
-          stock: Number(b.stock ?? 0),
-          receivedAt: getDate(b.receivedAt),
-          notes: b.notes,
-          // preserve serialized flag and serialNumbers for asset tracking
-          serialized: !!b.serialized,
-          serialNumbers: Array.isArray(b.serialNumbers) ? b.serialNumbers.slice() : [],
-          locations: Array.isArray(b.locations) ? b.locations.map((l: any) => ({
-            id: l.id ?? crypto.randomUUID?.() ?? Math.random().toString(),
-            name: l.name ?? '',
-            quantity: Number(l.quantity ?? 0)
-          })) : [],
-        }));
+        const batches = rawBatches.map(b => {
+          const serialNumbers = Array.isArray(b.serialNumbers) ? b.serialNumbers.slice() : [];
+          const serialized = !!b.serialized;
+          const stock = serialized ? serialNumbers.length : Number(b.stock ?? 0);
+          return ({
+            id: b.id,
+            lotNumber: b.lotNumber ?? b.lot ?? '',
+            expirationDate: getDate(b.expirationDate),
+            stock,
+            receivedAt: getDate(b.receivedAt),
+            notes: b.notes,
+            // preserve serialized flag and serialNumbers for asset tracking
+            serialized,
+            serialNumbers,
+            locations: Array.isArray(b.locations) ? b.locations.map((l: any) => ({
+              id: l.id ?? crypto.randomUUID?.() ?? Math.random().toString(),
+              name: l.name ?? '',
+              quantity: Number(l.quantity ?? 0)
+            })) : [],
+          });
+        });
 
         // Preserve expirable variants by folding them into batches
         if (variantBatches.length > 0) batches.push(...variantBatches);
@@ -727,11 +732,21 @@ export default function InventoryPage() {
     // If batches exist, sum only quantities in batch.locations where location === 'Back Room'.
     let backRoomCount = 0;
     if (i.batches && i.batches.length > 0) {
-      // Batches are treated as central storage records: sum their `stock` fields.
-      backRoomCount = i.batches.reduce((acc: number, b: any) => acc + Number(b.stock ?? 0), 0);
+      backRoomCount = i.batches.reduce((acc: number, b: any) => {
+        if (Array.isArray(b.locations) && b.locations.length > 0) {
+          const locSum = b.locations.reduce((la: number, loc: any) => {
+            const name = (loc.name || '').toString().trim().toLowerCase();
+            return la + (name === 'back room' ? Number(loc.quantity ?? 0) : 0);
+          }, 0);
+          return acc + locSum;
+        }
+        // fallback to batch stock if no per-location detail exists
+        return acc + Number(b.stock ?? 0);
+      }, 0);
     } else {
-      // No batches: only treat master item as Back Room if its room is Back Room
-      backRoomCount = (i.location === 'HQ' && i.room === 'Back Room') ? Number(i.totalStockQuantity ?? 0) : 0;
+      // No batches: only treat master item as Back Room if its room is Back Room (case-insensitive)
+      const roomName = (i.room || '').toString().trim().toLowerCase();
+      backRoomCount = roomName === 'back room' ? Number(i.totalStockQuantity ?? 0) : 0;
     }
 
     if (backRoomCount === 0) return false;
@@ -802,7 +817,7 @@ export default function InventoryPage() {
           opened += Math.floor(delta);
         }
 
-        const totalUnits = Number(unopened) + (opened > 0 ? 1 : 0);
+        const totalUnits = Number(unopened) * Number(qtyPer) + Number(opened);
         await updateDoc(itemRef, { unopenedQuantity: unopened, openedQuantity: opened, totalStockQuantity: totalUnits, updatedAt: serverTimestamp() });
       } else {
         const total = Math.max(0, Number(data.totalStockQuantity ?? 0) + delta);
@@ -1173,6 +1188,7 @@ export default function InventoryPage() {
             </Button>
             <Button onPress={() => setCsvModalOpen(true)} variant="flat" className="h-12 px-4">Import CSV</Button>
             <Button onPress={() => router.push('/audit')} variant="flat" className="h-12 px-4">Audit</Button>
+            <Button onPress={() => router.push('/audit')} variant="bordered" className="h-12 px-4">Audit</Button>
         </div>
 
         {/* CSV Import Modal (HeroUI) */}
