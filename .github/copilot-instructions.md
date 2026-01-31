@@ -57,8 +57,65 @@ This file gives AI coding assistants the minimal, actionable context needed to b
 - When you need missing secrets, ask: "Please provide Firebase project env vars or a `.env.local.example` to proceed."
 - When you change types in `app/types.ts`, request a brief migration note because schema changes must align with Firestore documents.
 
-## If something is unclear
+```markdown
+## Purpose
 
-- Tell me which area (deployment, auth, data model, UI component) you want clarified and I will update this guide or open the most relevant files.
+This file gives AI coding assistants the minimal, actionable context needed to be productive in the BMRC Logistics Next.js app — a student-focused logistics platform that models real EMS/ambulance inventory workflows (e.g., Falck-style operations).
+
+## Big picture
+
+- Framework: Next.js app directory (`app/`) using React 19 + TypeScript. UI components are a mix of server and client components.
+- Hosting: App is exported as a static site (`next.config.ts` sets `output: 'export'`) and hosted via Firebase Hosting; the static export should land in `out/` (see `firebase.json`).
+- Backend: Firebase Auth + Firestore are used exclusively for auth and data (`firebase.ts` exports `auth` and `db`). Analytics initialized only on the client.
+
+## Domain & notable business rules (important)
+
+- Asset vs Disposable policy: items below a dollar threshold are treated as disposables (tracked as unopened boxes only). Items above that threshold are assets requiring full lifecycle tracking (status, maintenance reason, and location).
+- Disposables workflow: unopened boxes are stored in the back; when a box is opened it is considered "used" (even if physically moved to a front shelf). Opened boxes are moved to the front for members to restock statpacks; only unopened box counts are kept for disposables.
+- Assets workflow: track `status`, `maintenanceReason`, `location`, and history logs (see `app/types.ts` for `InventoryItem`, `Statpack`, and related types). Treat asset state transitions carefully; Firestore documents mirror these types.
+
+## Key files (read first)
+
+- App shell & auth: [app/layout.tsx](app/layout.tsx) and [app/components/appnavbar.tsx](app/components/appnavbar.tsx) — auth sync + routing.
+- Firebase init: [firebase.ts](firebase.ts) — env keys and exported `auth`/`db`.
+- Types & domain model: [app/types.ts](app/types.ts) — canonical interfaces (InventoryItem, Statpack, StatpackLog, User).
+- Important UX components: [app/components/statpackvisualizer.tsx](app/components/statpackvisualizer.tsx), `additemmodal.tsx`, `assetmodal.tsx`, and `restock-*` modals in `app/components/` illustrate how disposables vs assets are presented to users.
+- Data helpers: `app/lib/inventory.ts` and `app/lib/audit.ts` — show Firestore reads/writes and audit/event shapes.
+- Scripts & migrations: `scripts/` contains utilities used for inventory normalization and migrations; useful when changing types or Firestore structure.
+
+## Developer workflows & commands
+
+- Dev server: `npm run dev` (Next dev server, port 3000).
+- Build & static export: `npm run build` then `npx next export` (if `out/` not produced automatically). Confirm `out/` exists before `firebase deploy`.
+- Deploy: `firebase deploy` (requires `out/` and Firebase CLI auth).
+- Linting: `npm run lint`.
+
+## Environment variables
+
+- Create `.env.local` with the `NEXT_PUBLIC_FIREBASE_*` keys used by `firebase.ts`.
+
+## Project-specific conventions & patterns
+
+- Client/server boundary: Components that use browser APIs include `'use client'` at the top. Keep server components free of client-only hooks.
+- Firebase usage: Use `auth`/`db` imported from `@/firebase`. Most data flows are client-driven (onAuthStateChanged, getDoc/setDoc). Follow patterns in `app/components/appnavbar.tsx`.
+- Types-first: Use interfaces in `app/types.ts` as the source of truth for Firestore documents. When updating types, coordinate a data migration or update `scripts/` utilities.
+
+## Integration points & gotchas
+
+- Static export implications: `trailingSlash: true` and `output: 'export'` affect URLs; validate exported routes in `out/` after build.
+- Firestore sentinels: code uses `serverTimestamp()` in places — tests/mocks must accommodate sentinel values.
+- Missing `.env.local.example`: create one or provide envs to run locally.
+
+## Examples (where to look for patterns)
+
+- Auth sync: [app/components/appnavbar.tsx](app/components/appnavbar.tsx)
+- Inventory read/write and normalizations: [app/lib/inventory.ts](app/lib/inventory.ts), `scripts/normalize-inventory.js`
+- Statpack interactions and disposable handling: [app/components/statpackvisualizer.tsx](app/components/statpackvisualizer.tsx) and `app/components/restock-alert-modal.tsx`
+
+## How to request help from humans
+
+- Missing secrets or Firebase access: "Please provide Firebase project env vars or a `.env.local.example`."
+- Types/schema changes: ask for a brief migration note describing Firestore doc changes and whether `scripts/` migration utilities should run.
 
 End of guidance
+```

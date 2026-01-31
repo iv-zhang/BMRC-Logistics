@@ -4,13 +4,14 @@ import {
   Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button, 
   Input, Select, SelectItem, Switch, Textarea, Divider, Slider
 } from '@heroui/react';
-import { Trash2, Plus, Info, Box, Wind, CalendarClock, GripVertical } from 'lucide-react';
+import { Trash2, Plus, Info, Box, Boxes, Wind, CalendarClock, GripVertical } from 'lucide-react';
 
-import { InventoryItem, ItemCategory, LocationType, HQRoom, InventoryVariant, InventoryBatch, AssetInstance } from '@/app/types'; 
+import { InventoryItem, ItemCategory, LocationType, HQRoom, InventoryVariant, InventoryBatch, AssetInstance, Statpack, StatpackItem, ASSET_VALUE_THRESHOLD } from '@/app/types'; 
 import { doc, getDoc, collection as coll, query as q, where, limit, getDocs, writeBatch } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { safeParseDate } from '@/app/utils/inventoryNormalization';
 import { addAuditEventToBatch } from '@/app/lib/audit';
+import { fetchStatpackById, batchAddInventoryFromStatpack } from '@/app/lib/inventory';
 import { useToast } from '@heroui/toast';
 
 // Constants for Dropdowns
@@ -30,15 +31,17 @@ interface InventoryModalProps {
 }
 
 // Extend state to hold new fields
-type InventoryFormState = Partial<Omit<InventoryItem, 'totalStockQuantity' | 'reorderThreshold'>> & {
+type InventoryFormState = Partial<Omit<InventoryItem, 'unopenedBoxes' | 'reorderThreshold'>> & {
   sku?: string;
   barcode?: string;
-  totalStockQuantity?: number | string;
+  unopenedBoxes?: number | string;
+  itemsPerBox?: number | string | null;
+  totalStockQuantity?: number | string; // Legacy
   reorderThreshold?: number | string;
   variants: InventoryVariant[];
   batches?: InventoryBatch[];
   assets?: AssetInstance[];
-  // New State Fields
+  // Legacy State Fields (deprecated)
   unopenedQuantity?: number | string;
   openedQuantity?: number | string;
   quantityPerUnit?: number | string;
@@ -46,10 +49,10 @@ type InventoryFormState = Partial<Omit<InventoryItem, 'totalStockQuantity' | 're
   maxOxygenPsi?: number;
   // Asset / Audit
   isAsset?: boolean;
+  assetValue?: number; // Monetary value in dollars
   assetStatus?: 'Ready' | 'Not Ready';
   assetLastChecked?: Date | string;
   assetNextExpiration?: Date | string;
-  isAuditRequired?: boolean;
   // When true, this item must have its expiration confirmed before use
   requiresExpirationCheck?: boolean;
   // AED-specific per-unit fields are stored on `assets[]`; do not keep top-level pad/battery dates here.
@@ -63,29 +66,22 @@ const DEFAULT_STATE: InventoryFormState = {
   location: 'HQ',
   room: 'Back Room',
   shelf: '',
-  totalStockQuantity: 0,
-  unit: 'count',
+  unopenedBoxes: 0,
+  itemsPerBox: undefined,
+  unit: 'box',
   reorderThreshold: 5,
-  isDisposable: true,
   description: '',
   hasVariants: false,
   variants: [],
-  // New Defaults
+  // Legacy fields kept for backwards compatibility
+  totalStockQuantity: 0,
   tracksOpenStock: false,
-  unopenedQuantity: 0,
-  openedQuantity: 0,
-  quantityPerUnit: 1, // Default 1 item per unit
   isOxygen: false,
   oxygenPsi: 2000,
   maxOxygenPsi: 2000,
   oxygenModel: '',
-  // expiration tracking removed at top-level; batch expirations are authoritative
-  openedAt: undefined
-  ,
-  batches: []
-  ,
-  assets: []
-  ,
+  batches: [],
+  assets: [],
   requiresExpirationCheck: false,
   
 };
@@ -184,10 +180,11 @@ export default function InventoryModal({
       assets,
       // Asset / Audit fields
       isAsset: (data as any).isAsset ?? false,
+      assetValue: (data as any).assetValue ?? undefined,
       assetStatus: (data as any).assetStatus,
       assetLastChecked: (data as any).assetLastChecked ? new Date((data as any).assetLastChecked) : undefined,
       assetNextExpiration: (data as any).assetNextExpiration ? new Date((data as any).assetNextExpiration) : undefined,
-        isAuditRequired: (data as any).isAuditRequired ?? true,
+        
         requiresExpirationCheck: (data as any).requiresExpirationCheck ?? false,
         assetCategory: (data as any).assetCategory ?? undefined,
         assetModel: (data as any).assetModel ?? undefined,
@@ -226,8 +223,42 @@ export default function InventoryModal({
   };
 
   const [formData, setFormData] = useState<InventoryFormState>(() => getInitialFormData(initialData));
+  // --- Statpack Quick-Add Mode ---
+  const [statpackId, setStatpackId] = useState<string>('');
+  const [statpack, setStatpack] = useState<Statpack | null>(null);
+  const [statpackLoading, setStatpackLoading] = useState(false);
+  const [addWholePack, setAddWholePack] = useState<boolean>(true);
+  const [selectedPackItemIds, setSelectedPackItemIds] = useState<Set<string>>(new Set());
+
+  const loadStatpack = async () => {
+    if (!statpackId) return;
+    setStatpackLoading(true);
+    try {
+      const sp = await fetchStatpackById(statpackId);
+      setStatpack(sp);
+      if (sp && Array.isArray(sp.contents)) {
+        const allIds = new Set((sp.contents as StatpackItem[]).map((i) => i.itemId));
+        setSelectedPackItemIds(allIds);
+        setAddWholePack(true);
+      } else {
+        setSelectedPackItemIds(new Set());
+      }
+    } catch {
+      setStatpack(null);
+      setSelectedPackItemIds(new Set());
+    } finally {
+      setStatpackLoading(false);
+    }
+  };
+
+  const togglePackItem = (itemId: string) => {
+    setSelectedPackItemIds(prev => {
+      const next = new Set(prev);
+      if (next.has(itemId)) next.delete(itemId); else next.add(itemId);
+      return next;
+    });
+  };
   const [assignedNames, setAssignedNames] = useState<Record<string,string>>({});
-  const [legacyMode, setLegacyMode] = useState(false); // Quick-Add mode for found items
   const [duplicates, setDuplicates] = useState<any[]>([]);
   const [checkingDuplicates, setCheckingDuplicates] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -693,6 +724,21 @@ export default function InventoryModal({
       }
     }
 
+    // CRITICAL ENFORCEMENT: If assetValue >= $500 threshold, item MUST be marked as asset (isAsset=true)
+    // per the business rules: items above threshold are tracked as assets, not disposables
+    const assetValue = Number(formData.assetValue ?? 0);
+    if (assetValue >= ASSET_VALUE_THRESHOLD && !formData.isAsset) {
+      const confirmMark = confirm(
+        `This item has an asset value of $${assetValue.toFixed(2)}, which exceeds the $${ASSET_VALUE_THRESHOLD} threshold. ` +
+        `Items above this threshold must be tracked as assets (not disposables). ` +
+        `Should I automatically mark this as an asset? Click OK to proceed.`
+      );
+      if (!confirmMark) return;
+      // Auto-mark as asset and set a sensible status
+      formData.isAsset = true;
+      if (!formData.assetStatus) formData.assetStatus = 'Ready';
+    }
+
     // If batches exist, do not treat the master item as having a single location — location is batch-scoped
     const masterHasBatches = Array.isArray(formData.batches) && formData.batches.length > 0;
     
@@ -750,18 +796,18 @@ export default function InventoryModal({
 
       // Asset / Audit fields
       isAsset: !!formData.isAsset,
+      assetValue: formData.assetValue ?? undefined,
       assetStatus: formData.assetStatus ?? undefined,
       assetSerial: (formData as any).assetSerial ?? undefined,
       parentAssetId: (formData as any).parentAssetId ?? undefined,
       assignedToId: (formData as any).assignedToId ?? undefined,
       // Per-asset checks live on each entry in `assets[]` for AEDs; remove top-level fields
-      isAuditRequired: formData.isAuditRequired ?? true,
+      
       requiresExpirationCheck: !!formData.requiresExpirationCheck,
 
       // Reagent and Legacy tracking
       isReagent: !!(formData as any).isReagent,
       daysValidAfterOpening: (formData as any).daysValidAfterOpening ?? 90,
-      isLegacyItem: legacyMode,
 
         variants: formData.hasVariants ? (formData.variants || []).map(v => ({
         ...v,
@@ -861,7 +907,7 @@ export default function InventoryModal({
     }
 
     if (initialData && initialData.id) {
-      onUpdateItem(initialData.id, payload);
+      onUpdateItem(initialData.id, payload as Partial<InventoryItem>);
       notify({ title: 'Item updated', description: `${String(payload.name)} updated`, variant: 'success' });
     } else {
       // Create item + audit atomically using a write batch
@@ -1003,6 +1049,56 @@ export default function InventoryModal({
                   ) : null}
                 </div>
 
+                {/* --- STATPACK QUICK ADD --- */}
+                <h3 className="md:col-span-2 text-sm font-bold text-gray-500 uppercase mt-4">Statpack Quick Add</h3>
+                <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-2 items-end">
+                  <Input
+                    label="Statpack ID"
+                    placeholder="e.g., sp_12345"
+                    variant="bordered"
+                    value={statpackId}
+                    onValueChange={(v) => setStatpackId(v)}
+                    className="md:col-span-2"
+                  />
+                  <Button color="primary" variant="flat" onPress={loadStatpack} isLoading={statpackLoading}>
+                    Load Statpack
+                  </Button>
+                </div>
+                {statpack && (
+                  <div className="md:col-span-2 border rounded-md p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-sm font-semibold">{statpack.name}</div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-500">Add whole pack</span>
+                        <Switch isSelected={addWholePack} onValueChange={(v) => {
+                          setAddWholePack(v);
+                          if (v) setSelectedPackItemIds(new Set((statpack.contents || []).map((i: any) => i.itemId)));
+                        }} />
+                      </div>
+                    </div>
+                    <div className="max-h-48 overflow-auto divide-y">
+                      {(statpack.contents || []).map((i: any) => (
+                        <label key={i.itemId} className="flex items-center justify-between py-2">
+                          <div className="text-sm">
+                            {i.itemDetails?.name || i.itemName || 'Item'}
+                            {i.variantName ? <span className="text-xs text-gray-500"> • {i.variantName}</span> : null}
+                          </div>
+                          {!addWholePack && (
+                            <input
+                              type="checkbox"
+                              checked={selectedPackItemIds.has(i.itemId)}
+                              onChange={() => togglePackItem(i.itemId)}
+                            />
+                          )}
+                        </label>
+                      ))}
+                    </div>
+                    <div className="mt-3 text-xs text-gray-500">
+                      Selected items will be created in inventory and linked to this statpack.
+                    </div>
+                  </div>
+                )}
+
                 {/* Heuristic: suggest marking item as AED if name looks like AED */}
                 {isLikelyAED(typeof formData.name === 'string' ? formData.name : '') && !formData.isAsset && !((formData as any).assetCategory === 'AED') && (
                   <div className="md:col-span-2 p-3 bg-yellow-50 dark:bg-yellow-900/10 rounded-md border border-yellow-100 text-sm">
@@ -1027,16 +1123,6 @@ export default function InventoryModal({
                   ))}
                 </Select>
 
-                <div className="flex items-center justify-between p-3 border-2 border-default-200 rounded-xl">
-                  <div className="flex flex-col">
-                    <span className="text-sm text-gray-600 dark:text-gray-400">Disposable?</span>
-                    <span className="text-xs text-gray-400">Toggle off for assets (bags, mannequins).</span>
-                  </div>
-                  <Switch 
-                    isSelected={formData.isDisposable} 
-                    onValueChange={(val) => setFormData({...formData, isDisposable: val})}
-                  />
-                </div>
 
                 <div className="flex items-center justify-between p-3 border-2 border-default-200 rounded-xl">
                   <div className="flex flex-col">
@@ -1046,13 +1132,6 @@ export default function InventoryModal({
                   <Switch isSelected={!!formData.isAsset} onValueChange={(val) => setFormData({...formData, isAsset: val, hasVariants: val ? false : formData.hasVariants})} />
                 </div>
 
-                <div className="flex items-center justify-between p-3 border-2 border-default-200 rounded-xl">
-                  <div className="flex flex-col">
-                    <span className="text-sm text-gray-600 dark:text-gray-400">Audit Required?</span>
-                    <span className="text-xs text-gray-400">Exclude non-audited items from semesterly audits.</span>
-                  </div>
-                  <Switch isSelected={formData.isAuditRequired ?? true} onValueChange={(val) => setFormData({...formData, isAuditRequired: val})} />
-                </div>
 
                 <div className="flex items-center justify-between p-3 border-2 border-default-200 rounded-xl">
                   <div className="flex flex-col">
@@ -1148,16 +1227,15 @@ export default function InventoryModal({
                       )}
                   </div>
 
-                  {/* Open/Unopened Box Tracking Switch */}
-                  <div className={`p-3 border-2 rounded-xl transition-all ${formData.tracksOpenStock ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20' : 'border-default-200'}`}>
+                  {/* Box Tracking  */}
+                  <div className={`p-3 border-2 rounded-xl transition-all ${'border-default-200'}`}>
                       <div className="flex justify-between items-center mb-2">
                         <div className="flex items-center gap-2">
-                          <Box size={18} className={formData.tracksOpenStock ? "text-purple-600" : "text-gray-400"} />
-                          <span className="text-sm font-bold">Track Open Box?</span>
+                          <Boxes size={18} className="text-blue-600" />
+                          <span className="text-sm font-bold">Box-Based Tracking</span>
                         </div>
-                        <Switch isSelected={formData.tracksOpenStock} onValueChange={(val) => setFormData({...formData, tracksOpenStock: val, isOxygen: false, hasVariants: false})} />
                       </div>
-                      <p className="text-xs text-gray-500">Enable for items like Gloves or Glucose strips where you have sealed boxes + one open box.</p>
+                      <p className="text-xs text-gray-500">Track inventory by unopened boxes only.</p>
                   </div>
 
                   {/* Reagent Tracking */}
@@ -1183,17 +1261,7 @@ export default function InventoryModal({
                       )}
                   </div>
 
-                  {/* Legacy/Found Item Mode */}
-                  <div className={`p-3 border-2 rounded-xl transition-all ${legacyMode ? 'border-green-500 bg-green-50 dark:bg-green-900/20' : 'border-default-200'}`}>
-                      <div className="flex justify-between items-center mb-2">
-                        <div className="flex items-center gap-2">
-                          <Info size={18} className={legacyMode ? "text-green-600" : "text-gray-400"} />
-                          <span className="text-sm font-bold">Legacy/Found Item Mode?</span>
-                        </div>
-                        <Switch isSelected={legacyMode} onValueChange={setLegacyMode} />
-                      </div>
-                      <p className="text-xs text-gray-500">Quick-add mode for uncatalogued items. Hides vendor/cost fields, simplifies entry.</p>
-                  </div>
+                  
                   </div>
                   </>
                 )}
@@ -1210,182 +1278,42 @@ export default function InventoryModal({
                    </div>
                 )}
 
-                {/* Scenario B: Open/Sealed Tracking */}
-                {formData.tracksOpenStock && (
-                  <div className="md:col-span-2 grid grid-cols-2 gap-4 bg-purple-50 dark:bg-purple-900/10 p-4 rounded-xl border border-purple-100">
+                {/* Scenario B: Box Tracking (Default) */}
+                {!formData.isOxygen && !formData.tracksOpenStock && (
+                  <div className="md:col-span-2 grid grid-cols-2 gap-4 bg-blue-50 dark:bg-blue-900/10 p-4 rounded-xl border border-blue-100">
                       <Input 
                         type="number" 
-                        label="Sealed Boxes" 
+                        label="Unopened Boxes" 
                         placeholder="0" 
-                        value={formData.unopenedQuantity?.toString()}
-                        onValueChange={(v) => setFormData({...formData, unopenedQuantity: Number(v)})}
+                        variant="bordered"
+                        value={formData.unopenedBoxes?.toString() ?? '0'}
+                        onValueChange={(v) => setFormData({...formData, unopenedBoxes: Number(v)})}
+                        description="Number of unopened boxes"
                       />
                       <Input 
                         type="number" 
-                        label="Qty in Open Box" 
-                        placeholder="0" 
-                        value={formData.openedQuantity?.toString()}
-                        onValueChange={(v) => setFormData({...formData, openedQuantity: Number(v)})}
-                        endContent={<span className="text-xs text-gray-400">items</span>}
+                        label="Items Per Box (optional)" 
+                        placeholder="e.g., 100" 
+                        variant="bordered"
+                        value={formData.itemsPerBox?.toString() ?? ''}
+                        onValueChange={(v) => setFormData({...formData, itemsPerBox: v ? Number(v) : undefined})}
+                        description="How many items in one box"
                       />
-                      <Input 
-                        type="number" 
-                        label="Items per Full Box" 
-                        placeholder="100" 
-                        className="col-span-2"
-                        value={formData.quantityPerUnit?.toString()}
-                        onValueChange={(v) => setFormData({...formData, quantityPerUnit: Number(v)})}
-                      />
-                      <div className="col-span-2 flex items-center gap-2">
-                        <Button size="sm" color="primary" variant="flat" onPress={openBoxAction}>Open Box</Button>
-                        <Button size="sm" color="warning" variant="flat" onPress={() => consumeItemsAction(1)}>Consume 1</Button>
-                        <div className="flex items-center gap-2">
-                          <Input size="sm" type="number" value={String(consumeCount)} onValueChange={(v) => setConsumeCount(Number(v ?? 1))} className="w-20" />
-                          <Button size="sm" color="danger" variant="flat" onPress={() => consumeItemsAction(consumeCount)}>Consume</Button>
-                        </div>
-                      </div>
                   </div>
                 )}
 
                 {/* Scenario C: Standard Stock (Only if not oxygen and not tracking open stock) */}
                 {!formData.isOxygen && !formData.tracksOpenStock && (
                   <>
-                    <div className="md:col-span-2 flex items-center justify-between p-3 border-2 border-default-200 rounded-xl mb-2 bg-gray-50 dark:bg-slate-700/50">
-                        <div className="flex flex-col">
-                            <span className="text-sm font-bold text-gray-700 dark:text-gray-200">Has Variations?</span>
-                            <span className="text-xs text-gray-500">Enable for different sizes (S, M, L).</span>
-                        </div>
-                      <div className="flex items-center gap-2">
-                        {cannotUseVariants && (
-                        <span className="text-xs text-orange-600">Variants disabled for expiring items or assets</span>
-                        )}
-                        <Switch 
-                          isSelected={formData.hasVariants} 
-                          onValueChange={(val) => {
-                            if (cannotUseVariants && val) return; // prevent enabling
-                            setFormData({...formData, hasVariants: val});
-                          }}
-                        />
-                      </div>
-                    </div>
-
-                    {formData.hasVariants ? (
-                        <div className="md:col-span-2 space-y-3 mt-2 border rounded-xl p-4 border-dashed border-gray-300 dark:border-slate-600 bg-gray-50/50 dark:bg-slate-800/50">
-                           {/* ... Same Variant Logic as before ... */}
-                           <div className="flex justify-between items-center mb-2">
-                              <label className="text-sm font-semibold text-gray-600 dark:text-gray-300">Variations</label>
-                              <Button size="sm" color="primary" variant="flat" onPress={addVariant} startContent={<Plus size={14} />}>Add Row</Button>
-                           </div>
-                           <div className="space-y-2">
-                             <div className="grid items-center gap-2 text-xs text-gray-500 font-semibold mb-1" style={{gridTemplateColumns: '40px 1fr 80px 80px 140px 40px'}}>
-                               <div />
-                               <div>Name</div>
-                               <div>Qty / Unit</div>
-                               <div>Stock</div>
-                               <div>Reorder Threshold</div>
-                               <div />
-                             </div>
-                             {formData.variants.map((v) => (
-                               <div key={v.id} className="space-y-2">
-                                 <div className="grid items-center gap-2" style={{gridTemplateColumns: '40px 1fr 80px 80px 140px 40px'}}>
-                                   <div className="flex items-center justify-center cursor-grab"><GripVertical size={14} className="text-gray-400"/></div>
-                                   <div className="text-sm">{v.name}</div>
-                                   <div className="text-sm">{v.quantityPerUnit}</div>
-                                   <div className="text-sm">{v.stock}</div>
-                                   <div className="text-sm">{v.reorderThreshold ?? formData.reorderThreshold ?? 0}</div>
-                                   <div className="flex justify-end"><Button isIconOnly size="sm" color="danger" variant="light" onPress={() => removeVariant(v.id)}><Trash2 size={16} /></Button></div>
-                                 </div>
-
-                                 {/* Variant-level batches */}
-                                 <div className="p-2 border rounded-md bg-gray-50 dark:bg-slate-800/40">
-                                   <div className="flex items-center justify-between mb-1">
-                                     <div className="text-xs font-semibold text-gray-600 dark:text-gray-300">Batches for {v.name}</div>
-                                    <Button size="sm" color="primary" variant="flat" onPress={() => addVariantBatch(v.id)} startContent={<Plus size={10} />}>Add Batch</Button>
-                                   </div>
-                                   {(v.batches || []).length === 0 ? (
-                                     <p className="text-[11px] text-gray-500">No variant batches. Add a batch for lot-specific tracking per size.</p>
-                                   ) : (
-                                     <div className="space-y-2">
-                                       {(v.batches || []).map((vb, vbidx) => (
-                                         <div key={`${vb.id}-${vbidx}`} className="space-y-2 p-2 border rounded-md bg-white dark:bg-slate-900/40">
-                                           <div className={`grid grid-cols-1 gap-2 items-end ${(formData as any).isReagent ? 'md:grid-cols-7' : 'md:grid-cols-6'}`}>
-                                             <Input size="sm" label="Lot # (optional)" value={vb.lotNumber || ''} onValueChange={(val) => updateBatch(vb.id, 'lotNumber', val, v.id)} />
-                                             <Input size="sm" type="date" label="Expiration" value={getDateString(vb.expirationDate as Date)} onValueChange={(val) => updateBatch(vb.id, 'expirationDate', val ? new Date(val) : undefined, v.id)} />
-                                             {(formData as any).isReagent && (
-                                               <Input size="sm" type="date" label="Opened Date" value={getDateString((vb as any).openDate as Date)} onValueChange={(val) => updateBatch(vb.id, 'openDate', val ? new Date(val) : undefined, v.id)} />
-                                             )}
-                                             <Input size="sm" type="number" label="Qty Total" value={String((vb as any).stock ?? 0)} onValueChange={(val) => updateBatch(vb.id, 'stock', Number(val), v.id)} />
-                                             <Input size="sm" type="date" label="Received" value={getDateString((vb.receivedAt as Date) ?? undefined)} onValueChange={(val) => updateBatch(vb.id, 'receivedAt', val ? new Date(val) : undefined, v.id)} />
-                                             <Input size="sm" label="Notes" value={(vb as any).notes ?? ''} onValueChange={(val) => updateBatch(vb.id, 'notes', val, v.id)} />
-                                             <div className="flex items-center justify-end"><Button size="sm" color="danger" variant="light" onPress={() => removeVariantBatch(v.id, vb.id)}><Trash2 size={14} /></Button></div>
-                                           </div>
-                                           <div className="bg-white dark:bg-slate-900/40 rounded-md p-2 border border-dashed border-gray-200 dark:border-slate-700">
-                                             <div className="flex items-center justify-between mb-1">
-                                               <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">Locations for this batch</span>
-                                               <Button size="sm" variant="flat" color="secondary" onPress={() => addBatchLocation(vb.id, v.id)} startContent={<Plus size={12} />}>Add Location</Button>
-                                             </div>
-                                             {(vb.locations && vb.locations.length > 0) ? (
-                                               <div className="space-y-2">
-                                                 {vb.locations.map((loc, lidx) => (
-                                                   <div key={`${loc.id}-${lidx}`} className="grid grid-cols-1 md:grid-cols-6 gap-2 items-end">
-                                                     <Select 
-                                                       size="sm"
-                                                       label="Area"
-                                                       variant="bordered"
-                                                       selectedKeys={loc.area ? [loc.area] : []}
-                                                       onSelectionChange={(keys) => updateBatchLocation(vb.id, loc.id, 'area', Array.from(keys)[0] as LocationType, v.id)}
-                                                       className="md:col-span-2"
-                                                     >
-                                                       {LOCATIONS.map((locOpt) => (<SelectItem key={locOpt}>{locOpt}</SelectItem>))}
-                                                     </Select>
-
-                                                     {loc.area === 'HQ' ? (
-                                                       <Select 
-                                                         size="sm"
-                                                         label="HQ Room"
-                                                         variant="bordered"
-                                                         selectedKeys={loc.room ? [loc.room] : []}
-                                                         onSelectionChange={(keys) => updateBatchLocation(vb.id, loc.id, 'room', Array.from(keys)[0] as HQRoom, v.id)}
-                                                         className="md:col-span-1"
-                                                       >
-                                                         {HQ_ROOMS.map((r) => (<SelectItem key={r}>{r}</SelectItem>))}
-                                                       </Select>
-                                                     ) : (
-                                                       <div className="hidden md:block" />
-                                                     )}
-
-                                                     <Input size="sm" label="Shelf / Bin" placeholder="Top Shelf, Bin 4" variant="bordered" value={loc.shelf ?? ''} onValueChange={(val) => updateBatchLocation(vb.id, loc.id, 'shelf', val, v.id)} className="md:col-span-1" />
-
-                                                     <Input size="sm" type="number" label="Qty here" value={String(loc.quantity ?? 0)} onValueChange={(val) => updateBatchLocation(vb.id, loc.id, 'quantity', Number(val), v.id)} className="md:col-span-1" />
-
-                                                     <div className="flex items-center justify-end"><Button size="sm" color="danger" variant="light" onPress={() => removeBatchLocation(vb.id, loc.id, v.id)}><Trash2 size={14} /></Button></div>
-                                                   </div>
-                                                 ))}
-                                               </div>
-                                             ) : (
-                                               <p className="text-[11px] text-gray-500">Use location rows to split this batch across spots (e.g., 3 in back storage, 2 in Statpack).</p>
-                                             )}
-                                           </div>
-                                         </div>
-                                       ))}
-                                     </div>
-                                   )}
-                                 </div>
-                               </div>
-                             ))}
-                           </div>
-                        </div>
-                    ) : (
-                        <Input 
-                          type="number" 
-                          label="Current Stock" 
-                          placeholder="0" 
-                          variant="bordered"
-                          className="md:col-span-2"
-                          value={formData.totalStockQuantity?.toString() ?? ''}
-                          onValueChange={handleValueChange('totalStockQuantity')}
-                        />
-                    )}
+                    <Input 
+                      type="number" 
+                      label="Current Stock" 
+                      placeholder="0" 
+                      variant="bordered"
+                      className="md:col-span-2"
+                      value={formData.totalStockQuantity?.toString() ?? ''}
+                      onValueChange={handleValueChange('totalStockQuantity')}
+                    />
                   </>
                 )}
 
@@ -1393,6 +1321,13 @@ export default function InventoryModal({
                 {formData.isAsset && (
                   <div className="md:col-span-2 mt-4 p-4 border rounded-xl bg-green-50 dark:bg-green-900/10">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <Input
+                        label="Asset Value (USD)"
+                        placeholder="500"
+                        type="number"
+                        value={formData.assetValue != null ? String(formData.assetValue) : ''}
+                        onValueChange={(v) => setFormData({...formData, assetValue: v ? Number(v) : undefined})}
+                      />
                       {((formData as any).assetCategory !== 'AED') ? (
                         <Select label="Asset Status" variant="bordered" selectedKeys={formData.assetStatus ? [formData.assetStatus] : []} onSelectionChange={(k) => setFormData({...formData, assetStatus: Array.from(k)[0] as any})}>
                           <SelectItem key="Ready">Ready</SelectItem>
@@ -1403,6 +1338,8 @@ export default function InventoryModal({
                         <Select label="Asset Category" variant="bordered" selectedKeys={(formData as any).assetCategory ? [String((formData as any).assetCategory)] : []} onSelectionChange={(k) => setFormData({...formData, assetCategory: Array.from(k)[0] as any})}>
                           <SelectItem key="Generic">Generic</SelectItem>
                           <SelectItem key="AED">AED</SelectItem>
+                          <SelectItem key="Radio">Radio</SelectItem>
+                          <SelectItem key="Oxygen Tank">Oxygen Tank</SelectItem>
                         </Select>
                         {((formData as any).assetCategory === 'AED') && (
                           <Input
@@ -1638,6 +1575,40 @@ export default function InventoryModal({
               <Button color="danger" variant="light" onPress={onClose}>
                 Cancel
               </Button>
+              {statpack && (
+                <Button
+                  color="secondary"
+                  variant="flat"
+                  onPress={async () => {
+                    try {
+                      const items = (statpack.contents || []) as StatpackItem[];
+                      const chosen = addWholePack ? items : items.filter(i => selectedPackItemIds.has(i.itemId));
+                      if (chosen.length === 0) {
+                        notify({ title: 'No items selected', description: 'Select items or toggle Add whole pack.' });
+                        return;
+                      }
+                      await batchAddInventoryFromStatpack({
+                        statpack,
+                        selected: chosen,
+                        defaults: {
+                          location: formData.location,
+                          room: formData.room,
+                          shelf: formData.shelf,
+                          reorderThreshold: Number(formData.reorderThreshold ?? 5),
+                          unit: formData.unit || 'count',
+                          
+                        }
+                      });
+                      notify({ title: 'Added items from statpack', description: `${chosen.length} item(s) created and linked.` });
+                      onClose();
+                    } catch (e) {
+                      notify({ title: 'Failed to add from statpack', description: 'Please try again.' });
+                    }
+                  }}
+                >
+                  Add Selected from Statpack
+                </Button>
+              )}
               <Button color="primary" onPress={() => handleSubmit(onClose)} className="font-semibold shadow-lg">
                 {isEditMode ? 'Save Changes' : 'Add Item'}
               </Button>

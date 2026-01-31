@@ -1,0 +1,161 @@
+/* Print Label Template Stylesheet */
+
+/* Default template configuration (A5 page, 48x30mm labels) */
+:root {
+  --page-width: 148mm;
+  --page-height: 210mm;
+  --page-margin: 8mm;
+  --label-width: 48mm;
+  --label-height: 30mm;
+  --label-h-gap: 4mm;
+  --label-v-gap: 4mm;
+}
+
+.print-labels-container {
+  width: var(--page-width);
+  margin: 0 auto;
+  padding: var(--page-margin);
+  background: white;
+}
+
+.print-labels-grid {
+  display: grid;
+  gap: var(--label-h-gap) var(--label-v-gap);
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(var(--label-width), 1fr)
+  );
+}
+
+.label-card {
+  width: var(--label-width);
+  height: var(--label-height);
+  page-break-inside: avoid;
+}
+
+/* Print-specific styles */
+@media print {
+  body {
+    margin: 0;
+    padding: 0;
+    background: white;
+  }
+
+  .print-labels-container {
+    margin: 0;
+    padding: var(--page-margin);
+    width: 100%;
+    max-width: var(--page-width);
+  }
+
+  .print-labels-grid {
+    display: grid;
+    gap: var(--label-h-gap) var(--label-v-gap);
+    grid-template-columns: repeat(
+      auto-fill,
+      minmax(var(--label-width), 1fr)
+    );
+  }
+
+  .label-card {
+    page-break-inside: avoid;
+    page-break-after: auto;
+  }
+
+  /* Hide non-print UI */
+  .print-controls,
+  .print-preview-controls,
+  button,
+  input[type="text"],
+  input[type="number"],
+  select,
+  .template-settings {
+    display: none !important;
+  }
+}
+
+/* Print preview (on-screen) */
+.print-preview-mode .print-labels-container {
+  box-shadow: 0 0 0 1px #e5e7eb;
+  page-break-before: always;
+  margin-bottom: 20px;
+}
+
+.print-preview-mode .label-card {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* Template customization UI */
+.template-settings {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 24px;
+}
+
+.template-settings h3 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.setting-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.setting-item label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #374151;
+}
+
+.setting-item input {
+  padding: 6px 8px;
+  font-size: 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+}
+
+/* Toolbar */
+.print-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.print-info {
+  font-size: 12px;
+  color: #6b7280;
+  margin-left: auto;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .template-settings {
+    padding: 12px;
+  }
+
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .print-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .print-info {
+    margin-left: 0;
+  }
+}

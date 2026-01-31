@@ -1,6 +1,6 @@
 "use client";
 import React, { useEffect, useMemo, useState } from 'react';
-import { Spinner, Button, Input, Card, CardBody, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from '@heroui/react';
+import { Spinner, Button, Input, Card, CardBody, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Textarea } from '@heroui/react';
 import { Plus, Camera } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import {
@@ -14,12 +14,16 @@ import {
   addDoc,
   serverTimestamp,
   setDoc,
-  deleteDoc
+  deleteDoc,
+  writeBatch
 } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
 import type { InventoryItem } from '@/app/types';
 import { parseGs1Barcode } from '@/app/lib/gs1';
+import { addAuditEventToBatch } from '@/app/lib/audit';
 import BarcodeScanner from '@/app/components/barcode-scanner';
+import CountControl from '@/app/components/count-control';
+import ConditionToggle from '@/app/components/condition-toggle';
 import { Timestamp } from 'firebase/firestore';
 
 type Props = { zone: string; zoneLabel?: string; onClose?: () => void };
@@ -53,7 +57,7 @@ export default function StackAuditClient({ zone, zoneLabel, onClose }: Props) {
     const q = query(collection(db, 'inventory'), orderBy('name'));
     const unsub = onSnapshot(q, (snap) => {
       const arr = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) } as InventoryItem));
-      const zoneItems = arr.filter(i => (i.isAuditRequired) && ((i.room || 'HQ') === zone || i.location === zone));
+      const zoneItems = arr.filter(i => ((i.room || 'HQ') === zone || i.location === zone));
       setItems(zoneItems);
       setLoading(false);
     }, (err) => { console.error('stack audit listener', err); setLoading(false); });
@@ -164,39 +168,90 @@ export default function StackAuditClient({ zone, zoneLabel, onClose }: Props) {
   const openReview = () => setShowReview(true);
 
   const submitAll = async () => {
-    // Prepare ops
     try {
-      const ops: Promise<any>[] = [];
-      const logs: Promise<any>[] = [];
+      const batch = writeBatch(db);
+      const logsToWrite: any[] = [];
+
+      // Add inventory updates to batch
       for (const [id, entry] of Object.entries(staged)) {
-        const it = items.find(x => x.id === id);
+        const it = items.find((x) => x.id === id);
         if (!it) continue;
         const newCount = Number(entry.counted ?? it.totalStockQuantity ?? 0);
-        ops.push(updateDoc(doc(db, 'inventory', id), {
+
+        batch.update(doc(db, 'inventory', id), {
           totalStockQuantity: newCount,
           auditVerified: true,
           auditCondition: entry.condition ?? 'Good',
           auditNotes: entry.notes ?? null,
-          updatedAt: serverTimestamp()
-        }));
-        logs.push(addDoc(collection(db, 'inventory_logs'), {
-          action: 'audit_count_update', itemId: id, itemName: it.name, userId: user?.uid ?? null, timestamp: serverTimestamp(), notes: `Counted ${newCount}`
-        }));
+          updatedAt: serverTimestamp(),
+        });
+
+        // Add audit event to batch
+        addAuditEventToBatch(batch, {
+          eventType: 'audit_stack_verified',
+          source: 'stack_audit',
+          sourceId: id,
+          actor: {
+            userId: user?.uid ?? null,
+            userEmail: user?.email ?? null,
+          },
+          targets: [{ collection: 'inventory', docId: id }],
+          after: {
+            totalStockQuantity: newCount,
+            auditCondition: entry.condition ?? 'Good',
+            auditVerified: true,
+          },
+        });
+
+        logsToWrite.push({
+          action: 'audit_count_update',
+          itemId: id,
+          itemName: it.name,
+          userId: user?.uid ?? null,
+          timestamp: serverTimestamp(),
+          notes: `Zone audit: counted ${newCount}, condition ${entry.condition ?? 'Good'}`,
+        });
       }
-      // create found items
+
+      // Add found items to batch
       for (const f of foundItems) {
         const payload: any = { ...(f || {}) };
-        payload.isLegacyItem = true;
-        payload.isAuditRequired = false;
         payload.reviewNeeded = true;
         payload.totalStockQuantity = Number(payload.totalStockQuantity ?? 0);
         payload.createdAt = serverTimestamp();
         payload.updatedAt = serverTimestamp();
-        ops.push(addDoc(collection(db, 'inventory'), payload));
+
+        const newItemRef = doc(collection(db, 'inventory'));
+        batch.set(newItemRef, payload);
+
+        addAuditEventToBatch(batch, {
+          eventType: 'audit_item_found',
+          source: 'stack_audit',
+          sourceId: newItemRef.id,
+          actor: {
+            userId: user?.uid ?? null,
+            userEmail: user?.email ?? null,
+          },
+          targets: [{ collection: 'inventory', docId: newItemRef.id }],
+          after: payload,
+        });
       }
-      await Promise.all([...ops, ...logs]);
-      // release lock
-      try { await deleteDoc(doc(db, 'audit_locks', zone)); } catch (e) { }
+
+      // Commit the batch
+      await batch.commit();
+
+      // Write logs separately (non-transactional)
+      for (const log of logsToWrite) {
+        await addDoc(collection(db, 'inventory_logs'), log);
+      }
+
+      // Release zone lock
+      try {
+        await deleteDoc(doc(db, 'audit_locks', zone));
+      } catch (e) {
+        /* ignore */
+      }
+
       setShowReview(false);
       alert('Zone counts submitted.');
       if (onClose) onClose();
@@ -238,59 +293,135 @@ export default function StackAuditClient({ zone, zoneLabel, onClose }: Props) {
       <Card className="mb-3">
         <CardBody className="p-4">
           <div className="text-xl font-bold mb-2">{current.name}</div>
-          <div className="mb-2 text-sm text-gray-500">System: {current.totalStockQuantity ?? 0}</div>
+          <div className="mb-4 text-sm text-gray-500">System: {current.totalStockQuantity ?? 0}</div>
 
-          <Input label="Count" type="number" value={String(stagedForCurrent.counted ?? '')} onValueChange={(v) => handleCountChange(current.id, Number(v || 0))} className="text-4xl font-mono" />
+          {/* Count Control */}
+          <div className="mb-4">
+            <CountControl
+              value={Number(stagedForCurrent.counted ?? '')}
+              onChange={(v) => handleCountChange(current.id, v)}
+              label="Count"
+              presets={[1, 5, 10]}
+            />
+          </div>
 
-          <div className="mt-3">
-            <div className="flex gap-2">
-              <Input label="Scan Barcode (optional)" placeholder="Scan GS1 barcode" value={stagedForCurrent._barcode ?? ''} onValueChange={(v) => {
-                updateStaged(current.id, { _barcode: v });
-                const parsed = parseGs1Barcode(v || '');
-                if (parsed.expiration) updateStaged(current.id, { expiration: parsed.expiration });
-                if (parsed.lot) updateStaged(current.id, { lot: parsed.lot });
-              }} />
-              <Button size="sm" onPress={() => setScannerOpen(true)}>Scan</Button>
-            </div>
-            <label className="block text-sm mb-1">Expiration</label>
-            <div className="flex items-center gap-2">
-              <Input type="date" value={toInputDate(stagedForCurrent.expiration ?? (current.expirationDate ?? ''))} onValueChange={(v) => updateStaged(current.id, { expiration: v })} />
-              <Button size="sm" onPress={() => {
-                // +1 year
-                const cur = stagedForCurrent.expiration ?? current.expirationDate ?? new Date();
-                const base = (cur && typeof cur === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(cur)) ? new Date(cur) : (cur && typeof cur.toDate === 'function' ? cur.toDate() : (cur instanceof Date ? cur : new Date()));
-                base.setFullYear(base.getFullYear() + 1);
-                updateStaged(current.id, { expiration: base.toISOString().slice(0, 10) });
-              }}>+1y</Button>
-              <Button size="sm" onPress={() => { const cur = stagedForCurrent.expiration ?? current.expirationDate ?? new Date(); const base = (cur && typeof cur === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(cur)) ? new Date(cur) : (cur && typeof cur.toDate === 'function' ? cur.toDate() : (cur instanceof Date ? cur : new Date())); base.setFullYear(base.getFullYear() + 2); updateStaged(current.id, { expiration: base.toISOString().slice(0, 10) }); }}>+2y</Button>
-              <Button size="sm" onPress={() => { const cur = stagedForCurrent.expiration ?? current.expirationDate ?? new Date(); const base = (cur && typeof cur === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(cur)) ? new Date(cur) : (cur && typeof cur.toDate === 'function' ? cur.toDate() : (cur instanceof Date ? cur : new Date())); base.setFullYear(base.getFullYear() + 3); updateStaged(current.id, { expiration: base.toISOString().slice(0, 10) }); }}>+3y</Button>
+          {/* Barcode Scan */}
+          <div className="mt-4 mb-4">
+            <div className="flex gap-2 mb-2">
+              <Input
+                label="Scan Barcode (optional)"
+                placeholder="Scan GS1 barcode"
+                value={stagedForCurrent._barcode ?? ''}
+                onValueChange={(v) => {
+                  updateStaged(current.id, { _barcode: v });
+                  const parsed = parseGs1Barcode(v || '');
+                  if (parsed.expiration) updateStaged(current.id, { expiration: parsed.expiration });
+                  if (parsed.lot) updateStaged(current.id, { lot: parsed.lot });
+                }}
+              />
+              <Button size="sm" onPress={() => setScannerOpen(true)} isIconOnly variant="flat" color="secondary">
+                <Camera size={20} />
+              </Button>
             </div>
           </div>
 
-          <div className="mt-4">
-            <label className="block text-sm mb-1">Condition</label>
+          {/* Expiration */}
+          <div className="mt-4 mb-4">
+            <label className="block text-sm font-medium mb-2">Expiration</label>
             <div className="flex items-center gap-2">
-              <Button color={stagedForCurrent.condition === 'Good' ? 'success' : 'default'} onPress={() => cycleCondition(current.id, 'Good')}>Good</Button>
-              <Button color={stagedForCurrent.condition === 'Damaged' ? 'warning' : 'default'} onPress={() => cycleCondition(current.id, 'Damaged')}>Damaged</Button>
-              <Button color={stagedForCurrent.condition === 'Expired' ? 'danger' : 'default'} onPress={() => cycleCondition(current.id, 'Expired')}>Expired</Button>
+              <Input
+                type="date"
+                value={toInputDate(stagedForCurrent.expiration ?? (current.expirationDate ?? ''))}
+                onValueChange={(v) => updateStaged(current.id, { expiration: v })}
+              />
+              <Button
+                size="sm"
+                variant="flat"
+                onPress={() => {
+                  const cur = stagedForCurrent.expiration ?? current.expirationDate ?? new Date();
+                  const base = cur && typeof cur === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(cur)
+                    ? new Date(cur)
+                    : cur && typeof cur.toDate === 'function'
+                    ? cur.toDate()
+                    : cur instanceof Date
+                    ? cur
+                    : new Date();
+                  base.setFullYear(base.getFullYear() + 1);
+                  updateStaged(current.id, { expiration: base.toISOString().slice(0, 10) });
+                }}
+              >
+                +1y
+              </Button>
+              <Button
+                size="sm"
+                variant="flat"
+                onPress={() => {
+                  const cur = stagedForCurrent.expiration ?? current.expirationDate ?? new Date();
+                  const base = cur && typeof cur === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(cur)
+                    ? new Date(cur)
+                    : cur && typeof cur.toDate === 'function'
+                    ? cur.toDate()
+                    : cur instanceof Date
+                    ? cur
+                    : new Date();
+                  base.setFullYear(base.getFullYear() + 2);
+                  updateStaged(current.id, { expiration: base.toISOString().slice(0, 10) });
+                }}
+              >
+                +2y
+              </Button>
+              <Button
+                size="sm"
+                variant="flat"
+                onPress={() => {
+                  const cur = stagedForCurrent.expiration ?? current.expirationDate ?? new Date();
+                  const base = cur && typeof cur === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(cur)
+                    ? new Date(cur)
+                    : cur && typeof cur.toDate === 'function'
+                    ? cur.toDate()
+                    : cur instanceof Date
+                    ? cur
+                    : new Date();
+                  base.setFullYear(base.getFullYear() + 3);
+                  updateStaged(current.id, { expiration: base.toISOString().slice(0, 10) });
+                }}
+              >
+                +3y
+              </Button>
             </div>
           </div>
 
-          {stagedForCurrent.conditionPrompt && (
-            <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded">
-              <div className="text-sm">You changed the count — is the condition still good?</div>
-              <div className="mt-2 flex gap-2">
-                <Button size="sm" color="success" onPress={() => cycleCondition(current.id, 'Good')}>Yes — Good</Button>
-                <Button size="sm" color="warning" onPress={() => cycleCondition(current.id, 'Damaged')}>No — Damaged</Button>
-                <Button size="sm" color="danger" onPress={() => cycleCondition(current.id, 'Expired')}>Expired</Button>
-              </div>
-            </div>
-          )}
+          {/* Condition Toggle */}
+          <div className="mt-4 mb-4">
+            <ConditionToggle
+              value={stagedForCurrent.condition ?? 'Good'}
+              onChange={(v) => cycleCondition(current.id, v)}
+              label="Condition"
+            />
+          </div>
 
+          {/* Notes */}
+          <div className="mt-4 mb-4">
+            <Textarea
+              label="Notes"
+              placeholder="Add notes about this item"
+              value={stagedForCurrent.notes ?? ''}
+              onValueChange={(v) => updateStaged(current.id, { notes: v })}
+              size="sm"
+            />
+          </div>
+
+          {/* Navigation */}
           <div className="mt-4 flex items-center gap-2">
-            <Button onPress={prev} isDisabled={index === 0}>Previous</Button>
-            <Button onPress={next} isDisabled={index >= items.length - 1}>Next</Button>
-            <Button color="primary" onPress={() => updateStaged(current.id, { counted: stagedForCurrent.counted ?? current.totalStockQuantity, condition: stagedForCurrent.condition ?? 'Good' })}>Save</Button>
+            <Button onPress={prev} isDisabled={index === 0}>
+              Previous
+            </Button>
+            <Button onPress={next} isDisabled={index >= items.length - 1}>
+              Next
+            </Button>
+            <Button color="primary" onPress={() => updateStaged(current.id, { counted: stagedForCurrent.counted ?? current.totalStockQuantity, condition: stagedForCurrent.condition ?? 'Good' })}>
+              Save
+            </Button>
           </div>
         </CardBody>
       </Card>

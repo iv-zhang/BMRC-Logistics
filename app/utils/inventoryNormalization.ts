@@ -31,65 +31,24 @@ export function preparePayload(data: any, opts?: { uniqueId?: () => string }) {
     }
   }
 
+  // Box-based tracking
+  payload.unopenedBoxes = Number(payload.unopenedBoxes ?? 0);
+  payload.itemsPerBox = payload.itemsPerBox ? Number(payload.itemsPerBox) : null;
+  
+  // Legacy fields for backwards compat
   payload.totalStockQuantity = Number(payload.totalStockQuantity ?? 0);
   payload.reorderThreshold = Number(payload.reorderThreshold ?? 0);
-  payload.unopenedQuantity = Number(payload.unopenedQuantity ?? 0);
-  payload.openedQuantity = Number(payload.openedQuantity ?? 0);
-  payload.quantityPerUnit = Number(payload.quantityPerUnit ?? 1);
 
-  // Variants -> convert any variant expirations into batches and normalize variants
-  if (Array.isArray(payload.variants)) {
-    payload.variants = payload.variants.map((v: any) => {
-      const out: any = { ...v };
-      if (out.expirationDate) {
-        if (typeof out.expirationDate === 'string') {
-          const d = new Date(out.expirationDate);
-          out.expirationDate = isNaN(d.getTime()) ? null : d;
-        } else if (!(out.expirationDate instanceof Date)) {
-          out.expirationDate = null;
-        }
-      }
-      out.quantityPerUnit = Number(out.quantityPerUnit ?? 1);
-      out.stock = Number(out.stock ?? 0);
-      out.reorderThreshold = Number(out.reorderThreshold ?? payload.reorderThreshold ?? 0);
-      Object.keys(out).forEach(k => out[k] === undefined && delete out[k]);
-      return out;
-    });
-
-    const convertedBatches: any[] = [];
-    const keptVariants: any[] = [];
-    (payload.variants || []).forEach((v: any) => {
-      if (v.expirationDate || v.lotNumber) {
-        const b = {
-          id: v.id ?? uniqueId(),
-          lotNumber: v.lotNumber ?? '',
-          expirationDate: v.expirationDate ?? null,
-          stock: Number(v.stock ?? 0),
-          receivedAt: undefined,
-          notes: `Converted from variant ${v.name ?? ''}`,
-          locations: []
-        };
-        convertedBatches.push(b);
-      } else {
-        keptVariants.push(v);
-      }
-    });
-    payload.variants = keptVariants;
-    if (convertedBatches.length > 0) payload.batches = [...(payload.batches || []), ...convertedBatches];
-
-    const variantNestedBatches: any[] = [];
-    payload.variants = (payload.variants || []).map((vv: any) => {
-      if (Array.isArray(vv.batches) && vv.batches.length > 0) {
-        vv.batches.forEach((vb: any) => {
-          variantNestedBatches.push({ ...vb, notes: vb.notes ?? `Variant: ${vv.name ?? ''}` });
-        });
-      }
-      const out = { ...vv };
-      delete out.batches;
-      return out;
-    });
-    if (variantNestedBatches.length > 0) payload.batches = [...(payload.batches || []), ...variantNestedBatches];
+  // Variations feature removed: prevent writing variants/hasVariants to Firestore
+  if (payload.variants) {
+    delete payload.variants;
   }
+  // ensure hasVariants flag is not persisted
+  if (payload.hasVariants) payload.hasVariants = false;
+
+  // Remove deprecated flags: disposability and audit requirement are derived/not persisted
+  if (payload.isDisposable !== undefined) delete payload.isDisposable;
+  if (payload.isAuditRequired !== undefined) delete payload.isAuditRequired;
 
   // Normalize batches
   if (Array.isArray(payload.batches) && payload.batches.length > 0) {

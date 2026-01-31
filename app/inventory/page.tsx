@@ -27,6 +27,7 @@ import { auth, db } from '@/firebase';
 import { recordAuditEvent } from '../lib/audit';
 
 import InventoryModal from '@/app/components/additemmodal';
+import ConsumeBoxModal from '@/app/components/consume-box-modal';
 import { getOldestValidBatch, getSmartPickInstructions, isBatchExpired } from '@/app/utils/batchHelpers';
 import { preparePayload } from '@/app/utils/inventoryNormalization';
 
@@ -92,6 +93,10 @@ export default function InventoryPage() {
   const [csvMode, setCsvMode] = useState<'add' | 'override'>('add');
   const [csvDragOver, setCsvDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  
+  // Consume Box modal state
+  const [consumeBoxModalOpen, setConsumeBoxModalOpen] = useState(false);
+  const [consumeBoxItem, setConsumeBoxItem] = useState<InventoryItem | null>(null);
 
   // --- SEARCH & FILTER STATE ---
   const [searchQuery, setSearchQuery] = useState('');
@@ -228,16 +233,14 @@ export default function InventoryPage() {
           ...data,
           // Sanitization
           location: data.location || 'HQ',
-          totalStockQuantity: data.totalStockQuantity ?? 0,
-          unopenedQuantity: data.unopenedQuantity ?? 0,
-          openedQuantity: data.openedQuantity ?? 0,
-          quantityPerUnit: data.quantityPerUnit ?? 1,
+          unopenedBoxes: data.unopenedBoxes ?? 0,
+          itemsPerBox: data.itemsPerBox ?? null,
+          totalStockQuantity: data.totalStockQuantity ?? 0, // Legacy field for backwards compat
           oxygenPsi: data.oxygenPsi ?? 0,
           maxOxygenPsi: data.maxOxygenPsi ?? 2000,
           variants,
           batches,
 
-          openedAt: getDate(data.openedAt),
           createdAt: getDate(data.createdAt) || new Date(),
           updatedAt: getDate(data.updatedAt) || new Date(),
         } as InventoryItem;
@@ -460,7 +463,7 @@ export default function InventoryPage() {
   const getStatus = (item: InventoryItem) => {
     const exp = getEffectiveExpiration(item);
     if (exp?.isExpired) return { emoji: '🔴', label: 'Critical/Expired', color: 'danger' };
-    const qty = Number(item.totalStockQuantity ?? 0);
+    const qty = Number(item.unopenedBoxes ?? 0);
     const threshold = Number(item.reorderThreshold ?? 0);
     if (qty <= 0) return { emoji: '🔴', label: 'Out', color: 'danger' };
     if (threshold > 0 && qty <= threshold) return { emoji: '🟡', label: 'Low Stock', color: 'warning' };
@@ -470,7 +473,7 @@ export default function InventoryPage() {
   const formatPar = (item: InventoryItem) => {
     const par = Number(item.reorderThreshold ?? 0);
     if (!par || par <= 0) return '—';
-    return `${par} ${item.unit ?? 'units'}`;
+    return `${par} ${item.itemsPerBox ? 'boxes' : (item.unit ?? 'units')}`;
   };
 
   const expColorClass = (date?: Date | null) => {
@@ -729,41 +732,22 @@ export default function InventoryPage() {
 
   const lowStockItems = filteredInventory.filter(i => {
     // Only Back Room counts are considered for reorder alerts (Back Room = true inventory).
-    // If batches exist, sum only quantities in batch.locations where location === 'Back Room'.
-    let backRoomCount = 0;
-    if (i.batches && i.batches.length > 0) {
-      backRoomCount = i.batches.reduce((acc: number, b: any) => {
-        if (Array.isArray(b.locations) && b.locations.length > 0) {
-          const locSum = b.locations.reduce((la: number, loc: any) => {
-            const name = (loc.name || '').toString().trim().toLowerCase();
-            return la + (name === 'back room' ? Number(loc.quantity ?? 0) : 0);
-          }, 0);
-          return acc + locSum;
-        }
-        // fallback to batch stock if no per-location detail exists
-        return acc + Number(b.stock ?? 0);
-      }, 0);
-    } else {
-      // No batches: only treat master item as Back Room if its room is Back Room (case-insensitive)
-      const roomName = (i.room || '').toString().trim().toLowerCase();
-      backRoomCount = roomName === 'back room' ? Number(i.totalStockQuantity ?? 0) : 0;
-    }
-
-    if (backRoomCount === 0) return false;
-
+    // For box-based tracking, we use unopenedBoxes directly
     const threshold = Number(i.reorderThreshold ?? 0);
     if (threshold <= 0) return false;
 
+    const boxes = Number(i.unopenedBoxes ?? 0);
+    if (boxes === 0) return false;
+
     if (i.hasVariants && i.variants && i.variants.length > 0) {
-      // For variants, consider variant-level batches when present; otherwise use variant.stock.
       return i.variants.some(v => {
-        const variantBackRoom = (v as any).batches && (v as any).batches.length > 0 ? (v as any).batches.reduce((a: number, bb: any) => a + Number(bb.stock ?? 0), 0) : Number(v.stock ?? 0);
+        const vBoxes = Number(v.stock ?? 0);
         const vThreshold = Number(v.reorderThreshold ?? threshold);
-        return variantBackRoom <= vThreshold;
+        return vBoxes <= vThreshold;
       });
     }
 
-    return backRoomCount <= threshold;
+    return boxes <= threshold;
   });
 
   // --- QUICK ADJUST HELPERS ---
@@ -794,35 +778,9 @@ export default function InventoryPage() {
       if (!snap.exists()) return;
       const data = snap.data() as any;
 
-      if (data.tracksOpenStock) {
-        let unopened = Number(data.unopenedQuantity ?? 0);
-        let opened = Number(data.openedQuantity ?? 0);
-        const qtyPer = Number(data.quantityPerUnit ?? 1);
-
-        if (delta < 0) {
-          let toConsume = Math.abs(Math.floor(delta));
-          const usedFromOpen = Math.min(opened, toConsume);
-          opened -= usedFromOpen;
-          toConsume -= usedFromOpen;
-
-          while (toConsume > 0 && unopened > 0) {
-            unopened -= 1;
-            const take = Math.min(qtyPer, toConsume);
-            // open a box and take 'take' items from it; leftover stays in opened
-            opened += (qtyPer - take);
-            toConsume -= take;
-          }
-        } else {
-          // increment open items
-          opened += Math.floor(delta);
-        }
-
-        const totalUnits = Number(unopened) * Number(qtyPer) + Number(opened);
-        await updateDoc(itemRef, { unopenedQuantity: unopened, openedQuantity: opened, totalStockQuantity: totalUnits, updatedAt: serverTimestamp() });
-      } else {
-        const total = Math.max(0, Number(data.totalStockQuantity ?? 0) + delta);
-        await updateDoc(itemRef, { totalStockQuantity: total, updatedAt: serverTimestamp() });
-      }
+      // Box-based tracking: adjust unopenedBoxes directly
+      const unopened = Math.max(0, Number(data.unopenedBoxes ?? 0) + delta);
+      await updateDoc(itemRef, { unopenedBoxes: unopened, updatedAt: serverTimestamp() });
     } catch (err) {
       console.error('Non-variant update failed', err);
       alert('Failed to update stock');
@@ -896,11 +854,11 @@ export default function InventoryPage() {
           b.stock = nextSerials.length;
         }
 
-        // Update totalStockQuantity by subtracting moved units
+        // Update unopenedBoxes by subtracting moved units
         const movedCount = idxs.length;
-        const current = Number(data.totalStockQuantity ?? 0);
+        const current = Number(data.unopenedBoxes ?? 0);
         const newTotal = Math.max(0, current - movedCount);
-        await updateDoc(itemRef, { batches, totalStockQuantity: newTotal, updatedAt: serverTimestamp() });
+        await updateDoc(itemRef, { batches, unopenedBoxes: newTotal, updatedAt: serverTimestamp() });
 
         // Log the forward restock action with serials
         await addDoc(collection(db, 'inventory_logs'), {
@@ -921,8 +879,8 @@ export default function InventoryPage() {
             source: 'web_ui',
             actor: { userId: user?.uid ?? null, userName: (user as any)?.email ?? null },
             targets: [{ collection: 'inventory', docId: item.id }],
-            before: { totalStockQuantity: current },
-            after: { totalStockQuantity: newTotal },
+            before: { unopenedBoxes: current },
+            after: { unopenedBoxes: newTotal },
             delta: { total: newTotal - current, count: movedCount },
             details: { serials: idxs.map(i => serializedUnits[i].serial), batchIds: Array.from(new Set(idxs.map(i => serializedUnits[i].batchId))) }
           });
@@ -938,9 +896,9 @@ export default function InventoryPage() {
       const qty = Math.max(0, Math.floor(Number(qtyStr2) || 0));
       if (qty <= 0) return;
 
-      const currentTotal = Number(data.totalStockQuantity ?? 0);
+      const currentTotal = Number(data.unopenedBoxes ?? 0);
       const newTotal2 = Math.max(0, currentTotal - qty);
-      await updateDoc(itemRef, { totalStockQuantity: newTotal2, updatedAt: serverTimestamp() });
+      await updateDoc(itemRef, { unopenedBoxes: newTotal2, updatedAt: serverTimestamp() });
 
       // Log the forward restock action for traceability
       await addDoc(collection(db, 'inventory_logs'), {
@@ -1013,14 +971,14 @@ export default function InventoryPage() {
             b.stock = b.serialNumbers.length;
           }
 
-          const total = Math.max(0, (Number(data.totalStockQuantity ?? 0) - removedSerials.length));
+          const total = Math.max(0, (Number(data.unopenedBoxes ?? 0) - removedSerials.length));
 
           // Optimistic UI
-          const next = before.map(it => it.id === itemId ? ({ ...it, batches: batches.map((bb:any) => ({ ...bb })), totalStockQuantity: total }) : it);
+          const next = before.map(it => it.id === itemId ? ({ ...it, batches: batches.map((bb:any) => ({ ...bb })), unopenedBoxes: total }) : it);
           setInventory(next);
 
           // Persist
-          await updateDoc(itemRef, { batches, totalStockQuantity: total, updatedAt: serverTimestamp() });
+          await updateDoc(itemRef, { batches, unopenedBoxes: total, updatedAt: serverTimestamp() });
 
           // Log removal
           await addDoc(collection(db, 'inventory_logs'), {
@@ -1051,12 +1009,12 @@ export default function InventoryPage() {
           targetBatch.serialNumbers = Array.isArray(targetBatch.serialNumbers) ? targetBatch.serialNumbers.concat(newSerials) : newSerials.slice();
           targetBatch.stock = targetBatch.serialNumbers.length;
 
-          const total = Number(data.totalStockQuantity ?? 0) + newSerials.length;
+          const total = Number(data.unopenedBoxes ?? 0) + newSerials.length;
 
-          const next = before.map(it => it.id === itemId ? ({ ...it, batches: batches.map((bb:any) => ({ ...bb })), totalStockQuantity: total }) : it);
+          const next = before.map(it => it.id === itemId ? ({ ...it, batches: batches.map((bb:any) => ({ ...bb })), unopenedBoxes: total }) : it);
           setInventory(next);
 
-          await updateDoc(itemRef, { batches, totalStockQuantity: total, updatedAt: serverTimestamp() });
+          await updateDoc(itemRef, { batches, unopenedBoxes: total, updatedAt: serverTimestamp() });
 
           await addDoc(collection(db, 'inventory_logs'), {
             itemId,
@@ -1073,11 +1031,11 @@ export default function InventoryPage() {
         }
       }
 
-      // Fallback to existing non-serialized behavior
+      // Fallback to box-based tracking
       const next = before.map(it => {
         if (it.id !== itemId) return it;
-        const total = Math.max(0, Number(it.totalStockQuantity ?? 0) + delta);
-        return { ...it, totalStockQuantity: total } as InventoryItem;
+        const unopened = Math.max(0, Number(it.unopenedBoxes ?? 0) + delta);
+        return { ...it, unopenedBoxes: unopened } as InventoryItem;
       });
       setInventory(next);
 
@@ -1172,13 +1130,7 @@ export default function InventoryPage() {
             >
               Add Item
             </Button>
-            <Button
-              onPress={() => router.push('/mobile/quick-count')}
-              variant="bordered"
-              className="h-12 px-4"
-            >
-              Quick Count (mobile)
-            </Button>
+
             <Button 
               onPress={() => exportInventoryCSV()} 
               variant="flat"
@@ -1188,7 +1140,6 @@ export default function InventoryPage() {
             </Button>
             <Button onPress={() => setCsvModalOpen(true)} variant="flat" className="h-12 px-4">Import CSV</Button>
             <Button onPress={() => router.push('/audit')} variant="flat" className="h-12 px-4">Audit</Button>
-            <Button onPress={() => router.push('/audit')} variant="bordered" className="h-12 px-4">Audit</Button>
         </div>
 
         {/* CSV Import Modal (HeroUI) */}
@@ -1333,15 +1284,15 @@ export default function InventoryPage() {
                                     {/* Details button removed; entire card is clickable to toggle batches */}
                                     
                                     {/* Detailed Stock Info for Box Tracking */}
-                                    {item.tracksOpenStock && (
+                                    {item.itemsPerBox && (
                                         <div className="flex items-center gap-2 mt-2 text-sm text-gray-700 dark:text-gray-300">
-                                            <PackageOpen size={16} className="text-purple-500" />
+                                            <Boxes size={16} className="text-blue-500" />
                                             <span>
-                                                <span className="font-bold">{item.unopenedQuantity}</span> Sealed
+                                                <span className="font-bold">{item.unopenedBoxes}</span> Boxes
                                             </span>
                                             <span className="text-gray-300">|</span>
-                                            <span>
-                                                <span className="font-bold">{item.openedQuantity}</span> / {item.quantityPerUnit} in Open Box
+                                            <span className="text-xs text-gray-500">
+                                                {item.itemsPerBox} items/box
                                             </span>
                                         </div>
                                     )}
@@ -1423,6 +1374,9 @@ export default function InventoryPage() {
                                           <div className="text-xs"><span className="ml-1 text-sm font-medium">{getStatus(item).label}</span></div>
                                           <div className="flex items-center gap-2">
                                             <Button isIconOnly size="sm" variant="light" onPress={(e:any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); openEditModal(item); }} className="ml-2"><Edit2 size={14} /></Button>
+                                            {item.location === 'HQ' && item.room === 'Back Room' && !item.isAsset && (item.unopenedBoxes || 0) > 0 && (
+                                              <Button size="sm" variant="flat" color="primary" onPress={(e:any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); setConsumeBoxItem(item); setConsumeBoxModalOpen(true); }}>Consume Box</Button>
+                                            )}
                                             {item.location === 'HQ' && item.room === 'Back Room' && !item.isAsset && (
                                               <Button size="sm" variant="flat" color="secondary" onPress={(e:any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); handleRestockForward(item); }}>Restock Forward</Button>
                                             )}
@@ -1613,9 +1567,12 @@ export default function InventoryPage() {
 
                                             <div className="flex flex-col items-center">
                                               <div className="w-16 flex items-center justify-center">
-                                                <p className={`text-3xl font-bold ${getStockStatusColor(item.totalStockQuantity, item.reorderThreshold)}`}>{item.totalStockQuantity}</p>
+                                                <p className={`text-3xl font-bold ${getStockStatusColor(item.unopenedBoxes, item.reorderThreshold)}`}>{item.unopenedBoxes}</p>
                                               </div>
-                                              <p className="text-xs text-gray-500 uppercase mt-1">Total Units</p>
+                                              <p className="text-xs text-gray-500 uppercase mt-1">{item.itemsPerBox ? 'Boxes' : 'Total Units'}</p>
+                                              {item.itemsPerBox && (
+                                                <p className="text-[10px] text-gray-400">{item.itemsPerBox} items/box</p>
+                                              )}
                                             </div>
 
                                             <div
@@ -1642,15 +1599,21 @@ export default function InventoryPage() {
                                       <div className="text-xs">{getStatus(item).label}</div>
                                       <div className="flex items-center gap-2">
                                         <Button isIconOnly size="sm" variant="light" onPress={(e:any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); openEditModal(item); }} className="ml-2"><Edit2 size={14} /></Button>
+                                        {item.location === 'HQ' && item.room === 'Back Room' && !item.isAsset && (item.unopenedBoxes || 0) > 0 && (
+                                          <Button size="sm" variant="flat" color="primary" onPress={(e:any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); setConsumeBoxItem(item); setConsumeBoxModalOpen(true); }}>Consume Box</Button>
+                                        )}
                                         {item.location === 'HQ' && item.room === 'Back Room' && !item.isAsset && (
                                           <Button size="sm" variant="flat" color="secondary" onPress={(e:any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); handleRestockForward(item); }}>Restock Forward</Button>
                                         )}
                                       </div>
                                     </div>
                                     <div className="w-16 flex items-center justify-center">
-                                      <p className={`text-3xl font-bold ${getStockStatusColor(item.totalStockQuantity, item.reorderThreshold)}`}>{item.totalStockQuantity}</p>
+                                      <p className={`text-3xl font-bold ${getStockStatusColor(item.unopenedBoxes, item.reorderThreshold)}`}>{item.unopenedBoxes}</p>
                                     </div>
-                                    <p className="text-xs text-gray-500 uppercase mt-1">Total Units</p>
+                                    <p className="text-xs text-gray-500 uppercase mt-1">{item.itemsPerBox ? 'Boxes' : 'Total Units'}</p>
+                                    {item.itemsPerBox && (
+                                      <p className="text-[10px] text-gray-400">{item.itemsPerBox} items/box</p>
+                                    )}
                                   </div>
                                 )}
                             </div>
@@ -1660,8 +1623,8 @@ export default function InventoryPage() {
                               <div className="mt-3">
                                 <Progress 
                                   size="sm" 
-                                  value={item.reorderThreshold > 0 ? (item.totalStockQuantity / (item.reorderThreshold * 2)) * 100 : 100} 
-                                  color={item.totalStockQuantity <= item.reorderThreshold ? "warning" : "success"}
+                                  value={item.reorderThreshold > 0 ? (item.unopenedBoxes / (item.reorderThreshold * 2)) * 100 : 100} 
+                                  color={item.unopenedBoxes <= item.reorderThreshold ? "warning" : "success"}
                                   aria-label="Stock level"
                                   className="h-1"
                                 />
@@ -1761,6 +1724,20 @@ export default function InventoryPage() {
             initialData={selectedItem}
             canToggleExpiration={isAdmin}
         />
+
+        {consumeBoxItem && (
+          <ConsumeBoxModal
+            isOpen={consumeBoxModalOpen}
+            onClose={() => {
+              setConsumeBoxModalOpen(false);
+              setConsumeBoxItem(null);
+            }}
+            item={consumeBoxItem}
+            onSuccess={() => {
+              // Modal will auto-refresh via onSnapshot
+            }}
+          />
+        )}
 
         {/* global modal removed; batches are shown inline per-card */}
       </div>

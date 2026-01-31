@@ -1,5 +1,6 @@
 'use client';
 import React, { useEffect, useState } from 'react';
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import { 
   Card, 
@@ -12,19 +13,19 @@ import {
   ScrollShadow,
   Textarea
 } from '@heroui/react';
-import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { collection, onSnapshot, query, where, orderBy, limit, getDocs, Timestamp, addDoc, serverTimestamp } from 'firebase/firestore';
-import { auth, db } from '@/firebase';
+import { db } from '@/firebase';
 import { 
   AlertTriangle, 
   ArrowUpRight, 
   ChevronDown, 
   ChevronUp, 
-  Clock, 
-  LayoutDashboard 
+  Clock
 } from 'lucide-react';
 
 import type { Statpack, InventoryItem, StatpackLog, StatpackItem } from '@/app/types';
+import { useUserRole } from '@/app/hooks/useUserRole';
+import MemberDashboard from './member-dashboard';
 
 interface ExpiryAlert {
   bagName: string; // Used for Bag Name OR Location String
@@ -36,7 +37,7 @@ interface ExpiryAlert {
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const { loading: authLoading, user, userData, role } = useUserRole();
   const [loading, setLoading] = useState(true);
   // --- Domain State ---
   const [statpacks, setStatpacks] = useState<Statpack[]>([]);
@@ -52,16 +53,12 @@ export default function DashboardPage() {
   const [loadingLogs, setLoadingLogs] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      if (!currentUser) {
-        router.push('/login');
-        return;
-      }
-      setUser(currentUser);
-    });
-
-    return () => unsubscribe();
-  }, [router]);
+    if (authLoading) return;
+    if (!user) {
+      router.push('/login');
+      return;
+    }
+  }, [authLoading, user, router]);
 
   useEffect(() => {
     if (!user) return;
@@ -184,7 +181,7 @@ export default function DashboardPage() {
   };
 
   const processAlerts = (packs: Statpack[], inv: InventoryItem[]) => {
-    const lowStock = inv.filter(item => item.totalStockQuantity <= item.reorderThreshold);
+    const lowStock = inv.filter(item => (item.totalStockQuantity ?? 0) <= item.reorderThreshold);
     setLowStockItems(lowStock);
 
     const alerts: ExpiryAlert[] = [];
@@ -263,7 +260,7 @@ export default function DashboardPage() {
     }
   };
 
-  if (loading) {
+  if (authLoading || loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
         <div className="animate-pulse text-indigo-600 font-semibold">Loading Dashboard...</div>
@@ -271,21 +268,25 @@ export default function DashboardPage() {
     );
   }
 
+  // Render member dashboard for non-admin users
+  if (role && role !== 'admin' && role !== 'quartermaster' && userData) {
+    return <MemberDashboard userData={userData} />;
+  }
+
+  // Render admin dashboard below
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
       <div className="max-w-7xl mx-auto space-y-8">
         
         {/* --- Header --- */}
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
-              <LayoutDashboard className="text-indigo-600" size={28} />
-              BMRC Dashboard
-            </h1>
-            <p className="text-gray-500 dark:text-gray-400">
-              Overview of fleet readiness and supply levels
-            </p>
-          </div>
+        <div className="mb-6">
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-white flex items-center gap-3">
+            <Image src="/images/NewLogoWhiteLong_NoHeartbeat.PNG" alt="BMRC Logo" width={200} height={50} />
+            Dashboard
+          </h1>
+          <p className="text-gray-600 dark:text-gray-400 mt-2">
+            Overview of fleet readiness and supply levels
+          </p>
         </div>
         <Divider />
 
@@ -358,7 +359,7 @@ export default function DashboardPage() {
                               variant="light" 
                               color="primary"
                               className="h-6 text-xs"
-                              onPress={() => router.push(`/statpacks?id=${pack.id}`)}
+                              onPress={() => router.push(`/assets?id=${pack.id}`)}
                               onClick={(e) => e.stopPropagation()} 
                               endContent={<ArrowUpRight size={14} />}
                             >
@@ -438,10 +439,10 @@ export default function DashboardPage() {
                       <div className="flex items-center">
                         <Button
                           color="primary"
-                          onPress={() => window.open('/mobile/scan-report', '_blank')}
+                          onPress={() => window.open('/reports', '_blank')}
                           startContent={<AlertTriangle />}
                         >
-                          Report Low Stock (Mobile)
+                          View Reports
                         </Button>
                       </div>
                     </div>

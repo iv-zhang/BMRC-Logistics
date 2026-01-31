@@ -12,15 +12,18 @@
     "migrate:normalize-inventory": "node ./scripts/normalize-inventory.cjs --dry-run"
   },
   "dependencies": {
+    "@heroicons/react": "^2.2.0",
     "@heroui/react": "^2.8.7",
     "@zxing/library": "^0.21.3",
     "firebase": "^12.7.0",
     "framer-motion": "^12.23.26",
+    "html2canvas": "^1.4.1",
     "jspdf": "^3.0.4",
     "lucide-react": "^0.562.0",
     "next": "16.1.1",
     "next-themes": "^0.4.6",
     "qrcode": "^1.5.4",
+    "jsbarcode": "^3.11.5",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "wicg-inert": "^3.1.0"

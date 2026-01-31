@@ -18,6 +18,9 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "BMRC Logistics",
   description: "Efficient logistics management system",
+  icons: {
+    icon: "/images/NoBackground_NewLogoWhite.PNG",
+  },
 };
 
 export default function RootLayout({

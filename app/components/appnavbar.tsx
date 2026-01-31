@@ -1,69 +1,69 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import Image from 'next/image';
 import { usePathname, useRouter } from 'next/navigation';
 import { 
   Navbar, 
   NavbarBrand, 
   NavbarContent, 
   NavbarItem, 
+  NavbarMenu,
+  NavbarMenuItem,
   Link, 
   Dropdown, 
   DropdownTrigger, 
   DropdownMenu, 
-  DropdownItem
+  DropdownItem,
+  Tooltip
 } from '@heroui/react';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore'; 
-import { onAuthStateChanged, signOut, type User as FirebaseUser } from 'firebase/auth';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth, db } from '@/firebase';
+import { useUserRole } from '@/app/hooks/useUserRole';
 
 // Icons
-const UserIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"></path>
-    <circle cx="12" cy="7" r="4"></circle>
-  </svg>
-);
-
-const LogOutIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-    <polyline points="16 17 21 12 16 7"></polyline>
-    <line x1="21" y1="12" x2="9" y2="12"></line>
-  </svg>
-);
+import { 
+  HomeIcon, 
+  CubeIcon, 
+  UsersIcon, 
+  ChartBarIcon, 
+  DevicePhoneMobileIcon, 
+  UserIcon as HeroUserIcon, 
+  ArrowRightOnRectangleIcon 
+} from '@heroicons/react/24/outline';
 
 export default function AppNavbar() {
   const pathname = usePathname();
   const router = useRouter();
-  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const { user, role } = useUserRole();
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
 
+  // Check if user is admin or quartermaster
+  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const canAudit = role === 'admin' || role === 'quartermaster' || role === 'inventory_helper' || role === 'FTO';
+
+  // Sync user to Firestore on sign-in
   useEffect(() => {
-  const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-    setUser(currentUser);
-    
-    // --- NEW: SYNC CODE ---
-    if (currentUser) {
-      const userRef = doc(db, 'users', currentUser.uid);
-      const userSnap = await getDoc(userRef);
-
-      // If user doesn't exist in Firestore, create them
-      if (!userSnap.exists()) {
-        await setDoc(userRef, {
-          id: currentUser.uid,
-          email: currentUser.email,
-          fullName: currentUser.displayName || 'Unknown Member',
-          role: 'member', // Default role
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-        console.log("User synced to Firestore");
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (currentUser) {
+        const userRef = doc(db, 'users', currentUser.uid);
+        const userSnap = await getDoc(userRef);
+        if (!userSnap.exists()) {
+          await setDoc(userRef, {
+            id: currentUser.uid,
+            email: currentUser.email,
+            fullName: currentUser.displayName || 'Unknown Member',
+            role: 'member',
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+          console.log("User synced to Firestore");
+        }
       }
-    }
-    // ----------------------
-  });
-  return () => unsubscribe();
-}, []);
+    });
+    return () => unsubscribe();
+  }, []);
 
   const handleSignOut = async () => {
     try {
@@ -78,104 +78,157 @@ export default function AppNavbar() {
     router.push('/profile');
   };
 
+  // Local role override state for testing (keeps UI in sync)
+  const [roleOverrideActive, setRoleOverrideActive] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('bmrc_role_override');
+    }
+    return null;
+  });
+
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'bmrc_role_override') setRoleOverrideActive(e.newValue);
+    };
+
+    const onCustom = () => {
+      const stored = localStorage.getItem('bmrc_role_override');
+      setRoleOverrideActive(stored);
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('storage', onStorage);
+      window.addEventListener('bmrc-role-changed', onCustom as EventListener);
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('storage', onStorage);
+        window.removeEventListener('bmrc-role-changed', onCustom as EventListener);
+      }
+    };
+  }, []);
+
   const isActive = (path: string) => pathname === path;
 
   return (
     <Navbar 
       maxWidth="xl" 
-      // Added [&_ul]:list-none [&_li]:list-none to forcibly remove any bullet points
-      className="p-[5px] bg-white/70 dark:bg-slate-900/70 backdrop-blur-md border-b border-gray-200 dark:border-slate-800 [&_ul]:list-none [&_li]:list-none"
+      className="py-1 px-[5px] bg-white/70 dark:bg-slate-900/70 backdrop-blur-md border-b border-gray-200 dark:border-slate-800 [&_ul]:list-none [&_li]:list-none"
+      onMenuOpenChange={setIsMenuOpen}
+      isMenuOpen={isMenuOpen}
     >
       {/* Added ml-[10px] to shift the Logo and Links towards the middle */}
       <NavbarBrand className="gap-4 ml-[10px]">
-        <p className="font-bold text-2xl text-indigo-600 dark:text-indigo-400 tracking-tighter">
-          BMRC
-        </p>
+        <div className="flex items-center gap-0">
+          <div className="relative w-[79px] h-[79px]">
+            <Image
+              src="/images/NoBackground_NewLogoWhite.PNG"
+              alt="BMRC logo"
+              fill
+              className="object-contain"
+              priority
+            />
+          </div>
+        </div>
         
-        <div className="hidden sm:flex gap-4 ml-6">
+        {/* Desktop Links */}
+        <div className="hidden sm:flex gap-4 ml-0">
           <NavbarItem isActive={isActive('/dashboard')}>
-            <Link 
-              href="/dashboard" 
-              color={isActive('/dashboard') ? "primary" : "foreground"}
-              className={isActive('/dashboard') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}
-            >
-              Dashboard
-            </Link>
+            <Tooltip content="View main dashboard">
+              <Link 
+                href="/dashboard" 
+                color={isActive('/dashboard') ? "primary" : "foreground"}
+                className={isActive('/dashboard') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}
+              >
+                <HomeIcon className="w-5 h-5 mr-1" />
+                Dashboard
+              </Link>
+            </Tooltip>
           </NavbarItem>
 
-          <NavbarItem isActive={isActive('/statpacks')}>
-            <Link 
-              href="/statpacks" 
-              color={isActive('/statpacks') ? "primary" : "foreground"}
-              className={isActive('/statpacks') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}
-            >
-              Statpacks
-            </Link>
-          </NavbarItem>
+          <Dropdown>
+            <NavbarItem>
+              <DropdownTrigger>
+                <button className={`flex items-center ${isActive('/assets') || pathname.startsWith('/statpacks') ? 'font-semibold text-primary' : 'text-gray-500 dark:text-gray-400'}`}>
+                  <CubeIcon className="w-5 h-5 mr-1" />
+                  Assets
+                </button>
+              </DropdownTrigger>
+            </NavbarItem>
+            <DropdownMenu aria-label="Assets menu">
+              <DropdownItem key="assets" onClick={() => router.push('/assets')}>
+                Manage Assets
+              </DropdownItem>
+              <DropdownItem key="statpacks" onClick={() => router.push('/statpacks')}>
+                Statpacks
+              </DropdownItem>
+            </DropdownMenu>
+          </Dropdown>
 
-          <NavbarItem isActive={isActive('/inventory')}>
-            <Link 
-              href="/inventory" 
-              color={isActive('/inventory') ? "primary" : "foreground"}
-              className={isActive('/inventory') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}
-            >
-              Inventory
-            </Link>
-          </NavbarItem>
+          {/* Inventory Dropdown - Admin Only */}
+          {isAdmin && (
+            <Dropdown>
+              <NavbarItem>
+                <DropdownTrigger>
+                  <button className={`flex items-center ${isActive('/inventory') || isActive('/restock') || isActive('/restock-stats') || isActive('/audit/events') ? 'font-semibold text-primary' : 'text-gray-500 dark:text-gray-400'}`}>
+                    <CubeIcon className="w-5 h-5 mr-1" />
+                    Inventory
+                  </button>
+                </DropdownTrigger>
+              </NavbarItem>
+              <DropdownMenu aria-label="Inventory menu">
+                <DropdownItem key="inventory" onClick={() => router.push('/inventory')}>
+                  View Inventory
+                </DropdownItem>
+                <DropdownItem key="restock" onClick={() => router.push('/restock')}>
+                  Restock Items
+                </DropdownItem>
+                <DropdownItem key="restock-stats" onClick={() => router.push('/restock-stats')}>
+                  Restock Stats
+                </DropdownItem>
+                <DropdownItem key="logs" onClick={() => router.push('/audit/events')}>
+                  Audit Logs
+                </DropdownItem>
+                <DropdownItem key="storage" onClick={() => router.push('/storage')}>
+                  Storage Management
+                </DropdownItem>
+              </DropdownMenu>
+            </Dropdown>
+          )}
 
-          <NavbarItem isActive={isActive('/roster')}>
-            <Link 
-              href="/roster" 
-              color={isActive('/roster') ? "primary" : "foreground"}
-              className={isActive('/roster') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}
-            >
-              Roster
-            </Link>
-          </NavbarItem>
+          {/* Roster - Admin Only */}
+          {isAdmin && (
+            <NavbarItem isActive={isActive('/roster')}>
+              <Tooltip content="View team roster">
+                <Link 
+                  href="/roster" 
+                  color={isActive('/roster') ? "primary" : "foreground"}
+                  className={isActive('/roster') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}
+                >
+                  <UsersIcon className="w-5 h-5 mr-1" />
+                  Roster
+                </Link>
+              </Tooltip>
+            </NavbarItem>
+          )}
 
-          {/* Audit link moved into Inventory page header */}
-
-          <NavbarItem isActive={isActive('/restock')}>
-            <Link
-              href="/restock"
-              color={isActive('/restock') ? "primary" : "foreground"}
-              className={isActive('/restock') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}
-            >
-              Restock
-            </Link>
-          </NavbarItem>
-
-          <NavbarItem isActive={isActive('/audit/events')}>
-            <Link
-              href="/audit/events"
-              color={isActive('/audit/events') ? "primary" : "foreground"}
-              className={isActive('/audit/events') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}
-            >
-              Logs
-            </Link>
-          </NavbarItem>
-
-          <NavbarItem isActive={isActive('/restock-stats')}>
-            <Link
-              href="/restock-stats"
-              color={isActive('/restock-stats') ? "primary" : "foreground"}
-              className={isActive('/restock-stats') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}
-            >
-              Restock Stats
-            </Link>
-          </NavbarItem>
+          {/* Reports - Admin Only */}
+          {isAdmin && (
+            <NavbarItem isActive={isActive('/reports')}>
+              <Tooltip content="View reports">
+                <Link 
+                  href="/reports" 
+                  color={isActive('/reports') ? "primary" : "foreground"}
+                  className={isActive('/reports') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}
+                >
+                  <ChartBarIcon className="w-5 h-5 mr-1" />
+                  Reports
+                </Link>
+              </Tooltip>
+            </NavbarItem>
+          )}
         </div>
 
-        {/* Mobile links (visible on small screens) */}
-        <div className="flex sm:hidden gap-3 ml-3">
-          <Link href="/dashboard" className={isActive('/dashboard') ? "font-semibold text-indigo-600" : "text-gray-500 dark:text-gray-400"}>Dashboard</Link>
-          <Link href="/statpacks" className={isActive('/statpacks') ? "font-semibold text-indigo-600" : "text-gray-500 dark:text-gray-400"}>Statpacks</Link>
-          <Link href="/inventory" className={isActive('/inventory') ? "font-semibold text-indigo-600" : "text-gray-500 dark:text-gray-400"}>Inventory</Link>
-          <Link href="/roster" className={isActive('/roster') ? "font-semibold text-indigo-600" : "text-gray-500 dark:text-gray-400"}>Roster</Link>
-          <Link href="/audit" className={isActive('/audit') ? "font-semibold text-indigo-600" : "text-gray-500 dark:text-gray-400"}>Audit</Link>
-          <Link href="/restock" className={isActive('/restock') ? "font-semibold text-indigo-600" : "text-gray-500 dark:text-gray-400"}>Restock</Link>
-          <Link href="/restock-stats" className={isActive('/restock-stats') ? "font-semibold text-indigo-600" : "text-gray-500 dark:text-gray-400"}>Restock Stats</Link>
-        </div>
       </NavbarBrand>
 
       <NavbarContent justify="end">
@@ -198,15 +251,50 @@ export default function AppNavbar() {
               <DropdownItem 
                 key="profile" 
                 onClick={handleProfile}
-                startContent={<UserIcon />}
+                startContent={<HeroUserIcon className="w-4 h-4" />}
                 className="p-2.5 text-sm font-medium text-left hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
               >
                 Profile
               </DropdownItem>
+              {isAdmin ? (
+                <DropdownItem 
+                  key="reports" 
+                  onClick={() => router.push('/reports')}
+                  startContent={<ChartBarIcon className="w-4 h-4" />}
+                  className="p-2.5 text-sm font-medium text-left hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                >
+                  Reports
+                </DropdownItem>
+              ) : null}
+
+              {/* Role override toggle for testing admin vs member views */}
+              <DropdownItem
+                key="role-override"
+                onClick={() => {
+                  try {
+                    const current = localStorage.getItem('bmrc_role_override');
+                    if (current) {
+                      localStorage.removeItem('bmrc_role_override');
+                    } else {
+                      // toggle to the opposite of the current effective role
+                      const target = (role === 'admin' || role === 'quartermaster') ? 'member' : 'admin';
+                      localStorage.setItem('bmrc_role_override', target);
+                    }
+                    // notify listeners
+                    window.dispatchEvent(new Event('bmrc-role-changed'));
+                  } catch (e) {
+                    console.error('role override failed', e);
+                  }
+                }}
+                startContent={<DevicePhoneMobileIcon className="w-4 h-4" />}
+                className="p-2.5 text-sm font-medium text-left hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+              >
+                {roleOverrideActive ? `Clear Test Role (${roleOverrideActive})` : `Toggle Test Role`}
+              </DropdownItem>
               <DropdownItem 
                 key="logout" 
                 onClick={handleSignOut}
-                startContent={<LogOutIcon />}
+                startContent={<ArrowRightOnRectangleIcon className="w-4 h-4" />}
                 className="p-2.5 text-sm font-medium text-left text-danger hover:bg-black/5 dark:hover:bg-white/10 transition-colors" 
                 color="danger"
               >
@@ -216,6 +304,39 @@ export default function AppNavbar() {
           </Dropdown>
         </NavbarItem>
       </NavbarContent>
+
+      {/* Mobile Menu */}
+      <NavbarMenu className="pt-6">
+        <NavbarMenuItem isActive={isActive('/dashboard')}>
+          <Link href="/dashboard" className="w-full">Dashboard</Link>
+        </NavbarMenuItem>
+        <NavbarMenuItem isActive={isActive('/assets')}>
+          <Link href="/assets" className="w-full">Assets</Link>
+        </NavbarMenuItem>
+        {isAdmin && (
+          <NavbarMenuItem>
+            <span className="font-semibold">Inventory</span>
+            <div className="ml-4 space-y-1">
+              <Link href="/inventory" className="block">View Inventory</Link>
+              <Link href="/restock" className="block">Restock Items</Link>
+              <Link href="/restock-stats" className="block">Restock Stats</Link>
+              <Link href="/audit/events" className="block">Audit Logs</Link>
+              <Link href="/storage" className="block">Storage Management</Link>
+            </div>
+          </NavbarMenuItem>
+        )}
+        {isAdmin && (
+          <NavbarMenuItem isActive={isActive('/roster')}>
+            <Link href="/roster" className="w-full">Roster</Link>
+          </NavbarMenuItem>
+        )}
+
+        {isAdmin && (
+          <NavbarMenuItem isActive={isActive('/reports')}>
+            <Link href="/reports" className="w-full">Reports</Link>
+          </NavbarMenuItem>
+        )}
+      </NavbarMenu>
     </Navbar>
   );
 }

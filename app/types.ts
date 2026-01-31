@@ -1,11 +1,20 @@
 import type { FieldValue, Timestamp } from 'firebase/firestore';
 
+// --- ASSET MANAGEMENT CONSTANTS ---
+// Default dollar threshold for automatic asset classification
+// Items over this value should be tracked as individual assets with serial numbers
+export const ASSET_VALUE_THRESHOLD = 500; // USD
+
+// High-value equipment categories that should always be treated as assets
+export const ASSET_CATEGORIES = ['AED', 'Radio', 'Oxygen Tank', 'Generator', 'Monitor'] as const;
+export type AssetCategoryType = typeof ASSET_CATEGORIES[number];
+
 // --- USER & AUTH ---
 export interface User {
   id: string;
   fullName: string;
   email: string;
-  role: 'admin' | 'member' | 'FTO' | 'quartermaster';
+  role: 'admin' | 'member' | 'FTO' | 'quartermaster' | 'inventory_helper';
   createdAt: Date;
   updatedAt: Date;
 }
@@ -82,9 +91,15 @@ export interface InventoryItem {
   category: ItemCategory;
   description?: string;
   
-  // Stock Levels
-  totalStockQuantity: number; 
+  // Stock Levels - Box-Based Tracking
+  unopenedBoxes: number; // Number of unopened boxes
+  itemsPerBox?: number;  // Optional: how many items in one box
   reorderThreshold: number;   
+  // Par levels per location (optional): { locationId: minimumQuantity }
+  parByLocation?: Record<string, number>;
+  
+  // DEPRECATED: Legacy fields kept for migration compatibility
+  totalStockQuantity?: number;
   
   // Locations
   location: LocationType;
@@ -94,12 +109,14 @@ export interface InventoryItem {
 
   // UI / metadata
   unit?: string; // e.g., 'box' or 'count'
-  isDisposable?: boolean;
   // Asset flag: when true this item is an individual asset (e.g., Blue Stat Pack 1)
   // Assets are tracked by status, not by quantity.
   isAsset?: boolean;
   // For tangible assets, optional serial number to uniquely identify this asset instance
   assetSerial?: string;
+  // Barcode and QR code for scanning asset checkout/checkin (either or both)
+  barcode?: string; // UPC, code128, or other barcode format
+  qr?: string; // QR code content (often same as serial or barcode)
   // If this asset is a child of another asset (e.g., battery/pad assigned to AED parent), store parent asset id
   parentAssetId?: string;
   // If assigned to a statpack or other container, reference that entity
@@ -109,9 +126,15 @@ export interface InventoryItem {
   // Model name or identifier for assets that have multiple models (e.g., 'Philips FRx')
   assetModel?: string;
   // If isAsset=true, use assetStatus/lastChecked/nextExpiration instead of quantities.
-  assetStatus?: 'Ready' | 'Not Ready';
+  assetStatus?: 'Ready' | 'Not Ready' | 'In Use' | 'Checked Out';
   assetLastChecked?: Date;
   assetNextExpiration?: Date;
+  // Checkout tracking fields (when asset is checked out by a member)
+  checkedOutAt?: Date | FieldValue; // When the asset was checked out
+  checkedOutBy?: string; // User ID of member who checked it out
+  lastCheckedInAt?: Date | FieldValue; // When asset was last checked in
+  lastCheckedInBy?: string; // User ID of member who checked it in
+  lastKnownReturnLocation?: string; // Where the member reported returning it
   // Asset-specific quick-check fields (useful for AEDs)
   assetChecks?: {
     batteryStatus?: 'Good' | 'Low' | 'Unknown';
@@ -131,7 +154,7 @@ export interface InventoryItem {
   tracksExpiration: boolean; 
   expirationDate?: Date;
   // Audit flag: whether this item must be included in semesterly audit counts
-  isAuditRequired?: boolean;
+  
   
   // Oxygen Specifics
   isOxygen?: boolean;
@@ -140,7 +163,7 @@ export interface InventoryItem {
   // Optional model/name for oxygen tanks
   oxygenModel?: string;
 
-  // Box/Unit Logic
+  // Box/Unit Logic - DEPRECATED (replaced by unopenedBoxes/itemsPerBox)
   tracksOpenStock?: boolean;
   quantityPerUnit?: number;
   unopenedQuantity?: number;
@@ -163,6 +186,20 @@ export interface InventoryItem {
 
   createdAt: Date;
   updatedAt: Date;
+  
+  // Asset-specific fields (for non-disposable high-value items: O2 tanks, AEDs, bikes, radios, etc.)
+  assetValue?: number; // Monetary value in dollars
+  currentLocation?: string; // Where the asset is currently (GPS or room location)
+  maintenance_logs?: Array<{
+    id?: string;
+    timestamp?: Date;
+    serviceType: string; // 'routine', 'repair', 'inspection', 'replacement'
+    reason: string; // Why is it being serviced
+    technician?: string; // Who did the work
+    notes?: string;
+    status: 'pending' | 'in-progress' | 'completed'; // Current status
+    completedAt?: Date;
+  }>;
 }
 
 // --- STATPACKS ---
@@ -195,13 +232,15 @@ export interface StatpackItem {
   effectiveExpiration?: Date; // Computed from batch.expirationDate or batch.openDate + daysValid
   // Convenience flag copied from linked `InventoryItem`/variant to indicate expirations must be confirmed
   requiresExpirationCheck?: boolean;
+  // Per-item value for computing total statpack asset value
+  itemValue?: number;
 }
 
 export interface Statpack {
   id: string;
   name: string;
   type: 'Primary' | 'Secondary' | 'Event Bag';
-  status: 'Ready' | 'Restock Needed' | 'Expired Items' | 'CRITICAL - EXPIRED ITEMS' | 'In Use';
+  status: 'Ready' | 'Restock Needed' | 'Expired Items' | 'CRITICAL - EXPIRED ITEMS' | 'In Use' | 'Pending Initial Check';
   compartments: StatpackCompartment[];
   contents: StatpackItem[];
   isCheckedOut: boolean;
@@ -214,6 +253,24 @@ export interface Statpack {
   
   createdAt: Date;
   updatedAt: Date;
+  
+  // Statpacks are ALWAYS treated as high-value assets in EMS logistics
+  // This field represents the total value of the statpack container + all contents
+  // Should be computed/updated whenever contents change
+  assetValue?: number; // Computed: sum of contents' itemValue * quantity
+  currentLocation?: string; // Physical location (e.g., "Vehicle 1", "Storage Room A")
+  assetSerial?: string; // Unique serial/tag for the statpack container itself
+  
+  maintenance_logs?: Array<{
+    id?: string;
+    timestamp?: Date;
+    serviceType: string;
+    reason?: string;
+    technician?: string;
+    notes?: string;
+    status: 'pending' | 'in-progress' | 'completed';
+    completedAt?: Date;
+  }>;
 }
 
 // --- LOGGING & ISSUES ---
@@ -237,10 +294,27 @@ export interface StatpackLog {
   userName: string;
   timestamp: Date | FieldValue;
   notes?: string;
+  mismatchResolutions?: MismatchResolution[];
+  
+  // Digital Check-Off: structured per-item check entries
+  checkEntries?: {
+    itemId: string;
+    itemName?: string;
+    batchId?: string;
+    compartmentId?: string;
+    pocket?: StatpackPocket;
+    requiredQuantity: number;
+    countedQuantity: number; // Actual count during check
+    ok: boolean; // true if countedQuantity >= requiredQuantity
+    serialNumber?: string; // For asset items
+    notes?: string;
+    checkedAt?: Date;
+    checkedBy?: string;
+  }[];
   
   // Detailed Issue Tracking
   issues?: {
-      sealChecks?: Record<string, boolean>;
+      sealChecks?: Record<string, { sealed: boolean; sealNumber?: string; expiration?: Date }>;
       oxygenReadings?: Record<string, string>;
       issueReports?: Record<string, IssueReport>;
       verifiedCount?: number;
@@ -250,13 +324,26 @@ export interface StatpackLog {
   itemsUsed?: Record<string, number>; 
 }
 
+export interface MismatchResolution {
+  key: string; // item id or AED field key
+  entered?: string;
+  system?: string;
+  acknowledged: boolean;
+  resolvedBy?: string;
+  resolvedAt?: Date | FieldValue;
+  note?: string;
+}
+
 // Per-asset instance metadata for serialized items (e.g., AEDs)
 export interface AssetInstance {
   serial: string;
   // Unique asset identifier (asset tag or barcode). May differ from manufacturer `serial`.
   id?: string;
   assetTag?: string;
-  status?: 'Ready' | 'Not Ready' | 'Maintenance' | 'Unknown';
+  // Barcode and QR code for scanning asset checkout/checkin (either or both)
+  barcode?: string;
+  qr?: string;
+  status?: 'Ready' | 'Not Ready' | 'Maintenance' | 'In Use' | 'Checked Out' | 'Unknown';
   // Consumable components attached to the device
   padExpiration?: Date;
   batteryExpiration?: Date;
@@ -268,6 +355,11 @@ export interface AssetInstance {
   lastCheckNotes?: string;
   // Optional fields for derived next expiration (pads/battery replacement window)
   nextExpiration?: Date;
+  // Checkout tracking
+  checkedOutAt?: Date | FieldValue;
+  checkedOutBy?: string; // User ID of member who checked out this asset
+  lastCheckedInAt?: Date | FieldValue;
+  lastCheckedInBy?: string; // User ID of member who checked in this asset
   checks?: {
     batteryStatus?: 'Good' | 'Low' | 'Unknown';
     padsSealed?: boolean;
@@ -278,4 +370,83 @@ export interface AssetInstance {
   currentLocation?: string;
   createdAt?: Date;
   updatedAt?: Date;
+}
+
+// --- STORAGE / CONTAINERS ---
+export interface StorageZone {
+  id: string;
+  name: string;
+  locationType: LocationType;
+  room?: HQRoom;
+  description?: string;
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
+export interface Shelf {
+  id: string;
+  name: string;
+  zoneId?: string | null;
+  capacity?: number | null;
+  barcode?: string | null;
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
+export interface Container {
+  id: string;
+  name: string;
+  shelfId?: string | null;
+  barcode?: string | null;
+  // Sealed Box / Container Logic (for student workflow accountability)
+  isBox?: boolean; // When true, treat as a sealed box with fixed contents
+  isSealed?: boolean;
+  sealNumber?: string; // Tamper-evident seal id or sticker number
+  sealedAt?: Date;
+  sealedBy?: string; // userId of person who sealed
+  sealedByName?: string;
+  // Contents of the sealed box: itemId + batchId + quantity (assumes unchanged until unopened)
+  boxContents?: {
+    itemId: string;
+    batchId: string;
+    quantity: number;
+    serialNumber?: string; // For serialized/asset items
+  }[];
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
+export interface BoxLog {
+  id?: string;
+  boxId: string;
+  action: 'sealed' | 'unsealed' | 'inventory_check' | 'break_seal';
+  userId: string;
+  userName?: string;
+  timestamp: Date | FieldValue;
+  sealIntact?: boolean; // true if seal was verified intact, false if broken
+  notes?: string;
+  itemsCounted?: Record<string, number>; // If seal was broken, what was counted
+}
+
+// Inventory log events (e.g., asset checkout/checkin, box consumption, restocking)
+export interface InventoryLog {
+  id?: string;
+  itemId?: string; // The inventory item this log refers to
+  itemName?: string;
+  action: string; // 'asset_checkout', 'asset_checkin', 'consume_box', 'create_open_batch', etc.
+  serialNumber?: string; // For single-serial events
+  serials?: string[]; // For multi-serial events
+  batchId?: string;
+  quantity?: number;
+  boxCount?: number;
+  unitsAdded?: number;
+  beforeUnopenedBoxes?: number;
+  afterUnopenedBoxes?: number;
+  userId?: string;
+  userName?: string;
+  timestamp: Date | FieldValue; // Server timestamp of the event
+  location?: string; // Where the action took place or asset was located
+  notes?: string; // Additional context/reason
+  newStatus?: string; // For status change events
+  details?: Record<string, any>; // Catch-all for additional event data
 }

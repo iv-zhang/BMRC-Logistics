@@ -28,6 +28,7 @@ const ROLE_OPTIONS: Array<{ label: string; value: User['role']; color: RoleChipC
   { label: 'Admin', value: 'admin', color: 'danger' },
   { label: 'FTO', value: 'FTO', color: 'warning' },
   { label: 'Quartermaster', value: 'quartermaster', color: 'success' },
+  { label: 'Inventory Helper', value: 'inventory_helper', color: 'success' },
   { label: 'Member', value: 'member', color: 'default' },
 ];
 

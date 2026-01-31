@@ -37,13 +37,14 @@ export default function IssueModal({ isOpen, onOpenChange, currentIssueItem, tem
             <ModalBody>
               <p className="text-sm text-gray-500 mb-2">What is wrong with this item?</p>
               <RadioGroup
+                className="space-y-3"
                 value={tempIssueData.issueType}
                 onValueChange={(val: string) => setTempIssueData(prev => ({ ...prev, issueType: val as IssueReport['issueType'] }))}
               >
-                <Radio value="missing" description="Item is not in the bag">Missing / Not Found</Radio>
-                <Radio value="expired" description="Expiration date passed">Expired</Radio>
-                <Radio value="damaged" description="Broken or open seal">Damaged / Compromised</Radio>
-                <Radio value="other">Other Issue</Radio>
+                <Radio className="gap-3" value="missing" description="Item is not in the bag">Missing / Not Found</Radio>
+                <Radio className="gap-3" value="expired" description="Expiration date passed">Expired</Radio>
+                <Radio className="gap-3" value="damaged" description="Broken or open seal">Damaged / Compromised</Radio>
+                <Radio className="gap-3" value="other">Other Issue</Radio>
               </RadioGroup>
 
               <Divider className="my-2" />
