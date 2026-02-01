@@ -29,6 +29,7 @@ import { auth, db } from '@/firebase';
 import type { InventoryItem } from '@/app/types';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import CheckoutModal from '@/app/components/checkout-modal';
+import { findAssetByCode, type AssetScanMatch } from '@/app/lib/inventory';
 
 export default function AssetCheckoutPage() {
   const router = useRouter();
@@ -40,11 +41,12 @@ export default function AssetCheckoutPage() {
 
   const [selectedAsset, setSelectedAsset] = useState<InventoryItem | null>(null);
   const [checkoutMode, setCheckoutMode] = useState<'checkout' | 'checkin' | null>(null);
+  const [selectedSerial, setSelectedSerial] = useState<string | null>(null);
   
   const scannerDisclosure = useDisclosure();
   const checkoutDisclosure = useDisclosure();
   const multipleMatchDisclosure = useDisclosure();
-  const [multipleMatches, setMultipleMatches] = useState<InventoryItem[]>([]);
+  const [multipleMatches, setMultipleMatches] = useState<AssetScanMatch[]>([]);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
@@ -98,23 +100,17 @@ export default function AssetCheckoutPage() {
   }, [searchQuery, assets]);
 
   const handleBarcodeScan = async (value: string) => {
-    // Search for asset by barcode, QR, or serial
-    const matches = assets.filter(
-      (a) =>
-        a.barcode === value ||
-        a.qr === value ||
-        a.assetSerial === value ||
-        (a.barcode && value.includes(a.barcode)) ||
-        (a.qr && value.includes(a.qr))
-    );
+    const matches = findAssetByCode(assets, value);
 
     if (matches.length === 0) {
       alert(`No asset found with code: ${value}`);
       scannerDisclosure.onOpen();
     } else if (matches.length === 1) {
-      const asset = matches[0];
-      setSelectedAsset(asset);
-      setCheckoutMode(asset.assetStatus === 'Checked Out' ? 'checkin' : 'checkout');
+      const match = matches[0];
+      setSelectedAsset(match.asset);
+      setSelectedSerial(match.serial ?? null);
+      const status = match.instance?.status ?? match.asset.assetStatus;
+      setCheckoutMode(status === 'Checked Out' ? 'checkin' : 'checkout');
       checkoutDisclosure.onOpen();
     } else {
       setMultipleMatches(matches);
@@ -122,9 +118,11 @@ export default function AssetCheckoutPage() {
     }
   };
 
-  const handleSelectAsset = (asset: InventoryItem) => {
+  const handleSelectAsset = (asset: InventoryItem, serial?: string | null, statusOverride?: string) => {
     setSelectedAsset(asset);
-    setCheckoutMode(asset.assetStatus === 'Checked Out' ? 'checkin' : 'checkout');
+    setSelectedSerial(serial ?? null);
+    const status = statusOverride ?? asset.assetStatus;
+    setCheckoutMode(status === 'Checked Out' ? 'checkin' : 'checkout');
     multipleMatchDisclosure.onClose();
     checkoutDisclosure.onOpen();
   };
@@ -209,6 +207,9 @@ export default function AssetCheckoutPage() {
                         {asset.assetCategory && (
                           <p className="text-xs text-gray-500">{asset.assetCategory}</p>
                         )}
+                        {Array.isArray(asset.assets) && asset.assets.length > 0 && (
+                          <p className="text-xs text-gray-500">{asset.assets.length} serialized units</p>
+                        )}
                       </div>
                     </TableCell>
                     <TableCell className="text-xs text-gray-600">{asset.assetSerial || '—'}</TableCell>
@@ -257,6 +258,7 @@ export default function AssetCheckoutPage() {
           onOpenChange={checkoutDisclosure.onClose}
           asset={selectedAsset}
           mode={checkoutMode}
+          serial={selectedSerial}
         />
       )}
 
@@ -268,20 +270,20 @@ export default function AssetCheckoutPage() {
               Found {multipleMatches.length} assets matching the scanned code. Please select one:
             </p>
             <div className="space-y-2 max-h-80 overflow-y-auto">
-              {multipleMatches.map((asset) => (
+              {multipleMatches.map((match, idx) => (
                 <Card
-                  key={asset.id}
+                  key={`${match.asset.id}-${match.serial ?? idx}`}
                   isPressable
-                  onPress={() => handleSelectAsset(asset)}
+                  onPress={() => handleSelectAsset(match.asset, match.serial, match.instance?.status ?? match.asset.assetStatus)}
                   className="cursor-pointer hover:bg-slate-100"
                 >
                   <CardBody className="flex-row justify-between items-center py-2 px-3">
                     <div className="flex-1">
-                      <p className="font-semibold">{asset.name}</p>
-                      <p className="text-xs text-gray-600">{asset.assetSerial}</p>
+                      <p className="font-semibold">{match.asset.name}</p>
+                      <p className="text-xs text-gray-600">{match.serial || match.asset.assetSerial || '—'}</p>
                     </div>
-                    <Chip size="sm" variant="flat" color={getStatusColor(asset.assetStatus)}>
-                      {asset.assetStatus}
+                    <Chip size="sm" variant="flat" color={getStatusColor(match.instance?.status ?? match.asset.assetStatus)}>
+                      {match.instance?.status ?? match.asset.assetStatus}
                     </Chip>
                   </CardBody>
                 </Card>

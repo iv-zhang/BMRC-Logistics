@@ -87,7 +87,6 @@ export default function LabelCard({
     if (!tagContent || !svgRef.current) return;
 
     try {
-      // @ts-expect-error JsBarcode types are not fully typed
       JsBarcode(svgRef.current, tagContent, {
         format: 'code128',
         displayValue: false,

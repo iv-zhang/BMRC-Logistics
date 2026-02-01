@@ -714,6 +714,11 @@ export default function InventoryModal({
 
   // --- SUBMIT ---
   const handleSubmit = async (onClose: () => void) => {
+    // Prevent editing assets from this modal — it is now disposables-only
+    if (initialData && (initialData as any).isAsset) {
+      alert('This item is an Asset and must be edited from the Assets editor.');
+      return;
+    }
     if (!formData.name) return;
     // Enforce: when item has variants, top-level batches must be assigned to a specific variant
     if (formData.hasVariants) {
@@ -724,20 +729,10 @@ export default function InventoryModal({
       }
     }
 
-    // CRITICAL ENFORCEMENT: If assetValue >= $500 threshold, item MUST be marked as asset (isAsset=true)
-    // per the business rules: items above threshold are tracked as assets, not disposables
-    const assetValue = Number(formData.assetValue ?? 0);
-    if (assetValue >= ASSET_VALUE_THRESHOLD && !formData.isAsset) {
-      const confirmMark = confirm(
-        `This item has an asset value of $${assetValue.toFixed(2)}, which exceeds the $${ASSET_VALUE_THRESHOLD} threshold. ` +
-        `Items above this threshold must be tracked as assets (not disposables). ` +
-        `Should I automatically mark this as an asset? Click OK to proceed.`
-      );
-      if (!confirmMark) return;
-      // Auto-mark as asset and set a sensible status
-      formData.isAsset = true;
-      if (!formData.assetStatus) formData.assetStatus = 'Ready';
-    }
+    // Enforce disposables-only for this modal: always treat as non-asset
+    formData.isAsset = false;
+    formData.assetValue = undefined;
+    formData.assetStatus = undefined;
 
     // If batches exist, do not treat the master item as having a single location — location is batch-scoped
     const masterHasBatches = Array.isArray(formData.batches) && formData.batches.length > 0;
@@ -836,68 +831,14 @@ export default function InventoryModal({
           quantity: Number(loc.quantity ?? 0),
           name: loc.name ?? ''
         })),
-        // If this is a serialized batch, carry forward per-serial asset instances
-        // For AEDs we prefer to represent each unit as a top-level asset (non-fungible),
-        // so skip batch-level `assetInstances` for AED items.
-        assetInstances: ((formData.isAsset && (formData as any).assetCategory === 'AED') ? undefined : (Array.isArray(b.serialNumbers) ? (b.serialNumbers || []).map((s: string) => ({
+        // Serialized batch: keep serial numbers but do not create per-unit asset metadata here (disposables-only)
+        assetInstances: (Array.isArray(b.serialNumbers) ? (b.serialNumbers || []).map((s: string) => ({
           serial: s,
-          status: formData.isAsset ? (formData.assetStatus ?? undefined) : undefined,
-          checks: formData.isAsset ? ((formData as any).assetChecks ?? undefined) : undefined,
-          lastChecked: safeParseDate(formData.assetLastChecked as any)
-        })) : undefined))
+          lastChecked: undefined
+        })) : undefined)
       }))
     };
-
-    // For AED assets (non-fungible), collapse serials into top-level `assets[]` and remove batch/variant arrays.
-    if (formData.isAsset && (formData as any).assetCategory === 'AED') {
-      // Prefer explicit per-unit `formData.assets` if provided (more complete metadata).
-        const assetsList: any[] = Array.isArray(formData.assets) && formData.assets.length > 0
-        ? (formData.assets || []).map((a: any) => ({
-            id: a.id ?? a.serial ?? uniqueId(),
-            serial: a.serial,
-            assetTag: a.assetTag ?? a.id ?? a.serial,
-            status: a.status ?? formData.assetStatus ?? undefined,
-            padExpiration: a.padExpiration ? safeParseDate(a.padExpiration) : undefined,
-            batteryExpiration: a.batteryExpiration ? safeParseDate(a.batteryExpiration) : undefined,
-            lastServiceDate: a.lastServiceDate ? safeParseDate(a.lastServiceDate) : undefined,
-            lastChecked: a.lastChecked ? safeParseDate(a.lastChecked) : undefined,
-            nextExpiration: a.nextExpiration ? safeParseDate(a.nextExpiration) : undefined,
-            batteryStatus: a.batteryStatus ?? undefined,
-            padsSealed: typeof a.padsSealed === 'boolean' ? a.padsSealed : undefined,
-            lastCheckNotes: a.lastCheckNotes ?? undefined,
-            assignedToId: a.assignedToId ?? undefined,
-            currentLocation: a.currentLocation ?? undefined,
-          }))
-        : (Array.isArray(formData.batches) && formData.batches.length > 0)
-          ? formData.batches.flatMap((b: any) => (b.serialNumbers || []).map((s: string) => ({
-              id: s,
-              serial: s,
-              assetTag: s,
-              status: formData.assetStatus ?? undefined,
-              checks: (formData as any).assetCategory === 'AED' ? (formData as any).assetChecks ?? undefined : undefined,
-              lastChecked: safeParseDate((formData as any).assetLastChecked),
-              padExpiration: undefined,
-              batteryExpiration: undefined,
-              lastServiceDate: undefined,
-            })))
-          : (formData as any).assetSerial
-            ? [{
-                id: (formData as any).assetSerial,
-                serial: (formData as any).assetSerial,
-                assetTag: (formData as any).assetSerial,
-                status: formData.assetStatus ?? undefined,
-                checks: (formData as any).assetCategory === 'AED' ? (formData as any).assetChecks ?? undefined : undefined,
-                lastChecked: safeParseDate((formData as any).assetLastChecked),
-                padExpiration: undefined,
-                batteryExpiration: undefined,
-                lastServiceDate: undefined,
-              }]
-            : [];
-
-      (payload as any).assets = assetsList;
-      delete (payload as any).batches;
-      delete (payload as any).variants;
-    }
+    // Items created here are disposables; do not synthesize top-level assets list
 
     // Remove master-level location fields when batches are present — batches own location data
     if (masterHasBatches) {
@@ -989,6 +930,12 @@ export default function InventoryModal({
             </ModalHeader>
             <ModalBody className="py-6">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {initialData && (initialData as any).isAsset && (
+                  <div className="md:col-span-2 p-4 bg-red-50 dark:bg-red-900/10 rounded-md border border-red-100 text-sm">
+                    <div className="font-semibold mb-2">Asset Detected</div>
+                    <div>This item appears to be an Asset. The Inventory modal now manages disposables only — please use the Assets editor to view or edit asset items.</div>
+                  </div>
+                )}
                 
                 {/* --- BASIC INFO --- */}
                 <h3 className="md:col-span-2 text-sm font-bold text-gray-500 uppercase mt-2">Item Details</h3>
@@ -1099,18 +1046,7 @@ export default function InventoryModal({
                   </div>
                 )}
 
-                {/* Heuristic: suggest marking item as AED if name looks like AED */}
-                {isLikelyAED(typeof formData.name === 'string' ? formData.name : '') && !formData.isAsset && !((formData as any).assetCategory === 'AED') && (
-                  <div className="md:col-span-2 p-3 bg-yellow-50 dark:bg-yellow-900/10 rounded-md border border-yellow-100 text-sm">
-                    <div className="flex items-center justify-between">
-                      <div>This item name looks like an AED. Treat this as an AED asset?</div>
-                      <div className="flex items-center gap-2">
-                        <Button size="sm" color="primary" variant="flat" onPress={() => setFormData({...formData, isAsset: true, assetCategory: 'AED'})}>Yes, mark as AED</Button>
-                        <Button size="sm" color="danger" variant="light" onPress={() => { /* dismiss: set a flag to not prompt again for this session */ setFormData(prev => ({ ...prev, name: prev.name })); }}>Ignore</Button>
-                      </div>
-                    </div>
-                  </div>
-                )}
+                {/* AED suggestion removed: inventory modal is disposables-only now */}
 
                 <Select 
                   label="Category" 
@@ -1124,13 +1060,7 @@ export default function InventoryModal({
                 </Select>
 
 
-                <div className="flex items-center justify-between p-3 border-2 border-default-200 rounded-xl">
-                  <div className="flex flex-col">
-                    <span className="text-sm text-gray-600 dark:text-gray-400">Is Asset?</span>
-                    <span className="text-xs text-gray-400">Track as single asset (status), not by quantity.</span>
-                  </div>
-                  <Switch isSelected={!!formData.isAsset} onValueChange={(val) => setFormData({...formData, isAsset: val, hasVariants: val ? false : formData.hasVariants})} />
-                </div>
+                {/* Asset toggle removed: all items created/edited here are disposables */}
 
 
                 <div className="flex items-center justify-between p-3 border-2 border-default-200 rounded-xl">
@@ -1479,6 +1409,15 @@ export default function InventoryModal({
                               <Input size="sm" type="number" label="Qty Total" value={String((b as any).stock ?? 0)} onValueChange={(v) => updateBatch(b.id, 'stock', Number(v))} />
                               <Input size="sm" type="date" label="Received" value={getDateString((b.receivedAt as Date) ?? undefined)} onValueChange={(v) => updateBatch(b.id, 'receivedAt', v ? new Date(v) : undefined)} />
                               <Input size="sm" label="Notes" value={(b as any).notes ?? ''} onValueChange={(v) => updateBatch(b.id, 'notes', v)} />
+                              
+                              {/* Purchase/Vendor Info */}
+                              <Divider className="md:col-span-4 my-2" />
+                              <div className="md:col-span-4 text-xs font-semibold text-gray-500 uppercase">Purchase Info (Optional)</div>
+                              <Input size="sm" label="Supplier Name" placeholder="e.g., Medline" value={(b.purchase as any)?.supplierName ?? ''} onValueChange={(v) => updateBatch(b.id, 'purchase', { ...(b.purchase || {}), supplierName: v })} />
+                              <Input size="sm" label="Price Per Unit" type="number" placeholder="0.00" value={(b.purchase as any)?.pricePerUnit?.toString() ?? ''} onValueChange={(v) => updateBatch(b.id, 'purchase', { ...(b.purchase || {}), pricePerUnit: v ? Number(v) : undefined })} />
+                              <Input size="sm" label="Currency" placeholder="USD" value={(b.purchase as any)?.currency ?? ''} onValueChange={(v) => updateBatch(b.id, 'purchase', { ...(b.purchase || {}), currency: v })} />
+                              <Input size="sm" label="PO / Invoice #" placeholder="PO-1234" value={(b.purchase as any)?.purchaseOrderId ?? ''} onValueChange={(v) => updateBatch(b.id, 'purchase', { ...(b.purchase || {}), purchaseOrderId: v })} />
+                              
                               <div className="flex items-center gap-2">
                                 <div className="flex items-center">
                                   <span className="text-xs mr-2">Serialized (unit-level)?</span>

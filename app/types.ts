@@ -1,5 +1,19 @@
 import type { FieldValue, Timestamp } from 'firebase/firestore';
 
+// --- PURCHASE TRACKING ---
+export interface PurchaseInfo {
+  supplierName?: string;
+  supplierId?: string;
+  pricePerUnit?: number;
+  currency?: string; // Default: 'USD'
+  quantityReceived?: number;
+  unitOfMeasure?: string; // 'box', 'each', 'case', etc.
+  purchaseOrderId?: string;
+  invoiceRef?: string;
+  receivedAt?: Timestamp | Date;
+  notes?: string;
+}
+
 // --- ASSET MANAGEMENT CONSTANTS ---
 // Default dollar threshold for automatic asset classification
 // Items over this value should be tracked as individual assets with serial numbers
@@ -67,6 +81,8 @@ export interface InventoryBatch {
   receivedAt?: Date;
   notes?: string;
   requiresFIFO?: boolean; // Flag to enforce oldest-first picking
+  // Purchase/vendor tracking for this batch
+  purchase?: PurchaseInfo;
   // Optional per-location splits for the same batch (e.g., storage, statpacks)
   locations?: {
     id: string;
@@ -295,6 +311,7 @@ export interface StatpackLog {
   timestamp: Date | FieldValue;
   notes?: string;
   mismatchResolutions?: MismatchResolution[];
+  validationWarnings?: ValidationWarning[];
   
   // Digital Check-Off: structured per-item check entries
   checkEntries?: {
@@ -332,6 +349,60 @@ export interface MismatchResolution {
   resolvedBy?: string;
   resolvedAt?: Date | FieldValue;
   note?: string;
+}
+
+export interface ValidationWarning {
+  warningType:
+    | 'missing_asset'
+    | 'unassigned_asset'
+    | 'assigned_mismatch'
+    | 'asset_status'
+    | 'asset_expired'
+    | 'other';
+  itemId?: string;
+  itemName?: string;
+  serialNumber?: string;
+  currentAssignedTo?: string | null;
+  message: string;
+}
+
+export interface AssetCheckResult {
+  itemId: string;
+  itemName: string;
+  serialNumber?: string;
+  measuredBatteryPct?: number; // 0-100
+  measuredO2Psi?: number;
+  condition: 'Good' | 'Minor Issue' | 'Major Issue' | 'Needs Maintenance';
+  expirationWarnings: ValidationWarning[];
+  checkedAt: Date;
+  checkedBy: string;
+  checkedByName: string;
+  notes?: string;
+  dueNextDate?: Date;
+  actionRequired: boolean;
+}
+
+export interface StatpackAuditResult {
+  statpackId: string;
+  statpackName: string;
+  contentChecks: Array<{
+    itemId: string;
+    itemName: string;
+    serialNumber?: string;
+    requiredQuantity: number;
+    foundQuantity: number;
+    inCorrectPocket: boolean;
+    conditionOk: boolean;
+    expirationOk: boolean;
+    notes?: string;
+  }>;
+  validationWarnings: ValidationWarning[];
+  condition: 'Ready' | 'Issues Found';
+  checkedAt: Date;
+  checkedBy: string;
+  checkedByName: string;
+  overallNotes?: string;
+  actionRequired: boolean;
 }
 
 // Per-asset instance metadata for serialized items (e.g., AEDs)
@@ -412,6 +483,8 @@ export interface Container {
     quantity: number;
     serialNumber?: string; // For serialized/asset items
   }[];
+  // Purchase tracking for sealed boxes (when received)
+  purchase?: PurchaseInfo;
   createdAt?: Date;
   updatedAt?: Date;
 }

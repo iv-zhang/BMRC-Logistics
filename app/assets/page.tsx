@@ -42,6 +42,7 @@ import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { auth, db } from '@/firebase';
 import type { Statpack, InventoryItem, User, StatpackPocket, StatpackCompartment } from '@/app/types';
 import { BagVisualizer } from '@/app/components/statpackvisualizer';
+import { updateAssetAssignment } from '@/app/lib/inventory';
 import {
   Package,
   Wrench,
@@ -57,6 +58,7 @@ import {
 import AssetModal from '@/app/components/assetmodal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import AssetHistory from '@/app/components/asset-history';
+import AdminAuditModal from '@/app/components/admin-audit-modal';
 
 interface AssetRecord {
   id: string;
@@ -95,6 +97,10 @@ export default function AssetsPage() {
   const [editorSelectedPocket, setEditorSelectedPocket] = useState<StatpackPocket | 'all'>('all');
   const assetModalDisclosure = useDisclosure();
   const [editingAsset, setEditingAsset] = useState<any | null>(null);
+  // Admin audit modal state
+  const auditModalDisclosure = useDisclosure();
+  const [auditType, setAuditType] = useState<'asset' | 'statpack'>('asset');
+  const [auditTarget, setAuditTarget] = useState<AssetRecord | null>(null);
 
   // Helpers to update contents and compartment items by index (avoid id-collision issues)
   const updateContentAt = (idx: number, patch: Partial<any>) => {
@@ -548,7 +554,7 @@ export default function AssetsPage() {
               }}
             >
               <TableHeader>
-                {userRole === 'admin' && <TableColumn key="checkbox">✓</TableColumn>}
+                <TableColumn key="checkbox" className={userRole === 'admin' ? '' : 'hidden'}>✓</TableColumn>
                 <TableColumn>Asset Name</TableColumn>
                 <TableColumn>Type</TableColumn>
                 <TableColumn>Status</TableColumn>
@@ -568,8 +574,8 @@ export default function AssetsPage() {
                       onMouseLeave={() => setHoveredRowId((id) => id === asset.id ? null : id)}
                       className={`cursor-pointer transition-colors duration-150 ease-in-out ${selectedRowId === asset.id || hoveredRowId === asset.id ? 'bg-gray-100 dark:bg-slate-800' : ''}`}
                     >
-                      {userRole === 'admin' && (
-                        <TableCell>
+                      <TableCell className={userRole === 'admin' ? '' : 'hidden'}>
+                        {userRole === 'admin' && (
                           <input
                             type="checkbox"
                             checked={selectedForPrint.has(asset.id)}
@@ -584,8 +590,8 @@ export default function AssetsPage() {
                             }}
                             onClick={(e) => e.stopPropagation()}
                           />
-                        </TableCell>
-                      )}
+                        )}
+                      </TableCell>
                       <TableCell className="font-medium">{asset.name}</TableCell>
                       <TableCell>
                         <Chip size="sm" variant="flat">
@@ -644,18 +650,18 @@ export default function AssetsPage() {
                       <TableCell>
                         <div className="flex gap-2">
                           <Button
-                            isIconOnly
-                            size="sm"
-                            variant="light"
-                            onPress={(e: any) => { e.stopPropagation(); setSelectedRowId(asset.id); setSelectedAsset(asset); setIsEditingDetails(false); detailsDisclosure.onOpen(); }}
-                          >
+                                isIconOnly
+                                size="sm"
+                                variant="light"
+                                onPress={(e: any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); setSelectedRowId(asset.id); setSelectedAsset(asset); setIsEditingDetails(false); detailsDisclosure.onOpen(); }}
+                              >
                             <Eye size={16} />
                           </Button>
                           <Button
                             isIconOnly
                             size="sm"
                             variant="light"
-                            onPress={(e: any) => { e.stopPropagation(); openScannerForAsset(asset); }}
+                            onPress={(e: any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); openScannerForAsset(asset); }}
                           >
                             <MapPin size={16} />
                           </Button>
@@ -665,7 +671,7 @@ export default function AssetsPage() {
                               size="sm"
                               variant="light"
                               color={activeMaintenance ? 'success' : 'warning'}
-                              onPress={(e: any) => { e.stopPropagation(); if (activeMaintenance) { handleCompleteMaintenance(asset, activeMaintenance.id); } else { handleStartMaintenance(asset); } }}
+                              onPress={(e: any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); if (activeMaintenance) { handleCompleteMaintenance(asset, activeMaintenance.id); } else { handleStartMaintenance(asset); } }}
                             >
                               {activeMaintenance ? <CheckCircle size={16} /> : <Wrench size={16} />}
                             </Button>
@@ -684,8 +690,24 @@ export default function AssetsPage() {
                             </Button>
                           )}
                           {asset.type === 'inventory' && userRole === 'admin' && (
-                            <Button isIconOnly size="sm" variant="light" onPress={(e:any) => { e.stopPropagation(); setEditingAsset(asset.data); assetModalDisclosure.onOpen(); }}>
+                            <Button isIconOnly size="sm" variant="light" onPress={(e:any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); setEditingAsset(asset.data); assetModalDisclosure.onOpen(); }}>
                               <Pencil size={16} />
+                            </Button>
+                          )}
+                          {userRole === 'admin' && (
+                            <Button
+                              isIconOnly
+                              size="sm"
+                              variant="light"
+                              onPress={(e: any) => {
+                                e.stopPropagation();
+                                setAuditTarget(asset);
+                                setAuditType(asset.type === 'statpack' ? 'statpack' : 'asset');
+                                auditModalDisclosure.onOpen();
+                              }}
+                              title="Run Manual Audit"
+                            >
+                              <Wrench size={16} />
                             </Button>
                           )}
                         </div>
@@ -1249,12 +1271,24 @@ export default function AssetsPage() {
         initial={editingAsset}
         onAdd={async (payload) => {
           try {
-            await addDoc(collection(db, 'inventory'), {
+            const ref = await addDoc(collection(db, 'inventory'), {
               ...payload,
               isAsset: true,
               createdAt: serverTimestamp(),
               updatedAt: serverTimestamp(),
             });
+            const assignedToId = (payload as any)?.assignedToId;
+            if (assignedToId) {
+              await updateAssetAssignment({
+                itemId: ref.id,
+                newAssignedToId: assignedToId,
+                user: {
+                  id: user?.uid ?? 'system',
+                  fullName: user?.displayName || user?.email || 'System',
+                },
+                note: 'Assigned on asset creation',
+              });
+            }
           } catch (err) {
             console.error('Failed to add asset:', err);
             alert('Failed to add asset');
@@ -1262,11 +1296,41 @@ export default function AssetsPage() {
         }}
         onUpdate={async (id, payload) => {
           try {
-            await updateDoc(doc(db, 'inventory', id), { ...payload, updatedAt: serverTimestamp() });
+            const assignedToId = (payload as any)?.assignedToId;
+            const prevAssignedToId = (editingAsset as any)?.assignedToId;
+            const assignedChanged = assignedToId !== prevAssignedToId;
+            const { assignedToId: _omit, ...rest } = payload as any;
+
+            await updateDoc(doc(db, 'inventory', id), { ...rest, updatedAt: serverTimestamp() });
+
+            if (assignedChanged) {
+              await updateAssetAssignment({
+                itemId: id,
+                newAssignedToId: assignedToId ?? null,
+                user: {
+                  id: user?.uid ?? 'system',
+                  fullName: user?.displayName || user?.email || 'System',
+                },
+                note: 'Updated via asset editor',
+              });
+            }
           } catch (err) {
             console.error('Failed to update asset:', err);
             alert('Failed to update asset');
           }
+        }}
+      />
+
+      <AdminAuditModal
+        isOpen={auditModalDisclosure.isOpen}
+        onOpenChange={auditModalDisclosure.onOpenChange}
+        auditType={auditType}
+        targetAsset={auditType === 'asset' && auditTarget ? (auditTarget.data as InventoryItem) : undefined}
+        targetStatpack={auditType === 'statpack' && auditTarget ? (auditTarget.data as Statpack) : undefined}
+        userId={user?.uid || ''}
+        userName={user?.displayName || user?.email || 'Unknown'}
+        onAuditComplete={() => {
+          setAuditTarget(null);
         }}
       />
 

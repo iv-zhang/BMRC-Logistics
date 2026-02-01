@@ -1,6 +1,6 @@
 'use client';
 import React, { useEffect, useState, useRef } from 'react';
-import { collection, getDocs } from 'firebase/firestore';
+import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button, Input, Select, SelectItem, Textarea } from '@heroui/react';
 import type { InventoryItem } from '@/app/types';
@@ -22,14 +22,19 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
   const [form, setForm] = useState<Partial<InventoryItem>>({});
   const [knownLocations, setKnownLocations] = useState<string[]>([]);
   const [useCustomLocation, setUseCustomLocation] = useState(false);
+  const [statpacks, setStatpacks] = useState<Array<{ id: string; name: string }>>([]);
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [historySerial, setHistorySerial] = useState<string>('');
   const svgRef = useRef<SVGSVGElement | null>(null);
 
   useEffect(() => {
     if (isOpen) {
       setForm(initial ? { ...initial } : { name: '', isAsset: true, assetStatus: 'Ready' });
       setValidationError(null);
+      setSaving(false);
+      setHistorySerial('');
     }
   }, [isOpen, initial]);
 
@@ -41,11 +46,19 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
       try {
         const locSet = new Set<string>();
         const spSnap = await getDocs(collection(db, 'statpacks'));
-        spSnap.forEach(s => { const d = s.data() as any; if (d?.currentLocation) locSet.add(String(d.currentLocation)); });
+        const spList: Array<{ id: string; name: string }> = [];
+        spSnap.forEach(s => {
+          const d = s.data() as any;
+          if (d?.currentLocation) locSet.add(String(d.currentLocation));
+          spList.push({ id: s.id, name: d?.name || s.id });
+        });
         const invSnap = await getDocs(collection(db, 'inventory'));
         invSnap.forEach(s => { const d = s.data() as any; if (d?.currentLocation) locSet.add(String(d.currentLocation)); });
         const arr = Array.from(locSet).filter(Boolean);
-        if (mounted) setKnownLocations(arr);
+        if (mounted) {
+          setKnownLocations(arr);
+          setStatpacks(spList);
+        }
       } catch (e) {
         // ignore
       }
@@ -74,7 +87,6 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
       }
       try {
         if (svgRef.current) {
-          // @ts-expect-error JsBarcode types are not fully typed
           JsBarcode(svgRef.current, tagValue, { format: 'code128', displayValue: true, width: 2, height: 40 });
         }
       } catch (e) {
@@ -174,6 +186,7 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
 
   const save = async () => {
     try {
+      setSaving(true);
       // Ensure there is a barcode or QR; if not present, generate one on-the-fly
       let payload: Partial<InventoryItem> = { ...form } as Partial<InventoryItem>;
       if (!payload.barcode && !payload.qr) {
@@ -182,6 +195,33 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
       }
 
       setValidationError(null);
+
+      const serialToCheck = String(payload.assetSerial || '').trim();
+      const barcodeToCheck = String(payload.barcode || '').trim();
+      const qrToCheck = String(payload.qr || '').trim();
+
+      const checkDuplicate = async (field: 'assetSerial' | 'barcode' | 'qr', value: string) => {
+        if (!value) return false;
+        const q = query(collection(db, 'inventory'), where(field, '==', value));
+        const snap = await getDocs(q);
+        return snap.docs.some((docSnap) => docSnap.id !== initial?.id);
+      };
+
+      if (await checkDuplicate('assetSerial', serialToCheck)) {
+        setValidationError('Serial/Tag is already in use by another asset. Please enter a unique value.');
+        setSaving(false);
+        return;
+      }
+      if (await checkDuplicate('barcode', barcodeToCheck)) {
+        setValidationError('Barcode is already in use by another asset. Please enter a unique value.');
+        setSaving(false);
+        return;
+      }
+      if (await checkDuplicate('qr', qrToCheck)) {
+        setValidationError('QR Code is already in use by another asset. Please enter a unique value.');
+        setSaving(false);
+        return;
+      }
 
       if (initial && initial.id) {
         console.log('AssetModal: updating', initial.id, payload);
@@ -198,6 +238,8 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
       console.error('AssetModal: save error', e);
       // eslint-disable-next-line no-alert
       alert((e as any)?.message ? `Failed to save asset: ${(e as any).message}` : 'Failed to save asset');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -221,6 +263,16 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
             <SelectItem key="Radio">Radio</SelectItem>
           </Select>
           <Input label="Model" value={String(form.assetModel ?? '')} onValueChange={(v) => setForm({ ...form, assetModel: v })} />
+
+          <Select
+            label="Assigned Statpack"
+            selectedKeys={[String(form.assignedToId ?? '')]}
+            onChange={(e) => setForm({ ...form, assignedToId: e.target.value || undefined })}
+            description="Single-assignment: an asset can belong to only one statpack"
+          >
+            <SelectItem key="">Unassigned</SelectItem>
+            {(statpacks.map(s => <SelectItem key={s.id}>{s.name}</SelectItem>) as any)}
+          </Select>
           
           <div className="flex gap-2 items-end">
             <div className="flex-1">
@@ -277,13 +329,26 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
           {initial && initial.id && (
             <div>
               <h4 className="text-sm font-semibold mb-2">Activity History</h4>
-              <AssetHistory assetId={initial.id} maxRows={5} />
+              {Array.isArray(initial.assets) && initial.assets.length > 0 && (
+                <Select
+                  label="Filter by Instance"
+                  selectedKeys={historySerial ? [historySerial] : []}
+                  onChange={(e) => setHistorySerial(e.target.value)}
+                  className="mb-2"
+                >
+                  <SelectItem key="">All instances</SelectItem>
+                  {(initial.assets.map(a => (
+                    <SelectItem key={a.serial}>{a.assetTag || a.id || a.serial}</SelectItem>
+                  )) as any)}
+                </Select>
+              )}
+              <AssetHistory assetId={initial.id} maxRows={5} serialNumber={historySerial || undefined} />
             </div>
           )}
         </ModalBody>
           <ModalFooter>
           <Button variant="light" onPress={() => onOpenChange(false)}>Cancel</Button>
-          <Button color="primary" onPress={save}>{initial ? 'Save' : 'Add Asset'}</Button>
+          <Button color="primary" onPress={save} isLoading={saving}>{initial ? 'Save' : 'Add Asset'}</Button>
         </ModalFooter>
       </ModalContent>
     </Modal>

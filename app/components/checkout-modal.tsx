@@ -1,30 +1,45 @@
 'use client';
-import React, { useEffect, useState } from 'react';
-import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button, Input, Textarea, Card, CardBody, Chip } from '@heroui/react';
-import type { InventoryItem, User } from '@/app/types';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button, Input, Textarea, Card, CardBody, Chip, Select, SelectItem } from '@heroui/react';
+import type { InventoryItem, User, AssetInstance } from '@/app/types';
 import { checkoutAsset, checkinAsset } from '@/app/lib/inventory';
 import { onAuthStateChanged } from 'firebase/auth';
-import { auth } from '@/firebase';
+import { doc, getDoc } from 'firebase/firestore';
+import { auth, db } from '@/firebase';
 
 interface CheckoutModalProps {
   isOpen: boolean;
   onOpenChange: () => void;
   asset: InventoryItem | null;
   mode: 'checkout' | 'checkin' | null;
+  serial?: string | null;
 }
 
-export default function CheckoutModal({ isOpen, onOpenChange, asset, mode }: CheckoutModalProps) {
+export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, serial }: CheckoutModalProps) {
   const [user, setUser] = useState<User | null>(null);
   const [location, setLocation] = useState<string>('');
   const [note, setNote] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [selectedSerial, setSelectedSerial] = useState<string | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
-        // In a real app, fetch full user doc from Firestore
+      if (!firebaseUser) return;
+      try {
+        const userRef = doc(db, 'users', firebaseUser.uid);
+        const userSnap = await getDoc(userRef);
+        const data = userSnap.exists() ? userSnap.data() : null;
+        setUser({
+          id: firebaseUser.uid,
+          email: firebaseUser.email || data?.email || '',
+          fullName: data?.fullName || data?.name || firebaseUser.displayName || firebaseUser.email?.split('@')[0] || '',
+          role: data?.role || 'member',
+          createdAt: data?.createdAt?.toDate?.() || new Date(),
+          updatedAt: data?.updatedAt?.toDate?.() || new Date(),
+        });
+      } catch (e) {
         setUser({
           id: firebaseUser.uid,
           email: firebaseUser.email || '',
@@ -47,8 +62,40 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode }: Che
     }
   }, [isOpen]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    setSelectedSerial(serial ?? null);
+  }, [isOpen, serial]);
+
+  const instances = useMemo(() => (asset?.assets || []) as AssetInstance[], [asset]);
+  const selectedInstance = useMemo(
+    () => (selectedSerial ? instances.find(i => i.serial === selectedSerial) : undefined),
+    [instances, selectedSerial]
+  );
+  const requiresSerial = instances.length > 0;
+  const friendlyError = useMemo(() => {
+    if (!error) return null;
+    if (error.toLowerCase().includes('already checked out')) {
+      return 'This asset is already checked out. If this is incorrect, ask an admin to check it in.';
+    }
+    if (error.toLowerCase().includes('not currently checked out')) {
+      return 'This asset is not checked out. Please verify the serial and try again.';
+    }
+    if (error.toLowerCase().includes('requires a serial')) {
+      return 'This asset is serialized. Please select an instance/serial to continue.';
+    }
+    if (error.toLowerCase().includes('serial') && error.toLowerCase().includes('not found')) {
+      return 'Serial not found on this asset. Check the tag/label and try again.';
+    }
+    return error;
+  }, [error]);
+
   const handleConfirm = async () => {
     if (!asset || !user || !mode) return;
+    if (requiresSerial && !selectedSerial) {
+      setError('Please select an asset instance/serial before continuing.');
+      return;
+    }
     
     setLoading(true);
     setError(null);
@@ -60,6 +107,7 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode }: Che
           user: { id: user.id, fullName: user.fullName },
           location: location || undefined,
           note: note || undefined,
+          serial: selectedSerial || undefined,
         });
       } else {
         await checkinAsset({
@@ -67,6 +115,7 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode }: Che
           user: { id: user.id, fullName: user.fullName },
           location: location || undefined,
           note: note || undefined,
+          serial: selectedSerial || undefined,
         });
       }
       
@@ -84,7 +133,8 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode }: Che
 
   if (!asset) return null;
 
-  const isCheckedOut = asset.assetStatus === 'Checked Out';
+  const effectiveStatus = selectedInstance?.status ?? asset.assetStatus;
+  const isCheckedOut = effectiveStatus === 'Checked Out';
   const buttonText = mode === 'checkout' ? 'Confirm Checkout' : 'Confirm Checkin';
   const cardTitle = mode === 'checkout' ? 'Checkout Asset' : 'Checkin Asset';
 
@@ -114,11 +164,29 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode }: Che
                   {asset.assetCategory && (
                     <p className="text-xs text-gray-600">Category: {asset.assetCategory}</p>
                   )}
-                  {asset.assetSerial && (
-                    <p className="text-xs text-gray-600">Serial: {asset.assetSerial}</p>
+                  {(selectedInstance?.serial || asset.assetSerial) && (
+                    <p className="text-xs text-gray-600">Serial: {selectedInstance?.serial || asset.assetSerial}</p>
                   )}
                 </CardBody>
               </Card>
+
+              {requiresSerial && (
+                <div>
+                  <label className="text-sm font-semibold block mb-1">Asset Instance</label>
+                  <Select
+                    selectedKeys={selectedSerial ? [selectedSerial] : []}
+                    onChange={(e) => setSelectedSerial(e.target.value)}
+                    placeholder="Select serial/tag"
+                    description="Required for serialized assets"
+                  >
+                    {instances.map((instance) => (
+                      <SelectItem key={instance.serial}>
+                        {instance.assetTag || instance.id || instance.serial} {instance.status ? `• ${instance.status}` : ''}
+                      </SelectItem>
+                    ))}
+                  </Select>
+                </div>
+              )}
 
               <div>
                 <label className="text-sm font-semibold block mb-1">Member</label>
@@ -150,10 +218,10 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode }: Che
                 />
               </div>
 
-              {error && (
+              {friendlyError && (
                 <Card className="bg-red-50">
                   <CardBody>
-                    <p className="text-red-700 text-sm">{error}</p>
+                    <p className="text-red-700 text-sm">{friendlyError}</p>
                   </CardBody>
                 </Card>
               )}

@@ -14,7 +14,7 @@ import {
   Card,
   CardBody,
 } from '@heroui/react';
-import type { InventoryItem, InventoryBatch } from '@/app/types';
+import type { InventoryItem, InventoryBatch, PurchaseInfo } from '@/app/types';
 import { consumeBox } from '@/app/lib/inventory';
 import { auth } from '@/firebase';
 
@@ -36,6 +36,12 @@ export default function ConsumeBoxModal({
   const [notes, setNotes] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string>('');
+  
+  // Purchase tracking fields
+  const [supplierName, setSupplierName] = useState<string>('');
+  const [pricePerUnit, setPricePerUnit] = useState<string>('');
+  const [purchaseOrderId, setPurchaseOrderId] = useState<string>('');
+  const [showPurchaseFields, setShowPurchaseFields] = useState(false);
 
   const currentUser = auth.currentUser;
   const itemsPerBox = item.itemsPerBox || 1;
@@ -67,12 +73,21 @@ export default function ConsumeBoxModal({
     try {
       const targetBatchId = selectedBatchId === 'new' ? undefined : selectedBatchId;
       
+      const purchase: PurchaseInfo | undefined = (supplierName || pricePerUnit || purchaseOrderId) ? {
+        supplierName: supplierName || undefined,
+        pricePerUnit: pricePerUnit ? Number(pricePerUnit) : undefined,
+        currency: 'USD',
+        purchaseOrderId: purchaseOrderId || undefined,
+        receivedAt: new Date(),
+      } : undefined;
+      
       await consumeBox(item.id, boxCount, {
         targetBatchId,
         openDate: new Date(),
         userId: currentUser?.uid || 'system',
         userName: currentUser?.displayName || currentUser?.email || 'Unknown',
         notes: notes || undefined,
+        purchase,
       });
 
       if (onSuccess) onSuccess();
@@ -90,6 +105,10 @@ export default function ConsumeBoxModal({
     setSelectedBatchId('new');
     setNotes('');
     setError('');
+    setSupplierName('');
+    setPricePerUnit('');
+    setPurchaseOrderId('');
+    setShowPurchaseFields(false);
     onClose();
   };
 
@@ -137,18 +156,18 @@ export default function ConsumeBoxModal({
               }}
               description="Choose an existing open batch or create a new one"
             >
-              <SelectItem key="new" value="new">
+              <SelectItem key="new">
                 Create new open batch
               </SelectItem>
               {openBatches.map((batch) => (
-                <SelectItem key={batch.id} value={batch.id}>
+                <SelectItem key={batch.id}>
                   {batch.lotNumber || 'OPEN'} — {batch.stock} units (opened{' '}
                   {batch.openDate
                     ? new Date(batch.openDate).toLocaleDateString()
                     : 'date unknown'}
                   )
                 </SelectItem>
-              ))}
+              )) as any}
             </Select>
 
             {/* Notes */}
@@ -158,6 +177,47 @@ export default function ConsumeBoxModal({
               onChange={(e) => setNotes(e.target.value)}
               placeholder="E.g., Moving stock to forward staging for restocks"
             />
+            
+            {/* Purchase Info Toggle */}
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="flat"
+                onPress={() => setShowPurchaseFields(!showPurchaseFields)}
+              >
+                {showPurchaseFields ? 'Hide' : 'Add'} Purchase Info
+              </Button>
+              <span className="text-xs text-gray-500">Track vendor and pricing for comparison</span>
+            </div>
+            
+            {/* Purchase Info Fields */}
+            {showPurchaseFields && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-3 bg-blue-50 dark:bg-blue-900/10 rounded-lg border border-blue-200">
+                <Input
+                  size="sm"
+                  label="Supplier Name"
+                  placeholder="e.g., Medline, Henry Schein"
+                  value={supplierName}
+                  onChange={(e) => setSupplierName(e.target.value)}
+                />
+                <Input
+                  size="sm"
+                  type="number"
+                  label="Price Per Unit (USD)"
+                  placeholder="0.00"
+                  value={pricePerUnit}
+                  onChange={(e) => setPricePerUnit(e.target.value)}
+                />
+                <Input
+                  size="sm"
+                  label="PO / Invoice #"
+                  placeholder="PO-1234"
+                  value={purchaseOrderId}
+                  onChange={(e) => setPurchaseOrderId(e.target.value)}
+                  className="md:col-span-2"
+                />
+              </div>
+            )}
 
             {/* Preview */}
             <Card>

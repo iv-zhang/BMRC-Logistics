@@ -2,15 +2,16 @@
 import React, { useEffect, useState } from 'react';
 import { collection, query, where, orderBy, getDocs, Timestamp } from 'firebase/firestore';
 import { db } from '@/firebase';
-import { Card, CardBody, CardHeader, Chip, Spinner, Table, TableBody, TableCell, TableColumn, TableHeader } from '@heroui/react';
+import { Card, CardBody, CardHeader, Chip, Spinner, Table, TableBody, TableCell, TableColumn, TableHeader, TableRow } from '@heroui/react';
 import type { InventoryLog } from '@/app/types';
 
 interface AssetHistoryProps {
   assetId: string;
   maxRows?: number;
+  serialNumber?: string;
 }
 
-export default function AssetHistory({ assetId, maxRows = 10 }: AssetHistoryProps) {
+export default function AssetHistory({ assetId, maxRows = 10, serialNumber }: AssetHistoryProps) {
   const [logs, setLogs] = useState<(InventoryLog & { id: string })[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -28,8 +29,7 @@ export default function AssetHistory({ assetId, maxRows = 10 }: AssetHistoryProp
           orderBy('timestamp', 'desc')
         );
         const snap = await getDocs(q);
-        const logs: (InventoryLog & { id: string })[] = snap.docs
-          .slice(0, maxRows)
+        let logs: (InventoryLog & { id: string })[] = snap.docs
           .map((doc) => {
             const data = doc.data();
             return {
@@ -43,6 +43,12 @@ export default function AssetHistory({ assetId, maxRows = 10 }: AssetHistoryProp
                   : new Date(),
             } as InventoryLog & { id: string };
           });
+
+        if (serialNumber) {
+          logs = logs.filter((log) => String(log.serialNumber || '') === String(serialNumber));
+        }
+
+        logs = logs.slice(0, maxRows);
 
         if (mounted) {
           setLogs(logs);
@@ -61,7 +67,7 @@ export default function AssetHistory({ assetId, maxRows = 10 }: AssetHistoryProp
     return () => {
       mounted = false;
     };
-  }, [assetId, maxRows]);
+  }, [assetId, maxRows, serialNumber]);
 
   const getActionColor = (action: string) => {
     if (action === 'asset_checkout') return 'warning';
@@ -113,8 +119,8 @@ export default function AssetHistory({ assetId, maxRows = 10 }: AssetHistoryProp
 
   return (
     <Card>
-      <CardHeader className="bg-slate-50 py-3">
-        <h3 className="text-sm font-semibold">Recent Activity ({logs.length})</h3>
+      <CardHeader className="flex justify-between items-center bg-default-50 px-4 py-3 border-b border-default-200">
+        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Recent Activity ({logs.length})</h3>
       </CardHeader>
       <CardBody className="p-0">
         <Table hideHeader removeWrapper>
@@ -126,12 +132,14 @@ export default function AssetHistory({ assetId, maxRows = 10 }: AssetHistoryProp
             <TableColumn>Notes</TableColumn>
           </TableHeader>
           <TableBody>
-            {logs.map((log, idx) => (
-              <TableRow key={log.id} className={idx === 0 ? 'bg-blue-50' : ''}>
+            {logs.map((log, idx) => {
+              const rowClass = idx === 0 ? 'bg-default-50 dark:bg-slate-800 text-gray-700 dark:text-gray-200' : '';
+              return (
+                <TableRow key={log.id} className={rowClass}>
                 <TableCell>
                   <Chip
                     size="sm"
-                    variant="flat"
+                    variant="solid"
                     color={getActionColor(log.action)}
                     className="capitalize"
                   >
@@ -139,15 +147,16 @@ export default function AssetHistory({ assetId, maxRows = 10 }: AssetHistoryProp
                   </Chip>
                 </TableCell>
                 <TableCell className="text-sm">{log.userName || 'Unknown'}</TableCell>
-                <TableCell className="text-xs text-gray-600 whitespace-nowrap">
+                <TableCell className="text-xs text-default-600 dark:text-default-300 whitespace-nowrap">
                   {formatTimestamp(log.timestamp as Date)}
                 </TableCell>
-                <TableCell className="text-xs text-gray-600">{log.location || '—'}</TableCell>
-                <TableCell className="text-xs text-gray-600 max-w-xs truncate">
+                <TableCell className="text-xs text-default-600 dark:text-default-300">{log.location || '—'}</TableCell>
+                <TableCell className="text-xs text-default-600 dark:text-default-300 max-w-xs truncate">
                   {log.notes || '—'}
                 </TableCell>
               </TableRow>
-            ))}
+            );
+            })}
           </TableBody>
         </Table>
       </CardBody>
@@ -155,13 +164,4 @@ export default function AssetHistory({ assetId, maxRows = 10 }: AssetHistoryProp
   );
 }
 
-// Table row component for better type safety
-const TableRow = ({
-  children,
-  className,
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) => {
-  return <tr className={className}>{children}</tr>;
-};
+// Using HeroUI TableRow component imported above

@@ -16,7 +16,7 @@ import {
 } from '@heroui/react';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { logStatpackCheckOff } from '@/app/lib/inventory';
-import type { Statpack } from '@/app/types';
+import type { Statpack, ValidationWarning } from '@/app/types';
 
 interface StatpackCheckOffModalProps {
   isOpen: boolean;
@@ -57,7 +57,9 @@ export default function StatpackCheckOffModal({
   const [oxygenReadings, setOxygenReadings] = useState<Record<string, string>>({});
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [inlineAlert, setInlineAlert] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [inlineAlert, setInlineAlert] = useState<{ type: 'success' | 'error' | 'warning'; message: string } | null>(null);
+  const [validationWarnings, setValidationWarnings] = useState<ValidationWarning[]>([]);
+  const [pendingComplete, setPendingComplete] = useState(false);
 
   // Initialize counts from expected quantities
   React.useEffect(() => {
@@ -130,7 +132,7 @@ export default function StatpackCheckOffModal({
         };
       });
 
-      await logStatpackCheckOff({
+      const result = await logStatpackCheckOff({
         statpackId: statpack.id,
         statpackName: statpack.name,
         action,
@@ -142,6 +144,14 @@ export default function StatpackCheckOffModal({
         oxygenReadings: isAdmin && Object.keys(oxygenReadings).length > 0 ? oxygenReadings : undefined,
         notes,
       });
+
+      const warnings = result?.validationWarnings || [];
+      if (warnings.length > 0) {
+        setValidationWarnings(warnings);
+        setPendingComplete(true);
+        setInlineAlert({ type: 'warning', message: `✓ Saved with ${warnings.length} warning(s). Please review below.` });
+        return;
+      }
 
       // Show success message inline
       if (isAdmin) {
@@ -170,7 +180,15 @@ export default function StatpackCheckOffModal({
     setSealChecks({});
     setOxygenReadings({});
     setNotes('');
+    setValidationWarnings([]);
+    setPendingComplete(false);
     onOpenChange(false);
+  };
+
+  const handleAcknowledgeWarnings = () => {
+    setInlineAlert(null);
+    onCheckOffComplete?.();
+    handleClose();
   };
 
   if (!statpack) return null;
@@ -190,9 +208,21 @@ export default function StatpackCheckOffModal({
 
         <ModalBody className="gap-4">
           {inlineAlert && (
-            <Card className={inlineAlert.type === 'success' ? 'bg-success-50' : 'bg-danger-50'}>
+            <Card className={
+              inlineAlert.type === 'success'
+                ? 'bg-success-50'
+                : inlineAlert.type === 'warning'
+                ? 'bg-warning-50'
+                : 'bg-danger-50'
+            }>
               <CardBody>
-                <p className={inlineAlert.type === 'success' ? 'text-success' : 'text-danger'}>{inlineAlert.message}</p>
+                <p className={
+                  inlineAlert.type === 'success'
+                    ? 'text-success'
+                    : inlineAlert.type === 'warning'
+                    ? 'text-warning'
+                    : 'text-danger'
+                }>{inlineAlert.message}</p>
               </CardBody>
             </Card>
           )}
@@ -230,6 +260,24 @@ export default function StatpackCheckOffModal({
           </Card>
 
           <Divider />
+
+          {validationWarnings.length > 0 && (
+            <Card className="bg-warning-50 border border-warning-200">
+              <CardBody className="gap-2">
+                <p className="font-semibold text-sm text-warning-700">Validation Warnings</p>
+                <div className="flex flex-col gap-2">
+                  {validationWarnings.map((w, idx) => (
+                    <div key={`${w.itemId || 'item'}-${idx}`} className="text-xs text-warning-800">
+                      <div className="font-semibold">{w.itemName || w.itemId || 'Unknown Item'}</div>
+                      <div>{w.message}</div>
+                      {w.serialNumber && <div>Serial: {w.serialNumber}</div>}
+                      {w.currentAssignedTo && <div>Assigned to: {w.currentAssignedTo}</div>}
+                    </div>
+                  ))}
+                </div>
+              </CardBody>
+            </Card>
+          )}
 
           {/* Item Verification Section */}
           <div className="gap-2 flex flex-col">
@@ -379,11 +427,11 @@ export default function StatpackCheckOffModal({
           </Button>
           <Button
             color="primary"
-            onPress={handleSubmit}
+            onPress={pendingComplete ? handleAcknowledgeWarnings : handleSubmit}
             isLoading={submitting}
-            isDisabled={isAdmin ? !allItemsChecked : false}
+            isDisabled={!pendingComplete && (isAdmin ? !allItemsChecked : false)}
           >
-            {isAdmin ? (allItemsChecked ? '✓ Complete Audit' : 'Verify All Items') : 'Complete Verification'}
+            {pendingComplete ? 'Acknowledge & Continue' : (isAdmin ? (allItemsChecked ? '✓ Complete Audit' : 'Verify All Items') : 'Complete Verification')}
           </Button>
         </ModalFooter>
       </ModalContent>

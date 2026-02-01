@@ -133,6 +133,8 @@ function analyzeItem(item) {
       lotNumber: 'OPEN',
       openDate: admin.firestore.Timestamp.now(),
       notes: 'Converted from open/unreconciled counts (migration)',
+      // Preserve purchase info: null for migrated batches (no vendor history available)
+      purchase: null,
     } : null,
   };
 }

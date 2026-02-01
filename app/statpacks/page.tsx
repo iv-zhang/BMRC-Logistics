@@ -33,21 +33,25 @@ import type { Statpack } from '@/app/types';
 import StatpackCheckOffModal from '@/app/components/statpack-checkoff-modal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import { BagVisualizer } from '@/app/components/statpackvisualizer';
+import AdminAuditModal from '@/app/components/admin-audit-modal';
+import { useUserRole } from '@/app/hooks/useUserRole';
 
 export default function StatpacksListPage() {
   const router = useRouter();
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [statpacks, setStatpacks] = useState<Statpack[]>([]);
   const [loading, setLoading] = useState(true);
+  const { role: userRole } = useUserRole();
 
   const [selectedPack, setSelectedPack] = useState<Statpack | null>(null);
   const editorDisclosure = useDisclosure();
   const [editingPack, setEditingPack] = useState<Statpack | null>(null);
-  const [userRole, setUserRole] = useState<string | null>(null);
   const [isEditingSummary, setIsEditingSummary] = useState(false);
   const [summaryForm, setSummaryForm] = useState({ name: '', status: '', currentLocation: '', assetValue: '' });
   const checkoffDisclosure = useDisclosure();
   const [checkoffAction, setCheckoffAction] = useState<'checkin' | 'maintenance' | 'checkout'>('checkin');
+  const auditModalDisclosure = useDisclosure();
+  const [auditTarget, setAuditTarget] = useState<Statpack | null>(null);
 
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scannerTarget, setScannerTarget] = useState<Statpack | null>(null);
@@ -56,16 +60,6 @@ export default function StatpacksListPage() {
     const unsub = onAuthStateChanged(auth, (u) => setUser(u));
     return () => unsub();
   }, []);
-
-  useEffect(() => {
-    if (!user) return;
-    const uref = doc(db, 'users', user.uid);
-    const unsub = onSnapshot(uref, (snap) => {
-      const data = snap.data() as any;
-      setUserRole(data?.role ?? 'member');
-    });
-    return () => unsub();
-  }, [user]);
 
   const updateEditingContent = (index: number, patch: Partial<any>) => {
     setEditingPack(prev => {
@@ -343,6 +337,11 @@ export default function StatpacksListPage() {
                         </Button>
                         <Button size="sm" onPress={() => openCheckin(p)}>Check-In</Button>
                         <Button size="sm" variant="light" onPress={() => openMaintenance(p)}>Maintenance</Button>
+                        {userRole === 'admin' && (
+                          <Button isIconOnly size="sm" variant="light" onPress={() => { setAuditTarget(p); auditModalDisclosure.onOpen(); }} title="Manual Audit">
+                            <Wrench size={14} />
+                          </Button>
+                        )}
                         <Button isIconOnly size="sm" variant="light" onPress={() => openScanner(p)}>
                           <MapPin size={14} />
                         </Button>
@@ -491,6 +490,16 @@ export default function StatpacksListPage() {
           </ModalFooter>
         </ModalContent>
       </Modal>
+
+      <AdminAuditModal
+        isOpen={auditModalDisclosure.isOpen}
+        onOpenChange={(open) => (open ? auditModalDisclosure.onOpen() : auditModalDisclosure.onClose())}
+        auditType="statpack"
+        targetStatpack={auditTarget}
+        userId={user?.uid || 'unknown'}
+        userName={user?.displayName || 'Unknown'}
+        onAuditComplete={() => auditModalDisclosure.onClose()}
+      />
     </div>
   );
 }

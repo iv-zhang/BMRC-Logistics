@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { doc, getDoc } from 'firebase/firestore';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
@@ -50,7 +50,7 @@ interface AssetData {
   type: 'inventory' | 'statpack';
 }
 
-export default function PrintLabelsPage() {
+function PrintLabelsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [user, setUser] = useState<FirebaseUser | null>(null);
@@ -572,5 +572,13 @@ export default function PrintLabelsPage() {
         </ModalContent>
       </Modal>
     </div>
+  );
+}
+
+export default function PrintLabelsPage() {
+  return (
+    <Suspense fallback={<div className="h-screen flex items-center justify-center"><Spinner /></div>}>
+      <PrintLabelsContent />
+    </Suspense>
   );
 }

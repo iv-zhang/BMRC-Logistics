@@ -1,7 +1,7 @@
-import { collection, doc, getDoc, writeBatch, serverTimestamp, addDoc, updateDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, writeBatch, serverTimestamp, addDoc, updateDoc, runTransaction } from 'firebase/firestore';
 import { db } from '@/firebase';
-import type { InventoryItem, Statpack, StatpackItem, Container, BoxLog, StatpackLog } from '@/app/types';
-import { recordAuditEvent } from '@/app/lib/audit';
+import type { InventoryItem, Statpack, StatpackItem, Container, BoxLog, StatpackLog, PurchaseInfo, ValidationWarning, AssetInstance, AssetCheckResult, StatpackAuditResult } from '@/app/types';
+import { recordAuditEvent, removeUndefined } from '@/app/lib/audit';
 
 /**
  * Compute total asset value of a statpack from its contents.
@@ -111,11 +111,12 @@ export async function sealContainerAsBox(params: {
   sealedBy: string;
   sealedByName?: string;
   boxContents: { itemId: string; batchId: string; quantity: number; serialNumber?: string }[];
+  purchase?: PurchaseInfo;
 }) {
-  const { containerId, sealNumber, sealedBy, sealedByName, boxContents } = params;
+  const { containerId, sealNumber, sealedBy, sealedByName, boxContents, purchase } = params;
   const containerRef = doc(db, 'containers', containerId);
   
-  await updateDoc(containerRef, {
+  const updatePayload: any = {
     isBox: true,
     isSealed: true,
     sealNumber,
@@ -124,7 +125,10 @@ export async function sealContainerAsBox(params: {
     sealedByName: sealedByName || 'Unknown',
     boxContents,
     updatedAt: serverTimestamp(),
-  });
+  };
+  if (purchase) updatePayload.purchase = purchase;
+  
+  await updateDoc(containerRef, updatePayload);
 
   // Log the seal action
   await addDoc(collection(db, 'box_logs'), {
@@ -208,6 +212,11 @@ export async function logStatpackCheckOff(params: {
     notes,
   } = params;
 
+  const validationWarnings = await validateStatpackAssignments({
+    statpackId,
+    checkEntries,
+  });
+
   // Build base log object
   const logData: Partial<StatpackLog> = {
     statpackId,
@@ -265,7 +274,307 @@ export async function logStatpackCheckOff(params: {
     (logData as any).issues = issues;
   }
 
-  return await addDoc(collection(db, 'statpack_logs'), logData);
+  if (validationWarnings.length > 0) {
+    logData.validationWarnings = validationWarnings;
+  }
+
+  const logRef = await addDoc(collection(db, 'statpack_logs'), logData);
+
+  await logValidationWarningsToCollections({
+    warnings: validationWarnings,
+    statpackId,
+    statpackName,
+    userId,
+    userName,
+  });
+
+  return { logRef, validationWarnings };
+}
+
+function resolveAssetInstance(item: InventoryItem, serial?: string): { matched: boolean; instance?: AssetInstance } {
+  if (!serial) return { matched: false };
+
+  if (item.assetSerial && item.assetSerial === serial) {
+    return { matched: true };
+  }
+
+  const instance = (item.assets || []).find(a =>
+    a.serial === serial || a.id === serial || a.assetTag === serial || a.barcode === serial || a.qr === serial
+  );
+  if (instance) return { matched: true, instance };
+
+  const inBatch = (item.batches || []).some(b => Array.isArray(b.serialNumbers) && b.serialNumbers.includes(serial));
+  if (inBatch) return { matched: true };
+
+  return { matched: false };
+}
+
+export type AssetScanMatch = {
+  asset: InventoryItem;
+  instance?: AssetInstance;
+  serial?: string;
+  matchedOn: 'assetSerial' | 'assetBarcode' | 'assetQr' | 'instanceSerial' | 'instanceBarcode' | 'instanceQr' | 'instanceId' | 'instanceTag' | 'batchSerial';
+};
+
+export function findAssetByCode(assets: InventoryItem[], code: string): AssetScanMatch[] {
+  const normalized = code.trim();
+  if (!normalized) return [];
+
+  const matches: AssetScanMatch[] = [];
+  const matchesValue = (value?: string) => Boolean(value && (value === normalized || normalized.includes(value)));
+
+  for (const asset of assets) {
+    if (matchesValue(asset.assetSerial)) {
+      matches.push({ asset, serial: asset.assetSerial, matchedOn: 'assetSerial' });
+    }
+    if (matchesValue(asset.barcode)) {
+      matches.push({ asset, serial: asset.assetSerial, matchedOn: 'assetBarcode' });
+    }
+    if (matchesValue(asset.qr)) {
+      matches.push({ asset, serial: asset.assetSerial, matchedOn: 'assetQr' });
+    }
+
+    const instances = asset.assets || [];
+    for (const instance of instances) {
+      if (matchesValue(instance.serial)) {
+        matches.push({ asset, instance, serial: instance.serial, matchedOn: 'instanceSerial' });
+      } else if (matchesValue(instance.barcode)) {
+        matches.push({ asset, instance, serial: instance.serial, matchedOn: 'instanceBarcode' });
+      } else if (matchesValue(instance.qr)) {
+        matches.push({ asset, instance, serial: instance.serial, matchedOn: 'instanceQr' });
+      } else if (matchesValue(instance.id)) {
+        matches.push({ asset, instance, serial: instance.serial, matchedOn: 'instanceId' });
+      } else if (matchesValue(instance.assetTag)) {
+        matches.push({ asset, instance, serial: instance.serial, matchedOn: 'instanceTag' });
+      }
+    }
+
+    const batchSerials = (asset.batches || [])
+      .flatMap((b) => Array.isArray(b.serialNumbers) ? b.serialNumbers : [])
+      .filter(Boolean);
+    if (batchSerials.some((serial) => matchesValue(serial))) {
+      matches.push({ asset, serial: normalized, matchedOn: 'batchSerial' });
+    }
+  }
+
+  return matches;
+}
+
+function isExpired(date?: Date | null): boolean {
+  if (!date) return false;
+  const now = Date.now();
+  return new Date(date).getTime() < now;
+}
+
+export async function validateStatpackAssignments(params: {
+  statpackId: string;
+  checkEntries: {
+    itemId: string;
+    itemName?: string;
+    batchId?: string;
+    compartmentId?: string;
+    requiredQuantity: number;
+    countedQuantity: number;
+    ok: boolean;
+    serialNumber?: string;
+    notes?: string;
+  }[];
+}): Promise<ValidationWarning[]> {
+  const { statpackId, checkEntries } = params;
+  const warnings: ValidationWarning[] = [];
+
+  const uniqueItemIds = Array.from(new Set((checkEntries || []).map(e => e.itemId).filter(Boolean)));
+  const itemMap = new Map<string, InventoryItem>();
+
+  for (const itemId of uniqueItemIds) {
+    try {
+      const ref = doc(db, 'inventory', itemId);
+      const snap = await getDoc(ref);
+      if (snap.exists()) itemMap.set(itemId, snap.data() as InventoryItem);
+    } catch (e) {
+      console.warn('validateStatpackAssignments: failed to load inventory item', itemId, e);
+    }
+  }
+
+  for (const entry of checkEntries || []) {
+    const item = itemMap.get(entry.itemId);
+    const serial = entry.serialNumber?.trim();
+
+    if (!item) {
+      warnings.push({
+        warningType: 'missing_asset',
+        itemId: entry.itemId,
+        itemName: entry.itemName,
+        serialNumber: serial,
+        message: `Inventory item not found for ${entry.itemName || entry.itemId}.`,
+      });
+      continue;
+    }
+
+    const isAsset = determineIsAsset(item);
+    if (isAsset && !serial) {
+      warnings.push({
+        warningType: 'missing_asset',
+        itemId: entry.itemId,
+        itemName: entry.itemName || item.name,
+        message: `Asset item missing serial number during check-off.`,
+      });
+      continue;
+    }
+
+    if (!serial) continue;
+
+    const { matched, instance } = resolveAssetInstance(item, serial);
+    if (!matched) {
+      warnings.push({
+        warningType: 'missing_asset',
+        itemId: entry.itemId,
+        itemName: entry.itemName || item.name,
+        serialNumber: serial,
+        message: `Serial ${serial} not found on inventory record.`,
+      });
+      continue;
+    }
+
+    const assignedToId = instance?.assignedToId ?? item.assignedToId ?? null;
+    if (assignedToId && assignedToId !== statpackId) {
+      warnings.push({
+        warningType: 'assigned_mismatch',
+        itemId: entry.itemId,
+        itemName: entry.itemName || item.name,
+        serialNumber: serial,
+        currentAssignedTo: assignedToId,
+        message: `Asset is assigned to a different statpack (${assignedToId}).`,
+      });
+    } else if (!assignedToId) {
+      warnings.push({
+        warningType: 'unassigned_asset',
+        itemId: entry.itemId,
+        itemName: entry.itemName || item.name,
+        serialNumber: serial,
+        message: 'Asset is not assigned to any statpack.',
+      });
+    }
+
+    const status = instance?.status ?? item.assetStatus;
+    if (status && ['Not Ready', 'Maintenance', 'Unknown'].includes(status)) {
+      warnings.push({
+        warningType: 'asset_status',
+        itemId: entry.itemId,
+        itemName: entry.itemName || item.name,
+        serialNumber: serial,
+        message: `Asset status is ${status}.`,
+      });
+    }
+
+    const expirationCandidates = [
+      item.assetNextExpiration,
+      instance?.nextExpiration,
+      instance?.padExpiration,
+      instance?.batteryExpiration,
+    ].filter(Boolean) as Date[];
+
+    if (expirationCandidates.some(d => isExpired(d))) {
+      warnings.push({
+        warningType: 'asset_expired',
+        itemId: entry.itemId,
+        itemName: entry.itemName || item.name,
+        serialNumber: serial,
+        message: 'Asset has an expired component or service window.',
+      });
+    }
+  }
+
+  return warnings;
+}
+
+export async function logValidationWarningsToCollections(params: {
+  warnings: ValidationWarning[];
+  statpackId: string;
+  statpackName: string;
+  userId: string;
+  userName: string;
+}) {
+  const { warnings, statpackId, statpackName, userId, userName } = params;
+  if (!warnings || warnings.length === 0) return;
+
+  await Promise.all(
+    warnings.map(async (w) => {
+      const logPayload = removeUndefined({
+        itemId: w.itemId,
+        itemName: w.itemName,
+        action: 'statpack_validation_warning',
+        serialNumber: w.serialNumber,
+        warningType: w.warningType,
+        relatedStatpackId: statpackId,
+        relatedStatpackName: statpackName,
+        currentAssignedTo: w.currentAssignedTo,
+        message: w.message,
+        userId,
+        userName,
+        timestamp: serverTimestamp(),
+      });
+
+      await addDoc(collection(db, 'inventory_logs'), logPayload);
+
+      await recordAuditEvent({
+        eventType: 'statpack_validation_warning',
+        source: 'statpack_logs',
+        sourceId: statpackId,
+        actor: {
+          userId,
+          userName,
+        },
+        targets: w.itemId ? [{ collection: 'inventory', docId: w.itemId }] : undefined,
+        details: logPayload,
+      });
+    })
+  );
+}
+
+export async function updateAssetAssignment(params: {
+  itemId: string;
+  newAssignedToId?: string | null;
+  user?: { id: string; fullName?: string | null };
+  note?: string;
+}) {
+  const { itemId, newAssignedToId, user, note } = params;
+  const itemRef = doc(db, 'inventory', itemId);
+  const snap = await getDoc(itemRef);
+  if (!snap.exists()) throw new Error(`Asset ${itemId} not found`);
+
+  const item = snap.data() as InventoryItem;
+  const action = newAssignedToId ? 'asset_assign' : 'asset_unassign';
+
+  await updateDoc(itemRef, {
+    assignedToId: newAssignedToId ?? null,
+    updatedAt: serverTimestamp(),
+  });
+
+  await addDoc(collection(db, 'inventory_logs'), removeUndefined({
+    itemId,
+    itemName: item.name,
+    action,
+    relatedStatpackId: newAssignedToId ?? null,
+    previousAssignedToId: item.assignedToId ?? null,
+    userId: user?.id ?? 'system',
+    userName: user?.fullName ?? 'System',
+    timestamp: serverTimestamp(),
+    notes: note,
+  }));
+
+  await recordAuditEvent({
+    eventType: action,
+    source: 'inventory',
+    sourceId: itemId,
+    actor: {
+      userId: user?.id ?? null,
+      userName: user?.fullName ?? null,
+    },
+    targets: [{ collection: 'inventory', docId: itemId }],
+    after: { assignedToId: newAssignedToId ?? null },
+    details: { previousAssignedToId: item.assignedToId ?? null, note },
+  });
 }
 
 /**
@@ -368,7 +677,7 @@ export function determineIsAsset(item: Partial<InventoryItem> | { category?: str
  * 
  * @param itemId - Firestore doc ID of the inventory item
  * @param quantity - Number of units to add to the open batch
- * @param opts - Optional metadata: batchId (reuse existing), openDate, expirationDate, lotNumber, notes, userId/userName for audit
+ * @param opts - Optional metadata: batchId (reuse existing), openDate, expirationDate, lotNumber, notes, userId/userName for audit, purchase info
  * @returns The created or updated batch ID
  */
 export async function createOpenBatch(
@@ -382,6 +691,7 @@ export async function createOpenBatch(
     notes?: string;
     userId?: string;
     userName?: string;
+    purchase?: PurchaseInfo;
   }
 ): Promise<string> {
   const itemRef = doc(db, 'inventory', itemId);
@@ -413,6 +723,7 @@ export async function createOpenBatch(
     };
     if (opts?.openDate) newBatch.openDate = opts.openDate;
     if (opts?.expirationDate) newBatch.expirationDate = opts.expirationDate;
+    if (opts?.purchase) newBatch.purchase = opts.purchase;
     
     await updateDoc(itemRef, {
       batches: [...batches, newBatch],
@@ -447,7 +758,7 @@ export async function createOpenBatch(
  * 
  * @param itemId - Firestore doc ID of the inventory item
  * @param boxCount - Number of boxes to open (defaults to 1)
- * @param opts - Optional: targetBatchId (add to existing batch), openDate, expirationDate, userId/userName for audit
+ * @param opts - Optional: targetBatchId (add to existing batch), openDate, expirationDate, userId/userName for audit, purchase info
  * @returns The batch ID where opened units were added
  */
 export async function consumeBox(
@@ -460,6 +771,7 @@ export async function consumeBox(
     userId?: string;
     userName?: string;
     notes?: string;
+    purchase?: PurchaseInfo;
   }
 ): Promise<string> {
   const itemRef = doc(db, 'inventory', itemId);
@@ -497,6 +809,7 @@ export async function consumeBox(
       notes: opts?.notes || `Opened ${boxCount} box(es) from sealed inventory`,
     };
     if (opts?.expirationDate) newBatch.expirationDate = opts.expirationDate;
+    if (opts?.purchase) newBatch.purchase = opts.purchase;
     updatedBatches = [...batches, newBatch];
   }
   
@@ -535,38 +848,94 @@ export async function checkoutAsset(params: {
   user: { id: string; fullName?: string };
   location?: string; // Where the user reported they will be using/keeping it
   note?: string; // Optional reason or context
+  serial?: string; // Optional asset instance serial/tag
 }): Promise<void> {
-  const { assetId, user, location, note } = params;
+  const { assetId, user, location, note, serial } = params;
   const itemRef = doc(db, 'inventory', assetId);
-  
-  // Get current asset
-  const snap = await getDoc(itemRef);
-  if (!snap.exists()) throw new Error(`Asset ${assetId} not found`);
-  
-  const item = snap.data() as InventoryItem;
-  
-  // Update asset to checked out status
-  await updateDoc(itemRef, {
-    assetStatus: 'Checked Out',
-    checkedOutAt: serverTimestamp(),
-    checkedOutBy: user.id,
-    currentLocation: location,
-    updatedAt: serverTimestamp(),
+
+  const { itemName, resolvedSerial, resolvedLocation, nextStatus } = await runTransaction(db, async (tx) => {
+    const snap = await tx.get(itemRef);
+    if (!snap.exists()) throw new Error(`Asset ${assetId} not found`);
+    const item = snap.data() as InventoryItem;
+
+    const normalizedSerial = serial?.trim();
+    const hasInstances = Array.isArray(item.assets) && item.assets.length > 0;
+    if (hasInstances && !normalizedSerial) {
+      throw new Error('This asset requires a serial/instance selection.');
+    }
+
+    let updatedAssets = hasInstances ? [...(item.assets || [])] : undefined;
+    let resolvedInstance: AssetInstance | undefined;
+
+    if (normalizedSerial && hasInstances) {
+      const idx = updatedAssets!.findIndex(a =>
+        a.serial === normalizedSerial || a.id === normalizedSerial || a.assetTag === normalizedSerial || a.barcode === normalizedSerial || a.qr === normalizedSerial
+      );
+      if (idx === -1) {
+        throw new Error(`Serial ${normalizedSerial} not found on this asset.`);
+      }
+      resolvedInstance = updatedAssets![idx];
+      const currentStatus = resolvedInstance.status ?? item.assetStatus;
+      if (currentStatus === 'Checked Out') {
+        throw new Error('Asset instance is already checked out.');
+      }
+      updatedAssets![idx] = {
+        ...resolvedInstance,
+        status: 'Checked Out',
+        checkedOutAt: serverTimestamp(),
+        checkedOutBy: user.id,
+        currentLocation: location ?? resolvedInstance.currentLocation ?? item.currentLocation,
+        updatedAt: new Date(),
+      } as AssetInstance;
+    } else if (!normalizedSerial) {
+      if (item.assetStatus === 'Checked Out') {
+        throw new Error('Asset is already checked out.');
+      }
+    }
+
+    const anyCheckedOut = updatedAssets ? updatedAssets.some(a => a.status === 'Checked Out') : false;
+    const allCheckedOut = updatedAssets ? updatedAssets.every(a => a.status === 'Checked Out') : false;
+
+    const nextStatus: InventoryItem['assetStatus'] = updatedAssets
+      ? (allCheckedOut ? 'Checked Out' : anyCheckedOut ? 'In Use' : 'Ready')
+      : 'Checked Out';
+
+    const checkoutPayload: any = {
+      assetStatus: nextStatus,
+      checkedOutAt: serverTimestamp(),
+      checkedOutBy: user.id,
+      updatedAt: serverTimestamp(),
+    };
+    if (location !== undefined) {
+      checkoutPayload.currentLocation = location;
+    }
+    if (updatedAssets) {
+      checkoutPayload.assets = updatedAssets;
+    }
+
+    tx.update(itemRef, checkoutPayload);
+
+    return {
+      itemName: item.name,
+      resolvedSerial: normalizedSerial ?? item.assetSerial,
+      resolvedLocation: location ?? item.currentLocation,
+      nextStatus,
+    };
   });
-  
-  // Log the checkout event
-  await addDoc(collection(db, 'inventory_logs'), {
+
+  const checkoutLog: any = {
     itemId: assetId,
-    itemName: item.name,
+    itemName,
     action: 'asset_checkout',
     userId: user.id,
     userName: user.fullName || 'Unknown',
     timestamp: serverTimestamp(),
-    location: location || item.currentLocation,
+    location: resolvedLocation,
+    serialNumber: resolvedSerial,
     notes: note,
-  });
-  
-  // Record audit event for cross-system tracking
+  };
+  await addDoc(collection(db, 'inventory_logs'), removeUndefined(checkoutLog));
+
   await recordAuditEvent({
     eventType: 'asset_checkout',
     source: 'inventory',
@@ -577,12 +946,13 @@ export async function checkoutAsset(params: {
     },
     targets: [{ collection: 'inventory', docId: assetId }],
     after: {
-      assetStatus: 'Checked Out',
+      assetStatus: nextStatus,
       checkedOutBy: user.id,
-      currentLocation: location,
+      currentLocation: resolvedLocation,
     },
     details: {
       reason: note,
+      serialNumber: resolvedSerial,
     },
   });
 }
@@ -596,39 +966,95 @@ export async function checkinAsset(params: {
   user: { id: string; fullName?: string };
   location?: string; // Where the user is returning it to
   note?: string; // Optional reason or context (e.g., "returned in good condition")
+  serial?: string; // Optional asset instance serial/tag
 }): Promise<void> {
-  const { assetId, user, location, note } = params;
+  const { assetId, user, location, note, serial } = params;
   const itemRef = doc(db, 'inventory', assetId);
-  
-  // Get current asset
-  const snap = await getDoc(itemRef);
-  if (!snap.exists()) throw new Error(`Asset ${assetId} not found`);
-  
-  const item = snap.data() as InventoryItem;
-  
-  // Update asset to available/ready status
-  await updateDoc(itemRef, {
-    assetStatus: 'Ready',
-    lastCheckedInAt: serverTimestamp(),
-    lastCheckedInBy: user.id,
-    lastKnownReturnLocation: location,
-    currentLocation: location,
-    updatedAt: serverTimestamp(),
+
+  const { itemName, resolvedSerial, resolvedLocation, nextStatus } = await runTransaction(db, async (tx) => {
+    const snap = await tx.get(itemRef);
+    if (!snap.exists()) throw new Error(`Asset ${assetId} not found`);
+    const item = snap.data() as InventoryItem;
+
+    const normalizedSerial = serial?.trim();
+    const hasInstances = Array.isArray(item.assets) && item.assets.length > 0;
+    if (hasInstances && !normalizedSerial) {
+      throw new Error('This asset requires a serial/instance selection.');
+    }
+
+    let updatedAssets = hasInstances ? [...(item.assets || [])] : undefined;
+    let resolvedInstance: AssetInstance | undefined;
+
+    if (normalizedSerial && hasInstances) {
+      const idx = updatedAssets!.findIndex(a =>
+        a.serial === normalizedSerial || a.id === normalizedSerial || a.assetTag === normalizedSerial || a.barcode === normalizedSerial || a.qr === normalizedSerial
+      );
+      if (idx === -1) {
+        throw new Error(`Serial ${normalizedSerial} not found on this asset.`);
+      }
+      resolvedInstance = updatedAssets![idx];
+      const currentStatus = resolvedInstance.status ?? item.assetStatus;
+      if (currentStatus !== 'Checked Out') {
+        throw new Error('Asset instance is not currently checked out.');
+      }
+      updatedAssets![idx] = {
+        ...resolvedInstance,
+        status: 'Ready',
+        lastCheckedInAt: serverTimestamp(),
+        lastCheckedInBy: user.id,
+        currentLocation: location ?? resolvedInstance.currentLocation ?? item.currentLocation,
+        updatedAt: new Date(),
+      } as AssetInstance;
+    } else if (!normalizedSerial) {
+      if (item.assetStatus !== 'Checked Out' && item.assetStatus !== 'In Use') {
+        throw new Error('Asset is not currently checked out.');
+      }
+    }
+
+    const anyCheckedOut = updatedAssets ? updatedAssets.some(a => a.status === 'Checked Out') : false;
+    const allCheckedOut = updatedAssets ? updatedAssets.every(a => a.status === 'Checked Out') : false;
+
+    const nextStatus: InventoryItem['assetStatus'] = updatedAssets
+      ? (allCheckedOut ? 'Checked Out' : anyCheckedOut ? 'In Use' : 'Ready')
+      : 'Ready';
+
+    const checkinPayload: any = {
+      assetStatus: nextStatus,
+      lastCheckedInAt: serverTimestamp(),
+      lastCheckedInBy: user.id,
+      updatedAt: serverTimestamp(),
+    };
+    if (location !== undefined) {
+      checkinPayload.lastKnownReturnLocation = location;
+      checkinPayload.currentLocation = location;
+    }
+    if (updatedAssets) {
+      checkinPayload.assets = updatedAssets;
+    }
+
+    tx.update(itemRef, checkinPayload);
+
+    return {
+      itemName: item.name,
+      resolvedSerial: normalizedSerial ?? item.assetSerial,
+      resolvedLocation: location ?? item.currentLocation,
+      nextStatus,
+    };
   });
-  
-  // Log the checkin event
-  await addDoc(collection(db, 'inventory_logs'), {
+
+  const checkinLog: any = {
     itemId: assetId,
-    itemName: item.name,
+    itemName,
     action: 'asset_checkin',
     userId: user.id,
     userName: user.fullName || 'Unknown',
     timestamp: serverTimestamp(),
-    location: location || item.currentLocation,
+    location: resolvedLocation,
+    serialNumber: resolvedSerial,
     notes: note,
-  });
-  
-  // Record audit event for cross-system tracking
+  };
+  await addDoc(collection(db, 'inventory_logs'), removeUndefined(checkinLog));
+
   await recordAuditEvent({
     eventType: 'asset_checkin',
     source: 'inventory',
@@ -639,14 +1065,253 @@ export async function checkinAsset(params: {
     },
     targets: [{ collection: 'inventory', docId: assetId }],
     after: {
-      assetStatus: 'Ready',
+      assetStatus: nextStatus,
       lastCheckedInBy: user.id,
-      currentLocation: location,
+      currentLocation: resolvedLocation,
     },
     details: {
       reason: note,
+      serialNumber: resolvedSerial,
     },
   });
+}
+
+export async function performAssetManualCheck(params: {
+  itemId: string;
+  measuredBatteryPct?: number;
+  measuredO2Psi?: number;
+  condition: 'Good' | 'Minor Issue' | 'Major Issue' | 'Needs Maintenance';
+  notes?: string;
+  dueNextDate?: Date;
+  user: { id: string; fullName?: string | null };
+}): Promise<AssetCheckResult> {
+  const { itemId, measuredBatteryPct, measuredO2Psi, condition, notes, dueNextDate, user } = params;
+  const itemRef = doc(db, 'inventory', itemId);
+  const snap = await getDoc(itemRef);
+  if (!snap.exists()) throw new Error(`Asset ${itemId} not found`);
+
+  const item = snap.data() as InventoryItem;
+  const now = new Date();
+
+  const expirationWarnings: ValidationWarning[] = [];
+  if (item.assetNextExpiration && isExpired(item.assetNextExpiration)) {
+    expirationWarnings.push({
+      warningType: 'asset_expired',
+      itemId,
+      itemName: item.name,
+      message: 'Asset has an expired component.',
+    });
+  }
+
+  const actionRequired = condition !== 'Good' || expirationWarnings.length > 0;
+
+  const result: AssetCheckResult = {
+    itemId,
+    itemName: item.name,
+    serialNumber: item.assetSerial,
+    measuredBatteryPct,
+    measuredO2Psi,
+    condition,
+    expirationWarnings,
+    checkedAt: now,
+    checkedBy: user.id,
+    checkedByName: user.fullName || 'Unknown',
+    notes,
+    dueNextDate,
+    actionRequired,
+  };
+
+  const updatePayload: any = {
+    updatedAt: serverTimestamp(),
+  };
+  if (measuredBatteryPct !== undefined) {
+    updatePayload.batteryStatus = measuredBatteryPct > 50 ? 'Good' : measuredBatteryPct > 20 ? 'Low' : 'Unknown';
+  }
+  if (measuredO2Psi !== undefined) {
+    updatePayload.oxygenPsi = measuredO2Psi;
+  }
+
+  if (!item.maintenance_logs) item.maintenance_logs = [];
+  item.maintenance_logs.push({
+    timestamp: now,
+    serviceType: 'inspection',
+    reason: `Manual audit check: ${condition}`,
+    technician: user.fullName || user.id,
+    notes: notes || `Battery: ${measuredBatteryPct ?? 'N/A'}%, O2: ${measuredO2Psi ?? 'N/A'} PSI`,
+    status: actionRequired ? 'pending' : 'completed',
+    completedAt: actionRequired ? undefined : now,
+  });
+
+  updatePayload.maintenance_logs = item.maintenance_logs;
+  await updateDoc(itemRef, updatePayload);
+
+  await addDoc(collection(db, 'inventory_logs'), removeUndefined({
+    itemId,
+    itemName: item.name,
+    action: 'asset_manual_check',
+    serialNumber: item.assetSerial,
+    measuredBatteryPct,
+    measuredO2Psi,
+    condition,
+    expirationWarningCount: expirationWarnings.length,
+    userId: user.id,
+    userName: user.fullName || 'Unknown',
+    timestamp: serverTimestamp(),
+    notes,
+    dueNextDate,
+  }));
+
+  await recordAuditEvent({
+    eventType: 'asset_manual_check',
+    source: 'inventory',
+    sourceId: itemId,
+    actor: {
+      userId: user.id,
+      userName: user.fullName,
+    },
+    targets: [{ collection: 'inventory', docId: itemId }],
+    details: {
+      measuredBatteryPct,
+      measuredO2Psi,
+      condition,
+      actionRequired,
+      notes,
+    },
+  });
+
+  return result;
+}
+
+export async function performStatpackManualAudit(params: {
+  statpackId: string;
+  contentChecks: Array<{
+    itemId: string;
+    requiredQuantity: number;
+    foundQuantity: number;
+    inCorrectPocket: boolean;
+    conditionOk: boolean;
+    expirationOk: boolean;
+    notes?: string;
+  }>;
+  overallNotes?: string;
+  user: { id: string; fullName?: string | null };
+}): Promise<StatpackAuditResult> {
+  const { statpackId, contentChecks, overallNotes, user } = params;
+  const packRef = doc(db, 'statpacks', statpackId);
+  const snap = await getDoc(packRef);
+  if (!snap.exists()) throw new Error(`Statpack ${statpackId} not found`);
+
+  const statpack = snap.data() as Statpack;
+  const now = new Date();
+
+  const checks = await Promise.all(
+    contentChecks.map(async (check) => {
+      const itemRef = doc(db, 'inventory', check.itemId);
+      const itemSnap = await getDoc(itemRef);
+      const item = itemSnap.exists() ? (itemSnap.data() as InventoryItem) : null;
+
+      return {
+        itemId: check.itemId,
+        itemName: item?.name || 'Unknown',
+        serialNumber: item?.assetSerial,
+        requiredQuantity: check.requiredQuantity,
+        foundQuantity: check.foundQuantity,
+        inCorrectPocket: check.inCorrectPocket,
+        conditionOk: check.conditionOk,
+        expirationOk: check.expirationOk,
+        notes: check.notes,
+      };
+    })
+  );
+
+  const validationWarnings = await validateStatpackAssignments({
+    statpackId,
+    checkEntries: contentChecks.map(c => ({
+      itemId: c.itemId,
+      requiredQuantity: c.requiredQuantity,
+      countedQuantity: c.foundQuantity,
+      ok: c.foundQuantity >= c.requiredQuantity && c.conditionOk && c.expirationOk,
+    })) as any[],
+  });
+
+  const issueFound = checks.some(
+    (c) => c.foundQuantity < c.requiredQuantity || !c.inCorrectPocket || !c.conditionOk || !c.expirationOk
+  );
+  const actionRequired = issueFound || validationWarnings.length > 0;
+
+  const result: StatpackAuditResult = {
+    statpackId,
+    statpackName: statpack.name,
+    contentChecks: checks,
+    validationWarnings,
+    condition: actionRequired ? 'Issues Found' : 'Ready',
+    checkedAt: now,
+    checkedBy: user.id,
+    checkedByName: user.fullName || 'Unknown',
+    overallNotes,
+    actionRequired,
+  };
+
+  if (!statpack.maintenance_logs) statpack.maintenance_logs = [];
+  statpack.maintenance_logs.push({
+    timestamp: now,
+    serviceType: 'inspection',
+    reason: `Manual audit: ${actionRequired ? 'Issues found' : 'Ready'}`,
+    technician: user.fullName || user.id,
+    notes: overallNotes,
+    status: actionRequired ? 'pending' : 'completed',
+    completedAt: actionRequired ? undefined : now,
+  });
+
+  await updateDoc(packRef, {
+    maintenance_logs: statpack.maintenance_logs,
+    updatedAt: serverTimestamp(),
+  });
+
+  await addDoc(collection(db, 'statpack_logs'), removeUndefined({
+    statpackId,
+    statpackName: statpack.name,
+    action: 'maintenance',
+    userId: user.id,
+    userName: user.fullName || 'Unknown',
+    timestamp: serverTimestamp(),
+    checkEntries: checks.map((c) => ({
+      itemId: c.itemId,
+      itemName: c.itemName,
+      requiredQuantity: c.requiredQuantity,
+      countedQuantity: c.foundQuantity,
+      ok: c.foundQuantity >= c.requiredQuantity && c.inCorrectPocket && c.conditionOk && c.expirationOk,
+      notes: c.notes,
+    })),
+    validationWarnings,
+    notes: overallNotes,
+  }));
+
+  await logValidationWarningsToCollections({
+    warnings: validationWarnings,
+    statpackId,
+    statpackName: statpack.name,
+    userId: user.id,
+    userName: user.fullName || 'Unknown',
+  });
+
+  await recordAuditEvent({
+    eventType: 'statpack_manual_audit',
+    source: 'statpack_logs',
+    sourceId: statpackId,
+    actor: {
+      userId: user.id,
+      userName: user.fullName,
+    },
+    targets: [{ collection: 'statpacks', docId: statpackId }],
+    details: {
+      issuesFound: actionRequired,
+      checkCount: checks.length,
+      warningCount: validationWarnings.length,
+    },
+  });
+
+  return result;
 }
 
 

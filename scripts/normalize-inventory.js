@@ -84,6 +84,12 @@ function preparePayload(data, opts) {
       out.stock = Number(out.stock ?? 0);
       out.receivedAt = out.receivedAt ? (out.receivedAt instanceof Date ? out.receivedAt : new Date(out.receivedAt)) : undefined;
       out.locations = Array.isArray(out.locations) ? out.locations.map((l) => ({ id: l.id ?? uniqueId(), name: l.name ?? '', quantity: Number(l.quantity ?? 0) })) : [];
+      // Preserve purchase info if present
+      if (out.purchase && typeof out.purchase === 'object') {
+        out.purchase = Object.assign({}, out.purchase);
+        if (out.purchase.pricePerUnit) out.purchase.pricePerUnit = Number(out.purchase.pricePerUnit);
+        if (out.purchase.quantityReceived) out.purchase.quantityReceived = Number(out.purchase.quantityReceived);
+      }
       return out;
     });
     payload.batches = normBatches;
