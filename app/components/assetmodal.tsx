@@ -1,14 +1,16 @@
 'use client';
 import React, { useEffect, useState, useRef } from 'react';
 import { collection, getDocs, query, where } from 'firebase/firestore';
-import { db } from '@/firebase';
-import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button, Input, Select, SelectItem, Textarea } from '@heroui/react';
+import { db, auth } from '@/firebase';
+import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button, Input, Select, SelectItem, Textarea, Chip } from '@heroui/react';
 import type { InventoryItem } from '@/app/types';
 import QRCode from 'qrcode';
 import JsBarcode from 'jsbarcode';
 import AssetHistory from '@/app/components/asset-history';
 import { exportLabelsToPDF, DEFAULT_TEMPLATE } from '@/app/lib/print';
 import LabelCard from '@/app/components/label-card';
+import BarcodeScanner from '@/app/components/barcode-scanner';
+import { assignBarcode } from '@/app/lib/inventory';
 
 interface AssetModalProps {
   isOpen: boolean;
@@ -28,6 +30,16 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
   const [saving, setSaving] = useState(false);
   const [historySerial, setHistorySerial] = useState<string>('');
   const svgRef = useRef<SVGSVGElement | null>(null);
+  
+  // Scanner and barcode assignment state
+  const [showScanner, setShowScanner] = useState(false);
+  const [scannedBarcode, setScannedBarcode] = useState<string>('');
+  const [duplicateWarning, setDuplicateWarning] = useState<{
+    show: boolean;
+    barcode: string;
+    duplicateItem?: { id: string; name: string; serial?: string };
+  } | null>(null);
+  const [assigningBarcode, setAssigningBarcode] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -243,7 +255,79 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
     }
   };
 
+  const handleScanDetected = (code: string) => {
+    setScannedBarcode(code);
+    setShowScanner(false);
+    // Populate the assignedBarcode field in the form preview
+    setForm({ ...form, assignedBarcode: code } as any);
+  };
+
+  const handleAssignBarcode = async (allowDuplicate = false) => {
+    if (!initial?.id) {
+      alert('Please save the asset first before assigning a barcode tag.');
+      return;
+    }
+    
+    if (!scannedBarcode.trim()) {
+      alert('Please scan a barcode first.');
+      return;
+    }
+
+    const user = auth.currentUser;
+    if (!user) {
+      alert('You must be logged in to assign barcodes.');
+      return;
+    }
+
+    setAssigningBarcode(true);
+    setValidationError(null);
+    setDuplicateWarning(null);
+
+    try {
+      const result = await assignBarcode({
+        itemId: initial.id,
+        barcode: scannedBarcode,
+        user: { id: user.uid, fullName: user.displayName || user.email || 'Unknown' },
+        serial: historySerial || undefined,
+        options: { allowDuplicate },
+      });
+
+      if (!result.success) {
+        if (result.isDuplicate && !allowDuplicate) {
+          // Show duplicate warning with override option
+          setDuplicateWarning({
+            show: true,
+            barcode: scannedBarcode,
+            duplicateItem: result.duplicateItem,
+          });
+        } else {
+          setValidationError(result.message);
+        }
+      } else {
+        // Success - update form to reflect new assigned barcode
+        setForm({ ...form, assignedBarcode: scannedBarcode } as any);
+        alert(result.message);
+        setScannedBarcode('');
+        setDuplicateWarning(null);
+      }
+    } catch (error: any) {
+      setValidationError(error.message || 'Failed to assign barcode');
+    } finally {
+      setAssigningBarcode(false);
+    }
+  };
+
+  const handleDuplicateOverride = () => {
+    handleAssignBarcode(true);
+  };
+
+  const handleCancelDuplicate = () => {
+    setDuplicateWarning(null);
+    setScannedBarcode('');
+  };
+
   return (
+    <>
     <Modal isOpen={isOpen} onOpenChange={onOpenChange} size="lg" scrollBehavior="inside">
       <ModalContent>
         <ModalHeader>{initial ? `Edit Asset: ${initial.name}` : 'Add Asset'}</ModalHeader>
@@ -309,6 +393,107 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
             onValueChange={(v) => setForm({ ...form, qr: v })} 
             description="Either Barcode or QR Code required for scanning checkout"
           />
+
+          {/* External Barcode Assignment Section */}
+          <div className="border-t pt-4 mt-2">
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="text-sm font-semibold">External Asset Tag</h4>
+              {initial?.id && (
+                <Button
+                  size="sm"
+                  color="secondary"
+                  variant="flat"
+                  onPress={() => setShowScanner(true)}
+                >
+                  Scan Tag
+                </Button>
+              )}
+            </div>
+            
+            {(form as any).assignedBarcode && (
+              <Chip color="success" variant="flat" className="mb-2">
+                Current: {(form as any).assignedBarcode}
+              </Chip>
+            )}
+
+            {scannedBarcode && (
+              <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-2">
+                <p className="text-sm font-medium text-blue-900 mb-1">Scanned: {scannedBarcode}</p>
+                {initial?.id ? (
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      color="primary"
+                      onPress={() => handleAssignBarcode(false)}
+                      isLoading={assigningBarcode}
+                    >
+                      Assign to Asset
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="light"
+                      onPress={() => setScannedBarcode('')}
+                    >
+                      Clear
+                    </Button>
+                  </div>
+                ) : (
+                  <p className="text-xs text-blue-700">Save asset first to assign barcode</p>
+                )}
+              </div>
+            )}
+
+            {duplicateWarning?.show && (
+              <div className="bg-yellow-50 border border-yellow-300 rounded p-3 mb-2">
+                <p className="text-sm font-semibold text-yellow-900 mb-1">⚠️ Duplicate Barcode</p>
+                <p className="text-sm text-yellow-800 mb-2">
+                  This barcode is already assigned to{' '}
+                  <strong>{duplicateWarning.duplicateItem?.name}</strong>
+                  {duplicateWarning.duplicateItem?.serial && (
+                    <span> (Serial: {duplicateWarning.duplicateItem.serial})</span>
+                  )}
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    color="warning"
+                    onPress={handleDuplicateOverride}
+                    isLoading={assigningBarcode}
+                  >
+                    Assign Anyway
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="light"
+                    onPress={handleCancelDuplicate}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {(form as any).barcodeHistory && (form as any).barcodeHistory.length > 0 && (
+              <div className="mt-2">
+                <p className="text-xs text-gray-600 mb-1">Assignment History:</p>
+                <div className="space-y-1">
+                  {(form as any).barcodeHistory.slice(-3).reverse().map((entry: any, idx: number) => (
+                    <div key={idx} className="text-xs bg-gray-50 p-1 rounded">
+                      <span className="font-mono">{entry.value}</span>
+                      {' '}
+                      <span className="text-gray-500">
+                        by {entry.assignedBy?.name || 'Unknown'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <p className="text-xs text-gray-500 mt-2">
+              Scan purchased asset tags to assign unique tracking codes. Tags can be reassigned if they wear off.
+            </p>
+          </div>
           
           <Input label="Value (USD)" value={form.assetValue != null ? String(form.assetValue) : ''} onValueChange={(v) => setForm({ ...form, assetValue: v ? Number(v) : undefined })} />
           <div>
@@ -352,5 +537,13 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
         </ModalFooter>
       </ModalContent>
     </Modal>
+    
+    {/* Barcode Scanner Modal */}
+    <BarcodeScanner
+      isOpen={showScanner}
+      onClose={() => setShowScanner(false)}
+      onDetected={handleScanDetected}
+    />
+    </>
   );
 }

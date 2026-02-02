@@ -72,6 +72,7 @@ export default function AssetHistory({ assetId, maxRows = 10, serialNumber }: As
   const getActionColor = (action: string) => {
     if (action === 'asset_checkout') return 'warning';
     if (action === 'asset_checkin') return 'success';
+    if (action === 'barcode_assign' || action === 'barcode_reassign') return 'secondary';
     return 'default';
   };
 
@@ -151,8 +152,21 @@ export default function AssetHistory({ assetId, maxRows = 10, serialNumber }: As
                   {formatTimestamp(log.timestamp as Date)}
                 </TableCell>
                 <TableCell className="text-xs text-default-600 dark:text-default-300">{log.location || '—'}</TableCell>
-                <TableCell className="text-xs text-default-600 dark:text-default-300 max-w-xs truncate">
-                  {log.notes || '—'}
+                <TableCell className="text-xs text-default-600 dark:text-default-300 max-w-xs">
+                  {log.action === 'barcode_assign' || log.action === 'barcode_reassign' ? (
+                    <div>
+                      <div className="font-mono text-xs bg-secondary-50 dark:bg-secondary-900/20 px-1 py-0.5 rounded inline-block">
+                        {log.details?.newBarcode || '—'}
+                      </div>
+                      {log.details?.previousBarcode && (
+                        <div className="text-xs text-gray-500 mt-1">
+                          Previous: <span className="font-mono">{log.details.previousBarcode}</span>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="truncate">{log.notes || '—'}</span>
+                  )}
                 </TableCell>
               </TableRow>
             );

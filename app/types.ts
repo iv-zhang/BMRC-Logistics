@@ -133,6 +133,14 @@ export interface InventoryItem {
   // Barcode and QR code for scanning asset checkout/checkin (either or both)
   barcode?: string; // UPC, code128, or other barcode format
   qr?: string; // QR code content (often same as serial or barcode)
+  // External barcode assigned from purchased asset tags (can replace or supplement generated codes)
+  assignedBarcode?: string | null;
+  // History of all barcode assignments/reassignments for audit trail (append-only)
+  barcodeHistory?: Array<{
+    value: string;
+    assignedAt: Date | FieldValue;
+    assignedBy?: { id?: string; name?: string };
+  }>;
   // If this asset is a child of another asset (e.g., battery/pad assigned to AED parent), store parent asset id
   parentAssetId?: string;
   // If assigned to a statpack or other container, reference that entity
@@ -414,6 +422,14 @@ export interface AssetInstance {
   // Barcode and QR code for scanning asset checkout/checkin (either or both)
   barcode?: string;
   qr?: string;
+  // External barcode assigned from purchased asset tags (can replace or supplement generated codes)
+  assignedBarcode?: string | null;
+  // History of all barcode assignments/reassignments for audit trail (append-only)
+  barcodeHistory?: Array<{
+    value: string;
+    assignedAt: Date | FieldValue;
+    assignedBy?: { id?: string; name?: string };
+  }>;
   status?: 'Ready' | 'Not Ready' | 'Maintenance' | 'In Use' | 'Checked Out' | 'Unknown';
   // Consumable components attached to the device
   padExpiration?: Date;

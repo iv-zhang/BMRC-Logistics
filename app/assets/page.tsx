@@ -42,7 +42,7 @@ import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { auth, db } from '@/firebase';
 import type { Statpack, InventoryItem, User, StatpackPocket, StatpackCompartment } from '@/app/types';
 import { BagVisualizer } from '@/app/components/statpackvisualizer';
-import { updateAssetAssignment } from '@/app/lib/inventory';
+import { updateAssetAssignment, assignBarcode } from '@/app/lib/inventory';
 import {
   Package,
   Wrench,
@@ -118,6 +118,17 @@ export default function AssetsPage() {
   };
   const [maintenanceReason, setMaintenanceReason] = useState('');
   const [maintenanceNotes, setMaintenanceNotes] = useState('');
+  
+  // Quick-assign barcode state
+  const [showQuickAssignScanner, setShowQuickAssignScanner] = useState(false);
+  const [quickAssignAsset, setQuickAssignAsset] = useState<AssetRecord | null>(null);
+  const [scannedBarcodeQuick, setScannedBarcodeQuick] = useState<string>('');
+  const [duplicateWarningQuick, setDuplicateWarningQuick] = useState<{
+    show: boolean;
+    barcode: string;
+    duplicateItem?: { id: string; name: string; serial?: string };
+  } | null>(null);
+  const [assigningBarcodeQuick, setAssigningBarcodeQuick] = useState(false);
   const [maintenanceTechnician, setMaintenanceTechnician] = useState('');
   const [maintenanceServiceType, setMaintenanceServiceType] = useState<'routine' | 'repair' | 'inspection' | 'replacement'>('routine');
 
@@ -482,6 +493,72 @@ export default function AssetsPage() {
     return activeLog;
   };
 
+  // Quick-assign barcode handlers
+  const handleQuickAssignBarcode = (asset: AssetRecord) => {
+    if (asset.type !== 'inventory') {
+      alert('Barcode assignment is only supported for inventory assets currently.');
+      return;
+    }
+    setQuickAssignAsset(asset);
+    setScannedBarcodeQuick('');
+    setDuplicateWarningQuick(null);
+    setShowQuickAssignScanner(true);
+  };
+
+  const handleQuickScanDetected = (code: string) => {
+    setScannedBarcodeQuick(code);
+    setShowQuickAssignScanner(false);
+  };
+
+  const handleQuickAssign = async (allowDuplicate = false) => {
+    if (!quickAssignAsset || !scannedBarcodeQuick.trim() || !user) {
+      return;
+    }
+
+    setAssigningBarcodeQuick(true);
+    setDuplicateWarningQuick(null);
+
+    try {
+      const result = await assignBarcode({
+        itemId: quickAssignAsset.id,
+        barcode: scannedBarcodeQuick,
+        user: { id: user.uid, fullName: user.displayName || user.email || 'Unknown' },
+        options: { allowDuplicate },
+      });
+
+      if (!result.success) {
+        if (result.isDuplicate && !allowDuplicate) {
+          setDuplicateWarningQuick({
+            show: true,
+            barcode: scannedBarcodeQuick,
+            duplicateItem: result.duplicateItem,
+          });
+        } else {
+          alert(result.message);
+        }
+      } else {
+        alert(result.message);
+        setScannedBarcodeQuick('');
+        setQuickAssignAsset(null);
+        setDuplicateWarningQuick(null);
+      }
+    } catch (error: any) {
+      alert(error.message || 'Failed to assign barcode');
+    } finally {
+      setAssigningBarcodeQuick(false);
+    }
+  };
+
+  const handleQuickDuplicateOverride = () => {
+    handleQuickAssign(true);
+  };
+
+  const handleQuickCancelDuplicate = () => {
+    setDuplicateWarningQuick(null);
+    setScannedBarcodeQuick('');
+    setQuickAssignAsset(null);
+  };
+
   const sortedAssets = [...assets].sort((a, b) => {
     const aActive = getMaintenanceStatus(a);
     const bActive = getMaintenanceStatus(b);
@@ -692,6 +769,21 @@ export default function AssetsPage() {
                           {asset.type === 'inventory' && userRole === 'admin' && (
                             <Button isIconOnly size="sm" variant="light" onPress={(e:any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); setEditingAsset(asset.data); assetModalDisclosure.onOpen(); }}>
                               <Pencil size={16} />
+                            </Button>
+                          )}
+                          {asset.type === 'inventory' && (userRole === 'admin' || userRole === 'quartermaster' || userRole === 'inventory_helper') && (
+                            <Button
+                              isIconOnly
+                              size="sm"
+                              variant="light"
+                              color="secondary"
+                              onPress={(e: any) => {
+                                if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+                                handleQuickAssignBarcode(asset);
+                              }}
+                              title="Assign external barcode tag"
+                            >
+                              <Package size={16} />
                             </Button>
                           )}
                           {userRole === 'admin' && (
@@ -1342,6 +1434,88 @@ export default function AssetsPage() {
         }}
         onDetected={handleBarcodeDetected}
       />
+
+      {/* Quick Assign Barcode Scanner */}
+      <BarcodeScanner
+        isOpen={showQuickAssignScanner}
+        onClose={() => setShowQuickAssignScanner(false)}
+        onDetected={handleQuickScanDetected}
+      />
+
+      {/* Quick Assign Result/Duplicate Warning Modal */}
+      <Modal
+        isOpen={!!scannedBarcodeQuick && !showQuickAssignScanner}
+        onOpenChange={(open) => {
+          if (!open) {
+            setScannedBarcodeQuick('');
+            setQuickAssignAsset(null);
+            setDuplicateWarningQuick(null);
+          }
+        }}
+        size="md"
+      >
+        <ModalContent>
+          <ModalHeader>Assign Barcode Tag</ModalHeader>
+          <ModalBody>
+            {quickAssignAsset && (
+              <div className="space-y-3">
+                <div className="bg-blue-50 border border-blue-200 rounded p-3">
+                  <p className="text-sm font-medium text-blue-900">Asset: {quickAssignAsset.name}</p>
+                  <p className="text-sm text-blue-700 mt-1">Scanned: <span className="font-mono">{scannedBarcodeQuick}</span></p>
+                </div>
+
+                {duplicateWarningQuick?.show && (
+                  <div className="bg-yellow-50 border border-yellow-300 rounded p-3">
+                    <p className="text-sm font-semibold text-yellow-900 mb-1">⚠️ Duplicate Barcode</p>
+                    <p className="text-sm text-yellow-800 mb-2">
+                      This barcode is already assigned to{' '}
+                      <strong>{duplicateWarningQuick.duplicateItem?.name}</strong>
+                      {duplicateWarningQuick.duplicateItem?.serial && (
+                        <span> (Serial: {duplicateWarningQuick.duplicateItem.serial})</span>
+                      )}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+          </ModalBody>
+          <ModalFooter>
+            {duplicateWarningQuick?.show ? (
+              <>
+                <Button variant="light" onPress={handleQuickCancelDuplicate}>
+                  Cancel
+                </Button>
+                <Button
+                  color="warning"
+                  onPress={handleQuickDuplicateOverride}
+                  isLoading={assigningBarcodeQuick}
+                >
+                  Assign Anyway
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  variant="light"
+                  onPress={() => {
+                    setScannedBarcodeQuick('');
+                    setQuickAssignAsset(null);
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  color="primary"
+                  onPress={() => handleQuickAssign(false)}
+                  isLoading={assigningBarcodeQuick}
+                >
+                  Assign to Asset
+                </Button>
+              </>
+            )}
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
     </div>
   );
 }
