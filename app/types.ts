@@ -539,3 +539,46 @@ export interface InventoryLog {
   newStatus?: string; // For status change events
   details?: Record<string, any>; // Catch-all for additional event data
 }
+
+// --- BUG REPORTS & ISSUE TRACKING ---
+export interface IssueReport {
+  id?: string;
+  reporter: {
+    userId: string | null;
+    userName?: string | null;
+    userEmail?: string | null;
+    isAnonymous?: boolean;
+  };
+  target?: {
+    collection?: string; // 'inventory', 'statpack', etc.
+    docId?: string;
+  };
+  type: 'bug' | 'feedback' | 'improvement' | 'question';
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  status: 'open' | 'triaged' | 'in_progress' | 'resolved' | 'closed';
+  title: string;
+  description: string;
+  reproductionSteps?: string[];
+  pagePath?: string; // Route or UI area where issue was reported
+  component?: string; // Component name or ID
+  assignedTo?: {
+    userId?: string;
+    userName?: string;
+  } | null;
+  comments?: Array<{
+    commentId?: string;
+    by: {
+      userId: string;
+      userName?: string;
+    };
+    message: string;
+    timestamp: Date | FieldValue;
+  }>;
+  attachments?: Array<{
+    name: string;
+    url: string;
+  }>;
+  linkedAuditId?: string; // Reference to an auditEvents doc
+  createdAt: Date | FieldValue;
+  updatedAt: Date | FieldValue;
+}

@@ -15,12 +15,14 @@ import {
   DropdownTrigger, 
   DropdownMenu, 
   DropdownItem,
-  Tooltip
+  Tooltip,
+  Button
 } from '@heroui/react';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore'; 
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth, db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
+import IssueReportForm from './IssueReportForm';
 
 // Icons
 import { 
@@ -30,7 +32,8 @@ import {
   ChartBarIcon, 
   DevicePhoneMobileIcon, 
   UserIcon as HeroUserIcon, 
-  ArrowRightOnRectangleIcon 
+  ArrowRightOnRectangleIcon,
+  ExclamationTriangleIcon
 } from '@heroicons/react/24/outline';
 
 export default function AppNavbar() {
@@ -38,6 +41,7 @@ export default function AppNavbar() {
   const router = useRouter();
   const { user, role } = useUserRole();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isReportOpen, setIsReportOpen] = useState(false);
 
   // Check if user is admin or quartermaster
   const isAdmin = role === 'admin' || role === 'quartermaster';
@@ -227,11 +231,40 @@ export default function AppNavbar() {
               </Tooltip>
             </NavbarItem>
           )}
+
+          {/* Issue Reports - Admin Only */}
+          {isAdmin && (
+            <NavbarItem isActive={isActive('/issue-reports')}>
+              <Tooltip content="Triage issue reports">
+                <Link 
+                  href="/issue-reports" 
+                  color={isActive('/issue-reports') ? "primary" : "foreground"}
+                  className={isActive('/issue-reports') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}
+                >
+                  <ExclamationTriangleIcon className="w-5 h-5 mr-1" />
+                  Issues
+                </Link>
+              </Tooltip>
+            </NavbarItem>
+          )}
         </div>
 
       </NavbarBrand>
 
-      <NavbarContent justify="end">
+      <NavbarContent justify="end" className="gap-3">
+        <NavbarItem>
+          <Tooltip content="Report a bug or issue">
+            <Button
+              isIconOnly
+              className="bg-warning text-white hover:bg-warning-600"
+              size="sm"
+              onPress={() => setIsReportOpen(true)}
+            >
+              <ExclamationTriangleIcon className="w-5 h-5" />
+            </Button>
+          </Tooltip>
+        </NavbarItem>
+
         <NavbarItem>
           <Dropdown 
             placement="bottom-end" 
@@ -337,6 +370,13 @@ export default function AppNavbar() {
           </NavbarMenuItem>
         )}
       </NavbarMenu>
+
+      {/* Report Issue Modal */}
+      <IssueReportForm
+        isOpen={isReportOpen}
+        onOpenChange={setIsReportOpen}
+        pagePath={pathname}
+      />
     </Navbar>
   );
 }
