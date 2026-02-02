@@ -101,6 +101,8 @@ export default function CheckinPage() {
 
   const handleSelectPack = (pack: Statpack) => {
     setSelectedPack(pack);
+    // Open the check-in modal in "usage reporting" mode so members can
+    // mark only items they used and replaced (or use the quick-checkin button).
     checkoffDisclosure.onOpen();
   };
 
@@ -121,6 +123,27 @@ export default function CheckinPage() {
       scannerDisclosure.onClose();
     }
   };
+
+  async function markPackCheckedIn(pack: Statpack) {
+    try {
+      const packRef = doc(db, 'statpacks', pack.id as string);
+      await updateDoc(packRef, {
+        isCheckedOut: false,
+        assignedToUserId: null,
+        assignedToUserName: null,
+        checkedInAt: serverTimestamp(),
+        status: 'Ready',
+        updatedAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.error('Failed to mark statpack as checked in', e);
+    }
+
+    checkoffDisclosure.onClose();
+    setSelectedPack(null);
+    // Redirect to dashboard after successful check-in
+    setTimeout(() => router.push('/dashboard'), 500);
+  }
 
   const handleCheckOffComplete = async () => {
     // When a pack is checked in, mark it as available in Firestore
@@ -312,6 +335,8 @@ export default function CheckinPage() {
           userId={user.uid}
           userName={user.displayName || user.email || 'Unknown User'}
           onCheckOffComplete={handleCheckOffComplete}
+          checkinUsageMode={true}
+          onQuickCheckIn={() => selectedPack && markPackCheckedIn(selectedPack)}
         />
       )}
     </>

@@ -1,7 +1,7 @@
 import { collection, doc, getDoc, getDocs, writeBatch, serverTimestamp, addDoc, updateDoc, runTransaction, query, where } from 'firebase/firestore';
 import { db } from '@/firebase';
 import type { InventoryItem, Statpack, StatpackItem, Container, BoxLog, StatpackLog, PurchaseInfo, ValidationWarning, AssetInstance, AssetCheckResult, StatpackAuditResult } from '@/app/types';
-import { recordAuditEvent, removeUndefined } from '@/app/lib/audit';
+import { recordAuditEvent, removeUndefined, deepRemoveUndefined } from '@/app/lib/audit';
 
 /**
  * Compute total asset value of a statpack from its contents.
@@ -212,10 +212,12 @@ export async function logStatpackCheckOff(params: {
     notes,
   } = params;
 
-  const validationWarnings = await validateStatpackAssignments({
-    statpackId,
-    checkEntries,
-  });
+  const validationWarnings = (action === 'checkout' || action === 'checkin')
+    ? []
+    : await validateStatpackAssignments({
+        statpackId,
+        checkEntries,
+      });
 
   // Build base log object
   const logData: Partial<StatpackLog> = {
@@ -278,7 +280,8 @@ export async function logStatpackCheckOff(params: {
     logData.validationWarnings = validationWarnings;
   }
 
-  const logRef = await addDoc(collection(db, 'statpack_logs'), logData);
+  const sanitizedLog = deepRemoveUndefined(logData as any);
+  const logRef = await addDoc(collection(db, 'statpack_logs'), sanitizedLog as any);
 
   await logValidationWarningsToCollections({
     warnings: validationWarnings,
@@ -1268,7 +1271,7 @@ export async function performStatpackManualAudit(params: {
     updatedAt: serverTimestamp(),
   });
 
-  await addDoc(collection(db, 'statpack_logs'), removeUndefined({
+  await addDoc(collection(db, 'statpack_logs'), deepRemoveUndefined({
     statpackId,
     statpackName: statpack.name,
     action: 'maintenance',

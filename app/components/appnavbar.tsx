@@ -124,15 +124,17 @@ export default function AppNavbar() {
       {/* Added ml-[10px] to shift the Logo and Links towards the middle */}
       <NavbarBrand className="gap-4 ml-[10px]">
         <div className="flex items-center gap-0">
-          <div className="relative w-[79px] h-[79px]">
-            <Image
-              src="/images/NoBackground_NewLogoWhite.PNG"
-              alt="BMRC logo"
-              fill
-              className="object-contain"
-              priority
-            />
-          </div>
+          <Link href="/dashboard" className="block">
+            <div className="relative w-[79px] h-[79px]">
+              <Image
+                src="/images/NoBackground_NewLogoWhite.PNG"
+                alt="BMRC logo"
+                fill
+                className="object-contain"
+                priority
+              />
+            </div>
+          </Link>
         </div>
         
         {/* Desktop Links */}

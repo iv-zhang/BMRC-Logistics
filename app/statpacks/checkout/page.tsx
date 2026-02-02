@@ -211,7 +211,7 @@ export default function CheckoutPage() {
                 pocketDisclosure.onClose();
                 checkoffDisclosure.onOpen();
               }}
-              className={`w-full ${isDone ? 'opacity-60' : 'hover:shadow-md'} transition-shadow`}
+                className={`w-full transition-shadow ${isDone ? 'border-2 border-green-400 bg-green-50 opacity-90' : 'hover:shadow-md'}`}
             >
               <CardBody className="flex flex-col items-center text-center gap-3 py-6">
                 <div className="space-y-1">
@@ -403,7 +403,7 @@ export default function CheckoutPage() {
                   </CardBody>
                 </Card>
 
-                <PocketList />
+                      <PocketList />
               </div>
             ) : (
               <div>No pack selected.</div>
@@ -447,18 +447,18 @@ export default function CheckoutPage() {
           userId={user.uid}
           userName={user.displayName || user.email || 'Unknown User'}
           onCheckOffComplete={() => {
-            // Mark this pocket (or compartment) as completed
-            if (selectedPocketId) {
-              setCompletedPockets(prev => [...prev, selectedPocketId]);
-            } else if (selectedPack?.compartments && selectedPack.compartments.length === 0) {
-              // full pack verified
+            // If this was a full-pack verification and there are no compartments, finish the checkout
+            if (!selectedPocketId && selectedPack?.compartments && selectedPack.compartments.length === 0) {
               handleCheckOffComplete();
               return;
             }
 
-            // Close checkoff modal and decide whether to reopen selector for remaining pockets
+            // Build the new completed list synchronously and update state
+            const newCompleted = selectedPocketId ? [...completedPockets, selectedPocketId] : [...completedPockets];
+            setCompletedPockets(newCompleted);
+
+            // Close checkoff modal and reset selected pocket
             checkoffDisclosure.onClose();
-            const newCompleted = selectedPocketId ? [...completedPockets, selectedPocketId] : completedPockets;
             setSelectedPocketId(null);
 
             // Determine pockets with content (same list used for selection)
@@ -471,7 +471,7 @@ export default function CheckoutPage() {
 
             const remaining = pocketsWithContent.filter(p => !newCompleted.includes(p));
             if (pocketsWithContent.length > 0 && remaining.length > 0) {
-              setTimeout(() => pocketDisclosure.onOpen(), 250);
+              pocketDisclosure.onOpen();
             } else {
               handleCheckOffComplete();
             }

@@ -40,6 +40,31 @@ export function removeUndefined<T extends Record<string, unknown>>(obj: T): T {
   return cleaned;
 }
 
+export function deepRemoveUndefined<T>(obj: T): T {
+  if (obj === null || obj === undefined) return obj;
+  if (Array.isArray(obj)) {
+    // Clean array elements and remove undefined entries
+    const arr = (obj as unknown as any[])
+      .map((v) => deepRemoveUndefined(v))
+      .filter((v) => v !== undefined);
+    return arr as unknown as T;
+  }
+  if (typeof obj === 'object') {
+    const out: any = {};
+    for (const [k, v] of Object.entries(obj as any)) {
+      if (v === undefined) continue;
+      if (v === null) {
+        out[k] = null;
+        continue;
+      }
+      if (typeof v === 'object') out[k] = deepRemoveUndefined(v);
+      else out[k] = v;
+    }
+    return out as T;
+  }
+  return obj;
+}
+
 /**
  * Add an audit event to an existing WriteBatch.
  * Returns the DocumentReference created so callers can reference it elsewhere in the batch.
@@ -52,5 +77,5 @@ export function addAuditEventToBatch(batch: WriteBatch, event: Partial<AuditEven
   return ref;
 }
 
-const audit = { recordAuditEvent, addAuditEventToBatch, removeUndefined };
+const audit = { recordAuditEvent, addAuditEventToBatch, removeUndefined, deepRemoveUndefined };
 export default audit;

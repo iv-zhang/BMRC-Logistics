@@ -60,6 +60,7 @@ export const BagVisualizer: React.FC<BagVisualizerProps> = ({
     return {
       isPressable: true,
       onPress: () => onSelectPocket(pocket),
+      style: { touchAction: 'pan-y' },
       className: `transition-all duration-200 border-2 shadow-sm hover:shadow-md ${
         isSelected 
           ? 'border-primary bg-primary-50 dark:bg-primary-900/20 scale-[1.02] z-10' 
@@ -126,7 +127,7 @@ export const BagVisualizer: React.FC<BagVisualizerProps> = ({
             className="w-full h-full p-1 cursor-grab active:cursor-grabbing"
         >
              <Tooltip content={`O2 Level: ${current} / ${max} PSI`} showArrow color="primary">
-                <Card className={`w-full h-full border-2 ${borderColor} shadow-sm overflow-hidden relative group`}>
+                <Card style={{ touchAction: 'pan-y' }} className={`w-full h-full border-2 ${borderColor} shadow-sm overflow-hidden relative group`}>
                      {/* Background Level Indicator */}
                      <div 
                         className={`absolute bottom-0 w-full transition-all duration-500 ${fillColor}`}

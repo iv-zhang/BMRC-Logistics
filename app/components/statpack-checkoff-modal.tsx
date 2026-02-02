@@ -26,6 +26,11 @@ interface StatpackCheckOffModalProps {
   userId: string;
   userName: string;
   onCheckOffComplete?: () => void;
+  // When true, the modal is used for check-in "usage reporting":
+  // allow members to check off only items they used and replaced.
+  checkinUsageMode?: boolean;
+  // Callback for quick check-in when user reports they used nothing.
+  onQuickCheckIn?: () => void;
 }
 
 /**
@@ -46,6 +51,8 @@ export default function StatpackCheckOffModal({
   userId,
   userName,
   onCheckOffComplete,
+  checkinUsageMode,
+  onQuickCheckIn,
 }: StatpackCheckOffModalProps) {
   const { role } = useUserRole();
   const isAdmin = role === 'admin' || role === 'quartermaster';
@@ -66,7 +73,9 @@ export default function StatpackCheckOffModal({
     if (statpack?.contents) {
       const initialCounts: Record<string, number> = {};
       statpack.contents.forEach(item => {
-        initialCounts[item.itemId] = item.requiredQuantity;
+        // In usage reporting mode default to 1 used (so user can adjust),
+        // otherwise default to requiredQuantity for verification flows.
+        initialCounts[item.itemId] = checkinUsageMode ? 1 : item.requiredQuantity;
       });
       setCheckCounts(initialCounts);
     }
@@ -118,8 +127,9 @@ export default function StatpackCheckOffModal({
     setSubmitting(true);
     try {
       const checkEntries = (statpack.contents || []).map(item => {
-        const counted = checkCounts[item.itemId] ?? item.requiredQuantity;
-        return {
+        const counted = checkCounts[item.itemId] ?? (checkinUsageMode ? 1 : item.requiredQuantity);
+        const used = checkinUsageMode ? checkedItems.has(item.itemId) : false;
+        const entry: any = {
           itemId: item.itemId,
           itemName: item.itemDetails?.name || 'Unknown',
           batchId: item.batchId,
@@ -130,6 +140,13 @@ export default function StatpackCheckOffModal({
           serialNumber: item.serialNumber,
           notes: '',
         };
+        if (checkinUsageMode && used) {
+          // Mark used items so downstream tooling can interpret usage/consumption
+          entry.used = true;
+          entry.usedQuantity = counted || 1;
+          entry.notes = 'used_and_replaced';
+        }
+        return entry;
       });
 
       const result = await logStatpackCheckOff({
@@ -196,6 +213,13 @@ export default function StatpackCheckOffModal({
   const allItemsChecked = statpack.contents?.every(item =>
     checkedItems.has(item.itemId)
   );
+  const bodyRef = React.useRef<HTMLDivElement | null>(null);
+  React.useEffect(() => {
+    if (isOpen && bodyRef.current) {
+      // Ensure the top of the modal body (instructions) is visible when opened
+      bodyRef.current.scrollTop = 0;
+    }
+  }, [isOpen]);
 
   return (
     <Modal isOpen={isOpen} onOpenChange={onOpenChange} backdrop="blur" size="2xl" placement="center">
@@ -207,6 +231,7 @@ export default function StatpackCheckOffModal({
         </ModalHeader>
 
         <ModalBody className="gap-4">
+          <div ref={bodyRef} className="max-h-[70vh] overflow-y-auto p-2">
           {inlineAlert && (
             <Card className={
               inlineAlert.type === 'success'
@@ -226,6 +251,20 @@ export default function StatpackCheckOffModal({
               </CardBody>
             </Card>
           )}
+
+            {checkinUsageMode && (
+              <Card className="bg-default-50">
+                <CardBody className="flex items-center justify-between">
+                  <div>
+                    <p className="font-semibold">Report Used Items</p>
+                    <p className="text-xs text-default-500">Check the items you used and replaced. If you didn't use anything, you can mark the pack checked-in immediately.</p>
+                  </div>
+                  <div>
+                    <Button color="default" onPress={() => onQuickCheckIn && onQuickCheckIn()}>I did not use anything — Check In</Button>
+                  </div>
+                </CardBody>
+              </Card>
+            )}
           
           {/* Info banner about disposables vs assets */}
           <Card className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800">
@@ -285,7 +324,7 @@ export default function StatpackCheckOffModal({
             {(statpack.contents || []).map(item => {
               const itemId = item.itemId;
               const isChecked = checkedItems.has(itemId);
-              const counted = checkCounts[itemId] ?? item.requiredQuantity;
+              const counted = checkCounts[itemId] ?? (checkinUsageMode ? 1 : item.requiredQuantity);
               const ok = counted >= item.requiredQuantity;
 
               return (
@@ -308,8 +347,7 @@ export default function StatpackCheckOffModal({
                           {item.itemDetails?.name || 'Unnamed Item'}
                         </p>
                         <p className="text-xs text-default-500">
-                          Required: {item.requiredQuantity}x | Category:{' '}
-                          {item.itemDetails?.category || 'N/A'}
+                          {checkinUsageMode ? 'Mark if you used and replaced this item' : `Required: ${item.requiredQuantity}x | Category: ${item.itemDetails?.category || 'N/A'}`}
                         </p>
                         {item.expirationDate && (
                           <p className="text-xs text-danger">
@@ -328,8 +366,8 @@ export default function StatpackCheckOffModal({
                           }
                           className="w-24"
                           size="sm"
-                          label="Counted"
-                          disabled={!isAdmin}
+                          label={checkinUsageMode ? 'Used' : 'Counted'}
+                          disabled={!isAdmin && !checkinUsageMode}
                         />
                       </div>
                     </div>
@@ -418,6 +456,24 @@ export default function StatpackCheckOffModal({
               className="px-2 py-1 border rounded text-sm"
               rows={3}
             />
+          </div>
+          {/* General Notes */}
+          <Divider />
+
+          <div className="gap-1 flex flex-col">
+            <label htmlFor="checkoff-notes" className="text-sm font-semibold">
+              Additional Notes
+            </label>
+            <textarea
+              id="checkoff-notes"
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              placeholder="e.g., Items appear damaged, missing bag pocket..."
+              className="px-2 py-1 border rounded text-sm"
+              rows={3}
+            />
+          </div>
+
           </div>
         </ModalBody>
 
