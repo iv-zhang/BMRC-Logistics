@@ -20,7 +20,8 @@ import {
   Checkbox,
   Spinner,
   Divider,
-  Textarea
+  Textarea,
+  Chip,
 } from '@heroui/react';
 
 function formatDate(ts: any) {
@@ -30,6 +31,22 @@ function formatDate(ts: any) {
     return d.toLocaleString();
   } catch (e) {
     return String(ts);
+  }
+}
+
+function humanizeType(t: any) {
+  if (!t) return '';
+  const s = String(t);
+  switch (s) {
+    case 'open_box_low': return 'Open Box - Running Low';
+    case 'low_stock': return 'Low Stock';
+    case 'expiration': return 'Expiration';
+    case 'oxygen': return 'Oxygen Level';
+    case 'damaged': return 'Damaged / Defective';
+    case 'open_box': return 'Untracked / Open Box';
+    default:
+      // make camel or snake case human friendly
+      return s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
   }
 }
 
@@ -106,38 +123,35 @@ export default function ReportsPage() {
             {visible.map(r => (
               <Card key={r.id} className="shadow-sm">
                 <CardHeader>
-                  <div className="flex justify-between items-start">
+                  <div className="flex justify-between items-center">
                     <div>
-                      <div className="font-semibold">{r.restockBoxName || r.restockBoxId}</div>
+                      <div className="flex items-center gap-3">
+                        <div className="font-semibold text-lg">{humanizeType(r.type)}{(r.items && r.items.length > 0 && r.items[0].name) ? ` — ${r.items[0].name}` : (r.itemName ? ` — ${r.itemName}` : '')}</div>
+                        {r.severity && <Chip size="sm" color={r.severity === 'critical' ? 'danger' : 'warning'} variant="flat">{String(r.severity)}</Chip>}
+                      </div>
                       <div className="text-xs text-gray-500">Reported by {r.reporter || r.reporterId || 'unknown'} • {formatDate(r.createdAt)}</div>
                     </div>
-                    <div className="flex gap-2">
-                      {!r.resolved && <Button color="primary" onPress={() => handleResolve(r)}>Resolve</Button>}
-                      <Button variant="light" color="danger" onPress={() => handleDelete(r)}>Delete</Button>
-                    </div>
+                    {/* buttons moved to footer for consistent right-side placement */}
+                    <div />
                   </div>
                 </CardHeader>
                 <CardBody>
                   <div className="text-sm text-gray-700">
-                    {r.items && r.items.length > 0 ? (
-                      <div className="space-y-2">
-                        {r.items.map((it: any, idx: number) => (
-                          <div key={idx} className="flex justify-between items-center">
-                            <div>
-                              <div className="font-medium">{it.name || it.itemId}</div>
-                              <div className="text-xs text-gray-500">Required: {it.requiredQuantity} • Observed: {it.observedQuantity}</div>
-                              {it.note && <div className="text-xs mt-1">Note: {it.note}</div>}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="text-xs text-gray-500">No item details included.</div>
-                    )}
-                    {r.notes && <div className="mt-3 text-xs text-gray-600">Notes: {r.notes}</div>}
+                    {r.statpackName || r.location || r.locationDetail ? (
+                      <div className="text-xs text-gray-500">Location: <strong>{r.statpackName ?? r.location}{r.locationDetail ? ` • ${r.locationDetail}` : ''}</strong></div>
+                    ) : null}
+                    {r.notes && <div className="mt-2 text-xs text-gray-600">Notes: {r.notes}</div>}
                   </div>
                 </CardBody>
-                <CardFooter className="text-xs text-gray-500">{r.resolved ? `Resolved by ${r.resolvedByName || r.resolvedBy} • ${formatDate(r.resolvedAt)}` : 'Unresolved'}</CardFooter>
+                <CardFooter>
+                  <div className="flex items-center justify-between w-full text-xs text-gray-500">
+                    <div>{r.resolved ? `Resolved by ${r.resolvedByName || r.resolvedBy} • ${formatDate(r.resolvedAt)}` : 'Unresolved'}</div>
+                    <div className="flex items-center gap-2">
+                      {!r.resolved && <Button color="primary" onPress={() => handleResolve(r)}>Resolve</Button>}
+                      <Button variant="light" color="danger" onPress={() => handleDelete(r)}>Delete</Button>
+                    </div>
+                  </div>
+                </CardFooter>
               </Card>
             ))}
           </div>

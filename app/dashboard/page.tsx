@@ -434,18 +434,7 @@ export default function DashboardPage() {
                       <ReportsWidgetPreview />
                     </div>
 
-                    <div className="mt-3 border-t pt-3">
-                      <div className="text-sm font-medium mb-2">Simulate Report</div>
-                      <div className="flex items-center">
-                        <Button
-                          color="primary"
-                          onPress={() => window.open('/reports', '_blank')}
-                          startContent={<AlertTriangle />}
-                        >
-                          View Reports
-                        </Button>
-                      </div>
-                    </div>
+                    {/* simplified: removed simulation UI; reports list renders below */}
                   </div>
                 </CardBody>
               </Card>
@@ -554,6 +543,7 @@ export default function DashboardPage() {
 // --- Reports widget preview (client-only) ---
 function ReportsWidgetPreview() {
   const [reports, setReports] = React.useState<any[]>([]);
+  const router = useRouter();
 
   React.useEffect(() => {
     const q = query(collection(db, 'restock_reports'), orderBy('createdAt', 'desc'));
@@ -574,14 +564,33 @@ function ReportsWidgetPreview() {
   if (reports.length === 0) return <div className="text-xs text-gray-500">No recent unresolved reports.</div>;
 
   return (
-    <div className="space-y-2">
-      {reports.map(r => (
-        <div key={r.id} className="p-2 bg-gray-50 rounded border">
-          <div className="text-sm font-medium">{r.statpackName || r.statpackId}</div>
-          <div className="text-xs text-gray-500">{r.reporter || r.reporterId} • {(() => { try { const d = r.createdAt?.toDate ? r.createdAt.toDate() : new Date(r.createdAt); return d.toLocaleString(); } catch(e) { return String(r.createdAt); } })()}</div>
-          <div className="text-xs text-gray-700 mt-1">{(r.items || []).slice(0,2).map((it:any)=>it.name).join(', ')}</div>
-        </div>
-      ))}
+    <div className="divide-y divide-gray-100 dark:divide-slate-700">
+      {reports.map(r => {
+        let dateStr = '';
+        try {
+          const d = r.createdAt?.toDate ? r.createdAt.toDate() : new Date(r.createdAt);
+          dateStr = d.toLocaleString();
+        } catch (e) {
+          dateStr = String(r.createdAt || '');
+        }
+
+        return (
+          <div key={r.id} className="flex justify-between items-center p-3 hover:bg-indigo-50/70 dark:hover:bg-slate-700/60">
+            <div>
+              <p className="font-semibold text-gray-800 dark:text-gray-200">{r.statpackName || r.statpackId}</p>
+              <p className="text-xs text-gray-500">{r.reporter || r.reporterId}</p>
+              <p className="text-xs text-gray-700 mt-1">{(r.items || []).slice(0,2).map((it:any)=>it.name).join(', ')}</p>
+            </div>
+
+            <div className="text-right flex flex-col items-end gap-2">
+              <div className="text-xs text-gray-400">{dateStr}</div>
+              <Button size="sm" variant="light" onPress={(e:any) => { e?.stopPropagation?.(); router.push(`/reports?id=${r.id}`); }}>
+                Open
+              </Button>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

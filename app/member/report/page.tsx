@@ -164,7 +164,25 @@ export default function MemberReportPage() {
             : undefined;
       }
 
-      await addDoc(collection(db, 'inventory_alerts'), reportData);
+      // Normalize items array for admin UI
+      const itemsArr: Array<Record<string, unknown>> = [];
+      if (item) {
+        itemsArr.push({
+          itemId: item.id,
+          name: item.name,
+          observedQuantity: quantity ? Number(quantity) : undefined,
+          requiredQuantity: item.reorderThreshold ?? undefined,
+          note: notes || undefined,
+        });
+      }
+
+      // Write to the shared reports collection so admins can see member reports
+      reportData.items = itemsArr;
+      reportData.reporter = userData.fullName || user.displayName || null;
+      reportData.reporterId = user.uid;
+      reportData.createdAt = serverTimestamp();
+      reportData.resolved = false;
+      await addDoc(collection(db, 'restock_reports'), reportData);
       setSuccess(true);
       setTimeout(() => {
         router.push('/dashboard');
@@ -223,32 +241,32 @@ export default function MemberReportPage() {
           <Divider />
           <CardBody className="space-y-4">
             <RadioGroup value={reportType} onValueChange={(val: string) => setReportType(val as 'low_stock' | 'expiration' | 'oxygen' | 'open_box' | 'damaged')}>
-              <Radio value="low_stock" className="mb-2">
-                <div>
+              <Radio value="low_stock" className="mb-3">
+                <div className="ml-2">
                   <div className="font-medium">Open Box Running Low</div>
                   <div className="text-xs text-gray-500">Front room open box needs refill from sealed box</div>
                 </div>
               </Radio>
-              <Radio value="expiration" className="mb-2">
-                <div>
+              <Radio value="expiration" className="mb-3">
+                <div className="ml-2">
                   <div className="font-medium">Expiration</div>
                   <div className="text-xs text-gray-500">Item is expired or expiring soon</div>
                 </div>
               </Radio>
-              <Radio value="oxygen" className="mb-2">
-                <div>
+              <Radio value="oxygen" className="mb-3">
+                <div className="ml-2">
                   <div className="font-medium">Oxygen Level</div>
                   <div className="text-xs text-gray-500">Report oxygen tank PSI level</div>
                 </div>
               </Radio>
-              <Radio value="damaged" className="mb-2">
-                <div>
+              <Radio value="damaged" className="mb-3">
+                <div className="ml-2">
                   <div className="font-medium">Damaged/Defective</div>
                   <div className="text-xs text-gray-500">Item is damaged or not working</div>
                 </div>
               </Radio>
-              <Radio value="open_box" className="mb-2">
-                <div>
+              <Radio value="open_box" className="mb-0">
+                <div className="ml-2">
                   <div className="font-medium">Untracked/Open Box</div>
                   <div className="text-xs text-gray-500">Found items on open shelves</div>
                 </div>
@@ -285,40 +303,41 @@ export default function MemberReportPage() {
                     <div className="text-sm text-gray-500">Filter list for easier selection</div>
                   </div>
 
-                  {/* Always show a filtered HeroUI list under the single input. Clicking fills the input. */}
-                  {(() => {
+                  {/* Filtered item dropdown with dynamic height */}
+                  {searchTerm && (() => {
                     const filtered = inventory
                       .filter((it) => it.name.toLowerCase().includes(searchTerm.trim().toLowerCase()))
                       .filter((it) => (lowStockOnly ? (it.reorderThreshold !== undefined ? it.totalStockQuantity <= (it.reorderThreshold ?? 0) : false) : true));
 
+                    if (filtered.length === 0) return null;
+
                     const itemHeight = 56;
-                    const maxVisible = Math.min(filtered.length || 1, 8);
+                    const maxVisible = Math.min(filtered.length, 8);
                     const maxH = maxVisible * itemHeight;
 
                     return (
-                      <div style={{ maxHeight: maxH, overflowY: 'auto' }} className="border rounded-md bg-white dark:bg-slate-800">
-                        {filtered.length ? (
-                          filtered.map((item) => (
-                            <SelectItem
-                              key={item.id}
-                              textValue={item.name}
-                              onPress={() => {
-                                setItemId(item.id);
-                                setSearchTerm(item.name);
-                              }}
-                            >
-                              <div className={`flex flex-col p-3 ${itemId === item.id ? 'bg-gray-100 dark:bg-slate-700' : ''}`}>
-                                <span className="font-medium">{item.name}</span>
-                                <span className="text-xs text-gray-500">Stock: {item.totalStockQuantity} {item.reorderThreshold ? `/ Par: ${item.reorderThreshold}` : ''}</span>
-                              </div>
-                            </SelectItem>
-                          ))
-                        ) : (
-                          <div className="p-3 text-sm text-gray-500">No matching items</div>
-                        )}
+                      <div style={{ maxHeight: maxH, overflowY: 'auto' }} className="border rounded-md bg-white dark:bg-slate-800 shadow-md">
+                        {filtered.map((item) => (
+                          <button
+                            key={item.id}
+                            onClick={() => {
+                              setItemId(item.id);
+                              setSearchTerm(item.name);
+                            }}
+                            className={`w-full flex flex-col p-3 border-b last:border-b-0 text-left transition-colors ${
+                              itemId === item.id 
+                                ? 'bg-blue-100 dark:bg-blue-900' 
+                                : 'hover:bg-gray-50 dark:hover:bg-slate-700'
+                            }`}
+                          >
+                            <span className="font-medium text-gray-900 dark:text-white">{item.name}</span>
+                            <span className="text-xs text-gray-500">Stock: {item.totalStockQuantity} {item.reorderThreshold ? `/ Par: ${item.reorderThreshold}` : ''}</span>
+                          </button>
+                        ))}
                       </div>
                     );
                     })()}
+
                 </div>
 
               {getItemDetails() && (
@@ -354,14 +373,7 @@ export default function MemberReportPage() {
               />
             )}
 
-            {reportType === 'low_stock' && (
-              <div className="bg-blue-50 dark:bg-blue-900 p-3 rounded-lg text-sm space-y-1">
-                <p className="font-medium">📦 How this works:</p>
-                <p>You are reporting that an <strong>open box</strong> in the front room is running low.</p>
-                <p>An admin will take a <strong>sealed box</strong> from back room inventory and open it to refill the front.</p>
-                <p>You do not need to count exact quantities — just mark which item needs refilling.</p>
-              </div>
-            )}
+
 
             {(reportType === 'expiration' || reportType === 'damaged') && (
               <Input
@@ -382,14 +394,15 @@ export default function MemberReportPage() {
               />
             )}
 
-            <div className="space-y-2">
+            <div className="space-y-3">
               <label className="text-sm font-medium">Location</label>
               <div className="flex gap-2 flex-wrap">
                 {(['HQ/Storage', 'Statpack', 'Other'] as const).map((loc) => (
                   <Button
                     key={loc}
                     size="sm"
-                    variant={location === loc ? 'solid' : 'flat'}
+                    variant={location === loc ? 'solid' : 'bordered'}
+                    color={location === loc ? 'primary' : 'default'}
                     onPress={() => setLocation(loc)}
                   >
                     {loc}
