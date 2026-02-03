@@ -238,19 +238,32 @@ export default function AdminAuditModal({
                       const item = targetStatpack.contents?.find((c) => c.itemId === check.itemId);
                       return (
                         <Card key={`${check.itemId}-${idx}`} className="bg-default-100">
-                          <CardBody className="gap-2 p-3">
-                            <div className="flex items-start justify-between">
+                          <CardBody className="gap-3 p-4">
+                            <div className="flex flex-wrap items-start justify-between gap-2">
                               <div className="flex-1 min-w-0">
-                                <p className="font-semibold text-sm">{item?.itemDetails?.name || 'Unknown'}</p>
-                                <p className="text-xs text-default-500">Required: {check.requiredQuantity}</p>
+                                <p className="font-semibold text-base">{item?.itemDetails?.name || 'Unknown'}</p>
+                                <div className="flex flex-wrap gap-2 text-xs text-default-500 mt-1">
+                                  <span className="bg-default-200/60 dark:bg-default-700/60 px-2 py-0.5 rounded">Required: {check.requiredQuantity}</span>
+                                  {item?.pocket && (
+                                    <span className="bg-default-200/60 dark:bg-default-700/60 px-2 py-0.5 rounded">Pocket: {String(item.pocket).replace('_', ' ')}</span>
+                                  )}
+                                  {item?.compartmentId && (
+                                    <span className="bg-default-200/60 dark:bg-default-700/60 px-2 py-0.5 rounded">Compartment: {item.compartmentId}</span>
+                                  )}
+                                  {item?.expirationDate && (
+                                    <span className={`px-2 py-0.5 rounded ${new Date(item.expirationDate).getTime() < Date.now() ? 'bg-danger-100 text-danger-700' : 'bg-default-200/60 dark:bg-default-700/60'}`}>
+                                      Exp: {new Date(item.expirationDate).toLocaleDateString()}
+                                    </span>
+                                  )}
+                                </div>
                               </div>
                             </div>
 
-                            <div className="grid grid-cols-2 gap-2">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                               <Input
-                                size="sm"
+                                size="md"
                                 type="number"
-                                label="Found"
+                                label="Found Quantity"
                                 value={String(check.foundQuantity)}
                                 onChange={(e) => {
                                   const updated = [...contentChecks];
@@ -259,8 +272,8 @@ export default function AdminAuditModal({
                                 }}
                               />
                               <Select
-                                size="sm"
-                                label="Pocket"
+                                size="md"
+                                label="Correct Pocket"
                                 selectedKeys={[check.inCorrectPocket ? 'yes' : 'no']}
                                 onChange={(e) => {
                                   const updated = [...contentChecks];
@@ -273,7 +286,7 @@ export default function AdminAuditModal({
                               </Select>
 
                               <Select
-                                size="sm"
+                                size="md"
                                 label="Condition"
                                 selectedKeys={[check.conditionOk ? 'ok' : 'bad']}
                                 onChange={(e) => {
@@ -287,7 +300,7 @@ export default function AdminAuditModal({
                               </Select>
 
                               <Select
-                                size="sm"
+                                size="md"
                                 label="Expiration"
                                 selectedKeys={[check.expirationOk ? 'ok' : 'expired']}
                                 onChange={(e) => {

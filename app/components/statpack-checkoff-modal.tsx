@@ -134,10 +134,12 @@ export default function StatpackCheckOffModal({
           itemName: item.itemDetails?.name || 'Unknown',
           batchId: item.batchId,
           compartmentId: item.compartmentId,
+          pocket: item.pocket,
           requiredQuantity: item.requiredQuantity,
           countedQuantity: counted,
           ok: counted >= item.requiredQuantity,
           serialNumber: item.serialNumber,
+          expirationDate: item.expirationDate,
           notes: '',
         };
         if (checkinUsageMode && used) {
@@ -349,8 +351,12 @@ export default function StatpackCheckOffModal({
                         <p className="text-xs text-default-500">
                           {checkinUsageMode ? 'Mark if you used and replaced this item' : `Required: ${item.requiredQuantity}x | Category: ${item.itemDetails?.category || 'N/A'}`}
                         </p>
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-default-500">
+                          {item.pocket && <span className="bg-default-200/60 dark:bg-default-700/60 px-2 py-0.5 rounded">Pocket: {item.pocket.replace('_', ' ')}</span>}
+                          {item.compartmentId && <span className="bg-default-200/60 dark:bg-default-700/60 px-2 py-0.5 rounded">Compartment: {item.compartmentId}</span>}
+                        </div>
                         {item.expirationDate && (
-                          <p className="text-xs text-danger">
+                          <p className={`text-xs ${new Date(item.expirationDate).getTime() < Date.now() ? 'text-danger font-semibold' : 'text-default-500'}`}>
                             Expires: {new Date(item.expirationDate).toLocaleDateString()}
                           </p>
                         )}

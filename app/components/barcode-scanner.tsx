@@ -40,7 +40,19 @@ export default function BarcodeScanner({ isOpen, onClose, onDetected }: Props) {
         const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
         streamRef.current = stream;
         if (videoRef.current) videoRef.current.srcObject = stream;
-        videoRef.current?.play();
+        try {
+          // await play() to handle AbortError when a new load interrupts playback
+          // (some browsers throw when srcObject changes quickly)
+          // eslint-disable-next-line @typescript-eslint/no-floating-promises
+          await videoRef.current?.play();
+        } catch (playErr: any) {
+          if (playErr && playErr.name === 'AbortError') {
+            // ignore aborted play (race with load/stop)
+            console.warn('video play aborted (ignored)');
+          } else {
+            console.warn('video play failed', playErr);
+          }
+        }
         setScanning(true);
 
         if (hasBarcode && window.BarcodeDetector) {
@@ -83,6 +95,7 @@ export default function BarcodeScanner({ isOpen, onClose, onDetected }: Props) {
       try { streamRef.current?.getTracks().forEach(t => t.stop()); } catch {
         // ignore
       }
+      try { if (videoRef.current) videoRef.current.srcObject = null; } catch {}
     };
   }, [isOpen, onClose, onDetected]);
 
@@ -138,7 +151,8 @@ export default function BarcodeScanner({ isOpen, onClose, onDetected }: Props) {
                   if (ReaderCtor) {
                     const reader = new ReaderCtor() as { decodeFromImageElement: (el: HTMLImageElement) => Promise<unknown> };
                     const img = document.createElement('img');
-                    img.src = URL.createObjectURL(f);
+                    const objUrl = URL.createObjectURL(f);
+                    img.src = objUrl;
                     await new Promise((res) => { img.onload = res; });
                     const result = await reader.decodeFromImageElement(img);
                     if (result && typeof result === 'object' && result !== null) {
@@ -159,6 +173,7 @@ export default function BarcodeScanner({ isOpen, onClose, onDetected }: Props) {
                         return;
                       }
                     }
+                    try { URL.revokeObjectURL(objUrl); } catch {}
                   }
                 } catch (zxE) {
                   console.warn('ZXing decode failed or not installed', zxE);

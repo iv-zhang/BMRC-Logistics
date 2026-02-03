@@ -1,6 +1,6 @@
 import { collection, doc, getDoc, getDocs, writeBatch, serverTimestamp, addDoc, updateDoc, runTransaction, query, where } from 'firebase/firestore';
 import { db } from '@/firebase';
-import type { InventoryItem, Statpack, StatpackItem, Container, BoxLog, StatpackLog, PurchaseInfo, ValidationWarning, AssetInstance, AssetCheckResult, StatpackAuditResult } from '@/app/types';
+import type { InventoryItem, Statpack, StatpackItem, StatpackPocket, Container, BoxLog, StatpackLog, PurchaseInfo, ValidationWarning, AssetInstance, AssetCheckResult, StatpackAuditResult } from '@/app/types';
 import { recordAuditEvent, removeUndefined, deepRemoveUndefined } from '@/app/lib/audit';
 
 /**
@@ -190,10 +190,12 @@ export async function logStatpackCheckOff(params: {
     itemName?: string;
     batchId?: string;
     compartmentId?: string;
+    pocket?: StatpackPocket;
     requiredQuantity: number;
     countedQuantity: number;
     ok: boolean;
     serialNumber?: string;
+    expirationDate?: Date;
     notes?: string;
   }[];
   sealChecks?: Record<string, { sealed: boolean; sealNumber?: string }>;
@@ -236,12 +238,14 @@ export async function logStatpackCheckOff(params: {
       itemName: ce.itemName,
       batchId: ce.batchId,
       compartmentId: ce.compartmentId,
+      pocket: ce.pocket,
       requiredQuantity: ce.requiredQuantity,
       countedQuantity: ce.countedQuantity,
       ok: ce.ok,
       serialNumber: ce.serialNumber,
+      expirationDate: ce.expirationDate,
       notes: ce.notes,
-      checkedAt: new Date(),
+      checkedAt: serverTimestamp(),
       checkedBy: userId,
     };
     Object.keys(entry).forEach(k => { if (entry[k] === undefined) delete entry[k]; });

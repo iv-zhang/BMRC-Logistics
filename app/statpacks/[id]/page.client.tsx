@@ -18,7 +18,7 @@ import {
   Spinner,
   useDisclosure,
 } from '@heroui/react';
-import { Package, MapPin, Pencil, Save, X } from 'lucide-react';
+import { Package, MapPin, Pencil, Save, X, Clock } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { doc, onSnapshot, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
@@ -26,28 +26,14 @@ import type { Statpack, User, StatpackPocket } from '@/app/types';
 import { BagVisualizer } from '@/app/components/statpackvisualizer';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import StatpackCheckOffModal from '@/app/components/statpack-checkoff-modal';
+import StatpackHistory from '@/app/components/statpack-history';
 import { computeStatpackAssetValue } from '@/app/lib/inventory';
 
 export default function StatpackDetailClient() {
   const router = useRouter();
   const params = useParams();
   
-  let statpackId = Array.isArray(params?.id) ? params.id[0] : (params?.id as string);
-  
-  if (statpackId === '_') {
-    return (
-      <div className="h-screen flex items-center justify-center">
-        <Card className="w-full max-w-md">
-          <CardBody className="text-center gap-4">
-            <p className="text-gray-600">Statpack not found. Redirecting...</p>
-            <Button onPress={() => router.push('/statpacks')}>
-              Back to Statpacks
-            </Button>
-          </CardBody>
-        </Card>
-      </div>
-    );
-  }
+  const statpackId = Array.isArray(params?.id) ? params.id[0] : (params?.id as string);
 
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [userRole, setUserRole] = useState<User['role'] | null>(null);
@@ -196,6 +182,21 @@ export default function StatpackDetailClient() {
     }
   };
 
+  if (statpackId === '_') {
+    return (
+      <div className="h-screen flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardBody className="text-center gap-4">
+            <p className="text-gray-600">Statpack not found. Redirecting...</p>
+            <Button onPress={() => router.push('/statpacks')}>
+              Back to Statpacks
+            </Button>
+          </CardBody>
+        </Card>
+      </div>
+    );
+  }
+
   if (loading || !pack) return (
     <div className="h-screen flex items-center justify-center"><Spinner /></div>
   );
@@ -294,6 +295,45 @@ export default function StatpackDetailClient() {
                 </div>
               ) : (
                 <p className="text-sm text-gray-500">No contents recorded</p>
+              )}
+            </div>
+
+            <Divider />
+
+            <div>
+              <h3 className="font-semibold mb-2 flex items-center gap-2"><Clock size={16} /> Statpack History</h3>
+              <StatpackHistory statpackId={pack.id as string} maxRows={12} />
+            </div>
+
+            <Divider />
+
+            <div>
+              <h3 className="font-semibold mb-2 flex items-center gap-2"><Clock size={16} /> Maintenance History</h3>
+              {pack.maintenance_logs && pack.maintenance_logs.length > 0 ? (
+                <div className="space-y-2 max-h-60 overflow-y-auto">
+                  {pack.maintenance_logs.map((log, idx) => (
+                    <div key={log.id || idx} className="p-3 border rounded-md bg-gray-50 dark:bg-slate-800">
+                      <div className="flex justify-between items-start mb-2">
+                        <div>
+                          <p className="font-medium text-sm">{log.serviceType}</p>
+                          <p className="text-xs text-gray-600">{log.reason}</p>
+                        </div>
+                        <Chip size="sm" color={log.status === 'completed' ? 'success' : 'warning'} variant="flat">
+                          {log.status}
+                        </Chip>
+                      </div>
+                      {log.technician && <p className="text-xs text-gray-500">Technician: {log.technician}</p>}
+                      {log.timestamp && (
+                        <p className="text-xs text-gray-500">
+                          {log.timestamp instanceof Date ? log.timestamp.toLocaleDateString() : new Date(log.timestamp).toLocaleDateString()}
+                        </p>
+                      )}
+                      {log.notes && <p className="text-xs text-gray-600 mt-1 italic">{log.notes}</p>}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-gray-500">No maintenance records</p>
               )}
             </div>
           </CardBody>

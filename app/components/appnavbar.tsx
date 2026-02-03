@@ -22,7 +22,6 @@ import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth, db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
-import IssueReportForm from './IssueReportForm';
 
 // Icons
 import { 
@@ -35,6 +34,8 @@ import {
   ArrowRightOnRectangleIcon,
   ExclamationTriangleIcon
 } from '@heroicons/react/24/outline';
+import { ClipboardCheck } from 'lucide-react';
+import IssueReportForm from './IssueReportForm';
 
 export default function AppNavbar() {
   const pathname = usePathname();
@@ -152,6 +153,22 @@ export default function AppNavbar() {
             </Tooltip>
           </NavbarItem>
 
+          {/* Chronological Log - Admin Only (standalone tab) */}
+          {isAdmin && (
+            <NavbarItem isActive={isActive('/audit/events')}>
+              <Tooltip content="Chronological Log">
+                <Link 
+                  href="/audit/events" 
+                  color={isActive('/audit/events') ? 'primary' : 'foreground'}
+                  className={isActive('/audit/events') ? 'font-semibold' : 'text-gray-500 dark:text-gray-400'}
+                >
+                  <ClipboardCheck className="w-5 h-5 mr-1 inline-block" />
+                  Chronological Log
+                </Link>
+              </Tooltip>
+            </NavbarItem>
+          )}
+
           <Dropdown>
             <NavbarItem>
               <DropdownTrigger>
@@ -193,7 +210,7 @@ export default function AppNavbar() {
                   Restock Stats
                 </DropdownItem>
                 <DropdownItem key="logs" onClick={() => router.push('/audit/events')}>
-                  Audit Logs
+                  Chronological Log
                 </DropdownItem>
                 <DropdownItem key="storage" onClick={() => router.push('/storage')}>
                   Storage Management
@@ -220,31 +237,15 @@ export default function AppNavbar() {
 
           {/* Reports - Admin Only */}
           {isAdmin && (
-            <NavbarItem isActive={isActive('/reports')}>
+            <NavbarItem isActive={isActive('/issue-reports') || isActive('/reports')}>
               <Tooltip content="View reports">
                 <Link 
-                  href="/reports" 
-                  color={isActive('/reports') ? "primary" : "foreground"}
-                  className={isActive('/reports') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}
-                >
-                  <ChartBarIcon className="w-5 h-5 mr-1" />
-                  Reports
-                </Link>
-              </Tooltip>
-            </NavbarItem>
-          )}
-
-          {/* Issue Reports - Admin Only */}
-          {isAdmin && (
-            <NavbarItem isActive={isActive('/issue-reports')}>
-              <Tooltip content="Triage issue reports">
-                <Link 
                   href="/issue-reports" 
-                  color={isActive('/issue-reports') ? "primary" : "foreground"}
-                  className={isActive('/issue-reports') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}
+                  color={isActive('/issue-reports') || isActive('/reports') ? "primary" : "foreground"}
+                  className={isActive('/issue-reports') || isActive('/reports') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}
                 >
                   <ExclamationTriangleIcon className="w-5 h-5 mr-1" />
-                  Issues
+                  Reports
                 </Link>
               </Tooltip>
             </NavbarItem>
@@ -254,19 +255,6 @@ export default function AppNavbar() {
       </NavbarBrand>
 
       <NavbarContent justify="end" className="gap-3">
-        <NavbarItem>
-          <Tooltip content="Report a bug or issue">
-            <Button
-              isIconOnly
-              className="bg-warning text-white hover:bg-warning-600"
-              size="sm"
-              onPress={() => setIsReportOpen(true)}
-            >
-              <ExclamationTriangleIcon className="w-5 h-5" />
-            </Button>
-          </Tooltip>
-        </NavbarItem>
-
         <NavbarItem>
           <Dropdown 
             placement="bottom-end" 
@@ -355,7 +343,7 @@ export default function AppNavbar() {
               <Link href="/inventory" className="block">View Inventory</Link>
               <Link href="/restock" className="block">Restock Items</Link>
               <Link href="/restock-stats" className="block">Restock Stats</Link>
-              <Link href="/audit/events" className="block">Audit Logs</Link>
+              <Link href="/audit/events" className="block">Chronological Log</Link>
               <Link href="/storage" className="block">Storage Management</Link>
             </div>
           </NavbarMenuItem>

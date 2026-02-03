@@ -1,6 +1,6 @@
 'use client';
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Card,
@@ -42,6 +42,8 @@ import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { auth, db } from '@/firebase';
 import type { Statpack, InventoryItem, User, StatpackPocket, StatpackCompartment } from '@/app/types';
 import { BagVisualizer } from '@/app/components/statpackvisualizer';
+import StatpackCheckOffModal from '@/app/components/statpack-checkoff-modal';
+import StatpackHistory from '@/app/components/statpack-history';
 import { updateAssetAssignment, assignBarcode } from '@/app/lib/inventory';
 import {
   Package,
@@ -101,6 +103,11 @@ export default function AssetsPage() {
   const auditModalDisclosure = useDisclosure();
   const [auditType, setAuditType] = useState<'asset' | 'statpack'>('asset');
   const [auditTarget, setAuditTarget] = useState<AssetRecord | null>(null);
+  const auditPocketDisclosure = useDisclosure();
+  const auditCheckoffDisclosure = useDisclosure();
+  const [auditStatpack, setAuditStatpack] = useState<Statpack | null>(null);
+  const [auditSelectedPocketId, setAuditSelectedPocketId] = useState<string | null>(null);
+  const [auditCompletedPockets, setAuditCompletedPockets] = useState<string[]>([]);
 
   // Helpers to update contents and compartment items by index (avoid id-collision issues)
   const updateContentAt = (idx: number, patch: Partial<any>) => {
@@ -115,6 +122,43 @@ export default function AssetsPage() {
     const contents = [...(editingPack.contents || [])];
     contents.splice(idx, 1);
     setEditingPack({ ...editingPack, contents });
+  };
+
+  const auditPocketIds = useMemo(() => {
+    if (!auditStatpack) return [] as string[];
+    const pockets = ['main', 'front_aux', 'side_left', 'side_right'];
+    return pockets.filter((p) => {
+      const hasCompartments = (auditStatpack.compartments || []).some((c: any) => c.parentPocket === p);
+      const hasLooseItems = (auditStatpack.contents || []).some((i: any) => i.pocket === p && !i.compartmentId);
+      return hasCompartments || hasLooseItems;
+    });
+  }, [auditStatpack]);
+
+  const buildPocketStatpack = (pack: Statpack, pocketId: string | null): Statpack => {
+    if (!pocketId) return pack;
+    const pocketComp = (pack.compartments || []).filter((c) => c.parentPocket === pocketId);
+    let pocketContents: any[] = [];
+    if (pocketComp.length > 0) {
+      pocketContents = pocketComp.flatMap((c) => (pack.contents || []).filter((i) => i.compartmentId === c.id));
+    }
+    const loose = (pack.contents || []).filter((i) => i.pocket === pocketId && !i.compartmentId);
+    pocketContents = [...pocketContents, ...loose];
+
+    if (pocketComp.length === 0 && pocketContents.length === 0) {
+      pocketContents = (pack.contents || []).filter((i) => i.compartmentId === pocketId);
+      const directComp = (pack.compartments || []).filter((c) => c.id === pocketId);
+      return ({ ...pack, contents: pocketContents, compartments: directComp } as Statpack);
+    }
+
+    return ({ ...pack, contents: pocketContents, compartments: pocketComp } as Statpack);
+  };
+
+  const openStatpackAudit = (asset: AssetRecord) => {
+    const pack = asset.data as Statpack;
+    setAuditStatpack(JSON.parse(JSON.stringify(pack)) as Statpack);
+    setAuditSelectedPocketId(null);
+    setAuditCompletedPockets([]);
+    auditPocketDisclosure.onOpen();
   };
   const [maintenanceReason, setMaintenanceReason] = useState('');
   const [maintenanceNotes, setMaintenanceNotes] = useState('');
@@ -739,8 +783,9 @@ export default function AssetsPage() {
                             size="sm"
                             variant="light"
                             onPress={(e: any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); openScannerForAsset(asset); }}
+                            aria-label="Scan location"
                           >
-                            <MapPin size={16} />
+                            <MapPin size={18} />
                           </Button>
                           {userRole === 'admin' && (
                             <Button
@@ -749,8 +794,9 @@ export default function AssetsPage() {
                               variant="light"
                               color={activeMaintenance ? 'success' : 'warning'}
                               onPress={(e: any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); if (activeMaintenance) { handleCompleteMaintenance(asset, activeMaintenance.id); } else { handleStartMaintenance(asset); } }}
+                              aria-label={activeMaintenance ? 'Complete maintenance' : 'Start maintenance'}
                             >
-                              {activeMaintenance ? <CheckCircle size={16} /> : <Wrench size={16} />}
+                              {activeMaintenance ? <CheckCircle size={18} /> : <Wrench size={18} />}
                             </Button>
                           )}
                           {asset.type === 'statpack' && (
@@ -760,15 +806,16 @@ export default function AssetsPage() {
                               variant="light"
                               onPress={() => {
                                 // open statpack editor with a deep copy
-                                router.push(`/statpacks/?id=${asset.id}`);
+                                router.push(`/statpacks/${asset.id}`);
                               }}
+                              aria-label="Open statpack"
                             >
-                              <Pencil size={16} />
+                              <Pencil size={18} />
                             </Button>
                           )}
                           {asset.type === 'inventory' && userRole === 'admin' && (
-                            <Button isIconOnly size="sm" variant="light" onPress={(e:any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); setEditingAsset(asset.data); assetModalDisclosure.onOpen(); }}>
-                              <Pencil size={16} />
+                            <Button isIconOnly size="sm" variant="light" onPress={(e:any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); setEditingAsset(asset.data); assetModalDisclosure.onOpen(); }} aria-label="Edit asset">
+                              <Pencil size={18} />
                             </Button>
                           )}
                           {asset.type === 'inventory' && (userRole === 'admin' || userRole === 'quartermaster' || userRole === 'inventory_helper') && (
@@ -782,24 +829,29 @@ export default function AssetsPage() {
                                 handleQuickAssignBarcode(asset);
                               }}
                               title="Assign external barcode tag"
+                              aria-label="Assign barcode"
                             >
-                              <Package size={16} />
+                              <Package size={18} />
                             </Button>
                           )}
                           {userRole === 'admin' && (
                             <Button
-                              isIconOnly
                               size="sm"
                               variant="light"
                               onPress={(e: any) => {
                                 e.stopPropagation();
+                                if (asset.type === 'statpack') {
+                                  openStatpackAudit(asset);
+                                  return;
+                                }
                                 setAuditTarget(asset);
-                                setAuditType(asset.type === 'statpack' ? 'statpack' : 'asset');
+                                setAuditType('asset');
                                 auditModalDisclosure.onOpen();
                               }}
                               title="Run Manual Audit"
+                              startContent={<Wrench size={18} />}
                             >
-                              <Wrench size={16} />
+                              Audit
                             </Button>
                           )}
                         </div>
@@ -993,7 +1045,11 @@ export default function AssetsPage() {
                     <Clock size={16} />
                     Recent Activity
                   </h3>
-                  <AssetHistory assetId={selectedAsset.id} maxRows={10} />
+                  {selectedAsset.type === 'statpack' ? (
+                    <StatpackHistory statpackId={selectedAsset.id} maxRows={12} />
+                  ) : (
+                    <AssetHistory assetId={selectedAsset.id} maxRows={10} />
+                  )}
                 </div>
               )}
               <h3 className="font-semibold mb-3 flex items-center gap-2">
@@ -1412,6 +1468,121 @@ export default function AssetsPage() {
           }
         }}
       />
+
+      {/* Statpack Audit Pocket Selection */}
+      <Modal isOpen={auditPocketDisclosure.isOpen} onOpenChange={auditPocketDisclosure.onOpenChange} backdrop="blur" size="lg" placement="center">
+        <ModalContent>
+          <ModalHeader>Choose Pocket to Audit</ModalHeader>
+          <ModalBody className="gap-4 max-h-[70vh] overflow-y-auto">
+            {auditStatpack ? (
+              <div className="space-y-3">
+                <Card className="bg-default-100">
+                  <CardBody>
+                    <p className="font-semibold">{auditStatpack.name}</p>
+                    <p className="text-sm text-default-500">Audit pocket-by-pocket to verify expirations and O2.</p>
+                  </CardBody>
+                </Card>
+
+                <div className="flex flex-col gap-3 py-1">
+                  {auditPocketIds.length === 0 && (
+                    <Card>
+                      <CardBody className="text-center">
+                        <p className="text-sm text-default-500">No pockets defined — audit the entire pack.</p>
+                        <div className="mt-3">
+                          <Button onPress={() => {
+                            setAuditSelectedPocketId(null);
+                            auditPocketDisclosure.onClose();
+                            auditCheckoffDisclosure.onOpen();
+                          }}>Audit Full Pack</Button>
+                        </div>
+                      </CardBody>
+                    </Card>
+                  )}
+                  {[
+                    { id: 'main', name: 'Center Pocket' },
+                    { id: 'front_aux', name: 'Front Pocket' },
+                    { id: 'side_left', name: 'Left Side Pocket' },
+                    { id: 'side_right', name: 'Right Side Pocket' },
+                  ].filter((p) => auditPocketIds.includes(p.id)).map((p) => {
+                    const compForPocket = (auditStatpack.compartments || []).filter((c: any) => c.parentPocket === p.id);
+                    const compItemsCount = compForPocket.flatMap((c: any) => (auditStatpack.contents || []).filter((i: any) => i.compartmentId === c.id)).length;
+                    const looseCount = (auditStatpack.contents || []).filter((i: any) => i.pocket === p.id && !i.compartmentId).length;
+                    const count = compItemsCount + looseCount;
+                    const isDone = auditCompletedPockets.includes(p.id);
+
+                    return (
+                      <Card
+                        key={p.id}
+                        isPressable={!isDone}
+                        onPress={() => {
+                          if (isDone) return;
+                          setAuditSelectedPocketId(p.id);
+                          auditPocketDisclosure.onClose();
+                          auditCheckoffDisclosure.onOpen();
+                        }}
+                        className={`w-full transition-shadow ${isDone ? 'border-2 border-green-400 bg-green-50 opacity-90' : 'hover:shadow-md'}`}
+                      >
+                        <CardBody className="flex flex-col items-center text-center gap-3 py-6">
+                          <div className="space-y-1">
+                            <p className="font-semibold text-base">{p.name}</p>
+                            <p className="text-xs text-default-500">{count} items</p>
+                          </div>
+                          {isDone ? (
+                            <div className="w-full flex justify-center">
+                              <Chip size="sm" variant="flat" color="success">Completed</Chip>
+                            </div>
+                          ) : (
+                            <div className="w-full px-4">
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                className="w-full h-12 rounded-md bg-blue-600 text-white flex items-center justify-center"
+                                aria-label={`Start audit for ${p.name}`}
+                              >
+                                Tap to start
+                              </div>
+                            </div>
+                          )}
+                        </CardBody>
+                      </Card>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div>No statpack selected.</div>
+            )}
+          </ModalBody>
+          <ModalFooter>
+            <Button color="default" onPress={() => { auditPocketDisclosure.onClose(); setAuditStatpack(null); }}>Cancel</Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+
+      {/* Statpack Audit Check-Off (pocket-level) */}
+      {auditStatpack && user && (
+        <StatpackCheckOffModal
+          isOpen={auditCheckoffDisclosure.isOpen}
+          onOpenChange={auditCheckoffDisclosure.onOpenChange}
+          statpack={buildPocketStatpack(auditStatpack, auditSelectedPocketId)}
+          action="maintenance"
+          userId={user.uid}
+          userName={user.displayName || user.email || 'Unknown User'}
+          onCheckOffComplete={() => {
+            const newCompleted = auditSelectedPocketId ? [...auditCompletedPockets, auditSelectedPocketId] : [...auditCompletedPockets];
+            setAuditCompletedPockets(newCompleted);
+            setAuditSelectedPocketId(null);
+
+            auditCheckoffDisclosure.onClose();
+            if (newCompleted.length > 0 && newCompleted.length >= auditPocketIds.length) {
+              setAuditStatpack(null);
+              setAuditCompletedPockets([]);
+              return;
+            }
+            setTimeout(() => auditPocketDisclosure.onOpen(), 250);
+          }}
+        />
+      )}
 
       <AdminAuditModal
         isOpen={auditModalDisclosure.isOpen}

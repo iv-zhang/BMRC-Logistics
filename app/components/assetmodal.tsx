@@ -394,6 +394,62 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
             description="Either Barcode or QR Code required for scanning checkout"
           />
 
+          {/* Asset-specific fields: O2 tanks, AEDs, Epipens */}
+          {(form.assetCategory === 'O2' || form.isOxygen) && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Input
+                label="Oxygen PSI (current)"
+                type="number"
+                value={String((form.oxygenPsi ?? '') as any)}
+                onValueChange={(v) => setForm({ ...form, oxygenPsi: v ? Number(v) : undefined })}
+                description="Measured PSI at last check"
+              />
+              <Input
+                label="Max Oxygen PSI"
+                type="number"
+                value={String((form.maxOxygenPsi ?? '') as any)}
+                onValueChange={(v) => setForm({ ...form, maxOxygenPsi: v ? Number(v) : undefined })}
+              />
+            </div>
+          )}
+
+          {form.assetCategory === 'AED' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Select label="Battery Status" selectedKeys={[String((form.assetChecks?.batteryStatus) ?? '')]} onChange={(e) => setForm({ ...form, assetChecks: { ...(form.assetChecks || {}), batteryStatus: e.target.value as any } })}>
+                <SelectItem key="">Unknown</SelectItem>
+                <SelectItem key="Good">Good</SelectItem>
+                <SelectItem key="Low">Low</SelectItem>
+              </Select>
+              <div>
+                <Input
+                  label="Battery Expiration"
+                  type="date"
+                  value={form.batteryExpiration ? new Date(form.batteryExpiration).toISOString().slice(0,10) : ''}
+                  onValueChange={(v) => setForm({ ...form, batteryExpiration: v ? new Date(v) : undefined })}
+                />
+                <Input
+                  label="Pads Expiration"
+                  type="date"
+                  value={form.padExpiration ? new Date(form.padExpiration).toISOString().slice(0,10) : ''}
+                  onValueChange={(v) => setForm({ ...form, padExpiration: v ? new Date(v) : undefined })}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Epipen / consumable expiration (many meds) */}
+          {form.category === 'Meds' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Input
+                label="Item Expiration Date"
+                type="date"
+                value={form.expirationDate ? new Date(form.expirationDate).toISOString().slice(0,10) : ''}
+                onValueChange={(v) => setForm({ ...form, expirationDate: v ? new Date(v) : undefined })}
+                description="Set for individual consumable items (e.g., EpiPen)"
+              />
+            </div>
+          )}
+
           {/* External Barcode Assignment Section */}
           <div className="border-t pt-4 mt-2">
             <div className="flex items-center justify-between mb-2">

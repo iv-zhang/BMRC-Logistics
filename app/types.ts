@@ -165,6 +165,9 @@ export interface InventoryItem {
     padsSealed?: boolean;
     lastCheckNotes?: string;
   };
+  // Per-item expiry fields for consumable components (convenience for single-instance assets)
+  batteryExpiration?: Date;
+  padExpiration?: Date;
   // Optional top-level list of asset instances when the item represents multiple unique devices
   assets?: AssetInstance[];
   hasVariants?: boolean;
@@ -333,7 +336,8 @@ export interface StatpackLog {
     ok: boolean; // true if countedQuantity >= requiredQuantity
     serialNumber?: string; // For asset items
     notes?: string;
-    checkedAt?: Date;
+    expirationDate?: Date | FieldValue;
+    checkedAt?: Date | FieldValue;
     checkedBy?: string;
   }[];
   
@@ -440,8 +444,12 @@ export interface AssetInstance {
   batteryStatus?: 'Good' | 'Low' | 'Unknown';
   padsSealed?: boolean;
   lastCheckNotes?: string;
+  // For oxygen tanks: measured PSI at last check
+  oxygenPsi?: number;
   // Optional fields for derived next expiration (pads/battery replacement window)
   nextExpiration?: Date;
+  // Per-instance expiration date (useful for disposables stored as instances, e.g., EpiPens)
+  expirationDate?: Date;
   // Checkout tracking
   checkedOutAt?: Date | FieldValue;
   checkedOutBy?: string; // User ID of member who checked out this asset
