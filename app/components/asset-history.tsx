@@ -2,7 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { collection, query, where, orderBy, getDocs, Timestamp } from 'firebase/firestore';
 import { db } from '@/firebase';
-import { Card, CardBody, CardHeader, Chip, Spinner, Table, TableBody, TableCell, TableColumn, TableHeader, TableRow } from '@heroui/react';
+import { Card, CardBody, CardHeader, Chip, Spinner, Table, TableBody, TableCell, TableColumn, TableHeader, TableRow, Input, Button, Divider } from '@heroui/react';
 import type { InventoryLog } from '@/app/types';
 
 interface AssetHistoryProps {
@@ -15,6 +15,8 @@ export default function AssetHistory({ assetId, maxRows = 10, serialNumber }: As
   const [logs, setLogs] = useState<(InventoryLog & { id: string })[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [startDate, setStartDate] = useState<string>('');
+  const [endDate, setEndDate] = useState<string>('');
 
   useEffect(() => {
     if (!assetId) return;
@@ -88,6 +90,27 @@ export default function AssetHistory({ assetId, maxRows = 10, serialNumber }: As
     });
   };
 
+  const filteredLogs = React.useMemo(() => {
+    if (!startDate && !endDate) return logs;
+    let start: Date | null = null;
+    let end: Date | null = null;
+    if (startDate) {
+      start = new Date(startDate);
+      start.setHours(0, 0, 0, 0);
+    }
+    if (endDate) {
+      end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+    }
+    return logs.filter((l) => {
+      const ts = l.timestamp as Date;
+      if (!ts) return false;
+      if (start && ts < start) return false;
+      if (end && ts > end) return false;
+      return true;
+    });
+  }, [logs, startDate, endDate]);
+
   if (loading) {
     return (
       <Card>
@@ -108,7 +131,7 @@ export default function AssetHistory({ assetId, maxRows = 10, serialNumber }: As
     );
   }
 
-  if (logs.length === 0) {
+  if (filteredLogs.length === 0) {
     return (
       <Card>
         <CardBody>
@@ -120,10 +143,17 @@ export default function AssetHistory({ assetId, maxRows = 10, serialNumber }: As
 
   return (
     <Card>
-      <CardHeader className="flex justify-between items-center bg-default-50 px-4 py-3 border-b border-default-200">
-        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Recent Activity ({logs.length})</h3>
+      <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between bg-default-50 px-4 py-3 border-b border-default-200 gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Recent Activity ({filteredLogs.length})</h3>
+        </div>
+        <div className="flex items-center gap-2">
+          <Input type="date" size="sm" value={startDate} onChange={(e) => setStartDate(e.target.value)} placeholder="Start date" />
+          <Input type="date" size="sm" value={endDate} onChange={(e) => setEndDate(e.target.value)} placeholder="End date" />
+          <Button size="sm" variant="light" onPress={() => { setStartDate(''); setEndDate(''); }}>Clear</Button>
+        </div>
       </CardHeader>
-      <CardBody className="p-0">
+      <CardBody className="p-0 max-h-[50vh] overflow-y-auto">
         <Table hideHeader removeWrapper>
           <TableHeader>
             <TableColumn>Action</TableColumn>
@@ -133,7 +163,7 @@ export default function AssetHistory({ assetId, maxRows = 10, serialNumber }: As
             <TableColumn>Notes</TableColumn>
           </TableHeader>
           <TableBody>
-            {logs.map((log, idx) => {
+            {filteredLogs.slice(0, maxRows).map((log, idx) => {
               const rowClass = idx === 0 ? 'bg-default-50 dark:bg-slate-800 text-gray-700 dark:text-gray-200' : '';
               return (
                 <TableRow key={log.id} className={rowClass}>

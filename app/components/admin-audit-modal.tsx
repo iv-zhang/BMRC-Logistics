@@ -92,7 +92,7 @@ export default function AdminAuditModal({
       const dueNext = dueDateStr ? new Date(dueDateStr) : undefined;
       const auditResult = await performAssetManualCheck({
         itemId: targetAsset.id,
-        measuredBatteryPct: batteryPct,
+        measuredBatteryPct: targetAsset.assetCategory === 'AED' ? batteryPct : undefined,
         measuredO2Psi: targetAsset.isOxygen ? o2Psi : undefined,
         condition: assetCondition,
         notes: assetNotes,
@@ -166,18 +166,20 @@ export default function AdminAuditModal({
                   </Card>
 
                   <div className="gap-3 flex flex-col">
-                    <div>
-                      <label className="text-sm font-semibold">Measured Battery Level (%)</label>
-                      <Slider
-                        value={batteryPct}
-                        onChange={(val) => setBatteryPct(val as number)}
-                        minValue={0}
-                        maxValue={100}
-                        step={5}
-                        className="mt-1"
-                      />
-                      <p className="text-xs text-default-500 mt-1">{batteryPct}%</p>
-                    </div>
+                    {targetAsset.assetCategory === 'AED' && (
+                      <div>
+                        <label className="text-sm font-semibold">Measured Battery Level (%)</label>
+                        <Slider
+                          value={batteryPct}
+                          onChange={(val) => setBatteryPct(val as number)}
+                          minValue={0}
+                          maxValue={100}
+                          step={5}
+                          className="mt-1"
+                        />
+                        <p className="text-xs text-default-500 mt-1">{batteryPct}%</p>
+                      </div>
+                    )}
 
                     {targetAsset.isOxygen && (
                       <div>

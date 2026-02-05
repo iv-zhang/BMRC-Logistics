@@ -13,10 +13,14 @@ import {
   Checkbox,
   Input,
   Divider,
+  Chip,
 } from '@heroui/react';
 import { useUserRole } from '@/app/hooks/useUserRole';
-import { logStatpackCheckOff } from '@/app/lib/inventory';
+import { logStatpackCheckOff, verifyAssetAgainstRules } from '@/app/lib/inventory';
+import { parseGs1Barcode } from '@/app/lib/gs1';
 import type { Statpack, ValidationWarning } from '@/app/types';
+import BarcodeScanner from './barcode-scanner';
+import { ScanLine, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react';
 
 interface StatpackCheckOffModalProps {
   isOpen: boolean;
@@ -62,11 +66,21 @@ export default function StatpackCheckOffModal({
     Record<string, { sealed: boolean; sealNumber?: string }>
   >({});
   const [oxygenReadings, setOxygenReadings] = useState<Record<string, string>>({});
+  
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [inlineAlert, setInlineAlert] = useState<{ type: 'success' | 'error' | 'warning'; message: string } | null>(null);
   const [validationWarnings, setValidationWarnings] = useState<ValidationWarning[]>([]);
   const [pendingComplete, setPendingComplete] = useState(false);
+  
+  // Asset verification state
+  const [scanningItemId, setScanningItemId] = useState<string | null>(null);
+  const [itemVerifications, setItemVerifications] = useState<Record<string, {
+    scannedCode?: string;
+    scannedExpiration?: Date;
+    o2Psi?: number;
+    warnings: ValidationWarning[];
+  }>>({});
 
   // Initialize counts from expected quantities
   React.useEffect(() => {
@@ -79,7 +93,7 @@ export default function StatpackCheckOffModal({
       });
       setCheckCounts(initialCounts);
     }
-  }, [statpack]);
+  }, [statpack, checkinUsageMode]);
 
   const handleCountChange = (itemId: string, count: number) => {
     setCheckCounts(prev => ({
@@ -121,6 +135,71 @@ export default function StatpackCheckOffModal({
     }));
   };
 
+  const handleScanComplete = async (code: string, itemId: string) => {
+    setScanningItemId(null);
+    
+    // Find the statpack item
+    const statpackItem = statpack?.contents.find(i => i.itemId === itemId);
+    if (!statpackItem) return;
+    
+    // Parse GS1 for expiration
+    const gs1Data = parseGs1Barcode(code);
+    let scannedExpiration: Date | undefined;
+    if (gs1Data.expiration) {
+      try {
+        scannedExpiration = new Date(gs1Data.expiration);
+      } catch (e) {
+        console.warn('Failed to parse GS1 expiration', e);
+      }
+    }
+    
+    // Get current O2 reading if any
+    const o2Psi = oxygenReadings[itemId] ? Number(oxygenReadings[itemId]) : undefined;
+    
+    // Run verification
+    const warnings = await verifyAssetAgainstRules({
+      statpackItem,
+      scannedCode: code,
+      scannedExpiration,
+      scannedO2Psi: o2Psi,
+    });
+    
+    setItemVerifications(prev => ({
+      ...prev,
+      [itemId]: {
+        scannedCode: code,
+        scannedExpiration,
+        o2Psi,
+        warnings,
+      },
+    }));
+  };
+
+  const updateItemO2Psi = async (itemId: string, psi: string) => {
+    handleOxygenReading(itemId, psi);
+    
+    // Re-verify if item has rules
+    const statpackItem = statpack?.contents.find(i => i.itemId === itemId);
+    const verification = itemVerifications[itemId];
+    if (statpackItem?.verificationRules && verification) {
+      const warnings = await verifyAssetAgainstRules({
+        statpackItem,
+        scannedCode: verification.scannedCode,
+        scannedExpiration: verification.scannedExpiration,
+        scannedO2Psi: psi ? Number(psi) : undefined,
+      });
+      
+      setItemVerifications(prev => ({
+        ...prev,
+        [itemId]: {
+          ...verification,
+          o2Psi: psi ? Number(psi) : undefined,
+          warnings,
+        },
+      }));
+    }
+  };
+
   const handleSubmit = async () => {
     if (!statpack) return;
 
@@ -129,9 +208,9 @@ export default function StatpackCheckOffModal({
       const checkEntries = (statpack.contents || []).map(item => {
         const counted = checkCounts[item.itemId] ?? (checkinUsageMode ? 1 : item.requiredQuantity);
         const used = checkinUsageMode ? checkedItems.has(item.itemId) : false;
-        const entry: any = {
+          const baseEntry = {
           itemId: item.itemId,
-          itemName: item.itemDetails?.name || 'Unknown',
+            itemName: item.itemDetails?.name || 'Unknown',
           batchId: item.batchId,
           compartmentId: item.compartmentId,
           pocket: item.pocket,
@@ -142,14 +221,12 @@ export default function StatpackCheckOffModal({
           expirationDate: item.expirationDate,
           notes: '',
         };
+        
         if (checkinUsageMode && used) {
-          // Mark used items so downstream tooling can interpret usage/consumption
-          entry.used = true;
-          entry.usedQuantity = counted || 1;
-          entry.notes = 'used_and_replaced';
+          return { ...baseEntry, used: true, usedQuantity: counted || 1, notes: 'used_and_replaced' };
         }
-        return entry;
-      });
+        return baseEntry;
+      }) as Parameters<typeof logStatpackCheckOff>[0]['checkEntries'];
 
       const result = await logStatpackCheckOff({
         statpackId: statpack.id,
@@ -165,11 +242,16 @@ export default function StatpackCheckOffModal({
       });
 
       const warnings = result?.validationWarnings || [];
-      if (warnings.length > 0) {
+      const criticalWarnings = warnings.filter(w => w.severity === 'critical');
+      if (criticalWarnings.length > 0) {
         setValidationWarnings(warnings);
         setPendingComplete(true);
-        setInlineAlert({ type: 'warning', message: `✓ Saved with ${warnings.length} warning(s). Please review below.` });
+        setInlineAlert({ type: 'warning', message: `✓ Saved with ${criticalWarnings.length} critical warning(s). Please review and acknowledge.` });
         return;
+      }
+      // Show non-critical warnings but don't block submission
+      if (warnings.length > 0) {
+        setValidationWarnings(warnings);
       }
 
       // Show success message inline
@@ -198,6 +280,7 @@ export default function StatpackCheckOffModal({
     setCheckedItems(new Set());
     setSealChecks({});
     setOxygenReadings({});
+    // asset condition tracking temporarily disabled
     setNotes('');
     setValidationWarnings([]);
     setPendingComplete(false);
@@ -210,18 +293,20 @@ export default function StatpackCheckOffModal({
     handleClose();
   };
 
-  if (!statpack) return null;
-
-  const allItemsChecked = statpack.contents?.every(item =>
-    checkedItems.has(item.itemId)
-  );
   const bodyRef = React.useRef<HTMLDivElement | null>(null);
+  
   React.useEffect(() => {
     if (isOpen && bodyRef.current) {
       // Ensure the top of the modal body (instructions) is visible when opened
       bodyRef.current.scrollTop = 0;
     }
   }, [isOpen]);
+
+  if (!statpack) return null;
+
+  const allItemsChecked = statpack.contents?.every(item =>
+    checkedItems.has(item.itemId)
+  );
 
   return (
     <Modal isOpen={isOpen} onOpenChange={onOpenChange} backdrop="blur" size="2xl" placement="center">
@@ -259,7 +344,7 @@ export default function StatpackCheckOffModal({
                 <CardBody className="flex items-center justify-between">
                   <div>
                     <p className="font-semibold">Report Used Items</p>
-                    <p className="text-xs text-default-500">Check the items you used and replaced. If you didn't use anything, you can mark the pack checked-in immediately.</p>
+                    <p className="text-xs text-default-500">Check the items you used and replaced. If you didn&apos;t use anything, you can mark the pack checked-in immediately.</p>
                   </div>
                   <div>
                     <Button color="default" onPress={() => onQuickCheckIn && onQuickCheckIn()}>I did not use anything — Check In</Button>
@@ -308,11 +393,20 @@ export default function StatpackCheckOffModal({
                 <p className="font-semibold text-sm text-warning-700">Validation Warnings</p>
                 <div className="flex flex-col gap-2">
                   {validationWarnings.map((w, idx) => (
-                    <div key={`${w.itemId || 'item'}-${idx}`} className="text-xs text-warning-800">
-                      <div className="font-semibold">{w.itemName || w.itemId || 'Unknown Item'}</div>
-                      <div>{w.message}</div>
-                      {w.serialNumber && <div>Serial: {w.serialNumber}</div>}
-                      {w.currentAssignedTo && <div>Assigned to: {w.currentAssignedTo}</div>}
+                    <div key={`${w.itemId || 'item'}-${idx}`} className="text-xs">
+                      <div className="flex items-center gap-2 mb-1">
+                        <Chip 
+                          size="sm" 
+                          color={w.severity === 'critical' ? 'danger' : w.severity === 'warning' ? 'warning' : 'default'}
+                          variant="flat"
+                        >
+                          {w.severity === 'critical' ? 'CRITICAL' : w.severity === 'warning' ? 'Warning' : 'Info'}
+                        </Chip>
+                        <span className="font-semibold">{w.itemName || w.itemId || 'Unknown Item'}</span>
+                      </div>
+                      <div className="text-warning-800">{w.message}</div>
+                      {w.serialNumber && <div className="text-default-600">Serial: {w.serialNumber}</div>}
+                      {w.currentAssignedTo && <div className="text-default-600">Assigned to: {w.currentAssignedTo}</div>}
                     </div>
                   ))}
                 </div>
@@ -328,13 +422,15 @@ export default function StatpackCheckOffModal({
               const isChecked = checkedItems.has(itemId);
               const counted = checkCounts[itemId] ?? (checkinUsageMode ? 1 : item.requiredQuantity);
               const ok = counted >= item.requiredQuantity;
+              const hasRules = item.verificationRules && Object.keys(item.verificationRules).length > 0;
+              const verification = itemVerifications[itemId];
 
               return (
                 <Card
                   key={itemId}
                   isPressable
                   onPress={() => handleItemChecked(itemId)}
-                  className={`${ok ? '' : 'bg-warning-100'} transition-colors`}
+                  className={`${ok ? 'bg-success-50' : 'bg-warning-100'} transition-colors`}
                 >
                   <CardBody className="gap-3 py-4">
                     <div className="flex gap-3 items-start">
@@ -345,9 +441,14 @@ export default function StatpackCheckOffModal({
                         className="mt-1"
                       />
                       <div className="flex-1 min-w-0">
-                        <p className="font-semibold text-sm">
-                          {item.itemDetails?.name || 'Unnamed Item'}
-                        </p>
+                        <div className="flex items-center gap-2">
+                          <p className="font-semibold text-sm">
+                            {item.itemDetails?.name || 'Unnamed Item'}
+                          </p>
+                          {hasRules && (
+                            <Chip size="sm" color="primary" variant="flat">Rules</Chip>
+                          )}
+                        </div>
                         <p className="text-xs text-default-500">
                           {checkinUsageMode ? 'Mark if you used and replaced this item' : `Required: ${item.requiredQuantity}x | Category: ${item.itemDetails?.category || 'N/A'}`}
                         </p>
@@ -359,6 +460,68 @@ export default function StatpackCheckOffModal({
                           <p className={`text-xs ${new Date(item.expirationDate).getTime() < Date.now() ? 'text-danger font-semibold' : 'text-default-500'}`}>
                             Expires: {new Date(item.expirationDate).toLocaleDateString()}
                           </p>
+                        )}
+                        
+                        {/* Verification UI */}
+                        {hasRules && (
+                          <div className="mt-2 space-y-2" onClick={(e) => e.stopPropagation()}>
+                            {!verification ? (
+                              <Button
+                                size="sm"
+                                variant="flat"
+                                color="primary"
+                                startContent={<ScanLine size={14} />}
+                                onPress={() => setScanningItemId(itemId)}
+                              >
+                                Verify Asset
+                              </Button>
+                            ) : (
+                              <div className="space-y-1">
+                                <Card className="bg-blue-50">
+                                  <CardBody className="py-1 px-2">
+                                    <div className="flex items-center gap-2 text-xs">
+                                      <CheckCircle2 size={12} className="text-blue-700" />
+                                      <span className="text-blue-900">Scanned: {verification.scannedCode}</span>
+                                    </div>
+                                    {verification.scannedExpiration && (
+                                      <p className="text-xs text-blue-700 ml-4">
+                                        Exp: {verification.scannedExpiration.toLocaleDateString('en-US', { month: '2-digit', year: 'numeric' })}
+                                      </p>
+                                    )}
+                                  </CardBody>
+                                </Card>
+                                
+                                {verification.warnings.map((warning, idx) => {
+                                  const Icon = warning.severity === 'critical' ? XCircle : AlertTriangle;
+                                  const colorClass = warning.severity === 'critical' ? 'bg-red-50' : 'bg-yellow-50';
+                                  const textClass = warning.severity === 'critical' ? 'text-red-700' : 'text-yellow-700';
+                                  
+                                  return (
+                                    <Card key={idx} className={colorClass}>
+                                      <CardBody className="py-1 px-2">
+                                        <div className="flex items-start gap-1">
+                                          <Icon size={12} className={`${textClass} mt-0.5`} />
+                                          <p className="text-xs text-gray-700">{warning.message}</p>
+                                        </div>
+                                      </CardBody>
+                                    </Card>
+                                  );
+                                })}
+                              </div>
+                            )}
+                            
+                            {item.verificationRules?.requireO2PsiMin !== undefined && item.verificationRules.requireO2PsiMin > 0 && (
+                              <Input
+                                size="sm"
+                                type="number"
+                                label="O₂ PSI"
+                                placeholder={`Min: ${item.verificationRules.requireO2PsiMin}`}
+                                value={oxygenReadings[itemId] || ''}
+                                onValueChange={(v) => updateItemO2Psi(itemId, v)}
+                                className="w-32"
+                              />
+                            )}
+                          </div>
                         )}
                       </div>
                       <div onClick={(e) => e.stopPropagation()}>
@@ -382,6 +545,10 @@ export default function StatpackCheckOffModal({
               );
             })}
           </div>
+
+          <Divider />
+
+          {/* Asset condition tracking temporarily disabled while debugging */}
 
           <Divider />
 
@@ -497,6 +664,14 @@ export default function StatpackCheckOffModal({
           </Button>
         </ModalFooter>
       </ModalContent>
+      
+      {scanningItemId && (
+        <BarcodeScanner
+          isOpen={!!scanningItemId}
+          onDetected={(code) => handleScanComplete(code, scanningItemId)}
+          onClose={() => setScanningItemId(null)}
+        />
+      )}
     </Modal>
   );
 }

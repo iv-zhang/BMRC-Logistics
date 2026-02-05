@@ -197,6 +197,15 @@ export async function logStatpackCheckOff(params: {
     serialNumber?: string;
     expirationDate?: Date;
     notes?: string;
+    // Per-asset condition tracking (added for assignment feature)
+    assetCondition?: 'Good' | 'Minor Issue' | 'Major Issue' | 'Needs Maintenance';
+    assetCheckResult?: {
+      batteryStatus?: 'Good' | 'Low' | 'Unknown';
+      batteryPct?: number;
+      padsSealed?: boolean;
+      oxygenPsi?: number;
+      notes?: string;
+    };
   }[];
   sealChecks?: Record<string, { sealed: boolean; sealNumber?: string }>;
   oxygenReadings?: Record<string, string>;
@@ -214,12 +223,11 @@ export async function logStatpackCheckOff(params: {
     notes,
   } = params;
 
-  const validationWarnings = (action === 'checkout' || action === 'checkin')
-    ? []
-    : await validateStatpackAssignments({
-        statpackId,
-        checkEntries,
-      });
+  // Always validate statpack assignments for checkout/checkin to ensure assets are properly assigned
+  const validationWarnings = await validateStatpackAssignments({
+    statpackId,
+    checkEntries,
+  });
 
   // Build base log object
   const logData: Partial<StatpackLog> = {
@@ -247,6 +255,9 @@ export async function logStatpackCheckOff(params: {
       notes: ce.notes,
       checkedAt: serverTimestamp(),
       checkedBy: userId,
+      // Include per-asset condition fields
+      assetCondition: ce.assetCondition,
+      assetCheckResult: ce.assetCheckResult,
     };
     Object.keys(entry).forEach(k => { if (entry[k] === undefined) delete entry[k]; });
     return entry as any;
@@ -410,6 +421,7 @@ export async function validateStatpackAssignments(params: {
     if (!item) {
       warnings.push({
         warningType: 'missing_asset',
+        severity: 'info', // Cannot determine if asset without item doc
         itemId: entry.itemId,
         itemName: entry.itemName,
         serialNumber: serial,
@@ -422,6 +434,7 @@ export async function validateStatpackAssignments(params: {
     if (isAsset && !serial) {
       warnings.push({
         warningType: 'missing_asset',
+        severity: 'critical', // Asset missing serial is critical
         itemId: entry.itemId,
         itemName: entry.itemName || item.name,
         message: `Asset item missing serial number during check-off.`,
@@ -433,8 +446,10 @@ export async function validateStatpackAssignments(params: {
 
     const { matched, instance } = resolveAssetInstance(item, serial);
     if (!matched) {
+      const isAssetItem = determineIsAsset(item);
       warnings.push({
         warningType: 'missing_asset',
+        severity: isAssetItem ? 'critical' : 'info',
         itemId: entry.itemId,
         itemName: entry.itemName || item.name,
         serialNumber: serial,
@@ -447,6 +462,7 @@ export async function validateStatpackAssignments(params: {
     if (assignedToId && assignedToId !== statpackId) {
       warnings.push({
         warningType: 'assigned_mismatch',
+        severity: 'critical', // Asset in wrong statpack is critical
         itemId: entry.itemId,
         itemName: entry.itemName || item.name,
         serialNumber: serial,
@@ -456,6 +472,7 @@ export async function validateStatpackAssignments(params: {
     } else if (!assignedToId) {
       warnings.push({
         warningType: 'unassigned_asset',
+        severity: 'warning', // Unassigned asset is warning level (can still proceed)
         itemId: entry.itemId,
         itemName: entry.itemName || item.name,
         serialNumber: serial,
@@ -467,6 +484,7 @@ export async function validateStatpackAssignments(params: {
     if (status && ['Not Ready', 'Maintenance', 'Unknown'].includes(status)) {
       warnings.push({
         warningType: 'asset_status',
+        severity: 'critical', // Not Ready asset is critical
         itemId: entry.itemId,
         itemName: entry.itemName || item.name,
         serialNumber: serial,
@@ -484,6 +502,7 @@ export async function validateStatpackAssignments(params: {
     if (expirationCandidates.some(d => isExpired(d))) {
       warnings.push({
         warningType: 'asset_expired',
+        severity: 'critical', // Expired asset component is critical
         itemId: entry.itemId,
         itemName: entry.itemName || item.name,
         serialNumber: serial,
@@ -1552,4 +1571,157 @@ export async function assignBarcode(params: {
       message: error.message || 'Failed to assign barcode',
     };
   }
+}
+
+/**
+ * Compare expiration dates in month/year format (MM/YYYY or YYYY-MM).
+ * Returns true if dates match within the same month and year.
+ */
+export function compareExpirationMonthYear(
+  date1: Date | string | undefined,
+  date2: Date | string | undefined
+): boolean {
+  if (!date1 || !date2) return false;
+  
+  const d1 = date1 instanceof Date ? date1 : new Date(date1);
+  const d2 = date2 instanceof Date ? date2 : new Date(date2);
+  
+  if (isNaN(d1.getTime()) || isNaN(d2.getTime())) return false;
+  
+  return d1.getFullYear() === d2.getFullYear() && d1.getMonth() === d2.getMonth();
+}
+
+/**
+ * Verify an asset against configured verification rules.
+ * Returns ValidationWarning[] with permissive defaults (advisory severity).
+ * 
+ * Checks:
+ * - Serial number match (if requireSerial=true)
+ * - Expiration date confirmation (if requireExpirationConfirmation=true)
+ * - O2 PSI minimum (if requireO2PsiMin is set)
+ */
+export async function verifyAssetAgainstRules(params: {
+  statpackItem: StatpackItem;
+  scannedCode?: string; // Barcode/serial/QR scanned by user
+  scannedExpiration?: Date | string; // GS1-parsed or user-entered expiration
+  scannedO2Psi?: number; // User-entered O2 PSI reading
+  inventoryItem?: InventoryItem; // Full item details (optional, will fetch if needed)
+}): Promise<ValidationWarning[]> {
+  const { statpackItem, scannedCode, scannedExpiration, scannedO2Psi, inventoryItem } = params;
+  const warnings: ValidationWarning[] = [];
+  const rules = statpackItem.verificationRules;
+  
+  // No rules = no verification needed (permissive default)
+  if (!rules || Object.keys(rules).length === 0) return warnings;
+  
+  const severity = rules.advisoryOnly ? 'warning' : 'critical';
+  
+  // Fetch item details if not provided
+  let item = inventoryItem;
+  if (!item && statpackItem.itemId) {
+    try {
+      const snap = await getDoc(doc(db, 'inventory', statpackItem.itemId));
+      if (snap.exists()) {
+        item = { id: snap.id, ...snap.data() } as InventoryItem;
+      }
+    } catch (e) {
+      console.warn('Failed to fetch inventory item for verification', e);
+    }
+  }
+  
+  // Check 1: Serial number requirement
+  if (rules.requireSerial) {
+    const expectedSerial = statpackItem.serialNumber || item?.assetSerial;
+    if (!scannedCode) {
+      warnings.push({
+        warningType: 'missing_asset',
+        severity,
+        itemId: statpackItem.itemId,
+        itemName: statpackItem.itemDetails?.name || item?.name,
+        serialNumber: expectedSerial,
+        message: `Serial scan required but not provided${expectedSerial ? ` (expected: ${expectedSerial})` : ''}`,
+      });
+    } else if (expectedSerial && scannedCode !== expectedSerial) {
+      // Also check asset instances
+      const matchFound = item?.assets?.some(a => 
+        a.serial === scannedCode || 
+        a.barcode === scannedCode || 
+        a.qr === scannedCode ||
+        a.assetTag === scannedCode
+      );
+      
+      if (!matchFound) {
+        warnings.push({
+          warningType: 'assigned_mismatch',
+          severity,
+          itemId: statpackItem.itemId,
+          itemName: statpackItem.itemDetails?.name || item?.name,
+          serialNumber: scannedCode,
+          message: `Scanned serial "${scannedCode}" does not match expected "${expectedSerial}"`,
+        });
+      }
+    }
+  }
+  
+  // Check 2: Expiration date confirmation
+  if (rules.requireExpirationConfirmation) {
+    const expectedExpiration = statpackItem.expirationDate || item?.expirationDate;
+    if (!scannedExpiration) {
+      warnings.push({
+        warningType: 'asset_expired',
+        severity,
+        itemId: statpackItem.itemId,
+        itemName: statpackItem.itemDetails?.name || item?.name,
+        message: 'Expiration confirmation required but not provided',
+      });
+    } else if (expectedExpiration) {
+      const match = compareExpirationMonthYear(expectedExpiration, scannedExpiration);
+      if (!match) {
+        const exp1 = expectedExpiration instanceof Date ? expectedExpiration.toISOString().slice(0, 7) : String(expectedExpiration).slice(0, 7);
+        const exp2 = scannedExpiration instanceof Date ? scannedExpiration.toISOString().slice(0, 7) : String(scannedExpiration).slice(0, 7);
+        warnings.push({
+          warningType: 'asset_expired',
+          severity,
+          itemId: statpackItem.itemId,
+          itemName: statpackItem.itemDetails?.name || item?.name,
+          message: `Expiration mismatch: scanned "${exp2}" vs stored "${exp1}"`,
+        });
+      }
+      
+      // Also check if expired
+      const expDate = scannedExpiration instanceof Date ? scannedExpiration : new Date(scannedExpiration);
+      if (!isNaN(expDate.getTime()) && expDate < new Date()) {
+        warnings.push({
+          warningType: 'asset_expired',
+          severity: 'critical', // Expired is always critical
+          itemId: statpackItem.itemId,
+          itemName: statpackItem.itemDetails?.name || item?.name,
+          message: `Item expired on ${expDate.toLocaleDateString()}`,
+        });
+      }
+    }
+  }
+  
+  // Check 3: O2 PSI minimum
+  if (rules.requireO2PsiMin !== undefined && rules.requireO2PsiMin > 0) {
+    if (scannedO2Psi === undefined || scannedO2Psi === null) {
+      warnings.push({
+        warningType: 'asset_status',
+        severity,
+        itemId: statpackItem.itemId,
+        itemName: statpackItem.itemDetails?.name || item?.name,
+        message: `O₂ PSI reading required (min: ${rules.requireO2PsiMin})`,
+      });
+    } else if (scannedO2Psi < rules.requireO2PsiMin) {
+      warnings.push({
+        warningType: 'asset_status',
+        severity,
+        itemId: statpackItem.itemId,
+        itemName: statpackItem.itemDetails?.name || item?.name,
+        message: `O₂ PSI too low: ${scannedO2Psi} (min: ${rules.requireO2PsiMin})`,
+      });
+    }
+  }
+  
+  return warnings;
 }

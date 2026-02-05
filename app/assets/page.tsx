@@ -1,6 +1,6 @@
 'use client';
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Card,
@@ -26,7 +26,8 @@ import {
   Textarea,
   useDisclosure,
   Spinner,
-  Badge,
+  Tabs,
+  Tab,
 } from '@heroui/react';
 import {
   collection,
@@ -38,6 +39,7 @@ import {
   doc,
   serverTimestamp,
 } from 'firebase/firestore';
+import { getDoc } from 'firebase/firestore';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { auth, db } from '@/firebase';
 import type { Statpack, InventoryItem, User, StatpackPocket, StatpackCompartment } from '@/app/types';
@@ -56,12 +58,15 @@ import {
   Save,
   X,
   Printer,
+  ShieldCheck,
 } from 'lucide-react';
 import AssetModal from '@/app/components/assetmodal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import AssetHistory from '@/app/components/asset-history';
 import AdminAuditModal from '@/app/components/admin-audit-modal';
+import AssetAttachModal from '@/app/components/asset-attach-modal';
 
+  
 interface AssetRecord {
   id: string;
   name: string;
@@ -108,6 +113,7 @@ export default function AssetsPage() {
   const [auditStatpack, setAuditStatpack] = useState<Statpack | null>(null);
   const [auditSelectedPocketId, setAuditSelectedPocketId] = useState<string | null>(null);
   const [auditCompletedPockets, setAuditCompletedPockets] = useState<string[]>([]);
+  const assetAttachDisclosure = useDisclosure();
 
   // Helpers to update contents and compartment items by index (avoid id-collision issues)
   const updateContentAt = (idx: number, patch: Partial<any>) => {
@@ -123,6 +129,21 @@ export default function AssetsPage() {
     contents.splice(idx, 1);
     setEditingPack({ ...editingPack, contents });
   };
+
+    const handleAssetAttachedToLoose = (assetId: string, serial?: string, displayName?: string) => {
+      if (!editingPack) return;
+      const newItem = {
+        id: `asset_${assetId}_${Date.now()}`,
+        name: displayName || (serial ? `Asset ${serial}` : 'Attached Asset'),
+        qty: 1,
+        pocket: editorSelectedPocket,
+        assetInstanceId: assetId,
+        serialNumber: serial,
+      } as any;
+      const contents = [...(editingPack.contents || []), newItem];
+      setEditingPack({ ...editingPack, contents });
+      assetAttachDisclosure.onClose();
+    };
 
   const auditPocketIds = useMemo(() => {
     if (!auditStatpack) return [] as string[];
@@ -153,12 +174,49 @@ export default function AssetsPage() {
     return ({ ...pack, contents: pocketContents, compartments: pocketComp } as Statpack);
   };
 
+  const openAssetPolicyEditor = async (assetId: string) => {
+    try {
+      const snap = await getDoc(doc(db, 'inventory', assetId));
+      if (!snap.exists()) {
+        alert('Asset not found');
+        return;
+      }
+      const data = snap.data();
+      setEditingAsset({ id: snap.id, ...(data as any) });
+      assetModalDisclosure.onOpen();
+    } catch (err) {
+      console.error('Failed to load asset:', err);
+      alert('Failed to load asset');
+    }
+  };
+
   const openStatpackAudit = (asset: AssetRecord) => {
     const pack = asset.data as Statpack;
     setAuditStatpack(JSON.parse(JSON.stringify(pack)) as Statpack);
     setAuditSelectedPocketId(null);
     setAuditCompletedPockets([]);
     auditPocketDisclosure.onOpen();
+  };
+  const statpackBodyRef = useRef<HTMLDivElement | null>(null);
+
+  // When opening the statpack editor modal, ensure the internal scroll resets to top
+  useEffect(() => {
+    if (statpackDisclosure.isOpen) {
+      // allow layout to settle
+      setTimeout(() => {
+        if (statpackBodyRef.current) statpackBodyRef.current.scrollTop = 0;
+      }, 50);
+    }
+  }, [statpackDisclosure.isOpen]);
+  
+  const openStatpackEditorModal = (asset: AssetRecord) => {
+    if (!asset || asset.type !== 'statpack') return;
+    const pack = JSON.parse(JSON.stringify(asset.data)) as Statpack;
+    // preserve the Firestore document id so saving updates the existing statpack
+    const packWithId = { ...pack, id: asset.id } as Statpack;
+    setEditingPack(packWithId);
+    setEditorSelectedPocket('all');
+    statpackDisclosure.onOpen();
   };
   const [maintenanceReason, setMaintenanceReason] = useState('');
   const [maintenanceNotes, setMaintenanceNotes] = useState('');
@@ -479,21 +537,25 @@ export default function AssetsPage() {
 
     try {
       if (selectedAsset.type === 'statpack') {
-        await updateDoc(doc(db, 'statpacks', selectedAsset.id), {
+        const payload: any = {
           name: nameValue,
           status: statusValue as Statpack['status'],
           currentLocation: locationValue,
           assetValue: parsedValue,
           updatedAt: serverTimestamp(),
-        });
+        };
+        if (payload.assetValue === undefined) delete payload.assetValue;
+        await updateDoc(doc(db, 'statpacks', selectedAsset.id), payload);
       } else {
-        await updateDoc(doc(db, 'inventory', selectedAsset.id), {
+        const payload: any = {
           name: nameValue,
           assetStatus: inventoryStatus,
           currentLocation: locationValue,
           assetValue: parsedValue,
           updatedAt: serverTimestamp(),
-        });
+        };
+        if (payload.assetValue === undefined) delete payload.assetValue;
+        await updateDoc(doc(db, 'inventory', selectedAsset.id), payload);
       }
 
       setAssets((prev) =>
@@ -535,6 +597,33 @@ export default function AssetsPage() {
     const logs = asset.maintenance_logs || [];
     const activeLog = logs.find((l) => l.status === 'pending' || l.status === 'in-progress');
     return activeLog;
+  };
+
+  
+
+  const formatTimestampForTable = (ts?: any) => {
+    if (!ts) return '';
+    let d: Date;
+    if (typeof ts === 'object' && typeof ts.toDate === 'function') d = ts.toDate();
+    else if (ts instanceof Date) d = ts;
+    else d = new Date(ts);
+    return d.toLocaleString('en-US', {
+      month: 'short',
+      day: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    });
+  };
+
+  const getMaintenanceColor = (status?: string) => {
+    if (!status) return 'default';
+    if (status === 'in-progress') return 'warning';
+    if (status === 'completed') return 'success';
+    if (status === 'pending') return 'secondary';
+    return 'default';
   };
 
   // Quick-assign barcode handlers
@@ -757,16 +846,19 @@ export default function AssetsPage() {
                         {asset.assetValue ? `$${asset.assetValue.toFixed(2)}` : '—'}
                       </TableCell>
                       <TableCell>
-                        {activeMaintenance ? (
-                          <Badge color="danger" content={activeMaintenance.status === 'in-progress' ? 'IN PROGRESS' : 'PENDING'}>
-                            <div className="text-xs">
-                              <div className="font-semibold">{activeMaintenance.serviceType}</div>
-                              <div className="text-gray-600">{activeMaintenance.reason}</div>
+                          {activeMaintenance ? (
+                            <div className="flex items-center gap-2">
+                              <Chip size="sm" color={activeMaintenance.status === 'in-progress' ? 'warning' : 'secondary'} variant="flat">
+                                {activeMaintenance.status === 'in-progress' ? 'In Progress' : 'Pending'}
+                              </Chip>
+                              <div className="text-xs">
+                                <div className="font-semibold">{activeMaintenance.serviceType}</div>
+                                <div className="text-gray-600">{activeMaintenance.reason}</div>
+                              </div>
                             </div>
-                          </Badge>
-                        ) : (
-                          <span className="text-xs text-gray-500">No active maintenance</span>
-                        )}
+                          ) : (
+                            <span className="text-xs text-gray-500">No active maintenance</span>
+                          )}
                       </TableCell>
                       <TableCell>
                         <div className="flex gap-2">
@@ -804,17 +896,14 @@ export default function AssetsPage() {
                               isIconOnly
                               size="sm"
                               variant="light"
-                              onPress={() => {
-                                // open statpack editor with a deep copy
-                                router.push(`/statpacks/${asset.id}`);
-                              }}
+                              onPress={(e: any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); openStatpackEditorModal(asset); }}
                               aria-label="Open statpack"
                             >
                               <Pencil size={18} />
                             </Button>
                           )}
                           {asset.type === 'inventory' && userRole === 'admin' && (
-                            <Button isIconOnly size="sm" variant="light" onPress={(e:any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); setEditingAsset(asset.data); assetModalDisclosure.onOpen(); }} aria-label="Edit asset">
+                            <Button isIconOnly size="sm" variant="light" onPress={(e:any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); setEditingAsset({ ...(asset.data as any), id: asset.id }); assetModalDisclosure.onOpen(); }} aria-label="Edit asset">
                               <Pencil size={18} />
                             </Button>
                           )}
@@ -839,7 +928,7 @@ export default function AssetsPage() {
                               size="sm"
                               variant="light"
                               onPress={(e: any) => {
-                                e.stopPropagation();
+                                if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
                                 if (asset.type === 'statpack') {
                                   openStatpackAudit(asset);
                                   return;
@@ -917,7 +1006,7 @@ export default function AssetsPage() {
 
       {/* Details Modal */}
       <Modal isOpen={detailsDisclosure.isOpen} onOpenChange={detailsDisclosure.onOpenChange} size="2xl">
-        <ModalContent>
+        <ModalContent className="max-h-[90vh]">
           <ModalHeader className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Package size={18} />
@@ -940,7 +1029,7 @@ export default function AssetsPage() {
               </Button>
             )}
           </ModalHeader>
-          <ModalBody className="space-y-4">
+          <ModalBody className="space-y-4 overflow-y-auto max-h-[80vh]">
             {isEditingDetails ? (
               <div className="grid grid-cols-2 gap-3">
                 <Input label="Name" value={detailsForm.name} onValueChange={(v) => setDetailsForm({ ...detailsForm, name: v })} />
@@ -1038,50 +1127,105 @@ export default function AssetsPage() {
               </>
             )}
 
+            {/* Tabbed Activity and Maintenance sections */}
             <div>
-              {selectedAsset?.id && (
-                <div className="mb-4">
-                  <h3 className="font-semibold mb-3 flex items-center gap-2">
-                    <Clock size={16} />
-                    Recent Activity
-                  </h3>
-                  {selectedAsset.type === 'statpack' ? (
-                    <StatpackHistory statpackId={selectedAsset.id} maxRows={12} />
-                  ) : (
-                    <AssetHistory assetId={selectedAsset.id} maxRows={10} />
-                  )}
-                </div>
-              )}
-              <h3 className="font-semibold mb-3 flex items-center gap-2">
-                <Clock size={16} />
-                Maintenance History
-              </h3>
-              {selectedAsset?.maintenance_logs && selectedAsset.maintenance_logs.length > 0 ? (
-                <div className="space-y-2 max-h-60 overflow-y-auto">
-                  {selectedAsset.maintenance_logs.map((log, idx) => (
-                    <div key={log.id || idx} className="p-3 border rounded-md bg-gray-50 dark:bg-slate-800">
-                      <div className="flex justify-between items-start mb-2">
-                        <div>
-                          <p className="font-medium text-sm">{log.serviceType}</p>
-                          <p className="text-xs text-gray-600">{log.reason}</p>
-                        </div>
-                        <Chip size="sm" color={log.status === 'completed' ? 'success' : 'warning'} variant="flat">
-                          {log.status}
-                        </Chip>
-                      </div>
-                      {log.technician && <p className="text-xs text-gray-500">Technician: {log.technician}</p>}
-                      {log.timestamp && (
-                        <p className="text-xs text-gray-500">
-                          {log.timestamp instanceof Date ? log.timestamp.toLocaleDateString() : new Date(log.timestamp).toLocaleDateString()}
-                        </p>
-                      )}
-                      {log.notes && <p className="text-xs text-gray-600 mt-1 italic">{log.notes}</p>}
+              <Tabs 
+                aria-label="Asset details tabs" 
+                color="primary"
+                variant="underlined"
+                classNames={{
+                  tabList: "gap-6 w-full relative rounded-none p-0 border-b border-divider",
+                  cursor: "w-full bg-primary",
+                  tab: "max-w-fit px-0 h-12",
+                  tabContent: "group-data-[selected=true]:text-primary"
+                }}
+              >
+                <Tab
+                  key="activity"
+                  title={
+                    <div className="flex items-center gap-2">
+                      <Clock size={16} />
+                      <span>Activity</span>
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-sm text-gray-500">No maintenance records</p>
-              )}
+                  }
+                >
+                  <div className="pt-4">
+                    {selectedAsset?.id && (
+                      <div>
+                        {selectedAsset.type === 'statpack' ? (
+                          <StatpackHistory statpackId={selectedAsset.id} maxRows={12} />
+                        ) : (
+                          <AssetHistory assetId={selectedAsset.id} maxRows={10} />
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </Tab>
+                <Tab
+                  key="maintenance"
+                  title={
+                    <div className="flex items-center gap-2">
+                      <Wrench size={16} />
+                      <span>Maintenance</span>
+                    </div>
+                  }
+                >
+                  <div className="pt-4">
+                    {selectedAsset?.maintenance_logs && selectedAsset.maintenance_logs.length > 0 ? (
+                      (() => {
+                        const logs = (selectedAsset.maintenance_logs || []).map((l: any) => ({
+                          ...l,
+                          _ts: typeof l.timestamp === 'object' && typeof l.timestamp.toDate === 'function' ? l.timestamp.toDate() : l.timestamp instanceof Date ? l.timestamp : new Date(l.timestamp),
+                        })).sort((a: any, b: any) => (b._ts?.getTime?.() || 0) - (a._ts?.getTime?.() || 0));
+
+                        return (
+                          <Card>
+                            <CardHeader className="flex justify-between items-center bg-default-50 px-4 py-3 border-b border-default-200">
+                              <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Maintenance History ({logs.length})</h3>
+                            </CardHeader>
+                            <CardBody className="p-0">
+                              <Table hideHeader removeWrapper>
+                                <TableHeader>
+                                  <TableColumn>Action</TableColumn>
+                                  <TableColumn>Technician</TableColumn>
+                                  <TableColumn>Timestamp</TableColumn>
+                                  <TableColumn>Status</TableColumn>
+                                  <TableColumn>Notes</TableColumn>
+                                </TableHeader>
+                                <TableBody>
+                                  {logs.map((log: any, idx: number) => (
+                                    <TableRow key={log.id || idx} className={idx === 0 ? 'bg-default-50 dark:bg-slate-800 text-gray-700 dark:text-gray-200' : ''}>
+                                      <TableCell>
+                                        <Chip size="sm" variant="solid" color={getMaintenanceColor(log.status)} className="capitalize">
+                                          {log.serviceType}
+                                        </Chip>
+                                      </TableCell>
+                                      <TableCell className="text-sm">{log.technician || 'Unknown'}</TableCell>
+                                      <TableCell className="text-xs text-default-600 dark:text-default-300 whitespace-nowrap">{formatTimestampForTable(log._ts)}</TableCell>
+                                      <TableCell>
+                                        <Chip size="sm" variant="flat" color={getMaintenanceColor(log.status)}>
+                                          {String(log.status || '').replace('-', ' ')}
+                                        </Chip>
+                                      </TableCell>
+                                      <TableCell className="text-xs text-default-600 dark:text-default-300 max-w-xs">{log.notes || '—'}</TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </CardBody>
+                          </Card>
+                        );
+                      })()
+                    ) : (
+                      <Card>
+                        <CardBody>
+                          <p className="text-gray-500 text-sm text-center py-4">No maintenance records</p>
+                        </CardBody>
+                      </Card>
+                    )}
+                  </div>
+                </Tab>
+              </Tabs>
             </div>
           </ModalBody>
           <ModalFooter>
@@ -1111,7 +1255,7 @@ export default function AssetsPage() {
           <ModalBody className="space-y-4">
             {!editingPack && <p className="text-sm text-gray-500">No statpack loaded.</p>}
             {editingPack && (
-              <div className="space-y-4">
+              <div ref={statpackBodyRef} className="space-y-4 max-h-[70vh] overflow-y-auto p-2">
                 <div className="flex justify-center">
                   <BagVisualizer
                     statpack={editingPack}
@@ -1219,12 +1363,27 @@ export default function AssetsPage() {
                                   label="Qty"
                                   size="sm"
                                   className="w-20"
-                                  value={String((it as any).qty ?? it.currentQuantity ?? it.requiredQuantity ?? 1)}
-                                  onValueChange={(v) => updateContentAt(idx, { qty: Number(v), currentQuantity: Number(v) } as any)}
+                                  value={
+                                    (it as any).qty !== undefined && (it as any).qty !== null
+                                      ? String((it as any).qty)
+                                      : (it as any).currentQuantity !== undefined && (it as any).currentQuantity !== null
+                                      ? String((it as any).currentQuantity)
+                                      : (it as any).requiredQuantity !== undefined && (it as any).requiredQuantity !== null
+                                      ? String((it as any).requiredQuantity)
+                                      : ''
+                                  }
+                                  onValueChange={(v) => updateContentAt(idx, { qty: v === '' ? '' : Number(v), currentQuantity: v === '' ? '' : Number(v) } as any)}
                                 />
-                                <Button size="sm" variant="light" isIconOnly onPress={() => removeContentAt(idx)}>
-                                  <X size={16} />
-                                </Button>
+                                    <div className="flex items-center gap-2">
+                                      {((it as any).assetInstanceId || (it as any).serialNumber) && (
+                                        <Button size="sm" variant="light" isIconOnly onPress={() => openAssetPolicyEditor((it as any).assetInstanceId || (it as any).serialNumber)} title="Edit asset verification policy">
+                                          <ShieldCheck size={16} />
+                                        </Button>
+                                      )}
+                                      <Button size="sm" variant="light" isIconOnly onPress={() => removeContentAt(idx)}>
+                                        <X size={16} />
+                                      </Button>
+                                    </div>
                               </div>
                             ))}
                           <Button
@@ -1238,6 +1397,18 @@ export default function AssetsPage() {
                           >
                             + Add Loose Item
                           </Button>
+                          {userRole === 'admin' && (
+                            <Button
+                              size="sm"
+                              variant="flat"
+                              className="ml-2"
+                              onPress={() => {
+                                assetAttachDisclosure.onOpen();
+                              }}
+                            >
+                              + Attach Asset
+                            </Button>
+                          )}
                         </div>
 
                         {/* Compartments for this pocket */}
@@ -1329,11 +1500,17 @@ export default function AssetsPage() {
                                         label="Qty"
                                         size="sm"
                                         className="w-20"
-                                        value={String((it as any).qty ?? (it as any).currentQuantity ?? 1)}
+                                        value={
+                                          (it as any).qty !== undefined && (it as any).qty !== null
+                                            ? String((it as any).qty)
+                                            : (it as any).currentQuantity !== undefined && (it as any).currentQuantity !== null
+                                            ? String((it as any).currentQuantity)
+                                            : ''
+                                        }
                                         onValueChange={(v) => {
                                           const comps = [...(editingPack.compartments || [])];
                                           const items = [...((comps[origIndex] as any).items || [])];
-                                          items[ii] = { ...items[ii], qty: Number(v), currentQuantity: Number(v) };
+                                          items[ii] = { ...items[ii], qty: v === '' ? '' : Number(v), currentQuantity: v === '' ? '' : Number(v) };
                                           comps[origIndex] = { ...comps[origIndex], items } as any;
                                           setEditingPack({ ...editingPack, compartments: comps });
                                         }}
@@ -1394,10 +1571,102 @@ export default function AssetsPage() {
               onPress={async () => {
                 if (!editingPack) return;
                 try {
-                  await updateDoc(doc(db, 'statpacks', editingPack.id as string), {
-                    ...editingPack,
-                    updatedAt: serverTimestamp(),
+                    const parseQty = (v: any) => {
+                      if (v === '' || v === null || v === undefined) return undefined;
+                      const n = Number(v);
+                      return Number.isFinite(n) ? n : undefined;
+                    };
+                  // Normalize contents and compartments so edits to pocket/qty/compartment items are persisted
+                  const pack = JSON.parse(JSON.stringify(editingPack));
+
+                  const normalizedContents: any[] = [];
+
+                  // 1) Loose items from pack.contents (those without compartmentId)
+                  (pack.contents || []).forEach((c: any) => {
+                    if (c && !c.compartmentId) {
+                      const itemId = c.itemId || c.id || `it_${Date.now()}_${Math.floor(Math.random()*1000)}`;
+                      const requiredQuantity = parseQty(c.qty) ?? parseQty(c.requiredQuantity) ?? parseQty(c.currentQuantity) ?? 1;
+                      const currentQuantity = parseQty(c.currentQuantity) ?? requiredQuantity;
+                      normalizedContents.push({
+                        ...c,
+                        itemId,
+                        requiredQuantity,
+                        currentQuantity,
+                        pocket: c.pocket || 'main',
+                      });
+                    }
                   });
+
+                  // 2) Items declared inside compartments (comp.items)
+                  (pack.compartments || []).forEach((comp: any) => {
+                    const items = (comp.items || []) as any[];
+                    items.forEach((it: any) => {
+                      const itemId = it.itemId || it.id || `it_${Date.now()}_${Math.floor(Math.random()*1000)}`;
+                      const requiredQuantity = parseQty(it.qty) ?? parseQty(it.requiredQuantity) ?? parseQty(it.currentQuantity) ?? 1;
+                      const currentQuantity = parseQty(it.currentQuantity) ?? requiredQuantity;
+                      normalizedContents.push({
+                        itemId,
+                        name: it.name ?? it.itemDetails?.name,
+                        itemDetails: it.itemDetails ?? undefined,
+                        requiredQuantity,
+                        currentQuantity,
+                        pocket: comp.parentPocket || 'main',
+                        compartmentId: comp.id,
+                        lotNumber: it.lotNumber ?? undefined,
+                        expirationDate: it.expirationDate ?? undefined,
+                      });
+                    });
+                  });
+
+                  // 3) Preserve any existing contents that explicitly reference a compartmentId (in case they were present)
+                  (pack.contents || []).forEach((c: any) => {
+                    if (c && c.compartmentId) {
+                      const existing = normalizedContents.find(n => n.itemId === (c.itemId || c.id));
+                      if (!existing) {
+                        const requiredQuantity = parseQty(c.qty) ?? parseQty(c.requiredQuantity) ?? parseQty(c.currentQuantity) ?? 1;
+                        const currentQuantity = parseQty(c.currentQuantity) ?? requiredQuantity;
+                        normalizedContents.push({
+                          ...c,
+                          itemId: c.itemId || c.id || `it_${Date.now()}_${Math.floor(Math.random()*1000)}`,
+                          requiredQuantity,
+                          currentQuantity,
+                        });
+                      }
+                    }
+                  });
+
+                  // Strip nested `items` arrays from compartments before saving (source of truth is pack.contents)
+                  const normalizedCompartments = (pack.compartments || []).map((c: any) => {
+                    const { items, ...rest } = c;
+                    return { ...rest };
+                  });
+
+                  // Ensure display-friendly `itemDetails.name` exists when admins entered a freeform `name`.
+                  const enrichedContents = normalizedContents.map((n) => {
+                    const out = { ...n };
+                    if (!out.itemDetails && out.name) {
+                      out.itemDetails = { name: out.name } as any;
+                    }
+                    return out;
+                  });
+
+                  const normalizedPack = {
+                    ...pack,
+                    contents: enrichedContents,
+                    compartments: normalizedCompartments,
+                    updatedAt: serverTimestamp(),
+                  } as any;
+
+                  const docId = pack.id || editingPack?.id;
+                  if (!docId) {
+                    // No id: create a new statpack document and update editing state so the UI can continue editing
+                    const ref = await addDoc(collection(db, 'statpacks'), normalizedPack as any);
+                    const newId = ref.id;
+                    // persist the id into local editing state so subsequent saves use updateDoc
+                    setEditingPack(prev => prev ? ({ ...prev, id: newId } as Statpack) : null);
+                  } else {
+                    await updateDoc(doc(db, 'statpacks', String(docId)), normalizedPack);
+                  }
                   statpackDisclosure.onClose();
                   setEditingPack(null);
                 } catch (err) {
@@ -1411,6 +1680,13 @@ export default function AssetsPage() {
           </ModalFooter>
         </ModalContent>
       </Modal>
+
+      <AssetAttachModal
+        isOpen={assetAttachDisclosure.isOpen}
+        onOpenChange={assetAttachDisclosure.onOpenChange}
+        onAttach={handleAssetAttachedToLoose}
+        currentItemName={''}
+      />
 
       {/* Asset Add/Edit Modal */}
       <AssetModal
@@ -1447,7 +1723,8 @@ export default function AssetsPage() {
             const assignedToId = (payload as any)?.assignedToId;
             const prevAssignedToId = (editingAsset as any)?.assignedToId;
             const assignedChanged = assignedToId !== prevAssignedToId;
-            const { assignedToId: _omit, ...rest } = payload as any;
+            const rest = { ...(payload as any) };
+            delete rest.assignedToId;
 
             await updateDoc(doc(db, 'inventory', id), { ...rest, updatedAt: serverTimestamp() });
 

@@ -3,13 +3,7 @@
 
 export const dynamicParams = false;
 
-export async function generateStaticParams() {
-  // For static export, return all possible placeholder routes
-  // Actual statpack IDs are fetched and rendered client-side
-  return [
-    { id: '_' }, // Placeholder route
-  ];
-}
+// generateStaticParams is defined on the page component; keep layout minimal for static export
 
 export default function StatpackDetailLayout({
   children,

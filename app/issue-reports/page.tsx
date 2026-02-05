@@ -469,7 +469,7 @@ export default function IssueReportsPage() {
                     <div className="flex gap-2 flex-shrink-0">
                       <Chip
                         variant="flat"
-                        color={priorityColor[item.priority || 'medium']}
+                        color={priorityColor[(item.priority || 'medium') as keyof typeof priorityColor]}
                         size="sm"
                         className="font-semibold"
                       >
@@ -477,7 +477,7 @@ export default function IssueReportsPage() {
                       </Chip>
                       <Chip
                         variant="flat"
-                        color={statusColor[item.status] || 'default'}
+                        color={statusColor[item.status as keyof typeof statusColor] || 'default'}
                         size="sm"
                       >
                         {item.status}

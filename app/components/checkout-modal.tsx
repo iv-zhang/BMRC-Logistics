@@ -1,11 +1,14 @@
 'use client';
 import React, { useEffect, useMemo, useState } from 'react';
-import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button, Input, Textarea, Card, CardBody, Chip, Select, SelectItem } from '@heroui/react';
-import type { InventoryItem, User, AssetInstance } from '@/app/types';
-import { checkoutAsset, checkinAsset } from '@/app/lib/inventory';
+import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button, Input, Textarea, Card, CardBody, Chip, Select, SelectItem, Divider } from '@heroui/react';
+import type { InventoryItem, User, AssetInstance, StatpackItem, ValidationWarning } from '@/app/types';
+import { checkoutAsset, checkinAsset, verifyAssetAgainstRules, findAssetByCode } from '@/app/lib/inventory';
+import { parseGs1Barcode } from '@/app/lib/gs1';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
+import BarcodeScanner from './barcode-scanner';
+import { ScanLine, CheckCircle2, AlertTriangle, XCircle } from 'lucide-react';
 
 interface CheckoutModalProps {
   isOpen: boolean;
@@ -13,9 +16,10 @@ interface CheckoutModalProps {
   asset: InventoryItem | null;
   mode: 'checkout' | 'checkin' | null;
   serial?: string | null;
+  statpackItem?: StatpackItem | null; // Optional: for verification rules
 }
 
-export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, serial }: CheckoutModalProps) {
+export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, serial, statpackItem }: CheckoutModalProps) {
   const [user, setUser] = useState<User | null>(null);
   const [location, setLocation] = useState<string>('');
   const [note, setNote] = useState<string>('');
@@ -23,6 +27,11 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [selectedSerial, setSelectedSerial] = useState<string | null>(null);
+  const [showScanner, setShowScanner] = useState(false);
+  const [scannedCode, setScannedCode] = useState<string | null>(null);
+  const [scannedExpiration, setScannedExpiration] = useState<Date | null>(null);
+  const [manualO2Psi, setManualO2Psi] = useState<string>('');
+  const [verificationWarnings, setVerificationWarnings] = useState<ValidationWarning[]>([]);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
@@ -59,6 +68,10 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
       setNote('');
       setError(null);
       setSuccess(false);
+      setScannedCode(null);
+      setScannedExpiration(null);
+      setManualO2Psi('');
+      setVerificationWarnings([]);
     }
   }, [isOpen]);
 
@@ -73,6 +86,75 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
     [instances, selectedSerial]
   );
   const requiresSerial = instances.length > 0;
+  
+  const hasVerificationRules = useMemo(() => {
+    const rules = statpackItem?.verificationRules ?? asset?.verificationPolicy;
+    if (!rules) return false;
+    return rules.requireSerial || rules.requireExpirationConfirmation || (rules.requireO2PsiMin !== undefined && rules.requireO2PsiMin > 0);
+  }, [statpackItem, asset]);
+
+  const handleScanComplete = async (code: string) => {
+    setScannedCode(code);
+    setShowScanner(false);
+    
+    // Parse GS1 for expiration
+    const gs1Data = parseGs1Barcode(code);
+    if (gs1Data.expiration) {
+      try {
+        setScannedExpiration(new Date(gs1Data.expiration));
+      } catch (e) {
+        console.warn('Failed to parse GS1 expiration', e);
+      }
+    }
+    
+    // Try to match asset instance
+    if (asset) {
+      try {
+        const matches = findAssetByCode([asset], code);
+        if (matches.length > 0 && matches[0].instance) {
+          setSelectedSerial(matches[0].instance.serial);
+        }
+      } catch (e) {
+        console.warn('Asset match failed', e);
+      }
+    }
+    
+    // Run verification if rules present (prefer statpackItem rules, fall back to inventory item policy)
+    if (hasVerificationRules) {
+      const rulesSource = statpackItem?.verificationRules ? statpackItem : (asset ? ({ itemId: asset.id, itemDetails: asset, verificationRules: asset.verificationPolicy } as any) : null);
+      if (rulesSource) {
+        const warnings = await verifyAssetAgainstRules({
+          statpackItem: rulesSource,
+          scannedCode: code,
+          scannedExpiration: gs1Data.expiration ? new Date(gs1Data.expiration) : undefined,
+          scannedO2Psi: manualO2Psi ? Number(manualO2Psi) : undefined,
+          inventoryItem: asset || undefined,
+        });
+        setVerificationWarnings(warnings);
+      }
+    }
+  };
+
+  const runVerification = async () => {
+    if (!hasVerificationRules) return;
+    const rulesSource = statpackItem?.verificationRules ? statpackItem : (asset ? ({ itemId: asset.id, itemDetails: asset, verificationRules: asset.verificationPolicy } as any) : null);
+    if (!rulesSource) return;
+
+    const warnings = await verifyAssetAgainstRules({
+      statpackItem: rulesSource,
+      scannedCode: scannedCode || undefined,
+      scannedExpiration: scannedExpiration || undefined,
+      scannedO2Psi: manualO2Psi ? Number(manualO2Psi) : undefined,
+      inventoryItem: asset || undefined,
+    });
+    setVerificationWarnings(warnings);
+  };
+
+  useEffect(() => {
+    if (hasVerificationRules && (scannedCode || scannedExpiration || manualO2Psi)) {
+      runVerification();
+    }
+  }, [manualO2Psi]); // Re-verify when O2 PSI changes
   const friendlyError = useMemo(() => {
     if (!error) return null;
     if (error.toLowerCase().includes('already checked out')) {
@@ -94,6 +176,12 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
     if (!asset || !user || !mode) return;
     if (requiresSerial && !selectedSerial) {
       setError('Please select an asset instance/serial before continuing.');
+      return;
+    }
+    
+    // Check for critical warnings (non-advisory)
+    const criticalWarnings = verificationWarnings.filter(w => w.severity === 'critical');
+    if (criticalWarnings.length > 0 && !confirm(`${criticalWarnings.length} critical verification issue(s) found. Proceed anyway?`)) {
       return;
     }
     
@@ -173,19 +261,116 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
               {requiresSerial && (
                 <div>
                   <label className="text-sm font-semibold block mb-1">Asset Instance</label>
-                  <Select
-                    selectedKeys={selectedSerial ? [selectedSerial] : []}
-                    onChange={(e) => setSelectedSerial(e.target.value)}
-                    placeholder="Select serial/tag"
-                    description="Required for serialized assets"
-                  >
-                    {instances.map((instance) => (
-                      <SelectItem key={instance.serial}>
-                        {instance.assetTag || instance.id || instance.serial} {instance.status ? `• ${instance.status}` : ''}
-                      </SelectItem>
-                    ))}
-                  </Select>
+                  <div className="flex gap-2">
+                    <Select
+                      className="flex-1"
+                      selectedKeys={selectedSerial ? [selectedSerial] : []}
+                      onChange={(e) => setSelectedSerial(e.target.value)}
+                      placeholder="Select serial/tag"
+                      description="Required for serialized assets"
+                    >
+                      {instances.map((instance) => (
+                        <SelectItem key={instance.serial}>
+                          {instance.assetTag || instance.id || instance.serial} {instance.status ? `• ${instance.status}` : ''}
+                        </SelectItem>
+                      ))}
+                    </Select>
+                    {hasVerificationRules && (
+                      <Button
+                        isIconOnly
+                        variant="flat"
+                        color="primary"
+                        onPress={() => setShowScanner(true)}
+                        title="Scan asset tag"
+                      >
+                        <ScanLine size={18} />
+                      </Button>
+                    )}
+                  </div>
                 </div>
+              )}
+
+              {hasVerificationRules && (
+                <>
+                  <Divider />
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold">Asset Verification</span>
+                      {!requiresSerial && (
+                        <Button
+                          size="sm"
+                          variant="flat"
+                          color="primary"
+                          startContent={<ScanLine size={14} />}
+                          onPress={() => setShowScanner(true)}
+                        >
+                          Scan Tag
+                        </Button>
+                      )}
+                    </div>
+                    
+                    {scannedCode && (
+                      <Card className="bg-blue-50">
+                        <CardBody className="py-2">
+                          <div className="flex items-center gap-2 text-xs">
+                            <CheckCircle2 size={14} className="text-blue-700" />
+                            <span className="text-blue-900">Scanned: {scannedCode}</span>
+                          </div>
+                          {scannedExpiration && (
+                            <p className="text-xs text-blue-700 ml-5">
+                              Exp: {scannedExpiration.toLocaleDateString('en-US', { month: '2-digit', year: 'numeric' })}
+                            </p>
+                          )}
+                        </CardBody>
+                      </Card>
+                    )}
+                    
+                    {statpackItem?.verificationRules?.requireO2PsiMin !== undefined && statpackItem.verificationRules.requireO2PsiMin > 0 && (
+                      <div>
+                        <label className="text-xs font-medium block mb-1">
+                          O₂ PSI Reading (min: {statpackItem.verificationRules.requireO2PsiMin})
+                        </label>
+                        <Input
+                          size="sm"
+                          type="number"
+                          placeholder="Enter PSI"
+                          value={manualO2Psi}
+                          onValueChange={setManualO2Psi}
+                        />
+                      </div>
+                    )}
+                    
+                    {verificationWarnings.length > 0 && (
+                      <div className="space-y-2">
+                        {verificationWarnings.map((warning, idx) => {
+                          const Icon = warning.severity === 'critical' ? XCircle : AlertTriangle;
+                          const colorClass = warning.severity === 'critical' ? 'bg-red-50' : 'bg-yellow-50';
+                          const textClass = warning.severity === 'critical' ? 'text-red-700' : 'text-yellow-700';
+                          
+                          return (
+                            <Card key={idx} className={colorClass}>
+                              <CardBody className="py-2">
+                                <div className="flex items-start gap-2">
+                                  <Icon size={14} className={`${textClass} mt-0.5`} />
+                                  <div className="flex-1">
+                                    <p className={`text-xs ${textClass} font-medium`}>
+                                      {warning.severity === 'critical' ? 'Critical' : 'Warning'}
+                                    </p>
+                                    <p className="text-xs text-gray-700">{warning.message}</p>
+                                  </div>
+                                  <Chip size="sm" variant="flat" color={warning.severity === 'critical' ? 'danger' : 'warning'}>
+                                    {statpackItem?.verificationRules?.advisoryOnly ? 'Advisory' : 'Required'}
+                                  </Chip>
+                                </div>
+                              </CardBody>
+                            </Card>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                  <Divider />
+                </>
               )}
 
               <div>
@@ -244,6 +429,14 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
           )}
         </ModalFooter>
       </ModalContent>
+      
+      {showScanner && (
+        <BarcodeScanner
+          isOpen={showScanner}
+          onDetected={handleScanComplete}
+          onClose={() => setShowScanner(false)}
+        />
+      )}
     </Modal>
   );
 }

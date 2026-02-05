@@ -2,7 +2,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db, auth } from '@/firebase';
-import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button, Input, Select, SelectItem, Textarea, Chip } from '@heroui/react';
+import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button, Input, Select, SelectItem, Textarea, Chip, Switch } from '@heroui/react';
 import type { InventoryItem } from '@/app/types';
 import QRCode from 'qrcode';
 import JsBarcode from 'jsbarcode';
@@ -43,7 +43,22 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
 
   useEffect(() => {
     if (isOpen) {
-      setForm(initial ? { ...initial } : { name: '', isAsset: true, assetStatus: 'Ready' });
+      // Normalize Firestore Timestamp fields to JS Date for form controls
+      if (initial) {
+        const norm: any = { ...initial };
+        if ((initial as any).expirationDate && typeof (initial as any).expirationDate.toDate === 'function') {
+          norm.expirationDate = (initial as any).expirationDate.toDate();
+        }
+        if ((initial as any).batteryExpiration && typeof (initial as any).batteryExpiration.toDate === 'function') {
+          norm.batteryExpiration = (initial as any).batteryExpiration.toDate();
+        }
+        if ((initial as any).padExpiration && typeof (initial as any).padExpiration.toDate === 'function') {
+          norm.padExpiration = (initial as any).padExpiration.toDate();
+        }
+        setForm(norm);
+      } else {
+        setForm({ name: '', isAsset: true, assetStatus: 'Ready' });
+      }
       setValidationError(null);
       setSaving(false);
       setHistorySerial('');
@@ -341,6 +356,7 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
           <Input label="Name" value={String(form.name ?? '')} onValueChange={(v) => setForm({ ...form, name: v })} />
           <Select label="Category" selectedKeys={[String((form.assetCategory as any) ?? 'Generic')]} onChange={(e) => setForm({ ...form, assetCategory: e.target.value as any })}>
             <SelectItem key="Generic">Generic</SelectItem>
+            <SelectItem key="Meds">Meds</SelectItem>
             <SelectItem key="AED">AED</SelectItem>
             <SelectItem key="O2">O2</SelectItem>
             <SelectItem key="Bike">Bike</SelectItem>
@@ -394,6 +410,29 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
             description="Either Barcode or QR Code required for scanning checkout"
           />
 
+          {/* Verification Policy (per-asset) */}
+          <div className="border-t pt-4 mt-2">
+            <h4 className="text-sm font-semibold mb-2">Verification Policy</h4>
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <div className="text-sm">Require Serial on Checkout</div>
+                <Switch size="sm" isSelected={!!form.verificationPolicy?.requireSerial} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), requireSerial: v } as any })} />
+              </div>
+              <div className="flex items-center justify-between">
+                <div className="text-sm">Require Expiration Confirmation</div>
+                <Switch size="sm" isSelected={!!form.verificationPolicy?.requireExpirationConfirmation} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), requireExpirationConfirmation: v } as any })} />
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="text-sm flex-1">Minimum O₂ PSI (optional)</div>
+                <Input size="sm" type="number" className="w-32" value={String(form.verificationPolicy?.requireO2PsiMin ?? '')} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), requireO2PsiMin: v ? Number(v) : undefined } as any })} placeholder="e.g., 1800" />
+              </div>
+              <div className="flex items-center justify-between">
+                <div className="text-sm">Advisory Only (non-blocking)</div>
+                <Switch size="sm" isSelected={!!form.verificationPolicy?.advisoryOnly} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), advisoryOnly: v } as any })} />
+              </div>
+            </div>
+          </div>
+
           {/* Asset-specific fields: O2 tanks, AEDs, Epipens */}
           {(form.assetCategory === 'O2' || form.isOxygen) && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -437,18 +476,48 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
             </div>
           )}
 
-          {/* Epipen / consumable expiration (many meds) */}
-          {form.category === 'Meds' && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <Input
-                label="Item Expiration Date"
-                type="date"
-                value={form.expirationDate ? new Date(form.expirationDate).toISOString().slice(0,10) : ''}
-                onValueChange={(v) => setForm({ ...form, expirationDate: v ? new Date(v) : undefined })}
-                description="Set for individual consumable items (e.g., EpiPen)"
-              />
+          {/* Expiration (optional) - available for any asset that expires */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <p className="text-sm font-medium mb-1">Expiration Precision</p>
+              <Select
+                selectedKeys={[String(form.expirationPrecision ?? 'day')]}
+                onChange={(e) => setForm({ ...form, expirationPrecision: e.target.value as 'day' | 'month' })}
+              >
+                <SelectItem key="day">Month / Day / Year</SelectItem>
+                <SelectItem key="month">Month / Year</SelectItem>
+              </Select>
             </div>
-          )}
+
+            <div>
+              {((form.expirationPrecision ?? 'day') === 'day') ? (
+                <Input
+                  label="Item Expiration Date (optional)"
+                  type="date"
+                  value={form.expirationDate ? new Date(form.expirationDate).toISOString().slice(0,10) : ''}
+                  onValueChange={(v) => setForm({ ...form, expirationPrecision: 'day', expirationDate: v ? new Date(v) : undefined })}
+                  description="Set full expiration date (MM/DD/YYYY)"
+                />
+              ) : (
+                <Input
+                  label="Item Expiration Month (optional)"
+                  type="month"
+                  value={form.expirationDate ? (() => { const d = new Date(form.expirationDate); return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}`; })() : ''}
+                  onValueChange={(v) => {
+                    if (!v) {
+                      setForm({ ...form, expirationPrecision: 'month', expirationDate: undefined });
+                      return;
+                    }
+                    // v is YYYY-MM; store as the first day of that month (UTC)
+                    const [y, m] = v.split('-').map(Number);
+                    const dt = new Date(Date.UTC(y, m - 1, 1));
+                    setForm({ ...form, expirationPrecision: 'month', expirationDate: dt });
+                  }}
+                  description="Set expiration by month and year"
+                />
+              )}
+            </div>
+          </div>
 
           {/* External Barcode Assignment Section */}
           <div className="border-t pt-4 mt-2">

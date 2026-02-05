@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { collection, query, where, orderBy, getDocs, Timestamp } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { Card, CardBody, CardHeader, Chip, Spinner, Button, Divider } from '@heroui/react';
@@ -20,7 +20,8 @@ const normalizeTimestamp = (value: unknown): Date | null => {
   if (!value) return null;
   if (value instanceof Date) return value;
   if (value instanceof Timestamp) return value.toDate();
-  if (typeof value?.toDate === 'function') return value.toDate();
+  const obj = value as { toDate?: () => Date };
+  if (typeof obj.toDate === 'function') return obj.toDate();
   return null;
 };
 
@@ -248,6 +249,37 @@ export default function StatpackHistory({ statpackId, maxRows = 12 }: StatpackHi
                                   {e.serialNumber && <span>Serial: {e.serialNumber}</span>}
                                   {exp && <span className={exp.getTime() < Date.now() ? 'text-danger' : ''}>Exp: {exp.toLocaleDateString()}</span>}
                                 </div>
+                                {e.assetCondition && (
+                                  <div className="flex flex-wrap gap-2 mt-1">
+                                    <Chip 
+                                      size="sm" 
+                                      variant="flat" 
+                                      color={
+                                        e.assetCondition === 'Good' ? 'success' :
+                                        e.assetCondition === 'Minor Issue' ? 'warning' :
+                                        'danger'
+                                      }
+                                    >
+                                      Condition: {e.assetCondition}
+                                    </Chip>
+                                  </div>
+                                )}
+                                {e.assetCheckResult && (
+                                  <div className="mt-1 p-1.5 bg-default-200 rounded text-xs space-y-0.5">
+                                    {e.assetCheckResult.batteryStatus && (
+                                      <div>Battery: {e.assetCheckResult.batteryStatus}{e.assetCheckResult.batteryPct !== undefined ? ` (${e.assetCheckResult.batteryPct}%)` : ''}</div>
+                                    )}
+                                    {e.assetCheckResult.padsSealed !== undefined && (
+                                      <div>Pads: {e.assetCheckResult.padsSealed ? 'Sealed' : 'Not sealed'}</div>
+                                    )}
+                                    {e.assetCheckResult.oxygenPsi !== undefined && (
+                                      <div>O₂ PSI: {e.assetCheckResult.oxygenPsi}</div>
+                                    )}
+                                    {e.assetCheckResult.notes && (
+                                      <div>Notes: {e.assetCheckResult.notes}</div>
+                                    )}
+                                  </div>
+                                )}
                                 {e.notes && <div className="text-xs text-default-600 mt-1">Notes: {e.notes}</div>}
                               </div>
                             );

@@ -196,9 +196,29 @@ export default function AuditEventsPage() {
   };
 
   const filteredEvents = useMemo(() => {
-    if (!filter.trim()) return events;
+    // First filter to disposables only (exclude asset-related events)
+    const disposablesOnly = events.filter((ev) => {
+      const eventType = (ev.eventType || '').toLowerCase();
+      const source = (ev.source || '').toLowerCase();
+      
+      // Exclude asset-specific events (checkout, checkin, maintenance, assignments)
+      if (eventType.includes('asset_checkout') || 
+          eventType.includes('asset_checkin') ||
+          eventType.includes('asset_assign') ||
+          eventType.includes('asset_maintenance') ||
+          eventType.includes('asset_manual_check') ||
+          source === 'inventory_logs') {
+        return false;
+      }
+      
+      // Include disposable/supply events (restock, box operations, statpack operations)
+      return true;
+    });
+    
+    // Then apply text filter if present
+    if (!filter.trim()) return disposablesOnly;
     const needle = filter.toLowerCase();
-    return events.filter((ev) => {
+    return disposablesOnly.filter((ev) => {
       const actor = getActorLabel(ev.actor).toLowerCase();
       const targetText = (ev.targets || [])
         .map((t) => `${t.collection}/${t.docId}`)
@@ -244,8 +264,8 @@ export default function AuditEventsPage() {
     <div className="p-4">
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
-          <h2 className="text-xl font-bold">Chronological Log</h2>
-          <p className="text-xs text-default-500">Newest activity first · auditEvents only</p>
+          <h2 className="text-xl font-bold">Supply Ledger</h2>
+          <p className="text-xs text-default-500">Disposables tracking · Boxes added, opened, and restocked</p>
         </div>
         <div className="w-full md:w-96">
           <Input
@@ -349,7 +369,6 @@ export default function AuditEventsPage() {
             const reason = findFirst(details, ['reason', 'notes', 'message', 'issueType']);
             const itemsUsed = extractUsedItems(details);
             const issueReports = extractIssueReports(details);
-            const [showRaw, setShowRaw] = [false, (v:boolean) => {}];
             // Note: don't create state inside render; implement a tiny local toggle using closure
             let rawVisible = false;
             const toggleRaw = () => {
@@ -428,11 +447,11 @@ export default function AuditEventsPage() {
                     <div className="grid gap-2">
                       <div className="flex justify-between items-center">
                         <div className="font-semibold text-sm">Raw details</div>
-                        <Button size="xs" variant="bordered" onPress={() => setShowRaw((v) => !v)}>
-                          {showRaw ? 'Hide raw' : 'Show raw'}
+                        <Button size="sm" variant="bordered" onPress={toggleRaw}>
+                          {rawVisible ? 'Hide raw' : 'Show raw'}
                         </Button>
                       </div>
-                      {showRaw && selected && (
+                      {rawVisible && selected && (
                         <pre className="text-xs overflow-auto whitespace-pre-wrap bg-default-50 dark:bg-slate-900 p-3 rounded-lg">
                           {JSON.stringify(selected.details || selected.delta || { before: selected.before, after: selected.after }, null, 2)}
                         </pre>

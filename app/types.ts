@@ -170,6 +170,9 @@ export interface InventoryItem {
   padExpiration?: Date;
   // Optional top-level list of asset instances when the item represents multiple unique devices
   assets?: AssetInstance[];
+  // Optional per-asset verification policy (admin-configurable)
+  // Controls which checks are performed at checkout/checkin for this inventory item
+  verificationPolicy?: AssetVerificationRules;
   hasVariants?: boolean;
   variants?: InventoryVariant[];
 
@@ -241,6 +244,18 @@ export interface StatpackCompartment {
   expirationDate?: Date;
 }
 
+// Asset verification rules for statpack items (admin-configurable, optional)
+export interface AssetVerificationRules {
+  // Require scanning/entering serial number during checkin/checkout
+  requireSerial?: boolean;
+  // Require confirming expiration date matches during verification (month/year format)
+  requireExpirationConfirmation?: boolean;
+  // Minimum O2 PSI required for oxygen tanks
+  requireO2PsiMin?: number;
+  // If true, violations are advisory warnings only (not blocking)
+  advisoryOnly?: boolean;
+}
+
 export interface StatpackItem {
   itemId: string;
   itemDetails?: InventoryItem;
@@ -253,7 +268,11 @@ export interface StatpackItem {
   // CRITICAL: StatpackItem must reference a specific batch (not just item)
   batchId: string; // REQUIRED - cannot add generic item, must specify batch
   // If this statpack contains a serialized asset/unit, record the specific serial
+  // For serialized items (AEDs, oxygen tanks, etc.), this is the unique identifier
+  // that links to InventoryItem.assetSerial or InventoryItem.assets[].serial
   serialNumber?: string;
+  // Optional: link to a specific asset instance ID for direct asset assignment at the statpack item level
+  assetInstanceId?: string;
   expirationDate?: Date; // Derived from batch for UI convenience
   lotNumber?: string; // Derived from batch for UI convenience
   effectiveExpiration?: Date; // Computed from batch.expirationDate or batch.openDate + daysValid
@@ -261,6 +280,8 @@ export interface StatpackItem {
   requiresExpirationCheck?: boolean;
   // Per-item value for computing total statpack asset value
   itemValue?: number;
+  // Optional verification rules for this specific statpack item (admin-configurable)
+  verificationRules?: AssetVerificationRules;
 }
 
 export interface Statpack {
@@ -339,6 +360,15 @@ export interface StatpackLog {
     expirationDate?: Date | FieldValue;
     checkedAt?: Date | FieldValue;
     checkedBy?: string;
+    // Per-asset condition tracking (only for serialized/asset items)
+    assetCondition?: 'Good' | 'Minor Issue' | 'Major Issue' | 'Needs Maintenance';
+    assetCheckResult?: {
+      batteryStatus?: 'Good' | 'Low' | 'Unknown';
+      batteryPct?: number;
+      padsSealed?: boolean;
+      oxygenPsi?: number;
+      notes?: string;
+    };
   }[];
   
   // Detailed Issue Tracking
@@ -371,6 +401,7 @@ export interface ValidationWarning {
     | 'asset_status'
     | 'asset_expired'
     | 'other';
+  severity?: 'critical' | 'warning' | 'info'; // critical = blocks submission, warning/info = informational only
   itemId?: string;
   itemName?: string;
   serialNumber?: string;
@@ -460,7 +491,10 @@ export interface AssetInstance {
     padsSealed?: boolean;
     notes?: string;
   };
-  assignedToId?: string; // e.g., statpack id or location
+  // Container or statpack this asset instance is assigned to.
+  // Tracks the "home" location for accountability (e.g., 'statpack-primary-1' or 'vehicle-3').
+  // When checking in/out, verify this matches the expected statpack/container.
+  assignedToId?: string;
   // Current human-friendly location or container id (e.g., 'Statpack-1' or 'Back Room')
   currentLocation?: string;
   createdAt?: Date;

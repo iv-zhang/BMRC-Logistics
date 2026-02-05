@@ -53,6 +53,12 @@ export const BagVisualizer: React.FC<BagVisualizerProps> = ({
     return statpack.contents?.filter(i => i.pocket === pocket).length || 0;
   };
 
+  const getAssetSerials = (pocket: StatpackPocket) => {
+    return statpack.contents
+      ?.filter(i => i.pocket === pocket && i.serialNumber)
+      .map(i => i.serialNumber) || [];
+  };
+
   const getCardProps = (pocket: StatpackPocket) => {
     const isSelected = selectedPocket === pocket;
     const isCompleted = !!completedPockets && completedPockets.has(pocket);
@@ -167,6 +173,13 @@ export const BagVisualizer: React.FC<BagVisualizerProps> = ({
                   <Chip size="sm" variant="flat" color="primary" className="h-5 text-[10px] px-1">
                     {getPocketCount('side_left')}
                   </Chip>
+                  {getAssetSerials('side_left').length > 0 && (
+                    <Tooltip content={getAssetSerials('side_left').join(', ')} showArrow color="default" size="sm">
+                      <Chip size="sm" variant="flat" color="secondary" className="text-[8px] px-0.5">
+                        {getAssetSerials('side_left').length}A
+                      </Chip>
+                    </Tooltip>
+                  )}
                 </CardBody>
         </Card>
 
@@ -216,9 +229,18 @@ export const BagVisualizer: React.FC<BagVisualizerProps> = ({
                     <span className="font-bold text-xs">FRONT</span>
                     <span className="text-[9px] text-default-400 uppercase">Auxiliary</span>
                 </div>
-                <Chip size="sm" variant="flat" className="h-5 text-[10px] px-1">
-                  {getPocketCount('front_aux')}
-                </Chip>
+                <div className="flex items-center gap-1">
+                  <Chip size="sm" variant="flat" className="h-5 text-[10px] px-1">
+                    {getPocketCount('front_aux')}
+                  </Chip>
+                  {getAssetSerials('front_aux').length > 0 && (
+                    <Tooltip content={getAssetSerials('front_aux').join(', ')} showArrow color="default" size="sm">
+                      <Chip size="sm" variant="flat" color="secondary" className="text-[8px] px-0.5">
+                        {getAssetSerials('front_aux').length}A
+                      </Chip>
+                    </Tooltip>
+                  )}
+                </div>
                 {completedPockets && completedPockets.has('front_aux') && <CheckCircle2 className="text-green-500 ml-2" size={14} />}
              </CardBody>
            </Card>
@@ -234,6 +256,13 @@ export const BagVisualizer: React.FC<BagVisualizerProps> = ({
               <Chip size="sm" variant="flat" color="primary" className="h-5 text-[10px] px-1">
                 {getPocketCount('side_right')}
               </Chip>
+              {getAssetSerials('side_right').length > 0 && (
+                <Tooltip content={getAssetSerials('side_right').join(', ')} showArrow color="default" size="sm">
+                  <Chip size="sm" variant="flat" color="secondary" className="text-[8px] px-0.5">
+                    {getAssetSerials('side_right').length}A
+                  </Chip>
+                </Tooltip>
+              )}
            </CardBody>
         </Card>
       </div>

@@ -12,9 +12,7 @@ import {
   TableRow,
   TableCell,
   Chip,
-  Divider,
   Spinner,
-  Badge,
   useDisclosure,
   Modal,
   ModalContent,
@@ -25,16 +23,20 @@ import {
   Select,
   SelectItem,
 } from '@heroui/react';
-import { Package, MapPin, Eye, Wrench, Pencil, Save, X } from 'lucide-react';
+import { Package, MapPin, Eye, Wrench, Copy, Link2 } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
-import { collection, onSnapshot, query, orderBy, updateDoc, doc, serverTimestamp } from 'firebase/firestore';
+import { collection, onSnapshot, query, orderBy, updateDoc, doc, serverTimestamp, getDoc } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
-import type { Statpack } from '@/app/types';
+import type { Statpack, StatpackPocket } from '@/app/types';
 import StatpackCheckOffModal from '@/app/components/statpack-checkoff-modal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import { BagVisualizer } from '@/app/components/statpackvisualizer';
 import AdminAuditModal from '@/app/components/admin-audit-modal';
+import SortableStatpackContentList from '@/app/components/sortable-statpack-list';
+import AssetAttachModal from '@/app/components/asset-attach-modal';
+import AssetModal from '@/app/components/assetmodal';
 import { useUserRole } from '@/app/hooks/useUserRole';
+import { duplicateStatpack } from '@/app/lib/statpacks';
 
 export default function StatpacksListPage() {
   const router = useRouter();
@@ -46,8 +48,6 @@ export default function StatpacksListPage() {
   const [selectedPack, setSelectedPack] = useState<Statpack | null>(null);
   const editorDisclosure = useDisclosure();
   const [editingPack, setEditingPack] = useState<Statpack | null>(null);
-  const [isEditingSummary, setIsEditingSummary] = useState(false);
-  const [summaryForm, setSummaryForm] = useState({ name: '', status: '', currentLocation: '', assetValue: '' });
   const checkoffDisclosure = useDisclosure();
   const [checkoffAction, setCheckoffAction] = useState<'checkin' | 'maintenance' | 'checkout'>('checkin');
   const auditModalDisclosure = useDisclosure();
@@ -55,6 +55,14 @@ export default function StatpacksListPage() {
 
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scannerTarget, setScannerTarget] = useState<Statpack | null>(null);
+  const [duplicating, setDuplicating] = useState<string | null>(null);
+  
+  const assetAttachDisclosure = useDisclosure();
+  const [attachingItemIndex, setAttachingItemIndex] = useState<number | null>(null);
+  const [attachingItemName, setAttachingItemName] = useState<string>('');
+  const [attachPocket, setAttachPocket] = useState<string>('main');
+  const assetModalDisclosure = useDisclosure();
+  const [editingAsset, setEditingAsset] = useState<any | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => setUser(u));
@@ -66,7 +74,14 @@ export default function StatpacksListPage() {
       const base = prev || selectedPack;
       if (!base) return prev;
       const contents = Array.isArray(base.contents) ? [...base.contents] : [];
-      contents[index] = { ...(contents[index] || {}), ...patch };
+      const existing = contents[index] || {};
+      // If patch contains itemDetails, deep-merge it with existing.itemDetails
+      if (patch && (patch as any).itemDetails) {
+        const mergedDetails = { ...(existing.itemDetails || {}), ...(patch as any).itemDetails };
+        contents[index] = { ...existing, ...patch, itemDetails: mergedDetails };
+      } else {
+        contents[index] = { ...existing, ...patch };
+      }
       return ({ ...base, contents } as Statpack);
     });
   };
@@ -179,6 +194,7 @@ export default function StatpacksListPage() {
         if (it.compartmentId !== undefined) ci.compartmentId = it.compartmentId;
         if (it.batchId !== undefined) ci.batchId = it.batchId;
         if (it.serialNumber !== undefined) ci.serialNumber = it.serialNumber;
+        if (it.assetInstanceId !== undefined) ci.assetInstanceId = it.assetInstanceId;
         if (it.expirationDate instanceof Date) ci.expirationDate = it.expirationDate;
         if (it.lotNumber !== undefined) ci.lotNumber = it.lotNumber;
         if (it.effectiveExpiration instanceof Date) ci.effectiveExpiration = it.effectiveExpiration;
@@ -271,6 +287,80 @@ export default function StatpacksListPage() {
     }
   };
 
+  const handleDuplicate = async (pack: Statpack) => {
+    if (!pack.id) return;
+    setDuplicating(pack.id);
+    try {
+      await duplicateStatpack(pack.id);
+      // Success feedback (snapshot listener will auto-refresh list)
+    } catch (error) {
+      console.error('Failed to duplicate statpack:', error);
+      alert('Failed to duplicate statpack. Please try again.');
+    } finally {
+      setDuplicating(null);
+    }
+  };
+
+  const handleAttachAsset = (itemIndex: number, itemName: string) => {
+    setAttachingItemIndex(itemIndex);
+    setAttachingItemName(itemName);
+    assetAttachDisclosure.onOpen();
+  };
+
+  const handleEditAssetPolicy = async (assetInstanceId: string) => {
+    try {
+      const snap = await getDoc(doc(db, 'inventory', assetInstanceId));
+      if (!snap.exists()) {
+        alert('Asset not found');
+        return;
+      }
+      const data = snap.data();
+      setEditingAsset({ id: snap.id, ...(data as any) });
+      assetModalDisclosure.onOpen();
+    } catch (err) {
+      console.error('Failed to load asset for editing:', err);
+      alert('Failed to load asset');
+    }
+  };
+
+  const handleAssetAttached = (assetId: string, serial?: string, displayName?: string) => {
+    const nameFromAttach = attachingItemName || displayName || (serial ? `Asset ${serial}` : undefined);
+
+    if (attachingItemIndex !== null) {
+      // Update the existing item with the asset instance ID, serial, and preserve/merge itemDetails name
+      updateEditingContent(attachingItemIndex, {
+        assetInstanceId: assetId,
+        serialNumber: serial,
+        itemDetails: { name: nameFromAttach },
+      });
+    } else {
+      // No existing item targeted: create a new content item with this asset assigned
+      const newItem: Statpack['contents'][0] = {
+        itemId: `asset-${assetId}-${Date.now()}`,
+        itemDetails: { name: nameFromAttach || `Asset ${assetId.slice(0, 8)}`, createdAt: new Date(), updatedAt: new Date() } as any,
+        requiredQuantity: 1,
+        currentQuantity: 1,
+        pocket: attachPocket as unknown as StatpackPocket,
+        compartmentId: undefined,
+        batchId: '',
+        assetInstanceId: assetId,
+        serialNumber: serial,
+        itemValue: 0,
+      };
+
+      setEditingPack(prev => {
+        const base = prev || selectedPack;
+        if (!base) return prev;
+        const contents = Array.isArray(base.contents) ? [...base.contents, newItem] : [newItem];
+        return ({ ...base, contents } as Statpack);
+      });
+    }
+
+    // Reset
+    setAttachingItemIndex(null);
+    setAttachingItemName('');
+  };
+
   if (loading) return <div className="h-screen flex items-center justify-center"><Spinner /></div>;
 
   // Restrict access: general members should not access the Statpacks management UI
@@ -338,9 +428,21 @@ export default function StatpacksListPage() {
                         <Button size="sm" onPress={() => openCheckin(p)}>Check-In</Button>
                         <Button size="sm" variant="light" onPress={() => openMaintenance(p)}>Maintenance</Button>
                         {userRole === 'admin' && (
-                          <Button isIconOnly size="sm" variant="light" onPress={() => { setAuditTarget(p); auditModalDisclosure.onOpen(); }} title="Manual Audit">
-                            <Wrench size={14} />
-                          </Button>
+                          <>
+                            <Button isIconOnly size="sm" variant="light" onPress={() => { setAuditTarget(p); auditModalDisclosure.onOpen(); }} title="Manual Audit">
+                              <Wrench size={14} />
+                            </Button>
+                            <Button 
+                              isIconOnly 
+                              size="sm" 
+                              variant="light" 
+                              onPress={() => handleDuplicate(p)} 
+                              title="Duplicate Statpack"
+                              isLoading={duplicating === p.id}
+                            >
+                              <Copy size={14} />
+                            </Button>
+                          </>
                         )}
                         <Button isIconOnly size="sm" variant="light" onPress={() => openScanner(p)}>
                           <MapPin size={14} />
@@ -365,13 +467,37 @@ export default function StatpacksListPage() {
         onCheckOffComplete={() => checkoffDisclosure.onClose()}
       />
 
+      <AssetModal
+        isOpen={assetModalDisclosure.isOpen}
+        onOpenChange={(open) => (open ? assetModalDisclosure.onOpen() : assetModalDisclosure.onClose())}
+        initial={editingAsset}
+        onAdd={async (payload) => {
+          // Adding a new asset from this modal is not the primary flow here; fall back to snapshot update
+          try {
+            // delegate to an add flow elsewhere or simply close
+            assetModalDisclosure.onClose();
+          } catch (e) {
+            console.error('Failed to add asset from modal', e);
+          }
+        }}
+        onUpdate={async (id, payload) => {
+          try {
+            await updateDoc(doc(db, 'inventory', id), { ...payload, updatedAt: serverTimestamp() });
+            assetModalDisclosure.onClose();
+          } catch (e) {
+            console.error('Failed to update asset', e);
+            alert('Failed to save asset changes');
+          }
+        }}
+      />
+
       <BarcodeScanner isOpen={scannerOpen} onClose={() => { setScannerOpen(false); setScannerTarget(null); }} onDetected={onDetected} />
 
       {/* In-page Statpack Editor Modal */}
       <Modal isOpen={editorDisclosure.isOpen} onOpenChange={editorDisclosure.onOpenChange} size="3xl">
-        <ModalContent>
+        <ModalContent className="max-h-[90vh]">
           <ModalHeader>Statpack Editor - {editingPack?.name || selectedPack?.name}</ModalHeader>
-          <ModalBody className="space-y-4">
+          <ModalBody className="space-y-4 overflow-y-auto max-h-[80vh]">
             {!selectedPack && <p className="text-sm text-gray-500">No statpack selected.</p>}
             {selectedPack && (
               <div className="space-y-4">
@@ -404,51 +530,34 @@ export default function StatpacksListPage() {
                   <Input value={editingPack?.currentLocation ?? selectedPack.currentLocation ?? ''} onValueChange={(v) => setEditingPack(prev => ({ ...(prev || selectedPack), currentLocation: v } as Statpack))} />
                 </div>
 
-                {/* Contents editor: compact list */}
+                {/* Contents editor: compact list with drag-to-reorder */}
                 <div>
                   <div className="flex items-center justify-between">
                     <p className="text-sm font-semibold">Contents</p>
-                    <Button size="sm" onPress={addNewContentItem}>Add Item</Button>
+                    <div className="flex items-center gap-2">
+                      <Select className="min-w-[140px]" selectedKeys={[attachPocket]} onChange={(e) => setAttachPocket(e.target.value)}>
+                        <SelectItem key="main">Main</SelectItem>
+                        <SelectItem key="front_aux">Front</SelectItem>
+                        <SelectItem key="side_left">Left</SelectItem>
+                        <SelectItem key="side_right">Right</SelectItem>
+                      </Select>
+                      <Button size="sm" onPress={addNewContentItem}>Add Item</Button>
+                      <Button size="sm" variant="light" onPress={() => { setAttachingItemIndex(null); setAttachingItemName(''); assetAttachDisclosure.onOpen(); }}>
+                        <span className="text-sm mr-2">+</span>
+                        Attach Asset
+                      </Button>
+                    </div>
                   </div>
 
                   <div className="mt-2 max-h-64 overflow-y-auto">
-                    <Table aria-label="Statpack contents">
-                      <TableHeader>
-                        <TableColumn>Item</TableColumn>
-                        <TableColumn>Quantity</TableColumn>
-                        <TableColumn>Pocket</TableColumn>
-                        <TableColumn>Actions</TableColumn>
-                      </TableHeader>
-                      <TableBody>
-                        {(editingPack?.contents || selectedPack.contents || []).map((item: any, idx: number) => (
-                          <TableRow key={item.itemId || idx}>
-                            <TableCell>
-                              <div className="flex flex-col">
-                                <Input value={item.itemDetails?.name ?? ''} onValueChange={(v) => updateEditingContent(idx, { itemDetails: { ...(item.itemDetails || {}), name: v } })} />
-                              </div>
-                            </TableCell>
-                            <TableCell>
-                              <Input className="w-24" type="number" value={String(item.requiredQuantity ?? 0)} onValueChange={(v) => updateEditingContent(idx, { requiredQuantity: Number(v) || 0 })} />
-                            </TableCell>
-                            <TableCell>
-                              <Select className="min-w-[120px]" selectedKeys={[String(item.pocket || 'main')]} onChange={(e) => updateEditingContent(idx, { pocket: e.target.value })}>
-                                <SelectItem key="main">Main</SelectItem>
-                                <SelectItem key="front_aux">Front</SelectItem>
-                                <SelectItem key="side_left">Left</SelectItem>
-                                <SelectItem key="side_right">Right</SelectItem>
-                              </Select>
-                            </TableCell>
-                            <TableCell>
-                              <div className="flex gap-2">
-                                <Button isIconOnly size="sm" variant="light" color="danger" onPress={() => removeContentItem(idx)}>
-                                  <X size={14} />
-                                </Button>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
+                    <SortableStatpackContentList
+                      items={editingPack?.contents || selectedPack.contents || []}
+                      onReorder={(newItems) => setEditingPack(prev => ({ ...(prev || selectedPack), contents: newItems } as Statpack))}
+                      onUpdateItem={updateEditingContent}
+                      onRemoveItem={removeContentItem}
+                      onAttachAsset={userRole === 'admin' ? handleAttachAsset : undefined}
+                      onEditAssetPolicy={userRole === 'admin' ? handleEditAssetPolicy : undefined}
+                    />
                   </div>
                 </div>
               </div>
@@ -479,6 +588,13 @@ export default function StatpacksListPage() {
                     await updateDoc(doc(db, 'statpacks', packToSave.id as string), { ...cleaned, updatedAt: serverTimestamp() } as any);
                     editorDisclosure.onClose();
                     setEditingPack(null);
+
+      <AssetAttachModal
+        isOpen={assetAttachDisclosure.isOpen}
+        onOpenChange={assetAttachDisclosure.onOpenChange}
+        onAttach={handleAssetAttached}
+        currentItemName={attachingItemName}
+      />
                     // refresh handled by snapshot listener
                   } catch (err) {
                     console.error('Failed to save statpack', err);

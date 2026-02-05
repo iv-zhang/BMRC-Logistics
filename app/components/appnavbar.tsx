@@ -153,17 +153,17 @@ export default function AppNavbar() {
             </Tooltip>
           </NavbarItem>
 
-          {/* Chronological Log - Admin Only (standalone tab) */}
+          {/* Supply Ledger - Admin Only (standalone tab) */}
           {isAdmin && (
             <NavbarItem isActive={isActive('/audit/events')}>
-              <Tooltip content="Chronological Log">
+              <Tooltip content="Supply Ledger">
                 <Link 
                   href="/audit/events" 
                   color={isActive('/audit/events') ? 'primary' : 'foreground'}
                   className={isActive('/audit/events') ? 'font-semibold' : 'text-gray-500 dark:text-gray-400'}
                 >
                   <ClipboardCheck className="w-5 h-5 mr-1 inline-block" />
-                  Chronological Log
+                  Supply Ledger
                 </Link>
               </Tooltip>
             </NavbarItem>
@@ -210,7 +210,7 @@ export default function AppNavbar() {
                   Restock Stats
                 </DropdownItem>
                 <DropdownItem key="logs" onClick={() => router.push('/audit/events')}>
-                  Chronological Log
+                  Supply Ledger
                 </DropdownItem>
                 <DropdownItem key="storage" onClick={() => router.push('/storage')}>
                   Storage Management
@@ -343,7 +343,7 @@ export default function AppNavbar() {
               <Link href="/inventory" className="block">View Inventory</Link>
               <Link href="/restock" className="block">Restock Items</Link>
               <Link href="/restock-stats" className="block">Restock Stats</Link>
-              <Link href="/audit/events" className="block">Chronological Log</Link>
+              <Link href="/audit/events" className="block">Supply Ledger</Link>
               <Link href="/storage" className="block">Storage Management</Link>
             </div>
           </NavbarMenuItem>
