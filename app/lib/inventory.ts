@@ -1,7 +1,68 @@
 import { collection, doc, getDoc, getDocs, writeBatch, serverTimestamp, addDoc, updateDoc, runTransaction, query, where } from 'firebase/firestore';
 import { db } from '@/firebase';
-import type { InventoryItem, Statpack, StatpackItem, StatpackPocket, Container, BoxLog, StatpackLog, PurchaseInfo, ValidationWarning, AssetInstance, AssetCheckResult, StatpackAuditResult } from '@/app/types';
+import type { InventoryItem, Statpack, StatpackItem, StatpackPocket, Container, BoxLog, StatpackLog, PurchaseInfo, ValidationWarning, AssetInstance, AssetCheckResult, StatpackAuditResult, AssetVerificationRules } from '@/app/types';
 import { recordAuditEvent, removeUndefined, deepRemoveUndefined } from '@/app/lib/audit';
+
+/**
+ * Fetch an inventory item by ID and return enriched itemDetails + suggested verification rules.
+ * Used when attaching assets to statpacks to ensure full metadata is available.
+ */
+export async function fetchAndEnrichItemDetails(itemId: string): Promise<{
+  itemDetails: Partial<InventoryItem>;
+  suggestedVerificationRules?: AssetVerificationRules;
+} | null> {
+  try {
+    const itemRef = doc(db, 'inventory', itemId);
+    const snap = await getDoc(itemRef);
+    if (!snap.exists()) return null;
+    
+    const data = snap.data() as InventoryItem;
+    const itemDetails: Partial<InventoryItem> = {
+      id: snap.id,
+      name: data.name,
+      category: data.category,
+      isAsset: data.isAsset,
+      assetCategory: data.assetCategory,
+      assetSerial: data.assetSerial,
+      expirationDate: data.expirationDate,
+      batteryExpiration: data.batteryExpiration,
+      padExpiration: data.padExpiration,
+      isOxygen: data.isOxygen,
+      oxygenPsi: data.oxygenPsi,
+      maxOxygenPsi: data.maxOxygenPsi,
+      assetValue: data.assetValue,
+      requiresExpirationCheck: data.requiresExpirationCheck,
+      verificationPolicy: data.verificationPolicy,
+    };
+    
+    // Auto-suggest verification rules based on asset type
+    const suggestedVerificationRules: AssetVerificationRules = {};
+    
+    // Meds require expiration check
+    if (data.category === 'Meds' || data.requiresExpirationCheck || data.expirationDate) {
+      suggestedVerificationRules.requireExpirationConfirmation = true;
+    }
+    
+    // Oxygen tanks require PSI check
+    if (data.isOxygen || data.assetCategory === 'Oxygen Tank') {
+      suggestedVerificationRules.requireO2PsiMin = data.maxOxygenPsi ? Math.floor(data.maxOxygenPsi * 0.9) : 1800; // 90% of max or default 1800
+    }
+    
+    // AEDs and serialized assets require serial verification
+    if (data.assetCategory === 'AED' || data.isAsset || data.assetSerial || (data.assets && data.assets.length > 0)) {
+      suggestedVerificationRules.requireSerial = true;
+    }
+    
+    // Return enriched data
+    return {
+      itemDetails,
+      suggestedVerificationRules: Object.keys(suggestedVerificationRules).length > 0 ? suggestedVerificationRules : undefined,
+    };
+  } catch (e) {
+    console.error('fetchAndEnrichItemDetails failed:', e);
+    return null;
+  }
+}
 
 /**
  * Compute total asset value of a statpack from its contents.
@@ -875,8 +936,9 @@ export async function checkoutAsset(params: {
   location?: string; // Where the user reported they will be using/keeping it
   note?: string; // Optional reason or context
   serial?: string; // Optional asset instance serial/tag
+  expirationDate?: Date; // Optional expiration date confirmed at checkout
 }): Promise<void> {
-  const { assetId, user, location, note, serial } = params;
+  const { assetId, user, location, note, serial, expirationDate } = params;
   const itemRef = doc(db, 'inventory', assetId);
 
   const { itemName, resolvedSerial, resolvedLocation, nextStatus } = await runTransaction(db, async (tx) => {
@@ -912,6 +974,7 @@ export async function checkoutAsset(params: {
         checkedOutBy: user.id,
         currentLocation: location ?? resolvedInstance.currentLocation ?? item.currentLocation,
         updatedAt: new Date(),
+        ...(expirationDate ? { expirationDate } : {}),
       } as AssetInstance;
     } else if (!normalizedSerial) {
       if (item.assetStatus === 'Checked Out') {
@@ -932,6 +995,10 @@ export async function checkoutAsset(params: {
       checkedOutBy: user.id,
       updatedAt: serverTimestamp(),
     };
+    if (expirationDate && !updatedAssets) {
+      // Single-instance asset: store top-level next expiration for convenience
+      checkoutPayload.assetNextExpiration = expirationDate;
+    }
     if (location !== undefined) {
       checkoutPayload.currentLocation = location;
     }
@@ -959,6 +1026,7 @@ export async function checkoutAsset(params: {
     location: resolvedLocation,
     serialNumber: resolvedSerial,
     notes: note,
+    expirationDate: expirationDate ?? null,
   };
   await addDoc(collection(db, 'inventory_logs'), removeUndefined(checkoutLog));
 
@@ -979,6 +1047,7 @@ export async function checkoutAsset(params: {
     details: {
       reason: note,
       serialNumber: resolvedSerial,
+      expirationDate: expirationDate ?? null,
     },
   });
 }
@@ -1609,14 +1678,8 @@ export async function verifyAssetAgainstRules(params: {
 }): Promise<ValidationWarning[]> {
   const { statpackItem, scannedCode, scannedExpiration, scannedO2Psi, inventoryItem } = params;
   const warnings: ValidationWarning[] = [];
-  const rules = statpackItem.verificationRules;
-  
-  // No rules = no verification needed (permissive default)
-  if (!rules || Object.keys(rules).length === 0) return warnings;
-  
-  const severity = rules.advisoryOnly ? 'warning' : 'critical';
-  
-  // Fetch item details if not provided
+
+  // Fetch item details if not provided (we need item to derive rules if statpackItem doesn't carry them)
   let item = inventoryItem;
   if (!item && statpackItem.itemId) {
     try {
@@ -1628,6 +1691,16 @@ export async function verifyAssetAgainstRules(params: {
       console.warn('Failed to fetch inventory item for verification', e);
     }
   }
+
+  // Determine applicable rules: prefer statpackItem.verificationRules, fall back to statpack item's linked inventory item's verificationPolicy
+  const rules = statpackItem.verificationRules && Object.keys(statpackItem.verificationRules).length > 0
+    ? statpackItem.verificationRules
+    : (item?.verificationPolicy || statpackItem.itemDetails?.verificationPolicy);
+
+  // No rules = no verification needed (permissive default)
+  if (!rules || Object.keys(rules).length === 0) return warnings;
+
+  const severity = (rules as any).advisoryOnly ? 'warning' : 'critical';
   
   // Check 1: Serial number requirement
   if (rules.requireSerial) {

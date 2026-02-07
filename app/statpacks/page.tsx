@@ -23,9 +23,10 @@ import {
   Select,
   SelectItem,
 } from '@heroui/react';
-import { Package, MapPin, Eye, Wrench, Copy, Link2 } from 'lucide-react';
+import { Package, MapPin, Eye, Wrench, Copy, Link2, QrCode, Clipboard } from 'lucide-react';
+import QRCode from 'qrcode';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
-import { collection, onSnapshot, query, orderBy, updateDoc, doc, serverTimestamp, getDoc } from 'firebase/firestore';
+import { collection, onSnapshot, query, orderBy, updateDoc, doc, serverTimestamp, getDoc, getDocs, where, documentId } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
 import type { Statpack, StatpackPocket } from '@/app/types';
 import StatpackCheckOffModal from '@/app/components/statpack-checkoff-modal';
@@ -37,6 +38,7 @@ import AssetAttachModal from '@/app/components/asset-attach-modal';
 import AssetModal from '@/app/components/assetmodal';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { duplicateStatpack } from '@/app/lib/statpacks';
+import { fetchAndEnrichItemDetails } from '@/app/lib/inventory';
 
 export default function StatpacksListPage() {
   const router = useRouter();
@@ -56,6 +58,114 @@ export default function StatpacksListPage() {
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scannerTarget, setScannerTarget] = useState<Statpack | null>(null);
   const [duplicating, setDuplicating] = useState<string | null>(null);
+  const qrDisclosure = useDisclosure();
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [qrLink, setQrLink] = useState<string>('');
+  const [qrPrintDataUrl, setQrPrintDataUrl] = useState<string | null>(null);
+  const [qrPackName, setQrPackName] = useState<string>('');
+
+  const getHostedOrigin = () => {
+    if (typeof window === 'undefined') return '';
+    // Prefer explicit override
+    const envUrl = (process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_HOST || process.env.NEXT_PUBLIC_VERCEL_URL || '') as string;
+    if (envUrl && envUrl.length > 0) return envUrl.startsWith('http') ? envUrl.replace(/\/$/, '') : `https://${envUrl}`;
+    // Allow a user-set production base for local development (persisted)
+    try {
+      const persisted = localStorage.getItem('qr_base_url');
+      if (persisted && persisted.length > 0) return persisted.replace(/\/$/, '');
+    } catch (e) {
+      // ignore
+    }
+    const fb = (process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || '') as string;
+    if (fb && fb.length > 0) return `https://${fb.replace(/\/$/, '')}`;
+    const hostname = window.location.hostname;
+    if (hostname === 'localhost' || hostname.startsWith('127.')) {
+      // Prompt the user for a production base URL to use when on localhost and persist it
+      try {
+        const prod = window.prompt('Detected localhost. Enter production base URL to use for QR (e.g. https://app.example.com) or leave blank to use localhost:');
+        if (prod && prod.length > 0) {
+          try { localStorage.setItem('qr_base_url', prod.replace(/\/$/, '')); } catch (e) {}
+          return prod.replace(/\/$/, '');
+        }
+      } catch (e) {
+        // ignore prompt failures
+      }
+    }
+    return window.location.origin.replace(/\/$/, '');
+  };
+
+  // Render QR into a canvas and draw the logo centered with a white background
+  const generateQrWithLogo = async (text: string, size = 800) => {
+    // create an offscreen canvas
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+
+    // draw QR to canvas using qrcode lib
+    await new Promise<void>((resolve, reject) => {
+      QRCode.toCanvas(canvas, text, { width: size, margin: 1 }, (err: any) => {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return canvas.toDataURL('image/png');
+
+    // load logo image from public assets
+    const logo = new Image();
+    // prefer the black transparent logo if available
+    logo.src = '/images/NoBackground_NewLogoBlack.PNG';
+
+    await new Promise<void>((resolve) => {
+      logo.onload = () => resolve();
+      logo.onerror = () => resolve();
+    });
+
+    // draw white rounded background behind logo to improve scannability
+    const logoMaxRatio = 0.28; // logo size as fraction of QR (conservative)
+    const logoSize = Math.floor(size * logoMaxRatio);
+    const x = Math.floor((size - logoSize) / 2);
+    const y = Math.floor((size - logoSize) / 2);
+
+    // rounded rect
+    const radius = Math.max(6, Math.floor(logoSize * 0.08));
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + logoSize - radius, y);
+    ctx.quadraticCurveTo(x + logoSize, y, x + logoSize, y + radius);
+    ctx.lineTo(x + logoSize, y + logoSize - radius);
+    ctx.quadraticCurveTo(x + logoSize, y + logoSize, x + logoSize - radius, y + logoSize);
+    ctx.lineTo(x + radius, y + logoSize);
+    ctx.quadraticCurveTo(x, y + logoSize, x, y + logoSize - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x, y, x + radius, y);
+    ctx.closePath();
+    ctx.fill();
+
+    // draw logo centered and scaled to fit inside the white box
+    try {
+      // compute aspect-fit
+      const lw = logo.width || logoSize;
+      const lh = logo.height || logoSize;
+      let dw = logoSize;
+      let dh = logoSize;
+      if (lw && lh) {
+        const scale = Math.min(logoSize / lw, logoSize / lh);
+        dw = Math.round(lw * scale);
+        dh = Math.round(lh * scale);
+      }
+      const dx = x + Math.floor((logoSize - dw) / 2);
+      const dy = y + Math.floor((logoSize - dh) / 2);
+      ctx.drawImage(logo, dx, dy, dw, dh);
+    } catch (e) {
+      // ignore draw failures
+      console.error('Logo draw failed', e);
+    }
+
+    return canvas.toDataURL('image/png');
+  };
   
   const assetAttachDisclosure = useDisclosure();
   const [attachingItemIndex, setAttachingItemIndex] = useState<number | null>(null);
@@ -200,6 +310,7 @@ export default function StatpacksListPage() {
         if (it.effectiveExpiration instanceof Date) ci.effectiveExpiration = it.effectiveExpiration;
         if (it.requiresExpirationCheck !== undefined) ci.requiresExpirationCheck = it.requiresExpirationCheck;
         if (it.itemValue !== undefined) ci.itemValue = it.itemValue;
+        if (it.verificationRules !== undefined) ci.verificationRules = it.verificationRules;
         return ci;
       });
     }
@@ -246,9 +357,76 @@ export default function StatpacksListPage() {
     const unsub = onSnapshot(
       q,
       (snap) => {
-        const packs: Statpack[] = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
-        setStatpacks(packs);
-        setLoading(false);
+        (async () => {
+          try {
+            const packs: Statpack[] = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
+
+            const itemIds = packs
+              .flatMap((p) => (p.contents || []).flatMap((i) => [i.itemId, i.assetInstanceId]))
+              .filter((id): id is string => Boolean(id));
+
+            const map = new Map<string, any>();
+            const uniqueIds = Array.from(new Set(itemIds)).filter(Boolean);
+            const chunkArray = <T,>(items: T[], size: number) => {
+              const chunks: T[][] = [];
+              for (let i = 0; i < items.length; i += size) {
+                chunks.push(items.slice(i, i + size));
+              }
+              return chunks;
+            };
+
+            const chunks = chunkArray(uniqueIds, 10);
+            for (const chunk of chunks) {
+              try {
+                const qInv = query(collection(db, 'inventory'), where(documentId(), 'in', chunk));
+                const snapInv = await getDocs(qInv);
+                snapInv.forEach((s) => map.set(s.id, { id: s.id, ...(s.data() as any) }));
+              } catch (e) {
+                // ignore
+              }
+            }
+
+            const enriched = packs.map((p) => ({
+              ...p,
+              contents: (p.contents || []).map((item) => {
+                const lookupId = item.assetInstanceId || item.itemId;
+                let inv = lookupId ? map.get(lookupId) : undefined;
+
+                if (!inv) {
+                  const serial = item.serialNumber || item.assetInstanceId || undefined;
+                  if (serial) {
+                    inv = Array.from(map.values()).find((iv) => {
+                      if (!iv) return false;
+                      if (iv.assetSerial && String(iv.assetSerial) === String(serial)) return true;
+                      const instances = iv.assets || [];
+                      if (instances.some((a: any) => a.serial === serial || a.id === serial || a.assetTag === serial)) return true;
+                      return false;
+                    });
+                  }
+                }
+
+                if (!inv) {
+                  const name = item.itemDetails?.name;
+                  if (name) {
+                    const lower = String(name).toLowerCase();
+                    inv = Array.from(map.values()).find((iv) => String(iv.name || '').toLowerCase() === lower);
+                  }
+                }
+
+                const merged = inv ? { ...(item.itemDetails || {}), ...inv } : (item.itemDetails || {});
+                if (inv) merged.category = inv.category || inv.assetCategory || merged.category || 'Other';
+
+                return { ...item, itemDetails: merged };
+              }),
+            }));
+
+            setStatpacks(enriched);
+            setLoading(false);
+          } catch (err) {
+            console.error('Failed to load statpacks:', err);
+            setLoading(false);
+          }
+        })();
       },
       (err) => {
         console.error('Failed to load statpacks:', err);
@@ -323,21 +501,27 @@ export default function StatpacksListPage() {
     }
   };
 
-  const handleAssetAttached = (assetId: string, serial?: string, displayName?: string) => {
+  const handleAssetAttached = async (assetId: string, serial?: string, displayName?: string) => {
     const nameFromAttach = attachingItemName || displayName || (serial ? `Asset ${serial}` : undefined);
 
+    // Fetch full inventory item details to enrich itemDetails with category, asset properties, etc.
+    const enriched = await fetchAndEnrichItemDetails(assetId);
+    const fullItemDetails = enriched?.itemDetails || { name: nameFromAttach };
+    const suggestedRules = enriched?.suggestedVerificationRules;
+
     if (attachingItemIndex !== null) {
-      // Update the existing item with the asset instance ID, serial, and preserve/merge itemDetails name
+      // Update the existing item with the asset instance ID, serial, and full enriched itemDetails
       updateEditingContent(attachingItemIndex, {
         assetInstanceId: assetId,
         serialNumber: serial,
-        itemDetails: { name: nameFromAttach },
+        itemDetails: fullItemDetails as any,
+        verificationRules: suggestedRules, // Auto-populate verification rules based on asset type
       });
     } else {
       // No existing item targeted: create a new content item with this asset assigned
       const newItem: Statpack['contents'][0] = {
-        itemId: `asset-${assetId}-${Date.now()}`,
-        itemDetails: { name: nameFromAttach || `Asset ${assetId.slice(0, 8)}`, createdAt: new Date(), updatedAt: new Date() } as any,
+        itemId: assetId, // Use asset ID as itemId for linking
+        itemDetails: fullItemDetails as any,
         requiredQuantity: 1,
         currentQuantity: 1,
         pocket: attachPocket as unknown as StatpackPocket,
@@ -345,7 +529,8 @@ export default function StatpacksListPage() {
         batchId: '',
         assetInstanceId: assetId,
         serialNumber: serial,
-        itemValue: 0,
+        itemValue: enriched?.itemDetails?.assetValue || 0,
+        verificationRules: suggestedRules, // Auto-populate verification rules
       };
 
       setEditingPack(prev => {
@@ -446,6 +631,32 @@ export default function StatpacksListPage() {
                         )}
                         <Button isIconOnly size="sm" variant="light" onPress={() => openScanner(p)}>
                           <MapPin size={14} />
+                        </Button>
+                        <Button
+                          isIconOnly
+                          size="sm"
+                          variant="light"
+                          onPress={async () => {
+                            try {
+                              const base = getHostedOrigin();
+                              const link = `${base}/statpacks/checkout?pack=${encodeURIComponent(p.id || '')}`;
+                              setQrLink(link);
+                              setQrPackName(p.name || '');
+                              // generate small preview
+                              const preview = await generateQrWithLogo(link, 520);
+                              setQrDataUrl(preview);
+                              // generate high-res for print/download
+                              const printUrl = await generateQrWithLogo(link, 1800);
+                              setQrPrintDataUrl(printUrl);
+                              qrDisclosure.onOpen();
+                            } catch (err) {
+                              console.error('Failed to generate QR', err);
+                              alert('Failed to generate QR code');
+                            }
+                          }}
+                          title="Generate checkout QR"
+                        >
+                          <QrCode size={14} />
                         </Button>
                       </div>
                     </TableCell>
@@ -616,6 +827,121 @@ export default function StatpacksListPage() {
         userName={user?.displayName || 'Unknown'}
         onAuditComplete={() => auditModalDisclosure.onClose()}
       />
+      {/* QR Code Modal for Checkout Link */}
+      <Modal isOpen={qrDisclosure.isOpen} onOpenChange={qrDisclosure.onOpenChange} size="sm">
+        <ModalContent>
+          <ModalHeader>Statpack Checkout QR</ModalHeader>
+          <ModalBody className="flex flex-col items-center gap-4">
+            {qrDataUrl ? (
+              <div className="flex flex-col items-center">
+                <img src={qrDataUrl} alt="Statpack checkout QR" className="w-56 h-56" />
+                <p className="text-xs text-default-500 mt-2 text-center">Scan to open checkout flow for this statpack.</p>
+              </div>
+            ) : (
+              <p>Generating…</p>
+            )}
+            <div className="w-full">
+              <Input value={qrLink} onValueChange={setQrLink} readOnly />
+              <div className="flex items-center justify-between gap-2 mt-2">
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="light"
+                    onPress={async () => {
+                      try {
+                        await navigator.clipboard.writeText(qrLink || '');
+                        alert('Link copied to clipboard');
+                      } catch (e) {
+                        console.error('Failed to copy', e);
+                        alert('Failed to copy link');
+                      }
+                    }}
+                  >
+                    <Clipboard size={14} />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="light"
+                    onPress={() => {
+                      if (!qrPrintDataUrl) return alert('Print image not available');
+                      // download high-res PNG
+                      const a = document.createElement('a');
+                      a.href = qrPrintDataUrl;
+                      a.download = `${(selectedPack?.name || 'statpack').replace(/\s+/g, '_')}_qr.png`;
+                      document.body.appendChild(a);
+                      a.click();
+                      a.remove();
+                    }}
+                  >
+                    Download PNG
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="light"
+                    onPress={() => {
+                      if (!qrPrintDataUrl) return alert('Print image not available');
+                      // open printable window with front/back layout sized for business card (2in x 3.5in portrait)
+                      const w = window.open('', '_blank');
+                      if (!w) return alert('Pop-up blocked');
+                      const name = (qrPackName || selectedPack?.name || '');
+                      const logoSrc = '/images/NoBackground_NewLogoBlack.PNG';
+                      const safeName = String(name).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+                      const html = `
+                        <html>
+                          <head>
+                            <title>Print QR - ${name}</title>
+                            <meta name="viewport" content="width=device-width,initial-scale=1" />
+                            <style>
+                              /* Use portrait 2in width x 3.5in height */
+                              @page { size: 2in 3.5in; margin: 0.125in; }
+                              html,body{height:100%;margin:0;padding:0}
+                              .sheet{width:2in;height:3.5in;display:flex;align-items:center;justify-content:center;font-family:-apple-system,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;box-sizing:border-box;padding:0.125in}
+                              .front, .back{width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center}
+                              .qr{width:1.4in;height:1.4in;object-fit:contain}
+                              .name{font-size:16px;font-weight:600;margin-top:8px;text-align:center}
+                              .logo{max-width:1.2in;max-height:0.9in;object-fit:contain;margin-top:8px}
+                              .back .logoLarge{max-width:1.6in;max-height:1.2in}
+                              .back .desc{font-size:12px;margin-top:8px;text-align:center}
+                              .name{font-size:18px;font-weight:700;margin-top:10px;text-align:center}
+                              /* ensure no overflow when printing */
+                              img{display:block}
+                            </style>
+                          </head>
+                          <body>
+                            <!-- Front: QR only -->
+                            <div class="sheet front">
+                              <img src="${qrPrintDataUrl}" class="qr" alt="QR" />
+                            </div>
+                            <div style="page-break-before:always"></div>
+                            <!-- Back: Name + Logo -->
+                            <div class="sheet back">
+                              <img src="${logoSrc}" class="logo logoLarge" alt="Logo" />
+                              <div class="name">${safeName}</div>
+                            </div>
+                            <script>
+                              // trigger print after small delay
+                              setTimeout(()=>{ window.print(); }, 400);
+                              function escapeHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+                            </script>
+                          </body>
+                        </html>
+                      `;
+                      w.document.open();
+                      w.document.write(html);
+                      w.document.close();
+                    }}
+                  >
+                    Printable
+                  </Button>
+                </div>
+                <div>
+                  <Button size="sm" color="primary" onPress={() => qrDisclosure.onClose()}>Close</Button>
+                </div>
+              </div>
+            </div>
+          </ModalBody>
+        </ModalContent>
+      </Modal>
     </div>
   );
 }

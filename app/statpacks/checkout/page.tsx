@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import React, { useEffect, useState, useCallback } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Card,
   CardBody,
@@ -21,14 +21,39 @@ import {
 } from '@heroui/react';
 import { Package, ScanLine, Search, LogOut, ArrowLeft } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
-import { collection, onSnapshot, query, where, orderBy, Timestamp, updateDoc, doc, serverTimestamp } from 'firebase/firestore';
+import { collection, onSnapshot, query, where, orderBy, Timestamp, updateDoc, doc, serverTimestamp, getDocs, documentId, getDoc } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
-import type { Statpack } from '@/app/types';
+import type { InventoryItem, Statpack, StatpackItem } from '@/app/types';
 import StatpackCheckOffModal from '@/app/components/statpack-checkoff-modal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 
+const chunkArray = <T,>(items: T[], size: number) => {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+};
+
+const fetchInventoryMap = async (itemIds: string[]) => {
+  const map = new Map<string, InventoryItem>();
+  const uniqueIds = Array.from(new Set(itemIds)).filter(Boolean);
+  if (uniqueIds.length === 0) return map;
+
+  const chunks = chunkArray(uniqueIds, 10);
+  for (const chunk of chunks) {
+    const q = query(collection(db, 'inventory'), where(documentId(), 'in', chunk));
+    const snap = await getDocs(q);
+    snap.forEach((docSnap) => {
+      map.set(docSnap.id, { id: docSnap.id, ...docSnap.data() } as InventoryItem);
+    });
+  }
+  return map;
+};
+
 export default function CheckoutPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [statpacks, setStatpacks] = useState<Statpack[]>([]);
   const [filteredPacks, setFilteredPacks] = useState<Statpack[]>([]);
@@ -41,6 +66,7 @@ export default function CheckoutPage() {
   const pocketDisclosure = useDisclosure();
   const [selectedPocketId, setSelectedPocketId] = useState<string | null>(null);
   const [completedPockets, setCompletedPockets] = useState<string[]>([]);
+  const autoOpenedPackId = React.useRef<string | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => setUser(u));
@@ -61,27 +87,80 @@ export default function CheckoutPage() {
     const unsub = onSnapshot(
       q,
       (snap) => {
-        const packs: Statpack[] = snap.docs.map((d) => {
-          const data = d.data();
-          return {
-            id: d.id,
-            ...data,
-            lastCheckedAt: data.lastCheckedAt instanceof Timestamp 
-              ? data.lastCheckedAt.toDate() 
-              : undefined,
-            contents: Array.isArray(data.contents)
-              ? data.contents.map((item: any) => ({
+        (async () => {
+          try {
+            const packs: Statpack[] = snap.docs.map((d) => {
+              const data = d.data();
+              return {
+                id: d.id,
+                ...data,
+                lastCheckedAt: data.lastCheckedAt instanceof Timestamp
+                  ? data.lastCheckedAt.toDate()
+                  : undefined,
+                contents: Array.isArray(data.contents)
+                  ? data.contents.map((item: StatpackItem & { expirationDate?: Timestamp | Date }) => ({
+                      ...item,
+                      expirationDate: item.expirationDate instanceof Timestamp
+                        ? item.expirationDate.toDate()
+                        : item.expirationDate,
+                    }))
+                  : [],
+              } as Statpack;
+            });
+
+            const itemIds = packs
+              .flatMap((p) => (p.contents || []).flatMap((i) => [i.itemId, i.assetInstanceId]))
+              .filter((id): id is string => Boolean(id));
+            const inventoryMap = await fetchInventoryMap(itemIds);
+
+            const enriched = packs.map((p) => ({
+              ...p,
+              contents: (p.contents || []).map((item) => {
+                const lookupId = item.assetInstanceId || item.itemId;
+                let inv = lookupId ? inventoryMap.get(lookupId) : undefined;
+
+                // Fallbacks when direct id lookup fails:
+                // - match by serialNumber against inventory.assetSerial
+                // - match by serialNumber against inventory.assets[].serial
+                // - match by assetInstanceId against any asset instance id
+                // - finally, match by inventory name
+                if (!inv) {
+                  const serial = item.serialNumber || item.assetInstanceId || undefined;
+                  if (serial) {
+                    inv = Array.from(inventoryMap.values()).find((iv) => {
+                      if (!iv) return false;
+                      if ((iv as any).assetSerial && String((iv as any).assetSerial) === String(serial)) return true;
+                      const instances = (iv.assets || []) as any[];
+                      if (instances.some((a) => a.serial === serial || a.id === serial || a.assetTag === serial)) return true;
+                      return false;
+                    });
+                  }
+                }
+
+                if (!inv) {
+                  // Match by name as a last resort (case-insensitive)
+                  const name = item.itemDetails?.name;
+                  if (name) {
+                    const lower = String(name).toLowerCase();
+                    inv = Array.from(inventoryMap.values()).find((iv) => String(iv.name || '').toLowerCase() === lower);
+                  }
+                }
+
+                return {
                   ...item,
-                  expirationDate: item.expirationDate instanceof Timestamp
-                    ? item.expirationDate.toDate()
-                    : undefined,
-                }))
-              : [],
-          } as Statpack;
-        });
-        setStatpacks(packs);
-        setFilteredPacks(packs);
-        setLoading(false);
+                  itemDetails: inv ? { ...(item.itemDetails || {}), ...inv } : item.itemDetails,
+                };
+              }),
+            }));
+
+            setStatpacks(enriched);
+            setFilteredPacks(enriched);
+          } catch (err) {
+            console.error('Failed to load statpacks:', err);
+          } finally {
+            setLoading(false);
+          }
+        })();
       },
       (err) => {
         console.error('Failed to load statpacks:', err);
@@ -106,12 +185,86 @@ export default function CheckoutPage() {
     setFilteredPacks(filtered);
   }, [searchQuery, statpacks]);
 
-  const handleSelectPack = (pack: Statpack) => {
+  const handleSelectPack = useCallback((pack: Statpack) => {
     setSelectedPack(pack);
     setSelectedPocketId(null);
     setCompletedPockets([]);
     pocketDisclosure.onOpen();
-  };
+  }, [pocketDisclosure]);
+
+  // Open a specific pack if a `pack` query param is present (e.g., from QR)
+  useEffect(() => {
+    if (!searchParams) return;
+    
+    const raw = searchParams.get('pack') || searchParams.get('packId') || searchParams.get('id');
+    if (!raw) return;
+    
+    // Skip if we already auto-opened this exact pack
+    if (autoOpenedPackId.current === raw) return;
+    
+    // If user is not signed in, redirect to login and preserve the requested URL
+    if (!user) {
+      const redirect = window.location.href;
+      router.push(`/login?next=${encodeURIComponent(redirect)}`);
+      return;
+    }
+
+    // Try direct fetch by id first to avoid waiting for the full statpacks list
+    (async () => {
+      try {
+        const docRef = doc(db, 'statpacks', raw);
+        const snap = await getDoc(docRef);
+        if (snap.exists()) {
+          const data = snap.data();
+          // sanitize pack shape to avoid passing unexpected objects into React
+          const contents = Array.isArray(data.contents)
+            ? data.contents.map((item: any) => ({
+                itemId: String(item.itemId || item.id || ''),
+                itemDetails: item.itemDetails || {},
+                requiredQuantity: Number(item.requiredQuantity || 0),
+                currentQuantity: Number(item.currentQuantity || 0),
+                pocket: item.pocket || 'main',
+                compartmentId: item.compartmentId || undefined,
+                assetInstanceId: item.assetInstanceId || undefined,
+                serialNumber: item.serialNumber || undefined,
+                expirationDate: item.expirationDate instanceof Timestamp ? item.expirationDate.toDate() : (item.expirationDate instanceof Date ? item.expirationDate : undefined),
+              }))
+            : [];
+
+          const pack: Statpack = {
+            id: snap.id,
+            name: String(data.name || ''),
+            type: String(data.type || ''),
+            status: String(data.status || 'Ready'),
+            currentLocation: data.currentLocation || undefined,
+            assetValue: typeof data.assetValue === 'number' ? data.assetValue : undefined,
+            lastCheckedAt: data.lastCheckedAt instanceof Timestamp ? data.lastCheckedAt.toDate() : undefined,
+            compartments: Array.isArray(data.compartments) ? data.compartments : [],
+            contents,
+          } as Statpack;
+
+          autoOpenedPackId.current = raw;
+          setTimeout(() => {
+            handleSelectPack(pack);
+          }, 100);
+          return;
+        }
+      } catch (e) {
+        console.warn('Direct statpack fetch failed, falling back to list match', e);
+      }
+
+      // Fallback: match against loaded statpacks by id or name
+      const key = String(raw).toLowerCase();
+      const foundPack = statpacks.find(p =>
+        (p.id && p.id.toLowerCase() === key) ||
+        (p.name && p.name.toLowerCase() === key)
+      );
+      if (foundPack) {
+        autoOpenedPackId.current = raw;
+        setTimeout(() => handleSelectPack(foundPack), 100);
+      }
+    })();
+  }, [statpacks, searchParams, handleSelectPack, user, router]);
 
   const handleScanDetected = (value: string) => {
     // Try to match scanned value to a statpack ID or name
@@ -202,7 +355,7 @@ export default function CheckoutPage() {
           const isDone = completedPockets.includes(p.id);
 
           return (
-            <Card
+                <Card
               key={p.id}
               isPressable={!isDone}
               onPress={() => {
@@ -211,7 +364,7 @@ export default function CheckoutPage() {
                 pocketDisclosure.onClose();
                 checkoffDisclosure.onOpen();
               }}
-                className={`w-full transition-shadow ${isDone ? 'border-2 border-green-400 bg-green-50 opacity-90' : 'hover:shadow-md'}`}
+                className={`w-full transition-shadow ${isDone ? 'border-2 ring-1 ring-primary/10 bg-default-100 opacity-95' : 'hover:shadow-md'}`}
             >
               <CardBody className="flex flex-col items-center text-center gap-3 py-6">
                 <div className="space-y-1">

@@ -183,6 +183,7 @@ export interface InventoryItem {
   // Tracking
   tracksExpiration: boolean; 
   expirationDate?: Date;
+  expirationPrecision?: 'day' | 'month'; // Precision for expiration date tracking (day = full date, month = month/year only)
   // Audit flag: whether this item must be included in semesterly audit counts
   
   

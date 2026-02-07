@@ -99,14 +99,23 @@ function SortableStatpackItem({ item, index, onUpdate, onRemove, onAttachAsset, 
               </Chip>
             )}
           </div>
-          {hasAsset && (
-            <div className="flex items-center gap-2 text-xs text-success-700">
-              <Link2 size={12} />
-              <span>
-                Asset linked: {item.itemDetails?.name || item.serialNumber || (item.assetInstanceId ? `${item.assetInstanceId.slice(0,8)}` : '—')}
-              </span>
-            </div>
-          )}
+          
+          {/* Category and Asset Info */}
+          <div className="flex items-center gap-3 text-xs text-default-500">
+            {item.itemDetails?.category && (
+              <Chip size="sm" variant="flat" color="secondary">
+                {item.itemDetails.category}
+              </Chip>
+            )}
+            {hasAsset && (
+              <div className="flex items-center gap-1 text-success-700">
+                <Link2 size={12} />
+                <span>
+                  {item.serialNumber || (item.assetInstanceId ? `Asset ${item.assetInstanceId.slice(0,8)}` : 'Linked')}
+                </span>
+              </div>
+            )}
+          </div>
           
           {/* Verification Rules Accordion */}
           <Accordion variant="light" className="px-0">

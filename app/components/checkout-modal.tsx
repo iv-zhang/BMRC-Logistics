@@ -30,6 +30,7 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
   const [showScanner, setShowScanner] = useState(false);
   const [scannedCode, setScannedCode] = useState<string | null>(null);
   const [scannedExpiration, setScannedExpiration] = useState<Date | null>(null);
+  const [confirmedExpiration, setConfirmedExpiration] = useState<Date | null>(null);
   const [manualO2Psi, setManualO2Psi] = useState<string>('');
   const [verificationWarnings, setVerificationWarnings] = useState<ValidationWarning[]>([]);
 
@@ -70,6 +71,7 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
       setSuccess(false);
       setScannedCode(null);
       setScannedExpiration(null);
+      setConfirmedExpiration(null);
       setManualO2Psi('');
       setVerificationWarnings([]);
     }
@@ -102,6 +104,7 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
     if (gs1Data.expiration) {
       try {
         setScannedExpiration(new Date(gs1Data.expiration));
+        setConfirmedExpiration(new Date(gs1Data.expiration));
       } catch (e) {
         console.warn('Failed to parse GS1 expiration', e);
       }
@@ -185,6 +188,14 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
       return;
     }
     
+    // If expiration confirmation is required, ensure user provided/confirmed a date
+    const rulesSource = statpackItem?.verificationRules ? statpackItem : (asset ? ({ itemId: asset.id, itemDetails: asset, verificationRules: asset.verificationPolicy } as any) : null);
+    const requireExpiration = !!(rulesSource?.verificationRules?.requireExpirationConfirmation || rulesSource?.verificationRules?.requireExpirationConfirmation === true);
+    if (requireExpiration && !confirmedExpiration && !scannedExpiration) {
+      setError('Please confirm the item expiration date before continuing.');
+      return;
+    }
+
     setLoading(true);
     setError(null);
     
@@ -196,6 +207,7 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
           location: location || undefined,
           note: note || undefined,
           serial: selectedSerial || undefined,
+          expirationDate: confirmedExpiration ?? scannedExpiration ?? undefined,
         });
       } else {
         await checkinAsset({
@@ -232,9 +244,9 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
         <ModalHeader>{cardTitle}</ModalHeader>
         <ModalBody className="space-y-4">
           {success ? (
-            <Card className="bg-green-50">
+            <Card className="bg-default-100">
               <CardBody className="text-center py-6">
-                <p className="text-green-700 font-semibold">
+                <p className="text-default-700 font-semibold">
                   {mode === 'checkout' ? 'Asset checked out successfully!' : 'Asset checked in successfully!'}
                 </p>
               </CardBody>
@@ -267,7 +279,6 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
                       selectedKeys={selectedSerial ? [selectedSerial] : []}
                       onChange={(e) => setSelectedSerial(e.target.value)}
                       placeholder="Select serial/tag"
-                      description="Required for serialized assets"
                     >
                       {instances.map((instance) => (
                         <SelectItem key={instance.serial}>
@@ -279,7 +290,6 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
                       <Button
                         isIconOnly
                         variant="flat"
-                        color="primary"
                         onPress={() => setShowScanner(true)}
                         title="Scan asset tag"
                       >
@@ -300,7 +310,6 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
                         <Button
                           size="sm"
                           variant="flat"
-                          color="primary"
                           startContent={<ScanLine size={14} />}
                           onPress={() => setShowScanner(true)}
                         >
@@ -317,13 +326,25 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
                             <span className="text-blue-900">Scanned: {scannedCode}</span>
                           </div>
                           {scannedExpiration && (
-                            <p className="text-xs text-blue-700 ml-5">
-                              Exp: {scannedExpiration.toLocaleDateString('en-US', { month: '2-digit', year: 'numeric' })}
-                            </p>
+                            <div className="ml-5 space-y-1">
+                              <p className="text-xs text-blue-700">Exp: {scannedExpiration.toLocaleDateString('en-US', { month: '2-digit', year: 'numeric' })}</p>
+                            </div>
                           )}
                         </CardBody>
                       </Card>
                     )}
+                          {/* If admin requires expiration confirmation, allow user to confirm or edit the date here */}
+                          {hasVerificationRules && (statpackItem?.verificationRules?.requireExpirationConfirmation || asset?.verificationPolicy?.requireExpirationConfirmation) && (
+                            <div className="mt-2">
+                              <label className="text-xs font-medium block mb-1">Confirm Expiration</label>
+                              <Input
+                                size="sm"
+                                type="date"
+                                value={confirmedExpiration ? confirmedExpiration.toISOString().slice(0,10) : (scannedExpiration ? scannedExpiration.toISOString().slice(0,10) : '')}
+                                onValueChange={(v) => setConfirmedExpiration(v ? new Date(v) : null)}
+                              />
+                            </div>
+                          )}
                     
                     {statpackItem?.verificationRules?.requireO2PsiMin !== undefined && statpackItem.verificationRules.requireO2PsiMin > 0 && (
                       <div>
@@ -419,7 +440,6 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
           </Button>
           {!success && (
             <Button
-              color="primary"
               isLoading={loading}
               onPress={handleConfirm}
               disabled={loading || !user}

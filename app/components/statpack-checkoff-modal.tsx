@@ -312,7 +312,7 @@ export default function StatpackCheckOffModal({
     <Modal isOpen={isOpen} onOpenChange={onOpenChange} backdrop="blur" size="2xl" placement="center">
       <ModalContent>
         <ModalHeader className="flex flex-col gap-1">
-          {action === 'checkout' && '📦 Checkout: Digital Check-Off'}
+          {action === 'checkout' && 'Checkout: Digital Check-Off'}
           {action === 'checkin' && '✓ Check-In: Bag Verification'}
           {action === 'maintenance' && '🔧 Maintenance: Inventory Audit'}
         </ModalHeader>
@@ -354,20 +354,7 @@ export default function StatpackCheckOffModal({
             )}
           
           {/* Info banner about disposables vs assets */}
-          <Card className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800">
-            <CardBody className="p-3">
-              <p className="text-xs text-blue-800 dark:text-blue-200">
-                <strong>Note:</strong> This check-off creates an audit log only. Disposables are tracked as unopened boxes in the back room. 
-                When a member removes items from a sealed box to restock their pack, a quartermaster should use <strong>&ldquo;Consume Box&rdquo;</strong> in Master Inventory 
-                to mark the box as opened and track units in an open batch.
-                {isAdmin && (
-                  <span className="block mt-1 italic">
-                    Admins: Use the &ldquo;Consume Box&rdquo; button in Inventory → Back Room items when restocking forward.
-                  </span>
-                )}
-              </p>
-            </CardBody>
-          </Card>
+          {/* Info banner removed per request: keep modal focused for checkout flow */}
 
           <Card className="bg-default-100">
             <CardBody className="gap-2">
@@ -422,15 +409,19 @@ export default function StatpackCheckOffModal({
               const isChecked = checkedItems.has(itemId);
               const counted = checkCounts[itemId] ?? (checkinUsageMode ? 1 : item.requiredQuantity);
               const ok = counted >= item.requiredQuantity;
-              const hasRules = item.verificationRules && Object.keys(item.verificationRules).length > 0;
-              const verification = itemVerifications[itemId];
+              const rulesForItem = item.verificationRules || item.itemDetails?.verificationPolicy;
+              const hasRules = rulesForItem && Object.keys(rulesForItem).length > 0;
+              
+              // Type the verification explicitly to avoid TypeScript 'never' inference
+              type ItemVerification = { scannedCode?: string; scannedExpiration?: Date; o2Psi?: number; warnings: ValidationWarning[] };
+              const verification: ItemVerification | undefined = itemVerifications[itemId];
 
               return (
                 <Card
                   key={itemId}
                   isPressable
                   onPress={() => handleItemChecked(itemId)}
-                  className={`${ok ? 'bg-success-50' : 'bg-warning-100'} transition-colors`}
+                  className={`transition-colors bg-default-100 ${ok ? 'ring-1 ring-primary/10' : ''}`}
                 >
                   <CardBody className="gap-3 py-4">
                     <div className="flex gap-3 items-start">
@@ -450,7 +441,7 @@ export default function StatpackCheckOffModal({
                           )}
                         </div>
                         <p className="text-xs text-default-500">
-                          {checkinUsageMode ? 'Mark if you used and replaced this item' : `Required: ${item.requiredQuantity}x | Category: ${item.itemDetails?.category || 'N/A'}`}
+                          {checkinUsageMode ? 'Mark if you used and replaced this item' : `Required: ${item.requiredQuantity}x | Category: ${item.itemDetails?.category || 'Other'}`}
                         </p>
                         <div className="flex flex-wrap items-center gap-2 text-xs text-default-500">
                           {item.pocket && <span className="bg-default-200/60 dark:bg-default-700/60 px-2 py-0.5 rounded">Pocket: {item.pocket.replace('_', ' ')}</span>}
@@ -466,15 +457,70 @@ export default function StatpackCheckOffModal({
                         {hasRules && (
                           <div className="mt-2 space-y-2" onClick={(e) => e.stopPropagation()}>
                             {!verification ? (
-                              <Button
-                                size="sm"
-                                variant="flat"
-                                color="primary"
-                                startContent={<ScanLine size={14} />}
-                                onPress={() => setScanningItemId(itemId)}
-                              >
-                                Verify Asset
-                              </Button>
+                              <div className="flex gap-2">
+                                <div
+                                  role="button"
+                                  tabIndex={0}
+                                  onClick={(e) => { e.stopPropagation(); setScanningItemId(itemId); }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      setScanningItemId(itemId);
+                                    }
+                                  }}
+                                  className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-1 rounded text-sm font-medium text-primary bg-transparent hover:bg-primary/10 focus:outline-none"
+                                >
+                                  <span className="inline-flex items-center"><ScanLine size={14} /></span>
+                                  <span>Verify Asset</span>
+                                </div>
+                                {/* Allow manual expiration confirmation when required by rules */}
+                                {(item.verificationRules?.requireExpirationConfirmation || item.itemDetails?.verificationPolicy?.requireExpirationConfirmation) && (() => {
+                                  const currentVerif = itemVerifications[itemId];
+                                  return (
+                                    <Input
+                                      size="sm"
+                                      type="date"
+                                      placeholder="Confirm Expiration"
+                                      value={currentVerif?.scannedExpiration?.toISOString().slice(0,10) || ''}
+                                      onClick={(e) => e.stopPropagation()}
+                                      onValueChange={async (v) => {
+                                      const parsed = v ? new Date(v) : undefined;
+                                      setItemVerifications(prev => ({
+                                        ...prev,
+                                        [itemId]: {
+                                          ...(prev[itemId] || { warnings: [] }),
+                                          scannedExpiration: parsed,
+                                          scannedCode: prev[itemId]?.scannedCode,
+                                          o2Psi: prev[itemId]?.o2Psi,
+                                        }
+                                      }));
+
+                                      // Re-run verification with updated expiration
+                                      const statpackItem = statpack?.contents.find(i => i.itemId === itemId);
+                                      if (!statpackItem) return;
+                                      const currentVerif = itemVerifications[itemId];
+                                      const warnings = await verifyAssetAgainstRules({
+                                        statpackItem,
+                                        scannedCode: currentVerif?.scannedCode,
+                                        scannedExpiration: parsed,
+                                        scannedO2Psi: currentVerif?.o2Psi,
+                                      });
+                                      setItemVerifications(prev => ({
+                                        ...prev,
+                                        [itemId]: {
+                                          ...(prev[itemId] || { warnings: [] }),
+                                          scannedExpiration: parsed,
+                                          scannedCode: prev[itemId]?.scannedCode,
+                                          o2Psi: prev[itemId]?.o2Psi,
+                                          warnings,
+                                        }
+                                      }));
+                                    }}
+                                    />
+                                  );
+                                })()}
+                              </div>
                             ) : (
                               <div className="space-y-1">
                                 <Card className="bg-blue-50">
@@ -485,7 +531,7 @@ export default function StatpackCheckOffModal({
                                     </div>
                                     {verification.scannedExpiration && (
                                       <p className="text-xs text-blue-700 ml-4">
-                                        Exp: {verification.scannedExpiration.toLocaleDateString('en-US', { month: '2-digit', year: 'numeric' })}
+                                        Exp: {verification.scannedExpiration.toLocaleDateString('en-US', { month: '2-digit', year: '2-digit' })}
                                       </p>
                                     )}
                                   </CardBody>
