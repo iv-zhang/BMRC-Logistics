@@ -161,7 +161,7 @@ export default function MemberReportPage() {
             ? item.totalStockQuantity <= item.reorderThreshold
               ? 'critical'
               : 'attention'
-            : undefined;
+            : null;
       }
 
       // Normalize items array for admin UI
@@ -170,9 +170,9 @@ export default function MemberReportPage() {
         itemsArr.push({
           itemId: item.id,
           name: item.name,
-          observedQuantity: quantity ? Number(quantity) : undefined,
-          requiredQuantity: item.reorderThreshold ?? undefined,
-          note: notes || undefined,
+          observedQuantity: quantity ? Number(quantity) : null,
+          requiredQuantity: item.reorderThreshold ?? null,
+          note: notes || null,
         });
       }
 
