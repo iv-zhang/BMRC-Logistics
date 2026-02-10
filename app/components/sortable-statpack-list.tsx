@@ -19,12 +19,6 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
-  Table,
-  TableHeader,
-  TableColumn,
-  TableBody,
-  TableRow,
-  TableCell,
   Input,
   Select,
   SelectItem,
@@ -76,48 +70,45 @@ function SortableStatpackItem({ item, index, onUpdate, onRemove, onAttachAsset, 
   };
 
   return (
-    <TableRow style={style as React.CSSProperties}>
-      <TableCell>
-        <div ref={setNodeRef} className="flex items-center gap-2 cursor-move" {...attributes} {...listeners}>
-          <GripVertical size={16} className="text-gray-400" />
+    <div style={style as React.CSSProperties} className="flex items-start gap-3 p-2 border-b border-default-200">
+      <div ref={setNodeRef} className="flex items-center gap-2 cursor-move" {...attributes} {...listeners}>
+        <GripVertical size={16} className="text-gray-400" />
+      </div>
+
+      <div className="flex-1">
+        <div className="flex items-center gap-2">
+          <Input
+            value={item.itemDetails?.name ?? ''}
+            onValueChange={(v) =>
+              onUpdate(index, {
+                itemDetails: { ...(item.itemDetails || {} as any), name: v },
+              })
+            }
+          />
+          {hasRules && (
+            <Chip size="sm" color="primary" variant="flat" startContent={<ShieldCheck size={12} />}>
+              Rules
+            </Chip>
+          )}
         </div>
-      </TableCell>
-      <TableCell>
-        <div className="flex flex-col gap-1">
-          <div className="flex items-center gap-2">
-            <Input
-              value={item.itemDetails?.name ?? ''}
-              onValueChange={(v) =>
-                onUpdate(index, {
-                  itemDetails: { ...(item.itemDetails || {} as any), name: v },
-                })
-              }
-            />
-            {hasRules && (
-              <Chip size="sm" color="primary" variant="flat" startContent={<ShieldCheck size={12} />}>
-                Rules
-              </Chip>
-            )}
-          </div>
-          
-          {/* Category and Asset Info */}
-          <div className="flex items-center gap-3 text-xs text-default-500">
-            {item.itemDetails?.category && (
-              <Chip size="sm" variant="flat" color="secondary">
-                {item.itemDetails.category}
-              </Chip>
-            )}
-            {hasAsset && (
-              <div className="flex items-center gap-1 text-success-700">
-                <Link2 size={12} />
-                <span>
-                  {item.serialNumber || (item.assetInstanceId ? `Asset ${item.assetInstanceId.slice(0,8)}` : 'Linked')}
-                </span>
-              </div>
-            )}
-          </div>
-          
-          {/* Verification Rules Accordion */}
+
+        <div className="flex items-center gap-3 text-xs text-default-500 mt-2">
+          {item.itemDetails?.category && (
+            <Chip size="sm" variant="flat" color="secondary">
+              {item.itemDetails.category}
+            </Chip>
+          )}
+          {hasAsset && (
+            <div className="flex items-center gap-1 text-success-700">
+              <Link2 size={12} />
+              <span>
+                {item.serialNumber || (item.assetInstanceId ? `Asset ${item.assetInstanceId.slice(0,8)}` : 'Linked')}
+              </span>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-2">
           <Accordion variant="light" className="px-0">
             <AccordionItem
               key="rules"
@@ -141,7 +132,7 @@ function SortableStatpackItem({ item, index, onUpdate, onRemove, onAttachAsset, 
                 >
                   <span className="text-xs">Require Serial Scan</span>
                 </Switch>
-                
+
                 <Switch
                   size="sm"
                   isSelected={rules.requireExpirationConfirmation || false}
@@ -149,7 +140,7 @@ function SortableStatpackItem({ item, index, onUpdate, onRemove, onAttachAsset, 
                 >
                   <span className="text-xs">Require Expiration Check</span>
                 </Switch>
-                
+
                 <div className="flex items-center gap-2">
                   <span className="text-xs whitespace-nowrap">Min O₂ PSI:</span>
                   <Input
@@ -161,7 +152,7 @@ function SortableStatpackItem({ item, index, onUpdate, onRemove, onAttachAsset, 
                     placeholder="e.g., 1800"
                   />
                 </div>
-                
+
                 <Switch
                   size="sm"
                   isSelected={rules.advisoryOnly || false}
@@ -173,16 +164,16 @@ function SortableStatpackItem({ item, index, onUpdate, onRemove, onAttachAsset, 
             </AccordionItem>
           </Accordion>
         </div>
-      </TableCell>
-      <TableCell>
+      </div>
+
+      <div className="w-40 flex flex-col gap-2 items-end">
         <Input
           className="w-24"
           type="number"
           value={String(item.requiredQuantity ?? 0)}
           onValueChange={(v) => onUpdate(index, { requiredQuantity: Number(v) || 0 })}
         />
-      </TableCell>
-      <TableCell>
+
         <Select
           className="min-w-[120px]"
           selectedKeys={[String(item.pocket || 'main')]}
@@ -193,9 +184,8 @@ function SortableStatpackItem({ item, index, onUpdate, onRemove, onAttachAsset, 
           <SelectItem key="side_left">Left</SelectItem>
           <SelectItem key="side_right">Right</SelectItem>
         </Select>
-      </TableCell>
-      <TableCell>
-          <div className="flex gap-2">
+
+        <div className="flex gap-2 mt-2">
           {onAttachAsset && (
             <Button
               isIconOnly
@@ -230,8 +220,8 @@ function SortableStatpackItem({ item, index, onUpdate, onRemove, onAttachAsset, 
             <X size={14} />
           </Button>
         </div>
-      </TableCell>
-    </TableRow>
+      </div>
+    </div>
   );
 }
 

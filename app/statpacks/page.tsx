@@ -5,13 +5,6 @@ import {
   Card,
   CardBody,
   Button,
-  Table,
-  TableHeader,
-  TableColumn,
-  TableBody,
-  TableRow,
-  TableCell,
-  Chip,
   Spinner,
   useDisclosure,
   Modal,
@@ -23,7 +16,7 @@ import {
   Select,
   SelectItem,
 } from '@heroui/react';
-import { Package, MapPin, Eye, Wrench, Copy, Link2, QrCode, Clipboard } from 'lucide-react';
+import { Package, Clipboard } from 'lucide-react';
 import QRCode from 'qrcode';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { collection, onSnapshot, query, orderBy, updateDoc, doc, serverTimestamp, getDoc, getDocs, where, documentId } from 'firebase/firestore';
@@ -36,6 +29,7 @@ import AdminAuditModal from '@/app/components/admin-audit-modal';
 import SortableStatpackContentList from '@/app/components/sortable-statpack-list';
 import AssetAttachModal from '@/app/components/asset-attach-modal';
 import AssetModal from '@/app/components/assetmodal';
+import StatpackWidget from '@/app/components/statpack-widget';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { duplicateStatpack } from '@/app/lib/statpacks';
 import { fetchAndEnrichItemDetails } from '@/app/lib/inventory';
@@ -441,6 +435,11 @@ export default function StatpacksListPage() {
     setCheckoffAction('checkin');
     checkoffDisclosure.onOpen();
   };
+  const openCheckout = (pack: Statpack) => {
+    setSelectedPack(pack);
+    setCheckoffAction('checkout');
+    checkoffDisclosure.onOpen();
+  };
   const openMaintenance = (pack: Statpack) => {
     setSelectedPack(pack);
     setCheckoffAction('maintenance');
@@ -476,6 +475,30 @@ export default function StatpacksListPage() {
       alert('Failed to duplicate statpack. Please try again.');
     } finally {
       setDuplicating(null);
+    }
+  };
+
+  const handleOpenEditor = (pack: Statpack) => {
+    setSelectedPack(pack);
+    setEditingPack(null);
+    editorDisclosure.onOpen();
+  };
+
+  const handleGenerateQr = async (pack: Statpack) => {
+    try {
+      setSelectedPack(pack);
+      const base = getHostedOrigin();
+      const link = `${base}/statpacks/checkout?pack=${encodeURIComponent(pack.id || '')}`;
+      setQrLink(link);
+      setQrPackName(pack.name || '');
+      const preview = await generateQrWithLogo(link, 520);
+      setQrDataUrl(preview);
+      const printUrl = await generateQrWithLogo(link, 1800);
+      setQrPrintDataUrl(printUrl);
+      qrDisclosure.onOpen();
+    } catch (err) {
+      console.error('Failed to generate QR', err);
+      alert('Failed to generate QR code');
     }
   };
 
@@ -581,91 +604,28 @@ export default function StatpacksListPage() {
           </div>
         </div>
 
-        <Card>
-          <CardBody>
-            <Table aria-label="Statpacks table">
-              <TableHeader>
-                <TableColumn>Name</TableColumn>
-                <TableColumn>Status</TableColumn>
-                <TableColumn>Location</TableColumn>
-                <TableColumn>Value</TableColumn>
-                <TableColumn>Actions</TableColumn>
-              </TableHeader>
-              <TableBody emptyContent="No statpacks">
-                {statpacks.map((p) => (
-                  <TableRow key={p.id}>
-                    <TableCell className="font-medium">{p.name}</TableCell>
-                    <TableCell>
-                      <Chip size="sm" variant="flat">{p.status}</Chip>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <MapPin size={14} className="text-gray-400" />
-                        <span>{p.currentLocation || '—'}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell>{p.assetValue ? `$${p.assetValue.toFixed(2)}` : '—'}</TableCell>
-                    <TableCell>
-                      <div className="flex gap-2">
-                        <Button size="sm" variant="light" onPress={() => { setSelectedPack(p); editorDisclosure.onOpen(); }}>
-                          <Eye size={14} />
-                        </Button>
-                        <Button size="sm" onPress={() => openCheckin(p)}>Check-In</Button>
-                        <Button size="sm" variant="light" onPress={() => openMaintenance(p)}>Maintenance</Button>
-                        {userRole === 'admin' && (
-                          <>
-                            <Button isIconOnly size="sm" variant="light" onPress={() => { setAuditTarget(p); auditModalDisclosure.onOpen(); }} title="Manual Audit">
-                              <Wrench size={14} />
-                            </Button>
-                            <Button 
-                              isIconOnly 
-                              size="sm" 
-                              variant="light" 
-                              onPress={() => handleDuplicate(p)} 
-                              title="Duplicate Statpack"
-                              isLoading={duplicating === p.id}
-                            >
-                              <Copy size={14} />
-                            </Button>
-                          </>
-                        )}
-                        <Button isIconOnly size="sm" variant="light" onPress={() => openScanner(p)}>
-                          <MapPin size={14} />
-                        </Button>
-                        <Button
-                          isIconOnly
-                          size="sm"
-                          variant="light"
-                          onPress={async () => {
-                            try {
-                              const base = getHostedOrigin();
-                              const link = `${base}/statpacks/checkout?pack=${encodeURIComponent(p.id || '')}`;
-                              setQrLink(link);
-                              setQrPackName(p.name || '');
-                              // generate small preview
-                              const preview = await generateQrWithLogo(link, 520);
-                              setQrDataUrl(preview);
-                              // generate high-res for print/download
-                              const printUrl = await generateQrWithLogo(link, 1800);
-                              setQrPrintDataUrl(printUrl);
-                              qrDisclosure.onOpen();
-                            } catch (err) {
-                              console.error('Failed to generate QR', err);
-                              alert('Failed to generate QR code');
-                            }
-                          }}
-                          title="Generate checkout QR"
-                        >
-                          <QrCode size={14} />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </CardBody>
-        </Card>
+        {statpacks.length === 0 ? (
+          <p className="text-sm text-default-500 text-center py-6">No statpacks</p>
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 items-start">
+            {statpacks.map((p) => (
+              <StatpackWidget
+                key={p.id}
+                statpack={p}
+                userRole={userRole}
+                isDuplicating={duplicating === p.id}
+                onOpenEditor={handleOpenEditor}
+                onCheckin={openCheckin}
+                onCheckout={openCheckout}
+                onMaintenance={openMaintenance}
+                onAudit={(pack) => { setAuditTarget(pack); auditModalDisclosure.onOpen(); }}
+                onDuplicate={handleDuplicate}
+                onScan={openScanner}
+                onGenerateQr={handleGenerateQr}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       <StatpackCheckOffModal
