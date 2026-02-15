@@ -1,11 +1,10 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Card,
   CardBody,
-  CardHeader,
   Button,
   Input,
   Divider,
@@ -13,14 +12,44 @@ import {
   Chip,
   useDisclosure,
   Avatar,
+  Modal,
+  ModalContent,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
 } from '@heroui/react';
 import { Package, ScanLine, Search, LogIn, ArrowLeft } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
-import { collection, onSnapshot, query, where, orderBy, Timestamp, updateDoc, doc, serverTimestamp } from 'firebase/firestore';
+import { collection, onSnapshot, query, where, orderBy, Timestamp, getDocs, documentId } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
-import type { Statpack } from '@/app/types';
+import type { InventoryItem, Statpack, StatpackItem } from '@/app/types';
 import StatpackCheckOffModal from '@/app/components/statpack-checkoff-modal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
+import { logStatpackCheckOff } from '@/app/lib/inventory';
+
+const chunkArray = <T,>(items: T[], size: number) => {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+};
+
+const fetchInventoryMap = async (itemIds: string[]) => {
+  const map = new Map<string, InventoryItem>();
+  const uniqueIds = Array.from(new Set(itemIds)).filter(Boolean);
+  if (uniqueIds.length === 0) return map;
+
+  const chunks = chunkArray(uniqueIds, 10);
+  for (const chunk of chunks) {
+    const q = query(collection(db, 'inventory'), where(documentId(), 'in', chunk));
+    const snap = await getDocs(q);
+    snap.forEach((docSnap) => {
+      map.set(docSnap.id, { id: docSnap.id, ...docSnap.data() } as InventoryItem);
+    });
+  }
+  return map;
+};
 
 export default function CheckinPage() {
   const router = useRouter();
@@ -33,6 +62,23 @@ export default function CheckinPage() {
   const [selectedPack, setSelectedPack] = useState<Statpack | null>(null);
   const checkoffDisclosure = useDisclosure();
   const scannerDisclosure = useDisclosure();
+  const pocketDisclosure = useDisclosure();
+  const [selectedPocketId, setSelectedPocketId] = useState<string | null>(null);
+  const [completedPockets, setCompletedPockets] = useState<string[]>([]);
+
+  // Collect check entries from all pockets before final logging
+  const [allPocketCheckData, setAllPocketCheckData] = useState<Array<{
+    checkEntries: Parameters<typeof logStatpackCheckOff>[0]['checkEntries'];
+    sealChecks?: Record<string, { sealed: boolean; sealNumber?: string }>;
+    oxygenReadings?: Record<string, string>;
+    notes?: string;
+  }>>([]); 
+
+  // Error, review, and confirmation state
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [showReview, setShowReview] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [quickConfirmPack, setQuickConfirmPack] = useState<Statpack | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => setUser(u));
@@ -53,27 +99,75 @@ export default function CheckinPage() {
     const unsub = onSnapshot(
       q,
       (snap) => {
-        const packs: Statpack[] = snap.docs.map((d) => {
-          const data = d.data();
-          return {
-            id: d.id,
-            ...data,
-            lastCheckedAt: data.lastCheckedAt instanceof Timestamp 
-              ? data.lastCheckedAt.toDate() 
-              : undefined,
-            contents: Array.isArray(data.contents)
-              ? data.contents.map((item: any) => ({
+        (async () => {
+          try {
+            const packs: Statpack[] = snap.docs.map((d) => {
+              const data = d.data();
+              return {
+                id: d.id,
+                ...data,
+                lastCheckedAt: data.lastCheckedAt instanceof Timestamp
+                  ? data.lastCheckedAt.toDate()
+                  : undefined,
+                contents: Array.isArray(data.contents)
+                  ? data.contents.map((item: StatpackItem & { expirationDate?: Timestamp | Date }) => ({
+                      ...item,
+                      expirationDate: item.expirationDate instanceof Timestamp
+                        ? item.expirationDate.toDate()
+                        : item.expirationDate,
+                    }))
+                  : [],
+              } as Statpack;
+            });
+
+            // Enrich with inventory details for proper verification UI
+            const itemIds = packs
+              .flatMap((p) => (p.contents || []).flatMap((i) => [i.itemId, i.assetInstanceId]))
+              .filter((id): id is string => Boolean(id));
+            const inventoryMap = await fetchInventoryMap(itemIds);
+
+            const enriched = packs.map((p) => ({
+              ...p,
+              contents: (p.contents || []).map((item) => {
+                const lookupId = item.assetInstanceId || item.itemId;
+                let inv = lookupId ? inventoryMap.get(lookupId) : undefined;
+
+                if (!inv) {
+                  const serial = item.serialNumber || item.assetInstanceId || undefined;
+                  if (serial) {
+                    inv = Array.from(inventoryMap.values()).find((iv) => {
+                      if (!iv) return false;
+                      if ((iv as any).assetSerial && String((iv as any).assetSerial) === String(serial)) return true;
+                      const instances = (iv.assets || []) as any[];
+                      if (instances.some((a: any) => a.serial === serial || a.id === serial || a.assetTag === serial)) return true;
+                      return false;
+                    });
+                  }
+                }
+
+                if (!inv) {
+                  const name = item.itemDetails?.name;
+                  if (name) {
+                    const lower = String(name).toLowerCase();
+                    inv = Array.from(inventoryMap.values()).find((iv) => String(iv.name || '').toLowerCase() === lower);
+                  }
+                }
+
+                return {
                   ...item,
-                  expirationDate: item.expirationDate instanceof Timestamp
-                    ? item.expirationDate.toDate()
-                    : undefined,
-                }))
-              : [],
-          } as Statpack;
-        });
-        setStatpacks(packs);
-        setFilteredPacks(packs);
-        setLoading(false);
+                  itemDetails: inv ? { ...(item.itemDetails || {}), ...inv } : item.itemDetails,
+                };
+              }),
+            }));
+
+            setStatpacks(enriched);
+            setFilteredPacks(enriched);
+          } catch (err) {
+            console.error('Failed to load statpacks:', err);
+          } finally {
+            setLoading(false);
+          }
+        })();
       },
       (err) => {
         console.error('Failed to load statpacks:', err);
@@ -85,26 +179,42 @@ export default function CheckinPage() {
 
   useEffect(() => {
     if (!searchQuery.trim()) {
-      setFilteredPacks(statpacks);
+      // Sort packs: current user's packs first, then others
+      const sorted = [...statpacks].sort((a, b) => {
+        const aIsUsers = a.assignedToUserId === user?.uid ? 0 : 1;
+        const bIsUsers = b.assignedToUserId === user?.uid ? 0 : 1;
+        return aIsUsers - bIsUsers;
+      });
+      setFilteredPacks(sorted);
       return;
     }
     
-    const query = searchQuery.toLowerCase();
+    const q = searchQuery.toLowerCase();
     const filtered = statpacks.filter(pack => 
-      pack.name?.toLowerCase().includes(query) ||
-      pack.type?.toLowerCase().includes(query) ||
-      pack.id?.toLowerCase().includes(query) ||
-      pack.assignedToUserName?.toLowerCase().includes(query)
+      pack.name?.toLowerCase().includes(q) ||
+      pack.type?.toLowerCase().includes(q) ||
+      pack.id?.toLowerCase().includes(q) ||
+      pack.assignedToUserName?.toLowerCase().includes(q)
     );
     setFilteredPacks(filtered);
-  }, [searchQuery, statpacks]);
+  }, [searchQuery, statpacks, user]);
 
-  const handleSelectPack = (pack: Statpack) => {
+  const handleSelectPack = useCallback((pack: Statpack) => {
+    // Warn if pack is assigned to someone else
+    if (pack.assignedToUserId && pack.assignedToUserId !== user?.uid) {
+      const assignee = pack.assignedToUserName || 'another member';
+      if (!confirm(`This pack is assigned to ${assignee}. Only they (or an admin) can check it in. Continue anyway?`)) {
+        return;
+      }
+    }
     setSelectedPack(pack);
-    // Open the check-in modal in "usage reporting" mode so members can
-    // mark only items they used and replaced (or use the quick-checkin button).
-    checkoffDisclosure.onOpen();
-  };
+    setSelectedPocketId(null);
+    setCompletedPockets([]);
+    setAllPocketCheckData([]);
+    setErrorMessage(null);
+    setShowReview(false);
+    pocketDisclosure.onOpen();
+  }, [pocketDisclosure, user]);
 
   const handleScanDetected = (value: string) => {
     // Try to match scanned value to a statpack ID or name
@@ -115,58 +225,210 @@ export default function CheckinPage() {
     );
     
     if (foundPack) {
-      setSelectedPack(foundPack);
       scannerDisclosure.onClose();
-      checkoffDisclosure.onOpen();
+      handleSelectPack(foundPack);
     } else {
       alert(`No statpack found matching: ${value}`);
       scannerDisclosure.onClose();
     }
   };
 
-  async function markPackCheckedIn(pack: Statpack) {
+  // Quick check-in: require confirmation, then create a proper log entry for audit trail
+  async function confirmQuickCheckIn() {
+    const pack = quickConfirmPack;
+    if (!pack || !user) return;
+    setIsSubmitting(true);
+    setErrorMessage(null);
     try {
-      const packRef = doc(db, 'statpacks', pack.id as string);
-      await updateDoc(packRef, {
-        isCheckedOut: false,
-        assignedToUserId: null,
-        assignedToUserName: null,
-        checkedInAt: serverTimestamp(),
-        status: 'Ready',
-        updatedAt: serverTimestamp(),
+      // Build minimal check entries from the pack's contents
+      const quickEntries = (pack.contents || []).map(item => ({
+        itemId: item.itemId,
+        itemName: item.itemDetails?.name || 'Unknown',
+        batchId: item.batchId,
+        compartmentId: item.compartmentId,
+        pocket: item.pocket,
+        requiredQuantity: item.requiredQuantity,
+        countedQuantity: item.requiredQuantity, // Assume all items present
+        ok: true,
+        serialNumber: item.serialNumber,
+        expirationDate: item.expirationDate,
+        notes: 'quick-checkin: user reported no items used',
+      }));
+
+      await logStatpackCheckOff({
+        statpackId: pack.id,
+        statpackName: pack.name,
+        action: 'checkin',
+        userId: user.uid,
+        userName: user.displayName || user.email || 'Unknown',
+        checkEntries: quickEntries,
+        notes: 'Quick check-in: member reported no items used or replaced',
+        quickCheckin: true,
       });
-    } catch (e) {
-      console.error('Failed to mark statpack as checked in', e);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('Failed to complete quick check-in', e);
+      setIsSubmitting(false);
+      setErrorMessage(msg);
+      return;
     }
 
+    setIsSubmitting(false);
+    setQuickConfirmPack(null);
     checkoffDisclosure.onClose();
+    pocketDisclosure.onClose();
     setSelectedPack(null);
-    // Redirect to dashboard after successful check-in
+    setSelectedPocketId(null);
+    setCompletedPockets([]);
+    setAllPocketCheckData([]);
     setTimeout(() => router.push('/dashboard'), 500);
   }
 
+  // When all pockets are done, show review instead of auto-submitting
+  const handleAllPocketsComplete = () => {
+    setShowReview(true);
+  };
+
+  // Full check-in with all pocket data collected
   const handleCheckOffComplete = async () => {
-    // When a pack is checked in, mark it as available in Firestore
+    setIsSubmitting(true);
+    setErrorMessage(null);
     try {
-      if (selectedPack) {
-        const packRef = doc(db, 'statpacks', selectedPack.id as string);
-        await updateDoc(packRef, {
-          isCheckedOut: false,
-          assignedToUserId: null,
-          assignedToUserName: null,
-          checkedInAt: serverTimestamp(),
-          status: 'Ready',
-          updatedAt: serverTimestamp(),
+      if (selectedPack && user) {
+        // Combine all pocket check entries into a single log entry
+        const allCheckEntries: typeof allPocketCheckData[0]['checkEntries'] = [];
+        let allSealChecks: Record<string, { sealed: boolean; sealNumber?: string }> = {};
+        let allOxygenReadings: Record<string, string> = {};
+        const allNotes: string[] = [];
+
+        for (const pocketData of allPocketCheckData) {
+          allCheckEntries.push(...pocketData.checkEntries);
+          if (pocketData.sealChecks) {
+            allSealChecks = { ...allSealChecks, ...pocketData.sealChecks };
+          }
+          if (pocketData.oxygenReadings) {
+            allOxygenReadings = { ...allOxygenReadings, ...pocketData.oxygenReadings };
+          }
+          if (pocketData.notes) {
+            allNotes.push(pocketData.notes);
+          }
+        }
+
+        // Log the complete checkin with all items — logStatpackCheckOff handles
+        // BOTH the statpack_logs entry AND the statpack document update
+        // inside a single Firestore transaction. No separate updateDoc needed.
+        await logStatpackCheckOff({
+          statpackId: selectedPack.id,
+          statpackName: selectedPack.name,
+          action: 'checkin',
+          userId: user.uid,
+          userName: user.displayName || user.email || 'Unknown',
+          checkEntries: allCheckEntries,
+          sealChecks: Object.keys(allSealChecks).length > 0 ? allSealChecks : undefined,
+          oxygenReadings: Object.keys(allOxygenReadings).length > 0 ? allOxygenReadings : undefined,
+          notes: allNotes.length > 0 ? allNotes.join(' | ') : undefined,
         });
       }
-    } catch (e) {
-      console.error('Failed to mark statpack as checked in', e);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('Failed to complete check-in', e);
+      setIsSubmitting(false);
+      setErrorMessage(msg);
+      return; // Don't redirect on error
     }
+
+    setIsSubmitting(false);
 
     checkoffDisclosure.onClose();
     setSelectedPack(null);
+    setSelectedPocketId(null);
+    setCompletedPockets([]);
+    setAllPocketCheckData([]);
     // Redirect to dashboard after successful check-in
     setTimeout(() => router.push('/dashboard'), 500);
+  };
+
+  // Pocket list component (mirrors checkout page for consistent UX)
+  const PocketList = () => {
+    if (!selectedPack) return null;
+    const pockets = [
+      { id: 'main', name: 'Center Pocket' },
+      { id: 'front_aux', name: 'Front Pocket' },
+      { id: 'side_left', name: 'Left Side Pocket' },
+      { id: 'side_right', name: 'Right Side Pocket' },
+    ];
+
+    const pocketsWithContent = pockets.filter(p => {
+      const hasCompartments = (selectedPack.compartments || []).some((c: any) => c.parentPocket === p.id);
+      const hasLooseItems = (selectedPack.contents || []).some((i: any) => i.pocket === p.id && !i.compartmentId);
+      return hasCompartments || hasLooseItems;
+    });
+
+    if (pocketsWithContent.length === 0) {
+      return (
+        <Card>
+          <CardBody className="text-center">
+            <p className="text-sm text-default-500">No pockets defined — verify entire pack.</p>
+            <div className="mt-3">
+              <Button onPress={() => {
+                setSelectedPocketId(null);
+                pocketDisclosure.onClose();
+                checkoffDisclosure.onOpen();
+              }}>Verify Full Pack</Button>
+            </div>
+          </CardBody>
+        </Card>
+      );
+    }
+
+    return (
+      <div className="flex flex-col gap-3 py-1">
+        {pocketsWithContent.map((p) => {
+          const compForPocket = (selectedPack.compartments || []).filter((c: any) => c.parentPocket === p.id);
+          const compItemsCount = compForPocket.flatMap((c: any) => (selectedPack.contents || []).filter((i: any) => i.compartmentId === c.id)).length;
+          const looseCount = (selectedPack.contents || []).filter((i: any) => i.pocket === p.id && !i.compartmentId).length;
+          const count = compItemsCount + looseCount;
+          const isDone = completedPockets.includes(p.id);
+
+          return (
+            <Card
+              key={p.id}
+              isPressable={!isDone}
+              onPress={() => {
+                if (isDone) return;
+                setSelectedPocketId(p.id);
+                pocketDisclosure.onClose();
+                checkoffDisclosure.onOpen();
+              }}
+              className={`w-full transition-shadow ${isDone ? 'border-2 ring-1 ring-primary/10 bg-default-100 opacity-95' : 'hover:shadow-md'}`}
+            >
+              <CardBody className="flex flex-col items-center text-center gap-3 py-6">
+                <div className="space-y-1">
+                  <p className="font-semibold text-base">{p.name}</p>
+                  <p className="text-xs text-default-500">{count} items</p>
+                </div>
+                {isDone ? (
+                  <div className="w-full flex justify-center">
+                    <Chip size="sm" variant="flat" color="success">Verified</Chip>
+                  </div>
+                ) : (
+                  <div className="w-full px-4">
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      className="w-full h-12 rounded-md bg-green-600 text-white flex items-center justify-center"
+                      aria-label={`Start check for ${p.name}`}
+                    >
+                      Tap to verify
+                    </div>
+                  </div>
+                )}
+              </CardBody>
+            </Card>
+          );
+        })}
+      </div>
+    );
   };
 
   if (!user) {
@@ -206,7 +468,7 @@ export default function CheckinPage() {
                 </h1>
               </div>
               <p className="text-sm text-gray-600 dark:text-gray-400">
-                Return a pack and verify its contents
+                Return a pack and verify its contents pocket-by-pocket
               </p>
             </div>
           </div>
@@ -260,12 +522,14 @@ export default function CheckinPage() {
                 </CardBody>
               </Card>
             ) : (
-              filteredPacks.map((pack) => (
+              filteredPacks.map((pack) => {
+                const isYours = !pack.assignedToUserId || pack.assignedToUserId === user?.uid;
+                return (
                 <Card
                   key={pack.id}
                   isPressable
                   onPress={() => handleSelectPack(pack)}
-                  className="hover:shadow-lg transition-shadow"
+                  className={`hover:shadow-lg transition-shadow ${!isYours ? 'opacity-60' : ''}`}
                 >
                   <CardBody className="p-4">
                     <div className="flex items-center justify-between gap-4">
@@ -303,6 +567,9 @@ export default function CheckinPage() {
                         >
                           {pack.status}
                         </Chip>
+                        {!isYours && (
+                          <Chip size="sm" color="danger" variant="flat">Not your pack</Chip>
+                        )}
                         {pack.contents && (
                           <span className="text-xs text-gray-500">
                             {pack.contents.length} items
@@ -312,7 +579,8 @@ export default function CheckinPage() {
                     </div>
                   </CardBody>
                 </Card>
-              ))
+              );
+              })
             )}
           </div>
         </div>
@@ -325,20 +593,264 @@ export default function CheckinPage() {
         onDetected={handleScanDetected}
       />
 
-      {/* Check-Off Modal */}
+      {/* Pocket Selection Modal */}
+      <Modal isOpen={pocketDisclosure.isOpen} onOpenChange={pocketDisclosure.onOpenChange} backdrop="blur" size="lg" placement="center">
+        <ModalContent>
+          <ModalHeader>Verify Pockets for Check-In</ModalHeader>
+          <ModalBody className="gap-4 max-h-[70vh] overflow-y-auto">
+            {selectedPack ? (
+              <div className="space-y-3">
+                <Card className="bg-default-100">
+                  <CardBody>
+                    <p className="font-semibold">{selectedPack.name}</p>
+                    <p className="text-sm text-default-500">Verify each pocket&apos;s contents before returning this pack.</p>
+                    {selectedPack.assignedToUserName && (
+                      <p className="text-xs text-default-400 mt-1">Checked out by: {selectedPack.assignedToUserName}</p>
+                    )}
+                  </CardBody>
+                </Card>
+
+                {/* Quick Check-In — pinned at top for fastest access */}
+                <Card className="bg-emerald-50 dark:bg-emerald-900/20 border-2 border-emerald-300 dark:border-emerald-700">
+                  <CardBody className="text-center py-4">
+                    <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-200 mb-1">🚀 Didn&apos;t use anything?</p>
+                    <p className="text-xs text-emerald-700 dark:text-emerald-300 mb-3">
+                      If no items were used during the event, skip verification.
+                    </p>
+                    <Button
+                      color="success"
+                      variant="solid"
+                      size="lg"
+                      className="w-full font-semibold"
+                      onPress={() => selectedPack && setQuickConfirmPack(selectedPack)}
+                    >
+                      ⚡ Quick Check-In (nothing used)
+                    </Button>
+                    <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-2">
+                      This will be flagged for admin review
+                    </p>
+                  </CardBody>
+                </Card>
+
+                <Divider />
+                <p className="text-xs text-default-500 text-center font-medium">— OR verify each pocket below —</p>
+
+                <PocketList />
+              </div>
+            ) : (
+              <div>No pack selected.</div>
+            )}
+          </ModalBody>
+          <ModalFooter>
+            <Button color="default" onPress={() => { pocketDisclosure.onClose(); setSelectedPack(null); }}>Cancel</Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+
+      {/* Check-Off Modal (pocket-level) */}
       {selectedPack && user && (
         <StatpackCheckOffModal
           isOpen={checkoffDisclosure.isOpen}
           onOpenChange={checkoffDisclosure.onOpenChange}
-          statpack={selectedPack}
+          statpack={(() => {
+            if (!selectedPack) return null;
+            if (!selectedPocketId) return selectedPack;
+
+            const pocketComp = (selectedPack.compartments || []).filter(c => c.parentPocket === selectedPocketId);
+            let pocketContents: any[] = [];
+            if (pocketComp.length > 0) {
+              pocketContents = pocketComp.flatMap(c => (selectedPack.contents || []).filter(i => i.compartmentId === c.id));
+            }
+            const loose = (selectedPack.contents || []).filter(i => i.pocket === selectedPocketId && !i.compartmentId);
+            pocketContents = [...pocketContents, ...loose];
+
+            if (pocketComp.length === 0 && pocketContents.length === 0) {
+              pocketContents = (selectedPack.contents || []).filter(i => i.compartmentId === selectedPocketId);
+              const directComp = (selectedPack.compartments || []).filter(c => c.id === selectedPocketId);
+              return ({ ...selectedPack, contents: pocketContents, compartments: directComp } as Statpack);
+            }
+
+            return ({ ...selectedPack, contents: pocketContents, compartments: pocketComp } as Statpack);
+          })()}
           action="checkin"
           userId={user.uid}
           userName={user.displayName || user.email || 'Unknown User'}
-          onCheckOffComplete={handleCheckOffComplete}
-          checkinUsageMode={true}
-          onQuickCheckIn={() => selectedPack && markPackCheckedIn(selectedPack)}
+          skipLogging={true}
+          onDataCollected={async (data) => {
+            setAllPocketCheckData(prev => [...prev, data]);
+          }}
+          onCheckOffComplete={() => {
+            if (!selectedPocketId && selectedPack?.compartments && selectedPack.compartments.length === 0) {
+              handleCheckOffComplete();
+              return;
+            }
+
+            const newCompleted = selectedPocketId ? [...completedPockets, selectedPocketId] : [...completedPockets];
+            setCompletedPockets(newCompleted);
+
+            checkoffDisclosure.onClose();
+            setSelectedPocketId(null);
+
+            const allPockets = ['main', 'front_aux', 'side_left', 'side_right'];
+            const pocketsWithContent = allPockets.filter(p => {
+              const hasCompartments = (selectedPack?.compartments || []).some((c: any) => c.parentPocket === p);
+              const hasLooseItems = (selectedPack?.contents || []).some((i: any) => i.pocket === p && !i.compartmentId);
+              return hasCompartments || hasLooseItems;
+            });
+
+            const remaining = pocketsWithContent.filter(p => !newCompleted.includes(p));
+            if (pocketsWithContent.length > 0 && remaining.length > 0) {
+              pocketDisclosure.onOpen();
+            } else {
+              handleAllPocketsComplete();
+            }
+          }}
         />
       )}
+
+      {/* Quick Check-In Confirmation Modal */}
+      <Modal isOpen={!!quickConfirmPack} onOpenChange={(open) => !open && setQuickConfirmPack(null)} backdrop="blur" size="md" placement="center">
+        <ModalContent>
+          <ModalHeader>Confirm Quick Check-In</ModalHeader>
+          <ModalBody className="gap-3">
+            {errorMessage && (
+              <Card className="bg-danger-50 border border-danger-200">
+                <CardBody>
+                  <p className="text-danger text-sm font-medium">{errorMessage}</p>
+                </CardBody>
+              </Card>
+            )}
+
+            <Card className="bg-amber-50 dark:bg-amber-900/20">
+              <CardBody className="gap-2">
+                <p className="font-semibold">⚠ Are you sure?</p>
+                <p className="text-sm">You are confirming that <strong>no items were used</strong> from <strong>{quickConfirmPack?.name}</strong>.</p>
+                <p className="text-xs text-amber-700 dark:text-amber-300">This will be flagged for admin review. If items are missing later, this check-in will be investigated.</p>
+              </CardBody>
+            </Card>
+
+            {quickConfirmPack && (
+              <div className="text-xs text-default-500">
+                <p><strong>Pack:</strong> {quickConfirmPack.name}</p>
+                <p><strong>Items:</strong> {quickConfirmPack.contents?.length || 0} items</p>
+              </div>
+            )}
+          </ModalBody>
+          <ModalFooter className="flex justify-between">
+            <Button variant="light" onPress={() => { setQuickConfirmPack(null); setErrorMessage(null); }}>Cancel</Button>
+            <Button color="warning" isLoading={isSubmitting} onPress={confirmQuickCheckIn}>
+              Confirm Quick Check-In
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+
+      {/* Final Review Modal for Full Check-In */}
+      <Modal isOpen={showReview} onOpenChange={setShowReview} backdrop="blur" size="lg" placement="center">
+        <ModalContent>
+          <ModalHeader>Confirm Check-In</ModalHeader>
+          <ModalBody className="gap-3">
+            {errorMessage && (
+              <Card className="bg-danger-50 border border-danger-200">
+                <CardBody>
+                  <p className="text-danger text-sm font-medium">{errorMessage}</p>
+                </CardBody>
+              </Card>
+            )}
+
+            <Card className="bg-default-100">
+              <CardBody className="gap-2">
+                <p className="font-semibold text-lg">{selectedPack?.name}</p>
+                <p className="text-sm text-default-600">Checked in by: {user?.displayName || user?.email}</p>
+              </CardBody>
+            </Card>
+
+            {/* Summary of verification */}
+            {(() => {
+              const allEntries = allPocketCheckData.flatMap(p => p.checkEntries);
+              const totalItems = allEntries.length;
+              const okItems = allEntries.filter(e => e.ok).length;
+              const mismatchItems = allEntries.filter(e => !e.ok).length;
+              const expiredItems = allEntries.filter(e => {
+                if (!e.expirationDate) return false;
+                return new Date(e.expirationDate).getTime() < Date.now();
+              }).length;
+              const restockedItems = allEntries.filter(e => (e as Record<string, unknown>).restockStatus === 'restocked').length;
+              const shelfEmptyItems = allEntries.filter(e => (e as Record<string, unknown>).restockStatus === 'shelf_empty').length;
+
+              return (
+                <>
+                <div className="grid grid-cols-2 gap-3">
+                  <Card className="bg-success-50">
+                    <CardBody className="text-center py-3">
+                      <p className="text-2xl font-bold text-success">{okItems}</p>
+                      <p className="text-xs text-success-600">Items OK</p>
+                    </CardBody>
+                  </Card>
+                  <Card className="bg-default-50">
+                    <CardBody className="text-center py-3">
+                      <p className="text-2xl font-bold">{totalItems}</p>
+                      <p className="text-xs text-default-600">Total Items</p>
+                    </CardBody>
+                  </Card>
+                  {mismatchItems > 0 && (
+                    <Card className="bg-warning-50">
+                      <CardBody className="text-center py-3">
+                        <p className="text-2xl font-bold text-warning">{mismatchItems}</p>
+                        <p className="text-xs text-warning-600">Count Mismatches</p>
+                      </CardBody>
+                    </Card>
+                  )}
+                  {expiredItems > 0 && (
+                    <Card className="bg-danger-50">
+                      <CardBody className="text-center py-3">
+                        <p className="text-2xl font-bold text-danger">{expiredItems}</p>
+                        <p className="text-xs text-danger-600">Expired Items</p>
+                      </CardBody>
+                    </Card>
+                  )}
+                  {restockedItems > 0 && (
+                    <Card className="bg-blue-50">
+                      <CardBody className="text-center py-3">
+                        <p className="text-2xl font-bold text-blue-600">{restockedItems}</p>
+                        <p className="text-xs text-blue-600">Restocked</p>
+                      </CardBody>
+                    </Card>
+                  )}
+                  {shelfEmptyItems > 0 && (
+                    <Card className="bg-red-50 border border-red-200">
+                      <CardBody className="text-center py-3">
+                        <p className="text-2xl font-bold text-red-600">{shelfEmptyItems}</p>
+                        <p className="text-xs text-red-600">Shelf Empty</p>
+                      </CardBody>
+                    </Card>
+                  )}
+                </div>
+                {shelfEmptyItems > 0 && (
+                  <Card className="bg-red-50 dark:bg-red-900/20 border border-red-200">
+                    <CardBody className="py-2">
+                      <p className="text-xs text-red-700 dark:text-red-300 font-medium">
+                        ⚠ {shelfEmptyItems} item(s) could not be restocked — admin will be notified to refill the restock shelf.
+                      </p>
+                    </CardBody>
+                  </Card>
+                )}
+                </>
+              );
+            })()}
+
+            <p className="text-xs text-default-500 text-center">
+              By confirming, you verify the contents of this statpack have been checked.
+            </p>
+          </ModalBody>
+          <ModalFooter className="flex justify-between">
+            <Button variant="light" onPress={() => setShowReview(false)}>Go Back</Button>
+            <Button color="success" isLoading={isSubmitting} onPress={handleCheckOffComplete}>
+              Confirm Check-In
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
     </>
   );
 }

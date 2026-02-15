@@ -50,6 +50,11 @@ export function deepRemoveUndefined<T>(obj: T): T {
     return arr as unknown as T;
   }
   if (typeof obj === 'object') {
+    // Preserve Date instances as-is
+    if (obj instanceof Date) return obj;
+    // Preserve Firestore FieldValue sentinels (serverTimestamp, increment, etc.)
+    // They have an internal _methodName property – never destructure them.
+    if ('_methodName' in (obj as any)) return obj;
     const out: any = {};
     for (const [k, v] of Object.entries(obj as any)) {
       if (v === undefined) continue;

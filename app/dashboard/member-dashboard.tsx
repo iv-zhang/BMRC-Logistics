@@ -334,20 +334,6 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
           <div className="grid grid-cols-2 md:grid-cols-2 gap-2 md:gap-4">
             <Card
               isPressable
-              onPress={() => router.push('/statpacks/checkin')}
-              className="bg-gradient-to-br from-green-500 to-green-600 text-white hover:scale-105 transition-transform"
-            >
-              <CardBody className="flex flex-col items-center justify-center py-4 md:py-8 gap-2 md:gap-3">
-                <LogIn size={36} className="md:w-12 md:h-12" />
-                <h3 className="text-sm md:text-xl font-bold">Check In</h3>
-                <p className="text-xs md:text-sm text-center opacity-90 hidden md:block">
-                  Return supplies
-                </p>
-              </CardBody>
-            </Card>
-
-            <Card
-              isPressable
               onPress={() => router.push('/statpacks/checkout')}
               className="bg-gradient-to-br from-blue-500 to-blue-600 text-white hover:scale-105 transition-transform"
             >
@@ -356,6 +342,20 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
                 <h3 className="text-sm md:text-xl font-bold">Check Out</h3>
                 <p className="text-xs md:text-sm text-center opacity-90 hidden md:block">
                   Take supplies
+                </p>
+              </CardBody>
+            </Card>
+
+            <Card
+              isPressable
+              onPress={() => router.push('/statpacks/checkin')}
+              className="bg-gradient-to-br from-green-500 to-green-600 text-white hover:scale-105 transition-transform"
+            >
+              <CardBody className="flex flex-col items-center justify-center py-4 md:py-8 gap-2 md:gap-3">
+                <LogIn size={36} className="md:w-12 md:h-12" />
+                <h3 className="text-sm md:text-xl font-bold">Check In</h3>
+                <p className="text-xs md:text-sm text-center opacity-90 hidden md:block">
+                  Return supplies
                 </p>
               </CardBody>
             </Card>

@@ -30,9 +30,11 @@ import SortableStatpackContentList from '@/app/components/sortable-statpack-list
 import AssetAttachModal from '@/app/components/asset-attach-modal';
 import AssetModal from '@/app/components/assetmodal';
 import StatpackWidget from '@/app/components/statpack-widget';
+import StatpackLogHistory from '@/app/components/statpack-log-history';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { duplicateStatpack } from '@/app/lib/statpacks';
 import { fetchAndEnrichItemDetails } from '@/app/lib/inventory';
+import { formatDuration } from '@/app/lib/logs';
 
 export default function StatpacksListPage() {
   const router = useRouter();
@@ -57,6 +59,11 @@ export default function StatpacksListPage() {
   const [qrLink, setQrLink] = useState<string>('');
   const [qrPrintDataUrl, setQrPrintDataUrl] = useState<string | null>(null);
   const [qrPackName, setQrPackName] = useState<string>('');
+
+  // Log history modal state
+  const logHistoryDisclosure = useDisclosure();
+  const [logHistoryPackId, setLogHistoryPackId] = useState<string | null>(null);
+  const [logHistoryPackName, setLogHistoryPackName] = useState<string>('');
 
   const getHostedOrigin = () => {
     if (typeof window === 'undefined') return '';
@@ -167,6 +174,7 @@ export default function StatpacksListPage() {
   const [attachPocket, setAttachPocket] = useState<string>('main');
   const assetModalDisclosure = useDisclosure();
   const [editingAsset, setEditingAsset] = useState<any | null>(null);
+  const [selectedPocketView, setSelectedPocketView] = useState<'all' | StatpackPocket>('all');
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => setUser(u));
@@ -607,7 +615,72 @@ export default function StatpacksListPage() {
         {statpacks.length === 0 ? (
           <p className="text-sm text-default-500 text-center py-6">No statpacks</p>
         ) : (
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 items-start">
+          <>
+            {/* Currently Checked Out dashboard */}
+            {(() => {
+              const checkedOut = statpacks.filter(p => p.isCheckedOut);
+              if (checkedOut.length === 0) return null;
+              return (
+                <Card className="border border-warning-200 bg-warning-50 dark:bg-warning-50/10">
+                  <CardBody className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg">📋</span>
+                      <h2 className="text-sm font-semibold text-warning-700 dark:text-warning-400">
+                        Currently Checked Out ({checkedOut.length})
+                      </h2>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                      {checkedOut.map(p => {
+                        const checkedOutAt = p.checkedOutAt
+                          ? (typeof (p.checkedOutAt as any).toDate === 'function'
+                              ? (p.checkedOutAt as any).toDate()
+                              : p.checkedOutAt instanceof Date
+                              ? p.checkedOutAt
+                              : new Date(p.checkedOutAt as any))
+                          : null;
+                        const elapsed = checkedOutAt ? Date.now() - checkedOutAt.getTime() : null;
+                        return (
+                          <div
+                            key={`co-${p.id}`}
+                            className="rounded-lg border border-warning-200 bg-white dark:bg-default-100 p-3 flex flex-col gap-1.5"
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="font-semibold text-sm truncate">{p.name}</span>
+                              {elapsed !== null && (
+                                <span className={`text-xs font-medium ${elapsed > 8 * 60 * 60 * 1000 ? 'text-danger' : 'text-warning-600'}`}>
+                                  {formatDuration(elapsed)}
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-xs text-default-500">
+                              {p.assignedToUserName || 'Unknown'} • {p.currentLocation || 'No location'}
+                            </div>
+                            <div className="flex gap-1 mt-1">
+                              <Button size="sm" color="success" variant="flat" onPress={() => openCheckin(p)}>
+                                Check In
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="light"
+                                onPress={() => {
+                                  setLogHistoryPackId(p.id || null);
+                                  setLogHistoryPackName(p.name || '');
+                                  logHistoryDisclosure.onOpen();
+                                }}
+                              >
+                                Logs
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </CardBody>
+                </Card>
+              );
+            })()}
+
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 items-start">
             {statpacks.map((p) => (
               <StatpackWidget
                 key={p.id}
@@ -622,9 +695,11 @@ export default function StatpacksListPage() {
                 onDuplicate={handleDuplicate}
                 onScan={openScanner}
                 onGenerateQr={handleGenerateQr}
+                onEditAsset={handleEditAssetPolicy}
               />
             ))}
           </div>
+          </>
         )}
       </div>
 
@@ -675,8 +750,8 @@ export default function StatpacksListPage() {
                 <div className="flex justify-center">
                   <BagVisualizer
                     statpack={editingPack || selectedPack}
-                    selectedPocket={'all'}
-                    onSelectPocket={() => {}}
+                    selectedPocket={selectedPocketView}
+                    onSelectPocket={(p) => setSelectedPocketView(p)}
                     completedPockets={new Set()}
                   />
                 </div>
@@ -721,14 +796,62 @@ export default function StatpacksListPage() {
                   </div>
 
                   <div className="mt-2 max-h-64 overflow-y-auto">
-                    <SortableStatpackContentList
-                      items={editingPack?.contents || selectedPack.contents || []}
-                      onReorder={(newItems) => setEditingPack(prev => ({ ...(prev || selectedPack), contents: newItems } as Statpack))}
-                      onUpdateItem={updateEditingContent}
-                      onRemoveItem={removeContentItem}
-                      onAttachAsset={userRole === 'admin' ? handleAttachAsset : undefined}
-                      onEditAssetPolicy={userRole === 'admin' ? handleEditAssetPolicy : undefined}
-                    />
+                    {(() => {
+                      const base = editingPack || selectedPack;
+                      if (!base) return null;
+                      const allContents = Array.isArray(base.contents) ? base.contents : [];
+                      const visibleContents = selectedPocketView === 'all' ? allContents : allContents.filter((it) => it.pocket === selectedPocketView);
+
+                      const getGlobalIndex = (visibleIndex: number) => {
+                        const item = visibleContents[visibleIndex];
+                        if (!item) return -1;
+                        return allContents.findIndex((it) => it === item || (it.itemId && item.itemId && it.itemId === item.itemId) || (it.assetInstanceId && item.assetInstanceId && it.assetInstanceId === item.assetInstanceId));
+                      };
+
+                      const handleReorder = (newVisibleItems: any[]) => {
+                        if (selectedPocketView === 'all') {
+                          setEditingPack((prev) => ({ ...(prev || selectedPack), contents: newVisibleItems } as Statpack));
+                          return;
+                        }
+                        setEditingPack((prev) => {
+                          const base2 = prev || selectedPack;
+                          if (!base2) return prev;
+                          const all2 = Array.isArray(base2.contents) ? [...base2.contents] : [];
+                          const merged: any[] = [];
+                          let vi = 0;
+                          for (const it of all2) {
+                            if (it.pocket !== selectedPocketView) merged.push(it);
+                            else {
+                              merged.push(newVisibleItems[vi++] || it);
+                            }
+                          }
+                          return ({ ...base2, contents: merged } as Statpack);
+                        });
+                      };
+
+                      const handleUpdateVisible = (visibleIndex: number, patch: Partial<any>) => {
+                        const gi = getGlobalIndex(visibleIndex);
+                        if (gi === -1) return;
+                        updateEditingContent(gi, patch);
+                      };
+
+                      const handleRemoveVisible = (visibleIndex: number) => {
+                        const gi = getGlobalIndex(visibleIndex);
+                        if (gi === -1) return;
+                        removeContentItem(gi);
+                      };
+
+                      return (
+                        <SortableStatpackContentList
+                          items={visibleContents}
+                          onReorder={handleReorder}
+                          onUpdateItem={handleUpdateVisible}
+                          onRemoveItem={handleRemoveVisible}
+                          onAttachAsset={userRole === 'admin' ? handleAttachAsset : undefined}
+                          onEditAssetPolicy={userRole === 'admin' ? handleEditAssetPolicy : undefined}
+                        />
+                      );
+                    })()}
                   </div>
                 </div>
               </div>
@@ -902,6 +1025,13 @@ export default function StatpacksListPage() {
           </ModalBody>
         </ModalContent>
       </Modal>
+
+      <StatpackLogHistory
+        isOpen={logHistoryDisclosure.isOpen}
+        onOpenChange={(open) => (open ? logHistoryDisclosure.onOpen() : logHistoryDisclosure.onClose())}
+        statpackId={logHistoryPackId}
+        statpackName={logHistoryPackName}
+      />
     </div>
   );
 }

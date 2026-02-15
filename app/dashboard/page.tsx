@@ -163,13 +163,28 @@ export default function DashboardPage() {
         );
         
         const logsSnapshot = await getDocs(logsQuery);
-        const logsData = logsSnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data(),
-          timestamp: doc.data().timestamp instanceof Timestamp 
-            ? doc.data().timestamp.toDate() 
-            : new Date() // Fallback if timestamp is missing/invalid
-        })) as StatpackLog[];
+        const logsData = logsSnapshot.docs.map(doc => {
+          const data = doc.data();
+          // Resolve timestamp: prefer Firestore Timestamp, then clientTimestamp fallback, then null
+          let ts: Date | null = null;
+          if (data.timestamp instanceof Timestamp) {
+            ts = data.timestamp.toDate();
+          } else if (data.timestamp && typeof data.timestamp === 'object' && typeof data.timestamp.toDate === 'function') {
+            ts = data.timestamp.toDate();
+          } else if (data.clientTimestamp instanceof Timestamp) {
+            ts = data.clientTimestamp.toDate();
+          } else if (data.clientTimestamp instanceof Date) {
+            ts = data.clientTimestamp;
+          } else if (typeof data.clientTimestamp === 'string') {
+            const parsed = new Date(data.clientTimestamp);
+            ts = isNaN(parsed.getTime()) ? null : parsed;
+          }
+          return {
+            id: doc.id,
+            ...data,
+            timestamp: ts,
+          };
+        }) as StatpackLog[];
 
         setPackLogs(prev => ({ ...prev, [packId]: logsData }));
       } catch (err) {
@@ -379,16 +394,25 @@ export default function DashboardPage() {
                                   {logs.map((log) => (
                                     <li key={log.id} className="border-b border-gray-200 dark:border-gray-700 pb-2 last:border-0">
                                       <div className="flex justify-between items-start">
-                                        <span className="font-bold capitalize text-xs text-gray-700 dark:text-gray-200">
-                                          {log.action}
-                                        </span>
+                                        <div className="flex items-center gap-2">
+                                          <Chip
+                                            size="sm"
+                                            variant="flat"
+                                            color={log.action === 'checkout' ? 'warning' : log.action === 'checkin' ? 'success' : log.action === 'maintenance' ? 'secondary' : 'default'}
+                                            className="capitalize font-medium"
+                                          >
+                                            {log.action === 'checkin' ? 'Check-in' : log.action === 'checkout' ? 'Checkout' : log.action?.replace(/_/g, ' ') || 'Log'}
+                                          </Chip>
+                                        </div>
                                         <span className="text-[10px] text-gray-400 whitespace-nowrap ml-2">
-                                            {log.timestamp?.toLocaleString() || 'Just now'}
+                                            {log.timestamp ? (log.timestamp instanceof Date ? log.timestamp.toLocaleString() : new Date(log.timestamp as any).toLocaleString()) : '—'}
                                         </span>
                                       </div>
-                                      <p className="text-xs text-gray-600 dark:text-gray-400 mt-1 break-words">
-                                        {log.notes}
-                                      </p>
+                                      {log.notes && (
+                                        <p className="text-xs text-gray-600 dark:text-gray-400 mt-1 break-words italic">
+                                          &ldquo;{log.notes}&rdquo;
+                                        </p>
+                                      )}
                                       <p className="text-[10px] text-gray-400 mt-1">
                                         by {log.userName}
                                       </p>

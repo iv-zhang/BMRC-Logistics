@@ -5,7 +5,6 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Card,
   CardBody,
-  CardHeader,
   Button,
   Input,
   Divider,
@@ -21,11 +20,12 @@ import {
 } from '@heroui/react';
 import { Package, ScanLine, Search, LogOut, ArrowLeft } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
-import { collection, onSnapshot, query, where, orderBy, Timestamp, updateDoc, doc, serverTimestamp, getDocs, documentId, getDoc } from 'firebase/firestore';
+import { collection, onSnapshot, query, where, orderBy, Timestamp, doc, getDocs, documentId, getDoc } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
 import type { InventoryItem, Statpack, StatpackItem } from '@/app/types';
 import StatpackCheckOffModal from '@/app/components/statpack-checkoff-modal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
+import { logStatpackCheckOff } from '@/app/lib/inventory';
 
 const chunkArray = <T,>(items: T[], size: number) => {
   const chunks: T[][] = [];
@@ -67,6 +67,19 @@ export default function CheckoutPage() {
   const [selectedPocketId, setSelectedPocketId] = useState<string | null>(null);
   const [completedPockets, setCompletedPockets] = useState<string[]>([]);
   const autoOpenedPackId = React.useRef<string | null>(null);
+
+  // Collect check entries from all pockets before final logging
+  const [allPocketCheckData, setAllPocketCheckData] = useState<Array<{
+    checkEntries: Parameters<typeof logStatpackCheckOff>[0]['checkEntries'];
+    sealChecks?: Record<string, { sealed: boolean; sealNumber?: string }>;
+    oxygenReadings?: Record<string, string>;
+    notes?: string;
+  }>>([]);
+
+  // Error and review state
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [showReview, setShowReview] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => setUser(u));
@@ -189,6 +202,9 @@ export default function CheckoutPage() {
     setSelectedPack(pack);
     setSelectedPocketId(null);
     setCompletedPockets([]);
+    setAllPocketCheckData([]); // Clear stale data from previous pack
+    setErrorMessage(null);
+    setShowReview(false);
     pocketDisclosure.onOpen();
   }, [pocketDisclosure]);
 
@@ -286,28 +302,66 @@ export default function CheckoutPage() {
     }
   };
 
+  // When all pockets are done, show review instead of auto-submitting
+  const handleAllPocketsComplete = () => {
+    setShowReview(true);
+  };
+
   const handleCheckOffComplete = async () => {
-    // When a full pack checkout completes, mark the statpack document as checked out
+    // When a full pack checkout completes, combine all pocket check entries and log once
+    setIsSubmitting(true);
+    setErrorMessage(null);
     try {
       if (selectedPack && user) {
-        const packRef = doc(db, 'statpacks', selectedPack.id as string);
-        await updateDoc(packRef, {
-          isCheckedOut: true,
-          assignedToUserId: user.uid,
-          assignedToUserName: user.displayName || user.email || 'Unknown',
-          checkedOutAt: serverTimestamp(),
-          status: 'In Use',
-          updatedAt: serverTimestamp(),
+        // Combine all pocket check entries into a single log entry
+        const allCheckEntries: typeof allPocketCheckData[0]['checkEntries'] = [];
+        let allSealChecks: Record<string, { sealed: boolean; sealNumber?: string }> = {};
+        let allOxygenReadings: Record<string, string> = {};
+        const allNotes: string[] = [];
+
+        for (const pocketData of allPocketCheckData) {
+          allCheckEntries.push(...pocketData.checkEntries);
+          if (pocketData.sealChecks) {
+            allSealChecks = { ...allSealChecks, ...pocketData.sealChecks };
+          }
+          if (pocketData.oxygenReadings) {
+            allOxygenReadings = { ...allOxygenReadings, ...pocketData.oxygenReadings };
+          }
+          if (pocketData.notes) {
+            allNotes.push(pocketData.notes);
+          }
+        }
+
+        // Log the complete checkout once with all items from all pockets.
+        // logStatpackCheckOff handles BOTH logging and statpack document update
+        // inside a single Firestore transaction — no separate updateDoc needed.
+        await logStatpackCheckOff({
+          statpackId: selectedPack.id,
+          statpackName: selectedPack.name,
+          action: 'checkout',
+          userId: user.uid,
+          userName: user.displayName || user.email || 'Unknown',
+          checkEntries: allCheckEntries,
+          sealChecks: Object.keys(allSealChecks).length > 0 ? allSealChecks : undefined,
+          oxygenReadings: Object.keys(allOxygenReadings).length > 0 ? allOxygenReadings : undefined,
+          notes: allNotes.length > 0 ? allNotes.join(' | ') : undefined,
         });
       }
-    } catch (e) {
-      console.error('Failed to mark statpack as checked out', e);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('Failed to complete checkout', e);
+      setIsSubmitting(false);
+      setErrorMessage(msg);
+      return; // Don't redirect on error
     }
+
+    setIsSubmitting(false);
 
     checkoffDisclosure.onClose();
     setSelectedPack(null);
     setSelectedPocketId(null);
     setCompletedPockets([]);
+    setAllPocketCheckData([]); // Clear collected pocket data
     // Redirect to dashboard after successful checkout
     setTimeout(() => router.push('/dashboard'), 500);
   };
@@ -599,6 +653,11 @@ export default function CheckoutPage() {
           action="checkout"
           userId={user.uid}
           userName={user.displayName || user.email || 'Unknown User'}
+          skipLogging={true}
+          onDataCollected={async (data) => {
+            // Collect check data from this pocket for later logging
+            setAllPocketCheckData(prev => [...prev, data]);
+          }}
           onCheckOffComplete={() => {
             // If this was a full-pack verification and there are no compartments, finish the checkout
             if (!selectedPocketId && selectedPack?.compartments && selectedPack.compartments.length === 0) {
@@ -626,11 +685,89 @@ export default function CheckoutPage() {
             if (pocketsWithContent.length > 0 && remaining.length > 0) {
               pocketDisclosure.onOpen();
             } else {
-              handleCheckOffComplete();
+              handleAllPocketsComplete();
             }
           }}
         />
       )}
+
+      {/* Final Review Modal */}
+      <Modal isOpen={showReview} onOpenChange={setShowReview} backdrop="blur" size="lg" placement="center">
+        <ModalContent>
+          <ModalHeader>Confirm Checkout</ModalHeader>
+          <ModalBody className="gap-3">
+            {errorMessage && (
+              <Card className="bg-danger-50 border border-danger-200">
+                <CardBody>
+                  <p className="text-danger text-sm font-medium">{errorMessage}</p>
+                </CardBody>
+              </Card>
+            )}
+
+            <Card className="bg-default-100">
+              <CardBody className="gap-2">
+                <p className="font-semibold text-lg">{selectedPack?.name}</p>
+                <p className="text-sm text-default-600">Checked by: {user?.displayName || user?.email}</p>
+              </CardBody>
+            </Card>
+
+            {/* Summary of verification */}
+            {(() => {
+              const allEntries = allPocketCheckData.flatMap(p => p.checkEntries);
+              const totalItems = allEntries.length;
+              const okItems = allEntries.filter(e => e.ok).length;
+              const mismatchItems = allEntries.filter(e => !e.ok).length;
+              const expiredItems = allEntries.filter(e => {
+                if (!e.expirationDate) return false;
+                return new Date(e.expirationDate).getTime() < Date.now();
+              }).length;
+
+              return (
+                <div className="grid grid-cols-2 gap-3">
+                  <Card className="bg-success-50">
+                    <CardBody className="text-center py-3">
+                      <p className="text-2xl font-bold text-success">{okItems}</p>
+                      <p className="text-xs text-success-600">Items OK</p>
+                    </CardBody>
+                  </Card>
+                  <Card className="bg-default-50">
+                    <CardBody className="text-center py-3">
+                      <p className="text-2xl font-bold">{totalItems}</p>
+                      <p className="text-xs text-default-600">Total Items</p>
+                    </CardBody>
+                  </Card>
+                  {mismatchItems > 0 && (
+                    <Card className="bg-warning-50">
+                      <CardBody className="text-center py-3">
+                        <p className="text-2xl font-bold text-warning">{mismatchItems}</p>
+                        <p className="text-xs text-warning-600">Count Mismatches</p>
+                      </CardBody>
+                    </Card>
+                  )}
+                  {expiredItems > 0 && (
+                    <Card className="bg-danger-50">
+                      <CardBody className="text-center py-3">
+                        <p className="text-2xl font-bold text-danger">{expiredItems}</p>
+                        <p className="text-xs text-danger-600">Expired Items</p>
+                      </CardBody>
+                    </Card>
+                  )}
+                </div>
+              );
+            })()}
+
+            <p className="text-xs text-default-500 text-center">
+              By confirming, you take responsibility for this statpack and its contents.
+            </p>
+          </ModalBody>
+          <ModalFooter className="flex justify-between">
+            <Button variant="light" onPress={() => setShowReview(false)}>Go Back</Button>
+            <Button color="primary" isLoading={isSubmitting} onPress={handleCheckOffComplete}>
+              Confirm Checkout
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
     </>
   );
 }

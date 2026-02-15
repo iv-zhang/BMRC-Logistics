@@ -42,6 +42,7 @@ interface StatpackWidgetProps {
   onDuplicate?: (pack: Statpack) => void;
   onScan?: (pack: Statpack) => void;
   onGenerateQr?: (pack: Statpack) => void;
+  onEditAsset?: (assetInstanceId: string) => void;
 }
 
 const pocketOrder: { key: StatpackPocket; label: string }[] = [
@@ -72,6 +73,7 @@ export default function StatpackWidget({
   onDuplicate,
   onScan,
   onGenerateQr,
+  onEditAsset,
 }: StatpackWidgetProps) {
   const [selectedPocket, setSelectedPocket] = useState<StatpackPocket | 'all'>('all');
   const [showActivity, setShowActivity] = useState(false);
@@ -159,7 +161,17 @@ export default function StatpackWidget({
                 <div className="space-y-2">
                   {itemsByPocket.slice(0, 6).map((item, idx) => (
                     <div key={`${item.itemId}-${idx}`} className="flex items-center justify-between gap-2 text-xs">
-                      <span className="truncate">{item.itemDetails?.name || item.itemId}</span>
+                      {item.assetInstanceId ? (
+                        <button
+                          type="button"
+                          className="truncate text-left text-sm text-default-700 hover:underline"
+                          onClick={() => onEditAsset?.(item.assetInstanceId as string)}
+                        >
+                          {item.itemDetails?.name || item.itemId}
+                        </button>
+                      ) : (
+                        <span className="truncate">{item.itemDetails?.name || item.itemId}</span>
+                      )}
                       <Chip size="sm" variant="flat" color="default">
                         {item.currentQuantity ?? 0}/{item.requiredQuantity ?? 0}
                       </Chip>

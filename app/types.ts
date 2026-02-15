@@ -339,12 +339,25 @@ export interface StatpackLog {
   statpackId: string;
   statpackName: string;
   action: 'checkout' | 'checkin' | 'restock' | 'created' | 'maintenance';
+  pairId?: string; // Explicit pairing between checkout + checkin
+  quickCheckin?: boolean; // True when member used quick check-in (no items used)
   userId: string;
   userName: string;
   timestamp: Date | FieldValue;
+  clientTimestamp?: Date; // Client-side time for immediate display
   notes?: string;
   mismatchResolutions?: MismatchResolution[];
   validationWarnings?: ValidationWarning[];
+  
+  // Summary statistics for admin audit review
+  summary?: {
+    totalItems: number;
+    verifiedCount: number;
+    mismatchCount: number;
+    expiredCount: number;
+    restockedCount?: number; // Items that were restocked during check-in
+    shelfEmptyCount?: number; // Items where restock shelf was empty
+  };
   
   // Digital Check-Off: structured per-item check entries
   checkEntries?: {
@@ -370,6 +383,9 @@ export interface StatpackLog {
       oxygenPsi?: number;
       notes?: string;
     };
+    // Restock tracking during check-in: what the member did when an item was short
+    restockStatus?: 'restocked' | 'shelf_empty' | 'not_needed';
+    restockNotes?: string; // Free-text note about restock attempt
   }[];
   
   // Detailed Issue Tracking

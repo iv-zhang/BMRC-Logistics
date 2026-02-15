@@ -268,15 +268,13 @@ export default function SortableStatpackContentList({
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
       <SortableContext items={itemIds} strategy={verticalListSortingStrategy}>
-        <Table aria-label="Sortable statpack contents">
-          <TableHeader>
-            <TableColumn> </TableColumn>
-            <TableColumn>Item</TableColumn>
-            <TableColumn>Quantity</TableColumn>
-            <TableColumn>Pocket</TableColumn>
-            <TableColumn>Actions</TableColumn>
-          </TableHeader>
-          <TableBody>
+        <div className="flex flex-col">
+          <div className="hidden md:flex items-center gap-3 px-3 py-2 text-xs text-default-500 border-b border-default-200">
+            <div className="w-8"></div>
+            <div className="flex-1">Item</div>
+            <div className="w-40 text-right">Quantity / Pocket</div>
+          </div>
+          <div>
             {items.map((item, idx) => (
               <SortableStatpackItem
                 key={item.itemId || `item-${idx}`}
@@ -284,12 +282,12 @@ export default function SortableStatpackContentList({
                 index={idx}
                 onUpdate={onUpdateItem}
                 onRemove={onRemoveItem}
-                      onAttachAsset={onAttachAsset}
-                      onEditAssetPolicy={onEditAssetPolicy}
+                onAttachAsset={onAttachAsset}
+                onEditAssetPolicy={onEditAssetPolicy}
               />
             ))}
-          </TableBody>
-        </Table>
+          </div>
+        </div>
       </SortableContext>
     </DndContext>
   );

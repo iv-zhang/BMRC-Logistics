@@ -20,7 +20,7 @@ import { logStatpackCheckOff, verifyAssetAgainstRules } from '@/app/lib/inventor
 import { parseGs1Barcode } from '@/app/lib/gs1';
 import type { Statpack, ValidationWarning } from '@/app/types';
 import BarcodeScanner from './barcode-scanner';
-import { ScanLine, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react';
+import { ScanLine, CheckCircle2, XCircle, AlertTriangle, PackageOpen, AlertCircle, RefreshCw } from 'lucide-react';
 
 interface StatpackCheckOffModalProps {
   isOpen: boolean;
@@ -35,6 +35,15 @@ interface StatpackCheckOffModalProps {
   checkinUsageMode?: boolean;
   // Callback for quick check-in when user reports they used nothing.
   onQuickCheckIn?: () => void;
+  // When true, collect check data but don't log it. Caller is responsible for logging.
+  skipLogging?: boolean;
+  // Called with check entries when skipLogging is true. Caller handles logging.
+  onDataCollected?: (params: {
+    checkEntries: Parameters<typeof logStatpackCheckOff>[0]['checkEntries'];
+    sealChecks?: Record<string, { sealed: boolean; sealNumber?: string }>;
+    oxygenReadings?: Record<string, string>;
+    notes?: string;
+  }) => Promise<void>;
 }
 
 /**
@@ -57,6 +66,8 @@ export default function StatpackCheckOffModal({
   onCheckOffComplete,
   checkinUsageMode,
   onQuickCheckIn,
+  skipLogging = false,
+  onDataCollected,
 }: StatpackCheckOffModalProps) {
   const { role } = useUserRole();
   const isAdmin = role === 'admin' || role === 'quartermaster';
@@ -73,6 +84,10 @@ export default function StatpackCheckOffModal({
   const [validationWarnings, setValidationWarnings] = useState<ValidationWarning[]>([]);
   const [pendingComplete, setPendingComplete] = useState(false);
   
+  // Restock tracking state for check-in flow
+  const [restockStatuses, setRestockStatuses] = useState<Record<string, 'restocked' | 'shelf_empty' | null>>({});
+  const [restockNotes, setRestockNotes] = useState<Record<string, string>>({});
+
   // Asset verification state
   const [scanningItemId, setScanningItemId] = useState<string | null>(null);
   const [itemVerifications, setItemVerifications] = useState<Record<string, {
@@ -220,6 +235,9 @@ export default function StatpackCheckOffModal({
           serialNumber: item.serialNumber,
           expirationDate: item.expirationDate,
           notes: '',
+          // Include restock tracking data when checking in
+          restockStatus: restockStatuses[item.itemId] ?? (counted < item.requiredQuantity ? undefined : 'not_needed' as const),
+          restockNotes: restockNotes[item.itemId] || undefined,
         };
         
         if (checkinUsageMode && used) {
@@ -228,12 +246,38 @@ export default function StatpackCheckOffModal({
         return baseEntry;
       }) as Parameters<typeof logStatpackCheckOff>[0]['checkEntries'];
 
+      // If skipLogging is true, collect the data and let the caller handle logging
+      if (skipLogging) {
+        await onDataCollected?.({
+          checkEntries,
+          sealChecks: isAdmin && Object.keys(sealChecks).length > 0 ? sealChecks : undefined,
+          oxygenReadings: isAdmin && Object.keys(oxygenReadings).length > 0 ? oxygenReadings : undefined,
+          notes: notes || undefined,
+        });
+
+        // Show success message inline
+        if (isAdmin) {
+          setInlineAlert({ type: 'success', message: `✓ Pocket verified for ${statpack.name}.` });
+        } else {
+          setInlineAlert({ type: 'success', message: `✓ Pocket verification recorded for ${statpack.name}.` });
+        }
+
+        // Close modal and call callback after brief delay
+        setTimeout(() => {
+          setInlineAlert(null);
+          onCheckOffComplete?.();
+          handleClose();
+        }, 1200);
+        return;
+      }
+
       const result = await logStatpackCheckOff({
         statpackId: statpack.id,
         statpackName: statpack.name,
         action,
         userId,
         userName,
+        userRole: role || undefined,
         checkEntries,
         // Only include seal/oxygen details for admin audits; lightweight member verifications omit them
         sealChecks: isAdmin && Object.keys(sealChecks).length > 0 ? sealChecks : undefined,
@@ -267,9 +311,17 @@ export default function StatpackCheckOffModal({
         onCheckOffComplete?.();
         handleClose();
       }, 1200);
-    } catch (e) {
-      console.error('Failed to log check-off:', e);
-      setInlineAlert({ type: 'error', message: 'Error saving check-off. Try again.' });
+    } catch (e: unknown) {
+      // Log full error for debugging
+      const error = e instanceof Error ? e : new Error(String(e));
+      console.error('Failed to log check-off:', error.stack || error);
+      const msg = error.message || String(e);
+      // For admins show the detailed message to aid debugging; otherwise show generic.
+      if (isAdmin) {
+        setInlineAlert({ type: 'error', message: `Error saving check-off: ${msg}` });
+      } else {
+        setInlineAlert({ type: 'error', message: 'Error saving check-off. Try again.' });
+      }
     } finally {
       setSubmitting(false);
     }
@@ -280,6 +332,8 @@ export default function StatpackCheckOffModal({
     setCheckedItems(new Set());
     setSealChecks({});
     setOxygenReadings({});
+    setRestockStatuses({});
+    setRestockNotes({});
     // asset condition tracking temporarily disabled
     setNotes('');
     setValidationWarnings([]);
@@ -304,9 +358,10 @@ export default function StatpackCheckOffModal({
 
   if (!statpack) return null;
 
-  const allItemsChecked = statpack.contents?.every(item =>
-    checkedItems.has(item.itemId)
-  );
+  const totalItems = statpack.contents?.length || 0;
+  const checkedCount = statpack.contents?.filter(item => checkedItems.has(item.itemId)).length || 0;
+  const allItemsChecked = totalItems > 0 && checkedCount === totalItems;
+  const progressPct = totalItems > 0 ? Math.round((checkedCount / totalItems) * 100) : 0;
 
   return (
     <Modal isOpen={isOpen} onOpenChange={onOpenChange} backdrop="blur" size="2xl" placement="center">
@@ -374,12 +429,12 @@ export default function StatpackCheckOffModal({
 
           <Divider />
 
-          {validationWarnings.length > 0 && (
+          {validationWarnings.filter(w => w.severity !== 'info').length > 0 && (
             <Card className="bg-warning-50 border border-warning-200">
               <CardBody className="gap-2">
                 <p className="font-semibold text-sm text-warning-700">Validation Warnings</p>
                 <div className="flex flex-col gap-2">
-                  {validationWarnings.map((w, idx) => (
+                  {validationWarnings.filter(w => w.severity !== 'info').map((w, idx) => (
                     <div key={`${w.itemId || 'item'}-${idx}`} className="text-xs">
                       <div className="flex items-center gap-2 mb-1">
                         <Chip 
@@ -403,7 +458,39 @@ export default function StatpackCheckOffModal({
 
           {/* Item Verification Section */}
           <div className="gap-2 flex flex-col">
-            <p className="font-semibold text-md">Contents Verification</p>
+            {/* Progress bar */}
+            <div className="w-full">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-medium text-default-600">{checkedCount}/{totalItems} items verified</span>
+                <span className="text-xs font-medium text-default-600">{progressPct}%</span>
+              </div>
+              <div className="w-full bg-default-200 rounded-full h-2">
+                <div
+                  className={`h-2 rounded-full transition-all duration-300 ${allItemsChecked ? 'bg-success' : 'bg-primary'}`}
+                  style={{ width: `${progressPct}%` }}
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <p className="font-semibold text-md">Contents Verification</p>
+              {isAdmin && (
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="light" onPress={() => {
+                    // Mark all items as checked and set counts to requiredQuantity
+                    const allIds = (statpack?.contents || []).map(i => i.itemId).filter(Boolean) as string[];
+                    const counts: Record<string, number> = {};
+                    (statpack?.contents || []).forEach(it => {
+                      counts[it.itemId] = checkinUsageMode ? (checkCounts[it.itemId] ?? 1) : (it.requiredQuantity ?? 1);
+                    });
+                    setCheckCounts(counts);
+                    setCheckedItems(new Set(allIds));
+                    // clear any previous inline alerts
+                    setInlineAlert(null);
+                  }}>Check all</Button>
+                </div>
+              )}
+            </div>
             {(statpack.contents || []).map(item => {
               const itemId = item.itemId;
               const isChecked = checkedItems.has(itemId);
@@ -450,6 +537,75 @@ export default function StatpackCheckOffModal({
                         {item.expirationDate && (
                           <p className={`text-xs ${new Date(item.expirationDate).getTime() < Date.now() ? 'text-danger font-semibold' : 'text-default-500'}`}>
                             Expires: {new Date(item.expirationDate).toLocaleDateString()}
+                          </p>
+                        )}
+
+                        {/* Restock Action Panel — shown during check-in when item count is short */}
+                        {action === 'checkin' && !ok && isChecked && (
+                          <div className="mt-2 p-3 rounded-lg bg-warning-50 dark:bg-warning-900/20 border border-warning-200 dark:border-warning-700 space-y-2" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex items-center gap-2">
+                              <AlertCircle size={14} className="text-warning-600" />
+                              <p className="text-xs font-semibold text-warning-800 dark:text-warning-200">
+                                Short {item.requiredQuantity - counted}x — What did you do?
+                              </p>
+                            </div>
+                            <p className="text-xs text-warning-700 dark:text-warning-300">
+                              Go to the <strong>restock shelf</strong> (front area) and grab a replacement. If the shelf is empty, report it below.
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                              <Button
+                                size="sm"
+                                color={restockStatuses[itemId] === 'restocked' ? 'success' : 'default'}
+                                variant={restockStatuses[itemId] === 'restocked' ? 'solid' : 'flat'}
+                                startContent={<RefreshCw size={14} />}
+                                onPress={() => {
+                                  setRestockStatuses(prev => ({ ...prev, [itemId]: 'restocked' }));
+                                  // Auto-update count to required since they restocked
+                                  handleCountChange(itemId, item.requiredQuantity);
+                                }}
+                              >
+                                I restocked it ✓
+                              </Button>
+                              <Button
+                                size="sm"
+                                color={restockStatuses[itemId] === 'shelf_empty' ? 'danger' : 'default'}
+                                variant={restockStatuses[itemId] === 'shelf_empty' ? 'solid' : 'flat'}
+                                startContent={<PackageOpen size={14} />}
+                                onPress={() => setRestockStatuses(prev => ({ ...prev, [itemId]: 'shelf_empty' }))}
+                              >
+                                Shelf is empty
+                              </Button>
+                            </div>
+                            {restockStatuses[itemId] === 'restocked' && (
+                              <Card className="bg-success-50 dark:bg-success-900/20">
+                                <CardBody className="py-2 px-3">
+                                  <p className="text-xs text-success-700 dark:text-success-300">✓ Great! Count updated. Verify the replacement is correct.</p>
+                                </CardBody>
+                              </Card>
+                            )}
+                            {restockStatuses[itemId] === 'shelf_empty' && (
+                              <div className="space-y-2">
+                                <Card className="bg-danger-50 dark:bg-danger-900/20">
+                                  <CardBody className="py-2 px-3">
+                                    <p className="text-xs text-danger-700 dark:text-danger-300">⚠ Admin will be notified that the restock shelf needs to be refilled.</p>
+                                  </CardBody>
+                                </Card>
+                                <Input
+                                  size="sm"
+                                  placeholder="Optional: which item / any details"
+                                  value={restockNotes[itemId] || ''}
+                                  onValueChange={(v) => setRestockNotes(prev => ({ ...prev, [itemId]: v }))}
+                                  onClick={(e) => e.stopPropagation()}
+                                />
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Mismatch hint (when not yet checked but count manually lowered) */}
+                        {action === 'checkin' && !ok && !isChecked && (
+                          <p className="text-xs text-warning-600 mt-1 italic">
+                            ☝ Tap to verify, then choose a restock action
                           </p>
                         )}
                         
@@ -676,22 +832,6 @@ export default function StatpackCheckOffModal({
               rows={3}
             />
           </div>
-          {/* General Notes */}
-          <Divider />
-
-          <div className="gap-1 flex flex-col">
-            <label htmlFor="checkoff-notes" className="text-sm font-semibold">
-              Additional Notes
-            </label>
-            <textarea
-              id="checkoff-notes"
-              value={notes}
-              onChange={e => setNotes(e.target.value)}
-              placeholder="e.g., Items appear damaged, missing bag pocket..."
-              className="px-2 py-1 border rounded text-sm"
-              rows={3}
-            />
-          </div>
 
           </div>
         </ModalBody>
@@ -701,12 +841,16 @@ export default function StatpackCheckOffModal({
             Cancel
           </Button>
           <Button
-            color="primary"
+            color={allItemsChecked ? 'success' : 'primary'}
             onPress={pendingComplete ? handleAcknowledgeWarnings : handleSubmit}
             isLoading={submitting}
-            isDisabled={!pendingComplete && (isAdmin ? !allItemsChecked : false)}
+            isDisabled={!pendingComplete && !allItemsChecked}
           >
-            {pendingComplete ? 'Acknowledge & Continue' : (isAdmin ? (allItemsChecked ? '✓ Complete Audit' : 'Verify All Items') : 'Complete Verification')}
+            {pendingComplete
+              ? 'Acknowledge & Continue'
+              : allItemsChecked
+                ? '✓ Submit Verification'
+                : `Verify All Items (${checkedCount}/${totalItems})`}
           </Button>
         </ModalFooter>
       </ModalContent>

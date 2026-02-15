@@ -1,4 +1,4 @@
-import { collection, doc, getDoc, getDocs, writeBatch, serverTimestamp, addDoc, updateDoc, runTransaction, query, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, writeBatch, serverTimestamp, addDoc, updateDoc, runTransaction, query, where, orderBy, limit } from 'firebase/firestore';
 import { db } from '@/firebase';
 import type { InventoryItem, Statpack, StatpackItem, StatpackPocket, Container, BoxLog, StatpackLog, PurchaseInfo, ValidationWarning, AssetInstance, AssetCheckResult, StatpackAuditResult, AssetVerificationRules } from '@/app/types';
 import { recordAuditEvent, removeUndefined, deepRemoveUndefined } from '@/app/lib/audit';
@@ -240,12 +240,51 @@ export async function checkBoxSeal(params: {
 /**
  * Log a statpack check-off with detailed per-item entries
  */
+const generateStatpackPairId = () => {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return `pair_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+};
+
+const resolveStatpackPairId = async (params: {
+  statpackId: string;
+  action: 'checkout' | 'checkin' | 'maintenance';
+  pairId?: string;
+}) => {
+  const { statpackId, action, pairId } = params;
+
+  if (pairId) return pairId;
+  if (action === 'maintenance') return undefined;
+  if (action === 'checkout') return generateStatpackPairId();
+
+  try {
+    const q = query(
+      collection(db, 'statpack_logs'),
+      where('statpackId', '==', statpackId),
+      where('action', '==', 'checkout'),
+      orderBy('timestamp', 'desc'),
+      limit(1)
+    );
+    const snap = await getDocs(q);
+    const latest = snap.docs[0]?.data() as Partial<StatpackLog> | undefined;
+    if (latest?.pairId) return latest.pairId;
+  } catch (e) {
+    console.warn('resolveStatpackPairId: failed to lookup latest checkout', e);
+  }
+
+  return generateStatpackPairId();
+};
+
 export async function logStatpackCheckOff(params: {
   statpackId: string;
   statpackName: string;
   action: 'checkout' | 'checkin' | 'maintenance';
   userId: string;
   userName: string;
+  userRole?: string;
+  pairId?: string;
+  quickCheckin?: boolean; // When true, indicates a quick checkin (member reported no items used)
   checkEntries: {
     itemId: string;
     itemName?: string;
@@ -267,6 +306,9 @@ export async function logStatpackCheckOff(params: {
       oxygenPsi?: number;
       notes?: string;
     };
+    // Restock tracking during check-in
+    restockStatus?: 'restocked' | 'shelf_empty' | 'not_needed';
+    restockNotes?: string;
   }[];
   sealChecks?: Record<string, { sealed: boolean; sealNumber?: string }>;
   oxygenReadings?: Record<string, string>;
@@ -278,11 +320,16 @@ export async function logStatpackCheckOff(params: {
     action,
     userId,
     userName,
+    userRole,
+    pairId,
+    quickCheckin,
     checkEntries,
     sealChecks,
     oxygenReadings,
     notes,
   } = params;
+
+  const resolvedPairId = await resolveStatpackPairId({ statpackId, action, pairId });
 
   // Always validate statpack assignments for checkout/checkin to ensure assets are properly assigned
   const validationWarnings = await validateStatpackAssignments({
@@ -291,14 +338,20 @@ export async function logStatpackCheckOff(params: {
   });
 
   // Build base log object
-  const logData: Partial<StatpackLog> = {
+  const logData: Partial<StatpackLog> & { quickCheckin?: boolean; summary?: Record<string, number> } = {
     statpackId,
     statpackName,
     action,
+    pairId: resolvedPairId,
     userId,
     userName,
     timestamp: serverTimestamp(),
   };
+
+  // Mark quick checkins for admin audit visibility
+  if (quickCheckin) {
+    logData.quickCheckin = true;
+  }
 
   // Clean and attach check entries (remove undefined fields)
   logData.checkEntries = (checkEntries || []).map(ce => {
@@ -314,11 +367,14 @@ export async function logStatpackCheckOff(params: {
       serialNumber: ce.serialNumber,
       expirationDate: ce.expirationDate,
       notes: ce.notes,
-      checkedAt: serverTimestamp(),
+      // `checkedAt` will be set to the client `now` value after sanitization.
       checkedBy: userId,
       // Include per-asset condition fields
       assetCondition: ce.assetCondition,
       assetCheckResult: ce.assetCheckResult,
+      // Restock tracking
+      restockStatus: ce.restockStatus,
+      restockNotes: ce.restockNotes,
     };
     Object.keys(entry).forEach(k => { if (entry[k] === undefined) delete entry[k]; });
     return entry as any;
@@ -356,8 +412,87 @@ export async function logStatpackCheckOff(params: {
     logData.validationWarnings = validationWarnings;
   }
 
+  // Compute summary statistics for admin audit review
+  const totalItems = (checkEntries || []).length;
+  const verifiedCount = (checkEntries || []).filter(e => e.ok).length;
+  const mismatchCount = (checkEntries || []).filter(e => !e.ok).length;
+  const expiredCount = (checkEntries || []).filter(e => {
+    if (!e.expirationDate) return false;
+    return new Date(e.expirationDate).getTime() < Date.now();
+  }).length;
+  logData.summary = { totalItems, verifiedCount, mismatchCount, expiredCount };
+
   const sanitizedLog = deepRemoveUndefined(logData as any);
-  const logRef = await addDoc(collection(db, 'statpack_logs'), sanitizedLog as any);
+  // Use both serverTimestamp (canonical) and a client-side Date for immediate reads.
+  // serverTimestamp() is resolved server-side, but the client Date ensures the log
+  // reflects the actual time of the action (retroactive-safe).
+  const now = new Date();
+  sanitizedLog.timestamp = serverTimestamp();
+  sanitizedLog.clientTimestamp = now; // Fallback for immediate display before server resolves
+  // Also re-assign checkedAt in each checkEntry
+  if (Array.isArray(sanitizedLog.checkEntries)) {
+    for (const entry of sanitizedLog.checkEntries) {
+      entry.checkedAt = now;
+    }
+  }
+  // Write the log and update the statpack inside a transaction to avoid races.
+  const statpackRef = doc(db, 'statpacks', statpackId);
+  const newLogRef = doc(collection(db, 'statpack_logs'));
+
+  try {
+    await runTransaction(db, async (tx) => {
+      const sp = await tx.get(statpackRef);
+      if (!sp.exists()) throw new Error('Statpack not found');
+      const spData = sp.data() as any;
+
+      const isAdmin = userRole === 'admin' || userRole === 'quartermaster';
+
+      // Prevent checking out a statpack that is already checked out
+      if (action === 'checkout' && spData?.isCheckedOut) {
+        throw new Error('Statpack is already checked out');
+      }
+
+      // Enforce same-user checkin: only the user who checked out (or admin) can check in
+      if (action === 'checkin' && !isAdmin) {
+        if (spData?.assignedToUserId && spData.assignedToUserId !== userId) {
+          throw new Error('Only the user who checked out this statpack can check it in');
+        }
+      }
+
+      // Build statpack update payload
+      const statpackUpdate: Record<string, any> = {
+        lastCheckedBy: userName,
+        lastCheckedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+
+      if (action === 'checkout') {
+        statpackUpdate.isCheckedOut = true;
+        statpackUpdate.status = 'In Use';
+        statpackUpdate.checkedOutAt = serverTimestamp();
+        statpackUpdate.assignedToUserId = userId;
+        statpackUpdate.assignedToUserName = userName;
+      } else if (action === 'checkin') {
+        statpackUpdate.isCheckedOut = false;
+        statpackUpdate.status = 'Ready';
+        statpackUpdate.checkedOutAt = null;
+        statpackUpdate.assignedToUserId = null;
+        statpackUpdate.assignedToUserName = null;
+      }
+
+      // Use transaction to write the new log and update the statpack document.
+      const txLog = { ...sanitizedLog } as any;
+      // Ensure serverTimestamp sentinel fields remain present for server resolution
+      txLog.timestamp = serverTimestamp();
+      txLog.clientTimestamp = now;
+
+      tx.set(newLogRef, txLog);
+      tx.update(statpackRef, statpackUpdate);
+    });
+  } catch (e: any) {
+    console.warn('logStatpackCheckOff: Transaction failed', e);
+    throw e;
+  }
 
   await logValidationWarningsToCollections({
     warnings: validationWarnings,
@@ -367,7 +502,7 @@ export async function logStatpackCheckOff(params: {
     userName,
   });
 
-  return { logRef, validationWarnings };
+  return { logRef: newLogRef, validationWarnings };
 }
 
 function resolveAssetInstance(item: InventoryItem, serial?: string): { matched: boolean; instance?: AssetInstance } {
@@ -480,14 +615,19 @@ export async function validateStatpackAssignments(params: {
     const serial = entry.serialNumber?.trim();
 
     if (!item) {
-      warnings.push({
-        warningType: 'missing_asset',
-        severity: 'info', // Cannot determine if asset without item doc
-        itemId: entry.itemId,
-        itemName: entry.itemName,
-        serialNumber: serial,
-        message: `Inventory item not found for ${entry.itemName || entry.itemId}.`,
-      });
+      // Only warn about missing inventory items for serialized/asset entries.
+      // Non-asset items (disposables, consumables) may not have matching inventory docs
+      // until a full inventory audit is performed — skip these to avoid noise.
+      if (serial) {
+        warnings.push({
+          warningType: 'missing_asset',
+          severity: 'warning',
+          itemId: entry.itemId,
+          itemName: entry.itemName,
+          serialNumber: serial,
+          message: `Inventory item not found for ${entry.itemName || entry.itemId}.`,
+        });
+      }
       continue;
     }
 
@@ -1363,13 +1503,12 @@ export async function performStatpackManualAudit(params: {
     updatedAt: serverTimestamp(),
   });
 
-  await addDoc(collection(db, 'statpack_logs'), deepRemoveUndefined({
+  const maintenanceLogPayload: Record<string, unknown> = deepRemoveUndefined({
     statpackId,
     statpackName: statpack.name,
     action: 'maintenance',
     userId: user.id,
     userName: user.fullName || 'Unknown',
-    timestamp: serverTimestamp(),
     checkEntries: checks.map((c) => ({
       itemId: c.itemId,
       itemName: c.itemName,
@@ -1380,7 +1519,10 @@ export async function performStatpackManualAudit(params: {
     })),
     validationWarnings,
     notes: overallNotes,
-  }));
+  });
+  // Assign timestamp after sanitization to preserve the FieldValue sentinel
+  maintenanceLogPayload.timestamp = serverTimestamp();
+  await addDoc(collection(db, 'statpack_logs'), maintenanceLogPayload);
 
   await logValidationWarningsToCollections({
     warnings: validationWarnings,
