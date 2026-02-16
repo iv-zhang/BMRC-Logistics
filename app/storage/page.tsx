@@ -346,6 +346,7 @@ export default function StoragePage() {
                     <TableHeader>
                       <TableColumn>Name</TableColumn>
                       <TableColumn>Zone</TableColumn>
+                      <TableColumn>Levels</TableColumn>
                       <TableColumn>Capacity</TableColumn>
                       <TableColumn>Barcode</TableColumn>
                       <TableColumn>Actions</TableColumn>
@@ -357,6 +358,7 @@ export default function StoragePage() {
                           <TableRow key={s.id}>
                             <TableCell>{s.name}</TableCell>
                             <TableCell>{zone?.name || '—'}</TableCell>
+                            <TableCell>{s.numberOfLevels || '—'}</TableCell>
                             <TableCell>{s.capacity || '—'}</TableCell>
                             <TableCell className="text-xs text-gray-500">{s.barcode ? `${s.barcode.substring(0, 10)}...` : '—'}</TableCell>
                             <TableCell>

@@ -29,6 +29,8 @@ export interface User {
   fullName: string;
   email: string;
   role: 'admin' | 'member' | 'FTO' | 'quartermaster' | 'inventory_helper';
+  /** When true, this member can perform inventory audits even if not admin/quartermaster */
+  canAudit?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -69,6 +71,21 @@ export interface InventoryVariant {
   requiresExpirationCheck?: boolean;
 }
 
+// --- BATCH STATUS ---
+export type BatchStatus = 'sealed' | 'open' | 'depleted' | 'expired' | 'quarantined';
+
+// --- STORAGE LOCATION REFERENCE ---
+/** Structured reference to a storage zone/shelf/level/container from Storage Management */
+export interface StorageLocationRef {
+  zoneId?: string;
+  zoneName?: string;       // denormalized for display
+  shelfId?: string;
+  shelfName?: string;      // denormalized
+  level?: number;          // which level on the shelf
+  containerId?: string;
+  containerName?: string;  // denormalized
+}
+
 export interface InventoryBatch {
   id: string;
   lotNumber?: string;
@@ -77,8 +94,24 @@ export interface InventoryBatch {
   // When an item has variants, a batch must belong to a specific variant
   variantId?: string;
   stock: number;
+
+  // --- BAG / SUBDIVISION TRACKING ---
+  /** How many items are in each bag/box for THIS specific batch (supplier may vary between orders) */
+  itemsPerBag?: number;
+  /** Number of sealed bags in this batch (source-of-truth count) */
+  bagCount?: number;
+  /** Loose individual items not in a complete bag (e.g., partially used bag) */
+  looseItems?: number;
+  /** Lifecycle status of this batch */
+  status?: BatchStatus;
+  /** When the first bag in this batch was opened */
+  openedAt?: Date;
+  /** User ID of person who opened this batch */
+  openedBy?: string;
+
   // optional metadata for a batch (receivedAt, supplier, notes)
   receivedAt?: Date;
+  supplier?: string;
   notes?: string;
   requiresFIFO?: boolean; // Flag to enforce oldest-first picking
   // Purchase/vendor tracking for this batch
@@ -110,6 +143,8 @@ export interface InventoryItem {
   // Stock Levels - Box-Based Tracking
   unopenedBoxes: number; // Number of unopened boxes
   itemsPerBox?: number;  // Optional: how many items in one box
+  /** Loose individual units not in a complete box (e.g., partial box after subdivision) */
+  looseUnits?: number;
   reorderThreshold: number;   
   // Par levels per location (optional): { locationId: minimumQuantity }
   parByLocation?: Record<string, number>;
@@ -122,6 +157,13 @@ export interface InventoryItem {
   room?: HQRoom;
   shelf?: string;
   bin?: string;
+  /** Back-room shelf identifier (e.g., "Shelf A") */
+  backShelf?: string;
+  /** Back-room shelf level/row number (e.g., 1 = top, 2 = second, etc.) */
+  backLevel?: number;
+
+  /** Structured storage location from Storage Management (zone → shelf → level → container) */
+  storageLocation?: StorageLocationRef;
 
   // UI / metadata
   unit?: string; // e.g., 'box' or 'count'
@@ -535,6 +577,10 @@ export interface Shelf {
   zoneId?: string | null;
   capacity?: number | null;
   barcode?: string | null;
+  /** Number of levels/rows on this shelf (e.g., 4 for a 4-tier shelf) */
+  numberOfLevels?: number;
+  /** Optional label per level (e.g., ["Top", "Middle", "Bottom"]) */
+  levelLabels?: string[];
   createdAt?: Date;
   updatedAt?: Date;
 }

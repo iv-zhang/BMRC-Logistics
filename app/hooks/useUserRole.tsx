@@ -41,6 +41,7 @@ export function useUserRole(): UseUserRoleReturn {
               email: data.email || currentUser.email || '',
               fullName: data.fullName || currentUser.displayName || 'Unknown User',
               role: data.role || 'member',
+              canAudit: data.canAudit === true,
               createdAt: data.createdAt?.toDate() || new Date(),
               updatedAt: data.updatedAt?.toDate() || new Date(),
             });

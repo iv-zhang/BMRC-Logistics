@@ -69,9 +69,13 @@ export function preparePayload(data: any, opts?: { uniqueId?: () => string }) {
     });
     payload.batches = normBatches;
 
-    const hasBatchExpirations = normBatches.some((b: any) => !!b.expirationDate || !!b.lotNumber || !!b.serialized || (Array.isArray(b.serialNumbers) && b.serialNumbers.length > 0));
+    const hasBatchData = normBatches.some((b: any) =>
+      !!b.expirationDate || !!b.lotNumber || !!b.serialized ||
+      (Array.isArray(b.serialNumbers) && b.serialNumbers.length > 0) ||
+      b.bagCount !== undefined || b.itemsPerBag !== undefined
+    );
     payload.totalStockQuantity = normBatches.reduce((acc: number, b: any) => acc + Number(b.stock ?? 0), 0);
-    if (!hasBatchExpirations) {
+    if (!hasBatchData) {
       // treat as static-tracked
       delete payload.batches;
     }

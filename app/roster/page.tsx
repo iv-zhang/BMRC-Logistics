@@ -15,9 +15,11 @@ import {
   Card,
   CardBody,
   Spinner,
-  Divider
+  Divider,
+  Switch,
+  Tooltip
 } from '@heroui/react';
-import { Users } from 'lucide-react';
+import { Users, ClipboardCheck } from 'lucide-react';
 import { collection, getDocs, doc, updateDoc } from 'firebase/firestore';
 import { db } from '@/firebase'; // Assuming your firebase config export
 import type { User } from '@/app/types'; // Adjust path based on your folder structure
@@ -35,6 +37,7 @@ const ROLE_OPTIONS: Array<{ label: string; value: User['role']; color: RoleChipC
 const COLUMNS = [
   { name: "MEMBER", uid: "member" },
   { name: "CURRENT ROLE", uid: "role" },
+  { name: "AUDIT ACCESS", uid: "audit" },
   { name: "DELEGATE ROLE", uid: "actions" },
 ];
 
@@ -80,6 +83,22 @@ export default function RosterPage() {
     }
   };
 
+  const handleCanAuditToggle = async (userId: string, currentValue: boolean) => {
+    setUpdatingId(userId);
+    try {
+      const userRef = doc(db, 'users', userId);
+      await updateDoc(userRef, { canAudit: !currentValue });
+      setUsers(prev => prev.map(u =>
+        u.id === userId ? { ...u, canAudit: !currentValue } : u
+      ));
+    } catch (error) {
+      console.error("Error updating audit access:", error);
+      alert("Failed to update audit access. Check console.");
+    } finally {
+      setUpdatingId(null);
+    }
+  };
+
   const renderCell = React.useCallback((user: User, columnKey: React.Key) => {
     const cellValue = user[columnKey as keyof User];
 
@@ -100,6 +119,24 @@ export default function RosterPage() {
           <Chip className="capitalize" color={roleConfig.color} size="sm" variant="flat">
             {user.role}
           </Chip>
+        );
+      case "audit":
+        // Admins and quartermasters always have audit access (no toggle needed)
+        const inheritsAudit = user.role === 'admin' || user.role === 'quartermaster';
+        return (
+          <div className="flex items-center gap-2">
+            <Tooltip content={inheritsAudit ? `${user.role} role always has audit access` : (user.canAudit ? 'Can perform supply audits' : 'No audit access')}>
+              <Switch
+                size="sm"
+                color="secondary"
+                isSelected={inheritsAudit || (user.canAudit === true)}
+                isDisabled={inheritsAudit || updatingId === user.id}
+                onValueChange={() => handleCanAuditToggle(user.id, user.canAudit === true)}
+                startContent={<ClipboardCheck size={14} />}
+              />
+            </Tooltip>
+            {updatingId === user.id && <Spinner size="sm" />}
+          </div>
         );
       case "actions":
         return (

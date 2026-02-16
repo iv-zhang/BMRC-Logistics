@@ -302,6 +302,7 @@ export default function DashboardPage() {
           <p className="text-gray-600 dark:text-gray-400 mt-2">
             Overview of fleet readiness and supply levels
           </p>
+          {/* Audit & restock buttons moved to inventory page per requirements */}
         </div>
         <Divider />
 

@@ -34,7 +34,7 @@ import {
   ArrowRightOnRectangleIcon,
   ExclamationTriangleIcon
 } from '@heroicons/react/24/outline';
-import { ClipboardCheck } from 'lucide-react';
+
 import IssueReportForm from './IssueReportForm';
 
 export default function AppNavbar() {
@@ -153,21 +153,7 @@ export default function AppNavbar() {
             </Tooltip>
           </NavbarItem>
 
-          {/* Supply Ledger - Admin Only (standalone tab) */}
-          {isAdmin && (
-            <NavbarItem isActive={isActive('/audit/events')}>
-              <Tooltip content="Supply Ledger">
-                <Link 
-                  href="/audit/events" 
-                  color={isActive('/audit/events') ? 'primary' : 'foreground'}
-                  className={isActive('/audit/events') ? 'font-semibold' : 'text-gray-500 dark:text-gray-400'}
-                >
-                  <ClipboardCheck className="w-5 h-5 mr-1 inline-block" />
-                  Supply Ledger
-                </Link>
-              </Tooltip>
-            </NavbarItem>
-          )}
+
 
           <Dropdown>
             <NavbarItem>
@@ -193,7 +179,7 @@ export default function AppNavbar() {
             <Dropdown>
               <NavbarItem>
                 <DropdownTrigger>
-                  <button className={`flex items-center ${isActive('/inventory') || isActive('/restock') || isActive('/restock-stats') || isActive('/audit/events') ? 'font-semibold text-primary' : 'text-gray-500 dark:text-gray-400'}`}>
+                  <button className={`flex items-center ${isActive('/inventory') || isActive('/restock') || isActive('/restock-stats') ? 'font-semibold text-primary' : 'text-gray-500 dark:text-gray-400'}`}>
                     <CubeIcon className="w-5 h-5 mr-1" />
                     Inventory
                   </button>
@@ -203,14 +189,14 @@ export default function AppNavbar() {
                 <DropdownItem key="inventory" onClick={() => router.push('/inventory')}>
                   View Inventory
                 </DropdownItem>
+                <DropdownItem key="audit" onClick={() => router.push('/audit')}>
+                  Supply Audit
+                </DropdownItem>
                 <DropdownItem key="restock" onClick={() => router.push('/restock')}>
                   Restock Items
                 </DropdownItem>
                 <DropdownItem key="restock-stats" onClick={() => router.push('/restock-stats')}>
                   Restock Stats
-                </DropdownItem>
-                <DropdownItem key="logs" onClick={() => router.push('/audit/events')}>
-                  Supply Ledger
                 </DropdownItem>
                 <DropdownItem key="storage" onClick={() => router.push('/storage')}>
                   Storage Management
@@ -341,9 +327,9 @@ export default function AppNavbar() {
             <span className="font-semibold">Inventory</span>
             <div className="ml-4 space-y-1">
               <Link href="/inventory" className="block">View Inventory</Link>
+              <Link href="/audit" className="block">Supply Audit</Link>
               <Link href="/restock" className="block">Restock Items</Link>
               <Link href="/restock-stats" className="block">Restock Stats</Link>
-              <Link href="/audit/events" className="block">Supply Ledger</Link>
               <Link href="/storage" className="block">Storage Management</Link>
             </div>
           </NavbarMenuItem>

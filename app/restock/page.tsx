@@ -18,6 +18,9 @@ export default function RestockPage() {
   const [selectedItemId, setSelectedItemId] = useState('');
   const [location, setLocation] = useState(LOCATIONS[0]);
   const [locationDetail, setLocationDetail] = useState(LOCATION_MAP[LOCATIONS[0]][0]);
+  const [frontRoom, setFrontRoom] = useState('');
+  const [frontShelf, setFrontShelf] = useState('');
+  const [frontLevel, setFrontLevel] = useState('');
   const [pendingCount, setPendingCount] = useState<number>(0);
 
   const [opLoading, setOpLoading] = useState(false);
@@ -66,11 +69,14 @@ export default function RestockPage() {
         itemId: selectedItemId || null,
         location,
         locationDetail: locationDetail || null,
+        frontRoom: frontRoom || null,
+        frontShelf: frontShelf || null,
+        frontLevel: frontLevel ? Number(frontLevel) : null,
         pendingCount: Number(pendingCount) || 0,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
-      setName(''); setSelectedItemId(''); setLocation(LOCATIONS[0]); setLocationDetail(LOCATION_MAP[LOCATIONS[0]][0]); setPendingCount(0);
+      setName(''); setSelectedItemId(''); setLocation(LOCATIONS[0]); setLocationDetail(LOCATION_MAP[LOCATIONS[0]][0]); setFrontRoom(''); setFrontShelf(''); setFrontLevel(''); setPendingCount(0);
     } catch (e) {
       console.error(e);
     }
@@ -258,8 +264,9 @@ export default function RestockPage() {
         if (!shelfData.itemId && resolvedItemId) shelfUpdates.itemId = resolvedItemId;
         tx.update(shelfRef, shelfUpdates);
         if (invRef && newQty !== null) {
-          console.debug('Transaction will update inventory', { itemId, invQty: (invRef ? undefined : undefined), qty, newQty });
+          console.debug('Transaction will update inventory', { itemId, qty, newQty });
           if (inv && Array.isArray(inv.batches) && inv.batches.length > 0) {
+            // Sync both fields: unopenedBoxes stays as-is (handled by consumeBox), totalStockQuantity = batch sum
             tx.update(invRef, { totalStockQuantity: newQty, batches: inv.batches, updatedAt: serverTimestamp() });
           } else {
             tx.update(invRef, { totalStockQuantity: newQty, updatedAt: serverTimestamp() });
@@ -334,9 +341,14 @@ export default function RestockPage() {
               </div>
             </div>
             <div className="mt-3 flex items-center gap-3">
-              <Input type="number" label="Initial Pending" value={String(pendingCount)} onValueChange={(v: any) => setPendingCount(Number(v) || 0)} />
+              <Input type="number" label="Initial Pending" value={String(pendingCount)} onValueChange={(v: any) => setPendingCount(Number(v) || 0)} className="max-w-[140px]" />
               <div className="flex-1" />
               <Button color="primary" onPress={createShelf} isLoading={opLoading}>Create Shelf</Button>
+            </div>
+            <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 bg-amber-50 dark:bg-amber-900/10 p-3 rounded-lg border border-amber-100">
+              <Input label="Front Room" placeholder="e.g., Reception, Main Hall" value={frontRoom} onValueChange={setFrontRoom} description="Which room in the front" />
+              <Input label="Front Shelf" placeholder="e.g., Wall Shelf A" value={frontShelf} onValueChange={setFrontShelf} description="Which shelf/rack" />
+              <Input label="Level" type="number" placeholder="e.g., 1 (top)" value={frontLevel} onValueChange={setFrontLevel} description="Shelf level" />
             </div>
           </Card>
         </div>
@@ -366,7 +378,14 @@ export default function RestockPage() {
                     <div className="p-3 bg-white/80 dark:bg-slate-800/80 rounded-md grid grid-cols-[1fr_auto] items-center cursor-pointer" onClick={() => toggleShelfLog(s)}>
                     <div>
                       <div className="text-lg font-semibold">{s.name}</div>
-                      <div className="text-sm text-gray-500 mt-1">{s.location}{s.locationDetail ? ' — ' + s.locationDetail : ''}</div>
+                      <div className="text-sm text-gray-500 mt-1">
+                        {s.location}{s.locationDetail ? ' — ' + s.locationDetail : ''}
+                        {(s.frontRoom || s.frontShelf || s.frontLevel) && (
+                          <span className="ml-2 text-indigo-500">
+                            [{[s.frontRoom, s.frontShelf, s.frontLevel ? `Level ${s.frontLevel}` : ''].filter(Boolean).join(', ')}]
+                          </span>
+                        )}
+                      </div>
                       <div className="flex items-center gap-2 mt-2">
                         <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-indigo-50 text-indigo-700 dark:bg-slate-700 dark:text-white">Last: {formatDate(s.lastRestockedAt)}</span>
                         {s.itemId ? <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-slate-100 text-gray-700 dark:bg-slate-700 dark:text-white">Item: {(inventoryOptions.find((i:any)=>i.id===s.itemId)?.name) || s.itemId}</span> : null}
@@ -458,6 +477,11 @@ export default function RestockPage() {
                     <Select label="Location Detail" selectedKeys={[activeShelf?.locationDetail || (LOCATION_MAP[activeShelf?.location || LOCATIONS[0]]?.[0] || '')]} onSelectionChange={(keys: any) => { const v = Array.from(keys)[0] as string; setActiveShelf((s: any) => ({ ...s, locationDetail: v })); }}>
                       {(LOCATION_MAP[activeShelf?.location || location] || []).map(d => <SelectItem key={d} textValue={d}>{d}</SelectItem>)}
                     </Select>
+                  </div>
+                  <div className="grid grid-cols-3 gap-3 bg-amber-50 dark:bg-amber-900/10 p-3 rounded-lg border border-amber-100">
+                    <Input label="Front Room" placeholder="e.g., Reception" value={activeShelf?.frontRoom || ''} onValueChange={(v: any) => setActiveShelf((s: any) => ({ ...s, frontRoom: v }))} />
+                    <Input label="Front Shelf" placeholder="e.g., Wall Shelf A" value={activeShelf?.frontShelf || ''} onValueChange={(v: any) => setActiveShelf((s: any) => ({ ...s, frontShelf: v }))} />
+                    <Input label="Level" type="number" placeholder="e.g., 1" value={activeShelf?.frontLevel?.toString() || ''} onValueChange={(v: any) => setActiveShelf((s: any) => ({ ...s, frontLevel: v ? Number(v) : null }))} />
                   </div>
                 </div>
               </ModalBody>

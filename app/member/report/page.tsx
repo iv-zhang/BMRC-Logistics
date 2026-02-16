@@ -56,6 +56,9 @@ export default function MemberReportPage() {
   const [itemId, setItemId] = useState('');
   const [location, setLocation] = useState<'HQ/Storage' | 'Statpack' | 'Other'>('HQ/Storage');
   const [locationDetail, setLocationDetail] = useState('');
+  const [frontRoom, setFrontRoom] = useState('');
+  const [frontShelf, setFrontShelf] = useState('');
+  const [frontLevel, setFrontLevel] = useState('');
   const [statpackName, setStatpackName] = useState('');
   const [quantity, setQuantity] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
@@ -127,6 +130,9 @@ export default function MemberReportPage() {
         itemName: item?.name || (reportType === 'open_box' ? 'Untracked/Open Box' : 'Unknown Item'),
         location,
         locationDetail: locationDetail || null,
+        frontRoom: frontRoom || null,
+        frontShelf: frontShelf || null,
+        frontLevel: frontLevel ? Number(frontLevel) : null,
         userId: user.uid,
         userName: userData.fullName,
         createdAt: serverTimestamp(),
@@ -427,6 +433,34 @@ export default function MemberReportPage() {
                 value={locationDetail}
                 onValueChange={setLocationDetail}
               />
+            )}
+
+            {/* Precise front location (room / shelf / level) */}
+            {location === 'HQ/Storage' && (
+              <div className="grid grid-cols-3 gap-3 bg-amber-50 dark:bg-amber-900/10 p-3 rounded-lg border border-amber-100">
+                <Input
+                  label="Room"
+                  placeholder="e.g., Reception"
+                  size="sm"
+                  value={frontRoom}
+                  onValueChange={setFrontRoom}
+                />
+                <Input
+                  label="Shelf"
+                  placeholder="e.g., Wall Shelf A"
+                  size="sm"
+                  value={frontShelf}
+                  onValueChange={setFrontShelf}
+                />
+                <Input
+                  label="Level"
+                  type="number"
+                  placeholder="e.g., 2"
+                  size="sm"
+                  value={frontLevel}
+                  onValueChange={setFrontLevel}
+                />
+              </div>
             )}
 
             {location === 'Statpack' && locationDetail && (

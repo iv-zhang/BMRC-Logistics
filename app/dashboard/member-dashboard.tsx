@@ -33,6 +33,7 @@ import {
   PackageCheck,
   Clock,
   AlertTriangle,
+  ClipboardCheck,
 } from 'lucide-react';
 
 interface InventorySnapshot {
@@ -391,6 +392,23 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
                 </Card>
               </>
             ) : null}
+
+            {/* Audit button — visible to anyone with audit permission */}
+            {(userData.canAudit || role === 'admin' || role === 'quartermaster' || role === 'inventory_helper') && (
+              <Card
+                isPressable
+                onPress={() => router.push('/audit')}
+                className="bg-gradient-to-br from-teal-500 to-cyan-600 text-white hover:scale-105 transition-transform"
+              >
+                <CardBody className="flex flex-col items-center justify-center py-4 md:py-8 gap-2 md:gap-3">
+                  <ClipboardCheck size={36} className="md:w-12 md:h-12" />
+                  <h3 className="text-sm md:text-xl font-bold">Audit</h3>
+                  <p className="text-xs md:text-sm text-center opacity-90 hidden md:block">
+                    Count boxes & verify
+                  </p>
+                </CardBody>
+              </Card>
+            )}
           </div>
         </section>
 

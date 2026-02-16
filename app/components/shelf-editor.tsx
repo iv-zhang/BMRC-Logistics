@@ -28,6 +28,7 @@ export default function ShelfEditor({ shelf, zones, isOpen, onOpenChange, onSave
   const [zoneId, setZoneId] = useState<string | undefined>(undefined);
   const [capacity, setCapacity] = useState<number | undefined>(undefined);
   const [barcode, setBarcode] = useState<string | undefined>(undefined);
+  const [numberOfLevels, setNumberOfLevels] = useState<number | undefined>(undefined);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -36,11 +37,13 @@ export default function ShelfEditor({ shelf, zones, isOpen, onOpenChange, onSave
       setZoneId(shelf.zoneId || undefined);
       setCapacity(shelf.capacity ?? undefined);
       setBarcode(shelf.barcode ?? undefined);
+      setNumberOfLevels(shelf.numberOfLevels ?? undefined);
     } else {
       setName('');
       setZoneId(undefined);
       setCapacity(undefined);
       setBarcode(undefined);
+      setNumberOfLevels(undefined);
     }
   }, [shelf, isOpen]);
 
@@ -58,6 +61,7 @@ export default function ShelfEditor({ shelf, zones, isOpen, onOpenChange, onSave
           zoneId: zoneId || null,
           capacity: capacity ?? null,
           barcode: barcode || null,
+          numberOfLevels: numberOfLevels ?? null,
           updatedAt: serverTimestamp(),
         } as any);
       } else {
@@ -66,6 +70,7 @@ export default function ShelfEditor({ shelf, zones, isOpen, onOpenChange, onSave
           zoneId: zoneId || null,
           capacity: capacity ?? null,
           barcode: barcode || null,
+          numberOfLevels: numberOfLevels ?? null,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         } as any);
@@ -111,6 +116,17 @@ export default function ShelfEditor({ shelf, zones, isOpen, onOpenChange, onSave
             <div>
               <label className="text-xs text-gray-600">Barcode</label>
               <Input value={barcode ?? ''} onValueChange={(v) => setBarcode(v || undefined)} />
+            </div>
+
+            <div>
+              <label className="text-xs text-gray-600">Number of Levels</label>
+              <Input
+                type="number"
+                placeholder="e.g., 4 for a 4-tier shelf"
+                value={numberOfLevels != null ? String(numberOfLevels) : ''}
+                onValueChange={(v) => setNumberOfLevels(v ? Number(v) : undefined)}
+                description="How many levels/tiers does this shelf have?"
+              />
             </div>
           </div>
         </ModalBody>

@@ -1,7 +1,7 @@
 "use client";
 import React, { useEffect, useMemo, useState } from 'react';
 import { Spinner, Button, Input, Card, CardBody, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Textarea } from '@heroui/react';
-import { Plus, Camera } from 'lucide-react';
+import { Plus, Camera, Box } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import {
   collection,
@@ -293,7 +293,10 @@ export default function StackAuditClient({ zone, zoneLabel, onClose }: Props) {
       <Card className="mb-3">
         <CardBody className="p-4">
           <div className="text-xl font-bold mb-2">{current.name}</div>
-          <div className="mb-4 text-sm text-gray-500">System: {current.totalStockQuantity ?? 0}</div>
+          <div className="mb-4 text-sm text-gray-500 flex items-center gap-1">
+            <Box size={14} /> System: {current.unopenedBoxes ?? 0} box{(current.unopenedBoxes ?? 0) !== 1 ? 'es' : ''}
+            {(current.itemsPerBox ?? 0) > 1 && <span className="text-gray-400 ml-1">({current.itemsPerBox} per box)</span>}
+          </div>
 
           {/* Count Control */}
           <div className="mb-4">
@@ -451,20 +454,20 @@ export default function StackAuditClient({ zone, zoneLabel, onClose }: Props) {
               {Object.entries(staged).map(([id, s]) => {
                 const it = items.find(x => x.id === id);
                 if (!it) return null;
-                const sys = Number(it.totalStockQuantity ?? 0);
-                const counted = Number(s.counted ?? sys);
-                const diff = counted - sys;
+                const sysBoxes = Number(it.unopenedBoxes ?? 0);
+                const counted = Number(s.counted ?? sysBoxes);
+                const diff = counted - sysBoxes;
                 return (
                   <div key={id} className="p-2 border rounded">
                     <div className="font-semibold">{it.name}</div>
-                    <div className="text-sm">System: {sys} — You: {counted} — Delta: {diff>0? `+${diff}`: diff}</div>
+                    <div className="text-sm">System: {sysBoxes} boxes — You: {counted} boxes — Delta: {diff>0? `+${diff}`: diff}</div>
                   </div>
                 );
               })}
               {foundItems.length > 0 && (
                 <div className="pt-2">
                   <div className="font-semibold">Found Items</div>
-                  {foundItems.map((f, i) => <div key={i} className="text-sm">{f.name} — {f.totalStockQuantity}</div>)}
+                  {foundItems.map((f, i) => <div key={i} className="text-sm">{f.name} — {f.unopenedBoxes ?? f.totalStockQuantity} boxes</div>)}
                 </div>
               )}
             </div>
@@ -489,7 +492,7 @@ function QuickCapture({ onAdd }: { onAdd: (p: any) => void }) {
 
   const submit = () => {
     if (!name) { alert('Name required'); return; }
-    onAdd({ name, totalStockQuantity: Number(qty || 0), expirationDate: exp || undefined, photoName: photo?.name, barcode: barcode || undefined });
+    onAdd({ name, unopenedBoxes: Number(qty || 0), totalStockQuantity: Number(qty || 0), expirationDate: exp || undefined, photoName: photo?.name, barcode: barcode || undefined });
     setName(''); setQty(1); setExp(''); setPhoto(null);
   };
 

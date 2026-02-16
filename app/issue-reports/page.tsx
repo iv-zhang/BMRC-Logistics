@@ -506,7 +506,14 @@ export default function IssueReportsPage() {
 
                       {item._source === 'restock' && item.raw && (item.raw.statpackName || item.raw.location) && (
                         <div className="flex items-center gap-1 bg-blue-50 dark:bg-blue-900/20 px-2 py-0.5 rounded">
-                          <span>{item.raw.statpackName ?? item.raw.location}{item.raw.locationDetail ? ` • ${item.raw.locationDetail}` : ''}</span>
+                          <span>
+                            {item.raw.statpackName ?? item.raw.location}{item.raw.locationDetail ? ` • ${item.raw.locationDetail}` : ''}
+                            {(item.raw.frontRoom || item.raw.frontShelf || item.raw.frontLevel) && (
+                              <span className="ml-1 text-indigo-600 dark:text-indigo-400">
+                                [{[item.raw.frontRoom, item.raw.frontShelf, item.raw.frontLevel ? `Level ${item.raw.frontLevel}` : ''].filter(Boolean).join(', ')}]
+                              </span>
+                            )}
+                          </span>
                         </div>
                       )}
                     </div>

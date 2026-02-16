@@ -5,6 +5,7 @@ import {
   Card,
   CardBody,
   Button,
+  Chip,
   Spinner,
   useDisclosure,
   Modal,
@@ -16,7 +17,7 @@ import {
   Select,
   SelectItem,
 } from '@heroui/react';
-import { Package, Clipboard } from 'lucide-react';
+import { Package, Clipboard, AlertTriangle } from 'lucide-react';
 import QRCode from 'qrcode';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { collection, onSnapshot, query, orderBy, updateDoc, doc, serverTimestamp, getDoc, getDocs, where, documentId } from 'firebase/firestore';
@@ -598,6 +599,47 @@ export default function StatpacksListPage() {
     );
   }
 
+  // ── Expiration warnings for items inside statpacks ─────────────────────
+  const expirationWarnings = (() => {
+    const now = new Date();
+    const in30Days = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+    const warnings: { packName: string; packId: string; itemName: string; expirationDate: Date; isExpired: boolean }[] = [];
+
+    for (const pack of statpacks) {
+      for (const item of (pack.contents || [])) {
+        let expDate: Date | null = null;
+        if (item.expirationDate) {
+          const d = item.expirationDate instanceof Date
+            ? item.expirationDate
+            : typeof (item.expirationDate as Record<string, unknown>)?.toDate === 'function'
+              ? (item.expirationDate as unknown as { toDate: () => Date }).toDate()
+              : new Date(item.expirationDate as unknown as string);
+          if (!isNaN(d.getTime())) expDate = d;
+        }
+        if (!expDate && item.effectiveExpiration) {
+          const d = item.effectiveExpiration instanceof Date
+            ? item.effectiveExpiration
+            : typeof (item.effectiveExpiration as Record<string, unknown>)?.toDate === 'function'
+              ? (item.effectiveExpiration as unknown as { toDate: () => Date }).toDate()
+              : new Date(item.effectiveExpiration as unknown as string);
+          if (!isNaN(d.getTime())) expDate = d;
+        }
+
+        if (expDate && expDate <= in30Days) {
+          warnings.push({
+            packName: pack.name || 'Unknown Pack',
+            packId: pack.id || '',
+            itemName: item.itemDetails?.name || 'Unknown Item',
+            expirationDate: expDate,
+            isExpired: expDate < now,
+          });
+        }
+      }
+    }
+
+    return warnings.sort((a, b) => a.expirationDate.getTime() - b.expirationDate.getTime());
+  })();
+
   return (
     <div className="min-h-screen p-6 bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
       <div className="max-w-6xl mx-auto space-y-6">
@@ -616,6 +658,43 @@ export default function StatpacksListPage() {
           <p className="text-sm text-default-500 text-center py-6">No statpacks</p>
         ) : (
           <>
+            {/* Expiration warnings for items inside statpacks */}
+            {expirationWarnings.length > 0 && (
+              <Card className="border border-danger-200 bg-danger-50 dark:bg-danger-50/10">
+                <CardBody className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle size={18} className="text-danger-600" />
+                    <h2 className="text-sm font-semibold text-danger-700 dark:text-danger-400">
+                      Expiring Items in Statpacks ({expirationWarnings.length})
+                    </h2>
+                  </div>
+                  <div className="space-y-1 max-h-48 overflow-y-auto">
+                    {expirationWarnings.map((w, i) => (
+                      <div
+                        key={`exp-${i}`}
+                        className="flex items-center justify-between rounded-lg border border-danger-100 bg-white dark:bg-default-100 px-3 py-2"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Chip
+                            size="sm"
+                            variant="flat"
+                            color={w.isExpired ? 'danger' : 'warning'}
+                          >
+                            {w.isExpired ? 'Expired' : 'Expiring Soon'}
+                          </Chip>
+                          <span className="text-sm font-medium truncate">{w.itemName}</span>
+                          <span className="text-xs text-default-500">in {w.packName}</span>
+                        </div>
+                        <span className={`text-xs font-medium ${w.isExpired ? 'text-danger' : 'text-warning-600'}`}>
+                          {w.expirationDate.toLocaleDateString()}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </CardBody>
+              </Card>
+            )}
+
             {/* Currently Checked Out dashboard */}
             {(() => {
               const checkedOut = statpacks.filter(p => p.isCheckedOut);
