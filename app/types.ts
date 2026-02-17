@@ -299,6 +299,15 @@ export interface AssetVerificationRules {
   advisoryOnly?: boolean;
 }
 
+// Custom admin-configurable warning for statpack items (shown during checkout)
+export interface StatpackWarning {
+  id: string;
+  message: string;
+  severity: 'info' | 'warning' | 'critical';
+  /** When true, the person checking out must acknowledge this warning before proceeding */
+  requiresAcknowledgment?: boolean;
+}
+
 export interface StatpackItem {
   itemId: string;
   itemDetails?: InventoryItem;
@@ -325,6 +334,8 @@ export interface StatpackItem {
   itemValue?: number;
   // Optional verification rules for this specific statpack item (admin-configurable)
   verificationRules?: AssetVerificationRules;
+  // Admin-configurable custom warnings shown during checkout (e.g., "Verify glucose strips match glucometer brand")
+  customWarnings?: StatpackWarning[];
 }
 
 export interface Statpack {
@@ -645,7 +656,59 @@ export interface InventoryLog {
   details?: Record<string, any>; // Catch-all for additional event data
 }
 
+// --- BUY LIST (Admin Shopping List) ---
+export interface BuyListItem {
+  id?: string;
+  itemName: string;
+  quantity?: number;
+  unit?: string; // 'boxes', 'each', 'cases', etc.
+  category?: ItemCategory | string;
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  notes?: string;
+  /** Optional link to existing inventory item */
+  linkedInventoryId?: string;
+  status: 'pending' | 'ordered' | 'received';
+  addedBy: string; // userId
+  addedByName?: string;
+  addedAt: Date | FieldValue;
+  orderedAt?: Date | FieldValue;
+  receivedAt?: Date | FieldValue;
+  completedBy?: string;
+  completedByName?: string;
+}
+
 // --- BUG REPORTS & ISSUE TRACKING ---
+
+// --- LOGISTICS TASK LIST ---
+export type TaskCategory = 'buy' | 'fix' | 'restock' | 'admin' | 'other';
+export interface TaskItem {
+  id?: string;
+  title: string;
+  description?: string;
+  category: TaskCategory;
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  status: 'todo' | 'in_progress' | 'done';
+  /** For buy-type tasks: quantity and unit */
+  quantity?: number;
+  unit?: string;
+  /** Optional link to inventory item */
+  linkedInventoryId?: string;
+  /** Optional link to buy list item */
+  linkedBuyListId?: string;
+  /** Who created it */
+  createdBy: string;
+  createdByName?: string;
+  assignedTo?: string;
+  assignedToName?: string;
+  dueDate?: Date | null;
+  completedAt?: Date | FieldValue | null;
+  completedBy?: string;
+  completedByName?: string;
+  createdAt: Date | FieldValue;
+  updatedAt?: Date | FieldValue;
+  notes?: string;
+}
+
 export interface IssueReport {
   id?: string;
   reporter: {

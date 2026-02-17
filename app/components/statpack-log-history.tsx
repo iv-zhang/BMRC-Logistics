@@ -110,6 +110,11 @@ export default function StatpackLogHistory({ isOpen, onOpenChange, statpackId, s
                     const checkinEntries = item.checkin?.checkEntries?.length || 0;
                     const checkoutOk = item.checkout?.checkEntries?.filter(e => e.ok).length || 0;
                     const checkinOk = item.checkin?.checkEntries?.filter(e => e.ok).length || 0;
+                    
+                    // Check for low O₂ readings in checkout
+                    const lowO2 = item.checkout?.checkEntries?.some(e => 
+                      e.assetCheckResult?.oxygenPsi !== undefined && e.assetCheckResult.oxygenPsi < 1800
+                    );
 
                     return (
                       <Card
@@ -128,6 +133,9 @@ export default function StatpackLogHistory({ isOpen, onOpenChange, statpackId, s
                               </Chip>
                               {duration !== null && (
                                 <Chip size="sm" variant="flat" className="text-xs">{formatDuration(duration)}</Chip>
+                              )}
+                              {lowO2 && (
+                                <Chip size="sm" variant="flat" color="warning" className="text-xs">⚠️ Low O₂</Chip>
                               )}
                             </div>
                             <span className="text-xs text-default-500 whitespace-nowrap">

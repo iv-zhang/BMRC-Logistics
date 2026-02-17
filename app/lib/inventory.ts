@@ -1663,7 +1663,11 @@ export async function assignBarcode(params: {
       let previousBarcode: string | undefined;
       const historyEntry = {
         value: normalizedBarcode,
-        assignedAt: serverTimestamp(),
+        // serverTimestamp() cannot be used inside arrays/arrayUnion in writes.
+        // Use client-side Date for history entries inside arrays and keep
+        // `updatedAt`/`timestamp` fields set to serverTimestamp() at the
+        // top-level doc for canonical server time.
+        assignedAt: new Date(),
         assignedBy: { id: user.id, name: user.fullName },
       };
 
@@ -1748,7 +1752,7 @@ export async function assignBarcode(params: {
         ? `Reassigned barcode from ${result.previousBarcode} to ${normalizedBarcode}`
         : `Assigned barcode ${normalizedBarcode}`,
     };
-    await addDoc(collection(db, 'inventory_logs'), removeUndefined(logEntry));
+    await addDoc(collection(db, 'inventory_logs'), deepRemoveUndefined(logEntry) as any);
 
     // Step 5: Create audit event
     await recordAuditEvent({

@@ -16,13 +16,14 @@ import {
   Input,
   Select,
   SelectItem,
+  Tooltip,
 } from '@heroui/react';
-import { Package, Clipboard, AlertTriangle } from 'lucide-react';
+import { Package, Clipboard, AlertTriangle, ClipboardList, FileSpreadsheet } from 'lucide-react';
 import QRCode from 'qrcode';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { collection, onSnapshot, query, orderBy, updateDoc, doc, serverTimestamp, getDoc, getDocs, where, documentId } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
-import type { Statpack, StatpackPocket } from '@/app/types';
+import type { Statpack, StatpackPocket, StatpackItem } from '@/app/types';
 import StatpackCheckOffModal from '@/app/components/statpack-checkoff-modal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import { BagVisualizer } from '@/app/components/statpackvisualizer';
@@ -32,6 +33,7 @@ import AssetAttachModal from '@/app/components/asset-attach-modal';
 import AssetModal from '@/app/components/assetmodal';
 import StatpackWidget from '@/app/components/statpack-widget';
 import StatpackLogHistory from '@/app/components/statpack-log-history';
+import StatpackImportModal from '@/app/components/statpack-import-modal';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { duplicateStatpack } from '@/app/lib/statpacks';
 import { fetchAndEnrichItemDetails } from '@/app/lib/inventory';
@@ -51,6 +53,7 @@ export default function StatpacksListPage() {
   const [checkoffAction, setCheckoffAction] = useState<'checkin' | 'maintenance' | 'checkout'>('checkin');
   const auditModalDisclosure = useDisclosure();
   const [auditTarget, setAuditTarget] = useState<Statpack | null>(null);
+  const importModalDisclosure = useDisclosure();
 
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scannerTarget, setScannerTarget] = useState<Statpack | null>(null);
@@ -200,12 +203,14 @@ export default function StatpacksListPage() {
   };
 
   const addNewContentItem = () => {
+    // Use the currently viewed pocket if filtered, otherwise fall back to the pocket dropdown
+    const targetPocket = selectedPocketView !== 'all' ? selectedPocketView : attachPocket;
     const newItem = {
       itemId: `new-${Date.now()}`,
       itemDetails: { name: 'New Item', createdAt: new Date(), updatedAt: new Date() },
       requiredQuantity: 1,
       currentQuantity: 0,
-      pocket: 'main',
+      pocket: targetPocket || 'main',
       compartmentId: undefined,
       batchId: '',
       itemValue: 0,
@@ -225,6 +230,15 @@ export default function StatpacksListPage() {
       const contents = Array.isArray(base.contents) ? [...base.contents] : [];
       contents.splice(index, 1);
       return ({ ...base, contents } as Statpack);
+    });
+  };
+
+  const handleImportComplete = (items: StatpackItem[]) => {
+    setEditingPack(prev => {
+      const base = prev || selectedPack;
+      if (!base) return prev;
+      const existingContents = Array.isArray(base.contents) ? [...base.contents] : [];
+      return { ...base, contents: [...existingContents, ...items] } as Statpack;
     });
   };
 
@@ -314,6 +328,7 @@ export default function StatpacksListPage() {
         if (it.requiresExpirationCheck !== undefined) ci.requiresExpirationCheck = it.requiresExpirationCheck;
         if (it.itemValue !== undefined) ci.itemValue = it.itemValue;
         if (it.verificationRules !== undefined) ci.verificationRules = it.verificationRules;
+        if (it.customWarnings !== undefined) ci.customWarnings = it.customWarnings;
         return ci;
       });
     }
@@ -551,12 +566,13 @@ export default function StatpacksListPage() {
       });
     } else {
       // No existing item targeted: create a new content item with this asset assigned
+      const targetPocket = selectedPocketView !== 'all' ? selectedPocketView : attachPocket;
       const newItem: Statpack['contents'][0] = {
         itemId: assetId, // Use asset ID as itemId for linking
         itemDetails: fullItemDetails as any,
         requiredQuantity: 1,
         currentQuantity: 1,
-        pocket: attachPocket as unknown as StatpackPocket,
+        pocket: targetPocket as unknown as StatpackPocket,
         compartmentId: undefined,
         batchId: '',
         assetInstanceId: assetId,
@@ -641,16 +657,16 @@ export default function StatpacksListPage() {
   })();
 
   return (
-    <div className="min-h-screen p-6 bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
-      <div className="max-w-6xl mx-auto space-y-6">
-        <div className="flex justify-between items-center">
+    <div className="min-h-screen p-3 md:p-6 bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
+      <div className="max-w-6xl mx-auto space-y-4 md:space-y-6">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
           <div className="flex items-center gap-2">
-            <Package className="text-indigo-600" />
-            <h1 className="text-2xl font-bold">Statpacks</h1>
+            <Package className="text-indigo-600" size={24} />
+            <h1 className="text-xl md:text-2xl font-bold">Statpacks</h1>
           </div>
           <div className="flex gap-2">
-            <Button variant="light" onPress={() => router.push('/assets')}>Back to Assets</Button>
-            <Button color="primary" onPress={() => router.push('/statpacks/new')}>Add Statpack</Button>
+            <Button variant="light" size="sm" onPress={() => router.push('/assets')}>Back to Assets</Button>
+            <Button color="primary" size="sm" onPress={() => router.push('/statpacks/new')}>Add Statpack</Button>
           </div>
         </div>
 
@@ -703,7 +719,7 @@ export default function StatpacksListPage() {
                 <Card className="border border-warning-200 bg-warning-50 dark:bg-warning-50/10">
                   <CardBody className="space-y-3">
                     <div className="flex items-center gap-2">
-                      <span className="text-lg">📋</span>
+                      <ClipboardList size={18} className="text-warning-600" />
                       <h2 className="text-sm font-semibold text-warning-700 dark:text-warning-400">
                         Currently Checked Out ({checkedOut.length})
                       </h2>
@@ -759,7 +775,7 @@ export default function StatpacksListPage() {
               );
             })()}
 
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 items-start">
+            <div className="grid gap-3 md:gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-3 items-start">
             {statpacks.map((p) => (
               <StatpackWidget
                 key={p.id}
@@ -830,7 +846,11 @@ export default function StatpacksListPage() {
                   <BagVisualizer
                     statpack={editingPack || selectedPack}
                     selectedPocket={selectedPocketView}
-                    onSelectPocket={(p) => setSelectedPocketView(p)}
+                    onSelectPocket={(p) => {
+                      setSelectedPocketView(p);
+                      // Sync the pocket dropdown so new items use this pocket
+                      if (p !== 'all') setAttachPocket(p as string);
+                    }}
                     completedPockets={new Set()}
                   />
                 </div>
@@ -857,20 +877,43 @@ export default function StatpacksListPage() {
 
                 {/* Contents editor: compact list with drag-to-reorder */}
                 <div>
-                  <div className="flex items-center justify-between">
-                    <p className="text-sm font-semibold">Contents</p>
+                  <div className="flex items-center justify-between flex-wrap gap-2">
                     <div className="flex items-center gap-2">
-                      <Select className="min-w-[140px]" selectedKeys={[attachPocket]} onChange={(e) => setAttachPocket(e.target.value)}>
+                      <p className="text-sm font-semibold">Contents</p>
+                      <Chip size="sm" variant="flat" color={selectedPocketView === 'all' ? 'default' : 'primary'}>
+                        {selectedPocketView === 'all' ? 'All Pockets' : selectedPocketView === 'main' ? 'Main' : selectedPocketView === 'front_aux' ? 'Front' : selectedPocketView === 'side_left' ? 'Left' : 'Right'}
+                      </Chip>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Select
+                        className="min-w-[140px]"
+                        label="Pocket"
+                        size="sm"
+                        selectedKeys={[selectedPocketView === 'all' ? attachPocket : selectedPocketView]}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setAttachPocket(val);
+                          // Also update the pocket view so they stay in sync
+                          setSelectedPocketView(val as any);
+                        }}
+                      >
                         <SelectItem key="main">Main</SelectItem>
                         <SelectItem key="front_aux">Front</SelectItem>
                         <SelectItem key="side_left">Left</SelectItem>
                         <SelectItem key="side_right">Right</SelectItem>
                       </Select>
-                      <Button size="sm" onPress={addNewContentItem}>Add Item</Button>
+                      <Button size="sm" color="primary" variant="flat" onPress={addNewContentItem}>+ Add Item</Button>
                       <Button size="sm" variant="light" onPress={() => { setAttachingItemIndex(null); setAttachingItemName(''); assetAttachDisclosure.onOpen(); }}>
                         <span className="text-sm mr-2">+</span>
                         Attach Asset
                       </Button>
+                      <Button size="sm" variant="light" onPress={() => importModalDisclosure.onOpen()}>
+                        <FileSpreadsheet size={14} className="mr-1" />
+                        Import from Sheets
+                      </Button>
+                      {selectedPocketView !== 'all' && (
+                        <Button size="sm" variant="light" color="default" onPress={() => { setSelectedPocketView('all'); }}>Show All</Button>
+                      )}
                     </div>
                   </div>
 
@@ -1110,6 +1153,13 @@ export default function StatpacksListPage() {
         onOpenChange={(open) => (open ? logHistoryDisclosure.onOpen() : logHistoryDisclosure.onClose())}
         statpackId={logHistoryPackId}
         statpackName={logHistoryPackName}
+      />
+
+      <StatpackImportModal
+        isOpen={importModalDisclosure.isOpen}
+        onOpenChange={importModalDisclosure.onOpenChange}
+        onImportComplete={handleImportComplete}
+        existingItems={editingPack?.contents || selectedPack?.contents || []}
       />
     </div>
   );

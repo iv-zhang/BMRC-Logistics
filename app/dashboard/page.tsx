@@ -290,16 +290,16 @@ export default function DashboardPage() {
 
   // Render admin dashboard below
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
-      <div className="max-w-7xl mx-auto space-y-8">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-3 md:p-6">
+      <div className="max-w-7xl mx-auto space-y-6 md:space-y-8">
         
         {/* --- Header --- */}
-        <div className="mb-6">
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-white flex items-center gap-3">
-            <Image src="/images/NewLogoWhiteLong_NoHeartbeat.PNG" alt="BMRC Logo" width={200} height={50} />
+        <div className="mb-4 md:mb-6">
+          <h1 className="text-xl md:text-3xl font-bold text-gray-900 dark:text-white flex items-center gap-3">
+            <Image src="/images/NewLogoWhiteLong_NoHeartbeat.PNG" alt="BMRC Logo" width={200} height={50} className="hidden sm:block" />
             Dashboard
           </h1>
-          <p className="text-gray-600 dark:text-gray-400 mt-2">
+          <p className="text-sm md:text-base text-gray-600 dark:text-gray-400 mt-2">
             Overview of fleet readiness and supply levels
           </p>
           {/* Audit & restock buttons moved to inventory page per requirements */}

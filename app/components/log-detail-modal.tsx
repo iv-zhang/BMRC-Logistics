@@ -133,7 +133,13 @@ const renderEntries = (log?: StatpackLog) => {
                   <span>Battery: {e.assetCheckResult.batteryPct}%</span>
                 )}
                 {e.assetCheckResult?.oxygenPsi !== undefined && (
-                  <span>O2: {e.assetCheckResult.oxygenPsi} PSI</span>
+                  <Chip 
+                    size="sm" 
+                    variant="flat" 
+                    color={e.assetCheckResult.oxygenPsi < 1800 ? 'warning' : 'default'}
+                  >
+                    O₂: {e.assetCheckResult.oxygenPsi} PSI
+                  </Chip>
                 )}
               </div>
               {e.notes && <div className="mt-1 text-default-500">Notes: {e.notes}</div>}

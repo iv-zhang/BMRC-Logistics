@@ -97,6 +97,9 @@ export default function StatpackCheckOffModal({
     warnings: ValidationWarning[];
   }>>({});
 
+  // Custom warning acknowledgment tracking
+  const [acknowledgedWarnings, setAcknowledgedWarnings] = useState<Set<string>>(new Set());
+
   // Initialize counts from expected quantities
   React.useEffect(() => {
     if (statpack?.contents) {
@@ -218,14 +221,50 @@ export default function StatpackCheckOffModal({
   const handleSubmit = async () => {
     if (!statpack) return;
 
+    // Validate O₂ PSI requirements before checkout
+    if (action === 'checkout') {
+      const oxygenItems = (statpack.contents || []).filter(item => item.itemDetails?.isOxygen);
+      const missingO2 = oxygenItems.filter(item => !oxygenReadings[item.itemId]);
+      
+      if (missingO2.length > 0) {
+        setInlineAlert({
+          type: 'error',
+          message: `O₂ PSI required for: ${missingO2.map(i => i.itemDetails?.name || 'Oxygen').join(', ')}`
+        });
+        setSubmitting(false);
+        return;
+      }
+      
+      // Check if any readings are below minimum threshold
+      const lowO2Items = oxygenItems.filter(item => {
+        const reading = Number(oxygenReadings[item.itemId]);
+        const minPsi = item.itemDetails?.verificationPolicy?.requireO2PsiMin || 1800;
+        return reading < minPsi;
+      });
+      
+      if (lowO2Items.length > 0 && !isAdmin) {
+        setInlineAlert({
+          type: 'error',
+          message: `O₂ PSI too low for: ${lowO2Items.map(i => i.itemDetails?.name || 'Oxygen').join(', ')}. Contact admin.`
+        });
+        setSubmitting(false);
+        return;
+      }
+    }
+
     setSubmitting(true);
     try {
       const checkEntries = (statpack.contents || []).map(item => {
         const counted = checkCounts[item.itemId] ?? (checkinUsageMode ? 1 : item.requiredQuantity);
         const used = checkinUsageMode ? checkedItems.has(item.itemId) : false;
-          const baseEntry = {
+        
+        // Build assetCheckResult if we have O₂ reading for this item
+        const o2Reading = oxygenReadings[item.itemId] ? Number(oxygenReadings[item.itemId]) : undefined;
+        const assetCheckResult = o2Reading !== undefined ? { oxygenPsi: o2Reading } : undefined;
+        
+        const baseEntry = {
           itemId: item.itemId,
-            itemName: item.itemDetails?.name || 'Unknown',
+          itemName: item.itemDetails?.name || 'Unknown',
           batchId: item.batchId,
           compartmentId: item.compartmentId,
           pocket: item.pocket,
@@ -235,6 +274,7 @@ export default function StatpackCheckOffModal({
           serialNumber: item.serialNumber,
           expirationDate: item.expirationDate,
           notes: '',
+          assetCheckResult,
           // Include restock tracking data when checking in
           restockStatus: restockStatuses[item.itemId] ?? (counted < item.requiredQuantity ? undefined : 'not_needed' as const),
           restockNotes: restockNotes[item.itemId] || undefined,
@@ -334,6 +374,7 @@ export default function StatpackCheckOffModal({
     setOxygenReadings({});
     setRestockStatuses({});
     setRestockNotes({});
+    setAcknowledgedWarnings(new Set());
     // asset condition tracking temporarily disabled
     setNotes('');
     setValidationWarnings([]);
@@ -503,6 +544,9 @@ export default function StatpackCheckOffModal({
               type ItemVerification = { scannedCode?: string; scannedExpiration?: Date; o2Psi?: number; warnings: ValidationWarning[] };
               const verification: ItemVerification | undefined = itemVerifications[itemId];
 
+              // Custom admin warnings for this item
+              const customWarnings = item.customWarnings || [];
+
               return (
                 <Card
                   key={itemId}
@@ -534,6 +578,49 @@ export default function StatpackCheckOffModal({
                           {item.pocket && <span className="bg-default-200/60 dark:bg-default-700/60 px-2 py-0.5 rounded">Pocket: {item.pocket.replace('_', ' ')}</span>}
                           {item.compartmentId && <span className="bg-default-200/60 dark:bg-default-700/60 px-2 py-0.5 rounded">Compartment: {item.compartmentId}</span>}
                         </div>
+
+                        {/* Custom admin warnings */}
+                        {customWarnings.length > 0 && (
+                          <div className="mt-2 space-y-1.5" onClick={(e) => e.stopPropagation()}>
+                            {customWarnings.map((cw) => {
+                              const isAcked = acknowledgedWarnings.has(cw.id);
+                              const bgColor = cw.severity === 'critical' ? 'bg-danger-50 border-danger-200' : cw.severity === 'warning' ? 'bg-warning-50 border-warning-200' : 'bg-primary-50 border-primary-200';
+                              const textColor = cw.severity === 'critical' ? 'text-danger-700' : cw.severity === 'warning' ? 'text-warning-700' : 'text-primary-700';
+                              const IconComp = cw.severity === 'critical' ? AlertCircle : cw.severity === 'warning' ? AlertTriangle : AlertTriangle;
+                              return (
+                                <div key={cw.id} className={`flex items-start gap-2 p-2 rounded-lg border ${bgColor} ${isAcked ? 'opacity-60' : ''}`}>
+                                  <IconComp size={16} className={`${textColor} mt-0.5 flex-shrink-0`} />
+                                  <div className="flex-1">
+                                    <p className={`text-xs font-semibold ${textColor}`}>
+                                      {cw.severity === 'critical' ? '⚠ ACTION REQUIRED' : cw.severity === 'warning' ? '⚠ Warning' : 'ℹ Note'}
+                                    </p>
+                                    <p className="text-xs text-default-700">{cw.message}</p>
+                                    {cw.requiresAcknowledgment && !isAcked && (
+                                      <Checkbox
+                                        size="sm"
+                                        className="mt-1"
+                                        isSelected={false}
+                                        onValueChange={() => {
+                                          setAcknowledgedWarnings(prev => {
+                                            const next = new Set(prev);
+                                            next.add(cw.id);
+                                            return next;
+                                          });
+                                        }}
+                                      >
+                                        <span className="text-xs">I have verified this</span>
+                                      </Checkbox>
+                                    )}
+                                    {isAcked && (
+                                      <Chip size="sm" color="success" variant="flat" className="mt-1">✓ Acknowledged</Chip>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+
                         {item.expirationDate && (
                           <p className={`text-xs ${new Date(item.expirationDate).getTime() < Date.now() ? 'text-danger font-semibold' : 'text-default-500'}`}>
                             Expires: {new Date(item.expirationDate).toLocaleDateString()}
@@ -796,16 +883,40 @@ export default function StatpackCheckOffModal({
 
           <Divider />
 
-          {/* Oxygen Readings (if any O2 items in pack) */}
-          {isAdmin && (statpack.contents || []).some(item => item.itemDetails?.isOxygen) && (
+          {/* Oxygen Readings (if any O2 items in pack) - REQUIRED for checkout */}
+          {(statpack.contents || []).some(item => item.itemDetails?.isOxygen) && action === 'checkout' && (
             <div className="gap-2 flex flex-col">
-              <p className="font-semibold text-md">Oxygen Cylinder PSI</p>
+              <p className="font-semibold text-md text-danger">Oxygen Cylinder PSI (Required) *</p>
+              <p className="text-xs text-default-500">Measure and enter PSI for each oxygen tank before checkout</p>
               {(statpack.contents || [])
                 .filter(item => item.itemDetails?.isOxygen)
                 .map(item => (
                   <Input
                     key={item.itemId}
-                    type="text"
+                    type="number"
+                    label={`${item.itemDetails?.name || 'Oxygen'} PSI`}
+                    value={oxygenReadings[item.itemId] || ''}
+                    onChange={e => handleOxygenReading(item.itemId, e.target.value)}
+                    placeholder="e.g., 2000"
+                    size="sm"
+                    isRequired
+                    min="0"
+                    max="3000"
+                    description={`Minimum required: ${item.itemDetails?.verificationPolicy?.requireO2PsiMin || 1800} PSI`}
+                  />
+                ))}
+            </div>
+          )}
+          {/* Admin-only O₂ display during checkin/maintenance */}
+          {isAdmin && (statpack.contents || []).some(item => item.itemDetails?.isOxygen) && action !== 'checkout' && (
+            <div className="gap-2 flex flex-col">
+              <p className="font-semibold text-md">Oxygen Cylinder PSI (Optional)</p>
+              {(statpack.contents || [])
+                .filter(item => item.itemDetails?.isOxygen)
+                .map(item => (
+                  <Input
+                    key={item.itemId}
+                    type="number"
                     label={`${item.itemDetails?.name || 'Oxygen'} PSI`}
                     value={oxygenReadings[item.itemId] || ''}
                     onChange={e => handleOxygenReading(item.itemId, e.target.value)}
@@ -840,18 +951,29 @@ export default function StatpackCheckOffModal({
           <Button color="default" onPress={handleClose}>
             Cancel
           </Button>
-          <Button
-            color={allItemsChecked ? 'success' : 'primary'}
-            onPress={pendingComplete ? handleAcknowledgeWarnings : handleSubmit}
-            isLoading={submitting}
-            isDisabled={!pendingComplete && !allItemsChecked}
-          >
-            {pendingComplete
-              ? 'Acknowledge & Continue'
-              : allItemsChecked
-                ? '✓ Submit Verification'
-                : `Verify All Items (${checkedCount}/${totalItems})`}
-          </Button>
+          {(() => {
+            // Compute unacknowledged critical custom warnings across all items
+            const allCustomWarnings = (statpack.contents || []).flatMap(i => (i.customWarnings || []));
+            const unackedCount = allCustomWarnings.filter(w => w.requiresAcknowledgment && !acknowledgedWarnings.has(w.id)).length;
+            const hasUnacked = unackedCount > 0;
+
+            return (
+              <Button
+                color={allItemsChecked && !hasUnacked ? 'success' : 'primary'}
+                onPress={pendingComplete ? handleAcknowledgeWarnings : handleSubmit}
+                isLoading={submitting}
+                isDisabled={hasUnacked || (!pendingComplete && !allItemsChecked)}
+              >
+                {hasUnacked
+                  ? `Acknowledge ${unackedCount} Warning${unackedCount > 1 ? 's' : ''} First`
+                  : pendingComplete
+                    ? 'Acknowledge & Continue'
+                    : allItemsChecked
+                      ? '✓ Submit Verification'
+                      : `Verify All Items (${checkedCount}/${totalItems})`}
+              </Button>
+            );
+          })()}
         </ModalFooter>
       </ModalContent>
       

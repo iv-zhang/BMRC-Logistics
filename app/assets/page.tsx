@@ -28,6 +28,12 @@ import {
   Spinner,
   Tabs,
   Tab,
+  Dropdown,
+  DropdownTrigger,
+  DropdownMenu,
+  DropdownItem,
+  Tooltip,
+  Checkbox,
 } from '@heroui/react';
 import {
   collection,
@@ -59,6 +65,11 @@ import {
   X,
   Printer,
   ShieldCheck,
+  Lock,
+  Unlock,
+  ScanBarcode,
+  MoreVertical,
+  AlertTriangle,
 } from 'lucide-react';
 import AssetModal from '@/app/components/assetmodal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
@@ -722,16 +733,16 @@ export default function AssetsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
-      <div className="max-w-7xl mx-auto space-y-6">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-3 md:p-6">
+      <div className="max-w-7xl mx-auto space-y-4 md:space-y-6">
         {/* Header */}
-        <div className="flex justify-between items-center">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
-              <Package className="text-indigo-600" />
+            <h1 className="text-xl md:text-3xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
+              <Package className="text-indigo-600" size={24} />
               Asset Management
             </h1>
-            <p className="text-gray-500">Manage statpacks, O2 tanks, AEDs, bikes, radios, and other valuable equipment</p>
+            <p className="text-xs md:text-sm text-gray-500">Manage statpacks, O2 tanks, AEDs, bikes, radios, and other valuable equipment</p>
           </div>
           <div className="flex gap-2">
             {userRole === 'admin' && selectedForPrint.size > 0 && (
@@ -756,22 +767,22 @@ export default function AssetsPage() {
 
         {/* Assets Table */}
         <Card>
-          <CardBody>
+          <CardBody className="overflow-x-auto">
             <Table
               aria-label="Assets table"
               classNames={{
-                table: 'text-sm',
+                table: 'text-sm min-w-[700px]',
               }}
             >
               <TableHeader>
-                <TableColumn key="checkbox" className={userRole === 'admin' ? '' : 'hidden'}>✓</TableColumn>
+                <TableColumn key="checkbox" className={userRole === 'admin' ? 'w-10' : 'hidden'}>{" "}</TableColumn>
                 <TableColumn>Asset Name</TableColumn>
-                <TableColumn>Type</TableColumn>
+                <TableColumn className="hidden md:table-cell">Type</TableColumn>
                 <TableColumn>Status</TableColumn>
-                <TableColumn>Location</TableColumn>
-                <TableColumn>Value</TableColumn>
-                <TableColumn>Maintenance</TableColumn>
-                <TableColumn>Actions</TableColumn>
+                <TableColumn className="hidden lg:table-cell">Location</TableColumn>
+                <TableColumn className="hidden lg:table-cell">Value</TableColumn>
+                <TableColumn className="hidden md:table-cell">Maintenance</TableColumn>
+                <TableColumn className="w-16">Actions</TableColumn>
               </TableHeader>
               <TableBody emptyContent="No assets found">
                 {sortedAssets.map((asset) => {
@@ -786,24 +797,24 @@ export default function AssetsPage() {
                     >
                       <TableCell className={userRole === 'admin' ? '' : 'hidden'}>
                         {userRole === 'admin' && (
-                          <input
-                            type="checkbox"
-                            checked={selectedForPrint.has(asset.id)}
-                            onChange={(e) => {
+                          <Checkbox
+                            size="sm"
+                            isSelected={selectedForPrint.has(asset.id)}
+                            onValueChange={(checked) => {
                               const newSelected = new Set(selectedForPrint);
-                              if (e.target.checked) {
+                              if (checked) {
                                 newSelected.add(asset.id);
                               } else {
                                 newSelected.delete(asset.id);
                               }
                               setSelectedForPrint(newSelected);
                             }}
-                            onClick={(e) => e.stopPropagation()}
+                            onClick={(e: React.MouseEvent) => e.stopPropagation()}
                           />
                         )}
                       </TableCell>
                       <TableCell className="font-medium">{asset.name}</TableCell>
-                      <TableCell>
+                      <TableCell className="hidden md:table-cell">
                         <Chip size="sm" variant="flat">
                           {asset.type === 'statpack' ? 'Statpack' : (asset.data as InventoryItem).category || 'Item'}
                         </Chip>
@@ -813,7 +824,7 @@ export default function AssetsPage() {
                           {asset.status}
                         </Chip>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="hidden lg:table-cell">
                         {editingLocationId === asset.id ? (
                           <div className="flex items-center gap-2">
                             <Input
@@ -836,16 +847,18 @@ export default function AssetsPage() {
                           <div className="flex items-center gap-2 text-sm">
                             <MapPin size={14} className="text-gray-400" />
                             <span>{asset.currentLocation || '—'}</span>
-                            <Button isIconOnly size="sm" variant="light" onPress={() => startLocationEdit(asset)}>
-                              <Pencil size={14} />
-                            </Button>
+                            <Tooltip content="Edit location">
+                              <Button isIconOnly size="sm" variant="light" onPress={() => startLocationEdit(asset)}>
+                                <Pencil size={14} />
+                              </Button>
+                            </Tooltip>
                           </div>
                         )}
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="hidden lg:table-cell">
                         {asset.assetValue ? `$${asset.assetValue.toFixed(2)}` : '—'}
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="hidden md:table-cell">
                           {activeMaintenance ? (
                             <div className="flex items-center gap-2">
                               <Chip size="sm" color={activeMaintenance.status === 'in-progress' ? 'warning' : 'secondary'} variant="flat">
@@ -853,96 +866,78 @@ export default function AssetsPage() {
                               </Chip>
                               <div className="text-xs">
                                 <div className="font-semibold">{activeMaintenance.serviceType}</div>
-                                <div className="text-gray-600">{activeMaintenance.reason}</div>
+                                <div className="text-gray-600 dark:text-gray-400">{activeMaintenance.reason}</div>
                               </div>
                             </div>
                           ) : (
-                            <span className="text-xs text-gray-500">No active maintenance</span>
+                            <span className="text-xs text-gray-500">—</span>
                           )}
                       </TableCell>
                       <TableCell>
-                        <div className="flex gap-2">
-                          <Button
-                                isIconOnly
-                                size="sm"
-                                variant="light"
-                                onPress={(e: any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); setSelectedRowId(asset.id); setSelectedAsset(asset); setIsEditingDetails(false); detailsDisclosure.onOpen(); }}
-                              >
-                            <Eye size={16} />
-                          </Button>
-                          <Button
-                            isIconOnly
-                            size="sm"
-                            variant="light"
-                            onPress={(e: any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); openScannerForAsset(asset); }}
-                            aria-label="Scan location"
-                          >
-                            <MapPin size={18} />
-                          </Button>
-                          {userRole === 'admin' && (
+                        <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                          <Tooltip content="View details">
                             <Button
                               isIconOnly
                               size="sm"
                               variant="light"
-                              color={activeMaintenance ? 'success' : 'warning'}
-                              onPress={(e: any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); if (activeMaintenance) { handleCompleteMaintenance(asset, activeMaintenance.id); } else { handleStartMaintenance(asset); } }}
-                              aria-label={activeMaintenance ? 'Complete maintenance' : 'Start maintenance'}
+                              onPress={() => { setSelectedRowId(asset.id); setSelectedAsset(asset); setIsEditingDetails(false); detailsDisclosure.onOpen(); }}
                             >
-                              {activeMaintenance ? <CheckCircle size={18} /> : <Wrench size={18} />}
+                              <Eye size={16} />
                             </Button>
-                          )}
-                          {asset.type === 'statpack' && (
-                            <Button
-                              isIconOnly
-                              size="sm"
-                              variant="light"
-                              onPress={(e: any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); openStatpackEditorModal(asset); }}
-                              aria-label="Open statpack"
-                            >
-                              <Pencil size={18} />
-                            </Button>
-                          )}
-                          {asset.type === 'inventory' && userRole === 'admin' && (
-                            <Button isIconOnly size="sm" variant="light" onPress={(e:any) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); setEditingAsset({ ...(asset.data as any), id: asset.id }); assetModalDisclosure.onOpen(); }} aria-label="Edit asset">
-                              <Pencil size={18} />
-                            </Button>
-                          )}
-                          {asset.type === 'inventory' && (userRole === 'admin' || userRole === 'quartermaster' || userRole === 'inventory_helper') && (
-                            <Button
-                              isIconOnly
-                              size="sm"
-                              variant="light"
-                              color="secondary"
-                              onPress={(e: any) => {
-                                if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
-                                handleQuickAssignBarcode(asset);
-                              }}
-                              title="Assign external barcode tag"
-                              aria-label="Assign barcode"
-                            >
-                              <Package size={18} />
-                            </Button>
-                          )}
-                          {userRole === 'admin' && (
-                            <Button
-                              size="sm"
-                              variant="light"
-                              onPress={(e: any) => {
-                                if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
-                                if (asset.type === 'statpack') {
-                                  openStatpackAudit(asset);
-                                  return;
-                                }
-                                setAuditTarget(asset);
-                                setAuditType('asset');
-                                auditModalDisclosure.onOpen();
-                              }}
-                              title="Run Manual Audit"
-                              startContent={<Wrench size={18} />}
-                            >
-                              Audit
-                            </Button>
-                          )}
+                          </Tooltip>
+                          <Dropdown>
+                            <DropdownTrigger>
+                              <Button isIconOnly size="sm" variant="light">
+                                <MoreVertical size={16} />
+                              </Button>
+                            </DropdownTrigger>
+                            <DropdownMenu aria-label="Asset actions">
+                              <DropdownItem key="scan" startContent={<MapPin size={14} />} onPress={() => openScannerForAsset(asset)}>
+                                Scan Location
+                              </DropdownItem>
+                              {asset.type === 'statpack' ? (
+                                <DropdownItem key="edit" startContent={<Pencil size={14} />} onPress={() => openStatpackEditorModal(asset)}>
+                                  Edit Statpack
+                                </DropdownItem>
+                              ) : userRole === 'admin' ? (
+                                <DropdownItem key="edit" startContent={<Pencil size={14} />} onPress={() => { setEditingAsset({ ...(asset.data as any), id: asset.id }); assetModalDisclosure.onOpen(); }}>
+                                  Edit Asset
+                                </DropdownItem>
+                              ) : (
+                                <DropdownItem key="noop" className="hidden">.</DropdownItem>
+                              )}
+                              {userRole === 'admin' ? (
+                                activeMaintenance ? (
+                                  <DropdownItem key="maint" startContent={<CheckCircle size={14} />} color="success" onPress={() => handleCompleteMaintenance(asset, activeMaintenance.id)}>
+                                    Complete Maintenance
+                                  </DropdownItem>
+                                ) : (
+                                  <DropdownItem key="maint" startContent={<Wrench size={14} />} onPress={() => handleStartMaintenance(asset)}>
+                                    Start Maintenance
+                                  </DropdownItem>
+                                )
+                              ) : (
+                                <DropdownItem key="noop2" className="hidden">.</DropdownItem>
+                              )}
+                              {asset.type === 'inventory' && (userRole === 'admin' || userRole === 'quartermaster' || userRole === 'inventory_helper') ? (
+                                <DropdownItem key="barcode" startContent={<ScanBarcode size={14} />} onPress={() => handleQuickAssignBarcode(asset)}>
+                                  Assign Barcode Tag
+                                </DropdownItem>
+                              ) : (
+                                <DropdownItem key="noop3" className="hidden">.</DropdownItem>
+                              )}
+                              {userRole === 'admin' ? (
+                                <DropdownItem key="audit" startContent={<ShieldCheck size={14} />} onPress={() => {
+                                  if (asset.type === 'statpack') { openStatpackAudit(asset); return; }
+                                  setAuditTarget(asset); setAuditType('asset'); auditModalDisclosure.onOpen();
+                                }}>
+                                  Run Audit
+                                </DropdownItem>
+                              ) : (
+                                <DropdownItem key="noop4" className="hidden">.</DropdownItem>
+                              )}
+                            </DropdownMenu>
+                          </Dropdown>
                         </div>
                       </TableCell>
                     </TableRow>
@@ -1439,13 +1434,14 @@ export default function AssetsPage() {
                                           size="sm"
                                           variant="flat"
                                           color={comp.isSealed ? 'success' : 'default'}
+                                          startContent={comp.isSealed ? <Lock size={12} /> : <Unlock size={12} />}
                                           onClick={() => {
                                             const comps = [...(editingPack.compartments || [])];
                                             comps[origIndex] = { ...comps[origIndex], isSealed: !comps[origIndex].isSealed };
                                             setEditingPack({ ...editingPack, compartments: comps });
                                           }}
                                         >
-                                          {comp.isSealed ? '🔒 Sealed' : '🔓 Open'}
+                                          {comp.isSealed ? 'Sealed' : 'Open'}
                                         </Chip>
                                         {comp.isSealed && (
                                           <Input
@@ -1914,7 +1910,7 @@ export default function AssetsPage() {
 
                 {duplicateWarningQuick?.show && (
                   <div className="bg-yellow-50 border border-yellow-300 rounded p-3">
-                    <p className="text-sm font-semibold text-yellow-900 mb-1">⚠️ Duplicate Barcode</p>
+                    <p className="text-sm font-semibold text-yellow-900 mb-1 flex items-center gap-1"><AlertTriangle size={14} /> Duplicate Barcode</p>
                     <p className="text-sm text-yellow-800 mb-2">
                       This barcode is already assigned to{' '}
                       <strong>{duplicateWarningQuick.duplicateItem?.name}</strong>

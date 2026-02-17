@@ -491,13 +491,13 @@ export default function InventoryPage() {
   // ═══════════════════════════════════════════════════════════════════════════
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-slate-950">
-      <div className="max-w-5xl mx-auto px-4 py-6">
+      <div className="max-w-5xl mx-auto px-3 md:px-4 py-4 md:py-6">
 
         {/* ── Header ─────────────────────────────────────────────────────── */}
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4 md:mb-6">
           <div className="flex items-center gap-3">
-            <Boxes size={28} className="text-indigo-600" />
-            <h1 className="text-2xl font-bold">Inventory</h1>
+            <Boxes size={24} className="text-indigo-600" />
+            <h1 className="text-xl md:text-2xl font-bold">Inventory</h1>
             <Chip size="sm" variant="flat">{filteredInventory.length} items</Chip>
           </div>
           <div className="flex items-center gap-2">
@@ -505,7 +505,7 @@ export default function InventoryPage() {
               Export
             </Button>
             {isAdmin && (
-              <Button color="primary" startContent={<Plus size={16} />} onPress={openNewModal}>
+              <Button color="primary" size="sm" startContent={<Plus size={16} />} onPress={openNewModal}>
                 Add Item
               </Button>
             )}

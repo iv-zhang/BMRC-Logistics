@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React from 'react';
 import {
   DndContext,
   closestCenter,
@@ -28,8 +28,8 @@ import {
   Accordion,
   AccordionItem,
 } from '@heroui/react';
-import { GripVertical, X, Link2, ShieldCheck } from 'lucide-react';
-import type { StatpackItem } from '@/app/types';
+import { GripVertical, X, Link2, ShieldCheck, AlertTriangle, Plus, Info, AlertCircle } from 'lucide-react';
+import type { StatpackItem, StatpackWarning } from '@/app/types';
 
 interface SortableStatpackItemProps {
   item: StatpackItem;
@@ -160,6 +160,109 @@ function SortableStatpackItem({ item, index, onUpdate, onRemove, onAttachAsset, 
                 >
                   <span className="text-xs">Advisory Only (Non-blocking)</span>
                 </Switch>
+              </div>
+            </AccordionItem>
+
+            <AccordionItem
+              key="warnings"
+              aria-label="Checkout Warnings"
+              title={
+                <div className="flex items-center gap-2 text-xs font-medium">
+                  <AlertTriangle size={14} />
+                  <span>Checkout Warnings</span>
+                  {(item.customWarnings || []).length > 0 && (
+                    <Chip size="sm" color="warning" variant="flat">{(item.customWarnings || []).length}</Chip>
+                  )}
+                </div>
+              }
+              classNames={{
+                title: "text-xs",
+                content: "pt-2 pb-0",
+              }}
+            >
+              <div className="flex flex-col gap-3 pl-4 pr-2">
+                {(item.customWarnings || []).map((warning, wIdx) => (
+                  <div key={warning.id} className="flex flex-col gap-2 p-2 border border-default-200 rounded-lg">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        {warning.severity === 'critical' ? (
+                          <AlertCircle size={14} className="text-danger" />
+                        ) : warning.severity === 'warning' ? (
+                          <AlertTriangle size={14} className="text-warning" />
+                        ) : (
+                          <Info size={14} className="text-primary" />
+                        )}
+                        <Select
+                          size="sm"
+                          className="min-w-[100px] max-w-[120px]"
+                          selectedKeys={[warning.severity]}
+                          onChange={(e) => {
+                            const warnings = [...(item.customWarnings || [])];
+                            warnings[wIdx] = { ...warnings[wIdx], severity: e.target.value as any };
+                            onUpdate(index, { customWarnings: warnings });
+                          }}
+                        >
+                          <SelectItem key="info">Info</SelectItem>
+                          <SelectItem key="warning">Warning</SelectItem>
+                          <SelectItem key="critical">Critical</SelectItem>
+                        </Select>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Switch
+                          size="sm"
+                          isSelected={warning.requiresAcknowledgment || false}
+                          onValueChange={(v) => {
+                            const warnings = [...(item.customWarnings || [])];
+                            warnings[wIdx] = { ...warnings[wIdx], requiresAcknowledgment: v };
+                            onUpdate(index, { customWarnings: warnings });
+                          }}
+                        >
+                          <span className="text-xs">Must Ack</span>
+                        </Switch>
+                        <Button
+                          isIconOnly
+                          size="sm"
+                          variant="light"
+                          color="danger"
+                          onPress={() => {
+                            const warnings = (item.customWarnings || []).filter((_, i) => i !== wIdx);
+                            onUpdate(index, { customWarnings: warnings.length > 0 ? warnings : undefined });
+                          }}
+                        >
+                          <X size={12} />
+                        </Button>
+                      </div>
+                    </div>
+                    <Input
+                      size="sm"
+                      placeholder="Warning message (e.g., Verify glucose strips match glucometer brand)"
+                      value={warning.message}
+                      onValueChange={(v) => {
+                        const warnings = [...(item.customWarnings || [])];
+                        warnings[wIdx] = { ...warnings[wIdx], message: v };
+                        onUpdate(index, { customWarnings: warnings });
+                      }}
+                    />
+                  </div>
+                ))}
+                <Button
+                  size="sm"
+                  variant="flat"
+                  color="warning"
+                  startContent={<Plus size={14} />}
+                  onPress={() => {
+                    const newWarning: StatpackWarning = {
+                      id: `warn-${Date.now()}`,
+                      message: '',
+                      severity: 'warning',
+                      requiresAcknowledgment: true,
+                    };
+                    const warnings = [...(item.customWarnings || []), newWarning];
+                    onUpdate(index, { customWarnings: warnings });
+                  }}
+                >
+                  Add Warning
+                </Button>
               </div>
             </AccordionItem>
           </Accordion>

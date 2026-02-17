@@ -217,3 +217,118 @@ assert(restockShelf.frontRoom === 'Reception');
 - [ ] Create restock shelf with front location → displays in card
 - [ ] Member reports low stock with front location → shows in issue-reports
 - [ ] No emojis visible on audit page, inventory page, navbar
+
+---
+
+# Phase 3 — UI Overhaul, Barcode Fix, Tasks Page, Mobile
+
+> Covers: navbar mobile menu, barcode scanner fix, tasks/buy-list page, asset/statpack admin overhaul, mobile responsiveness.
+
+---
+
+## 8. Mobile Navbar (`app/components/appnavbar.tsx`)
+
+### What changed
+- Added `NavbarMenuToggle` (hamburger) for mobile
+- Lucide-react icons replace all @heroicons + emojis
+- Mobile menu with sectioned layout (Assets, Inventory, Admin)
+- "Buy List" → "Tasks & Buy List" routing to `/tasks`
+
+### Tests
+| # | Scenario | Expected |
+|---|----------|----------|
+| 1 | Hamburger visible <640px | ☰ icon top-left |
+| 2 | Menu opens/closes on tap | Smooth slide |
+| 3 | Links navigate + close menu | Correct route, menu auto-closes |
+| 4 | Active link highlighted | Primary color on current route |
+| 5 | Desktop layout unchanged | No hamburger >640px |
+| 6 | Sign out from mobile menu | Signs out + redirects |
+
+---
+
+## 9. Barcode Scanner (`app/components/barcode-scanner.tsx`)
+
+### What changed
+- Camera / Manual mode toggle
+- 2 consecutive identical reads required (CONFIRM_READS=2)
+- `minLength` prop (default 3) rejects short garbage reads
+- Visual scanning indicator (green pulse, targeting box)
+
+### Tests
+| # | Scenario | Expected |
+|---|----------|----------|
+| 1 | Short barcode "01" rejected | "Too short" message |
+| 2 | Consecutive read required | Must read same value 2× before accepting |
+| 3 | Manual entry with Enter key | Barcode assigned |
+| 4 | Manual minLength check | "AB" rejected, "ABC" accepted |
+| 5 | Camera fallback to manual | If no camera, auto-switches with message |
+| 6 | Image upload | Photo decoded and returned |
+| 7 | Modal state reset on reopen | Camera mode, no residual values |
+| 8 | USB barcode scanner | Focus input, scan → value fills, Enter to confirm |
+
+---
+
+## 10. Tasks Page (`app/tasks/page.tsx`)
+
+### What changed
+- New `/tasks` combining buy list + todo/fix list
+- Categories: Buy, Fix, Restock, Admin, Other
+- Status workflow: todo → in_progress → done
+- Buy list items appear automatically in "Buy List" tab
+- Firestore `tasks` collection
+
+### Tests
+| # | Scenario | Expected |
+|---|----------|----------|
+| 1 | Page loads for admin | Stats cards + items |
+| 2 | Access denied for member | "Access Denied" message |
+| 3 | Add Buy task | Category="buy", quantity/unit fields visible |
+| 4 | Status toggle cycle | Circle click: todo→in_progress→done→todo |
+| 5 | Edit via dropdown | Modal pre-filled |
+| 6 | Delete with confirmation | Firestore doc removed |
+| 7 | Buy list integration | Buy list items show under "Buy List" tab |
+| 8 | Buy list status sync | Marking done updates buyList collection |
+| 9 | Filter + search + sort | All work correctly |
+
+---
+
+## 11. Asset Management Overhaul (`app/assets/page.tsx`)
+
+### What changed
+- Actions: Eye button + ⋮ dropdown (was 6-7 individual buttons)
+- 🔒/🔓 → Lock/Unlock icons; ⚠️ → AlertTriangle
+- Raw checkbox → HeroUI `<Checkbox>`
+- Tooltips on icon buttons
+- Responsive: columns hidden on mobile, overflow-x-auto
+
+### Tests
+| # | Scenario | Expected |
+|---|----------|----------|
+| 1 | Dropdown actions all work | Each action opens correct modal |
+| 2 | Sealed/Open uses Lock icon | No emoji in statpack editor |
+| 3 | Print checkbox works | HeroUI-styled, count badge updates |
+| 4 | Mobile table scrolls | Horizontal scroll, hidden columns |
+
+---
+
+## 12. Mobile Responsiveness (All Pages)
+
+### Tests
+| # | Page | 375px width check |
+|---|------|-------------------|
+| 1 | Dashboard | No overflow; heading readable; logo hidden |
+| 2 | Inventory | Header wraps vertically |
+| 3 | Buy List | Stats cards fit; reduced padding |
+| 4 | Assets | Table scrolls; fewer columns |
+| 5 | Statpacks | Cards stack vertically |
+| 6 | Tasks | Full functionality on mobile |
+
+---
+
+## 13. Cross-Cutting
+
+- [ ] `npm run build` succeeds without errors
+- [ ] No remaining emojis in modified files
+- [ ] Dark mode renders correctly on all pages
+- [ ] No console errors in browser dev tools
+- [ ] Firestore security rules updated for `tasks` collection
