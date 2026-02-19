@@ -9,8 +9,9 @@ import JsBarcode from 'jsbarcode';
 import AssetHistory from '@/app/components/asset-history';
 import { exportLabelsToPDF, DEFAULT_TEMPLATE } from '@/app/lib/print';
 import LabelCard from '@/app/components/label-card';
-import BarcodeScanner from '@/app/components/barcode-scanner';
+import ScannerInput from '@/app/components/scanner-input';
 import { assignBarcode } from '@/app/lib/inventory';
+import { ASSET_CATEGORIES_CONFIG, ITEM_CATEGORIES } from '@/app/config/org-config';
 
 interface AssetModalProps {
   isOpen: boolean;
@@ -356,11 +357,25 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
           <Input label="Name" value={String(form.name ?? '')} onValueChange={(v) => setForm({ ...form, name: v })} />
           <Select label="Category" selectedKeys={[String((form.assetCategory as any) ?? 'Generic')]} onChange={(e) => setForm({ ...form, assetCategory: e.target.value as any })}>
             <SelectItem key="Generic">Generic</SelectItem>
-            <SelectItem key="Meds">Meds</SelectItem>
-            <SelectItem key="AED">AED</SelectItem>
-            <SelectItem key="O2">O2</SelectItem>
-            <SelectItem key="Bike">Bike</SelectItem>
-            <SelectItem key="Radio">Radio</SelectItem>
+            {(() => {
+              const seen = new Set<string>();
+              return (
+                <>
+                  {ASSET_CATEGORIES_CONFIG.map((config) => {
+                    const label = String(config.name || config.id || '');
+                    if (seen.has(label)) return null;
+                    seen.add(label);
+                    return <SelectItem key={label}>{label}</SelectItem>;
+                  })}
+                  {ITEM_CATEGORIES.map((cat) => {
+                    const label = String(cat);
+                    if (seen.has(label)) return null;
+                    seen.add(label);
+                    return <SelectItem key={label}>{label}</SelectItem>;
+                  })}
+                </>
+              );
+            })()}
           </Select>
           <Input label="Model" value={String(form.assetModel ?? '')} onValueChange={(v) => setForm({ ...form, assetModel: v })} />
 
@@ -523,7 +538,7 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
           <div className="border-t pt-4 mt-2">
             <div className="flex items-center justify-between mb-2">
               <h4 className="text-sm font-semibold">External Asset Tag</h4>
-              {initial?.id && (
+              {initial?.id && !showScanner && (
                 <Button
                   size="sm"
                   color="secondary"
@@ -534,6 +549,26 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
                 </Button>
               )}
             </div>
+
+            {/* Inline scanner — no separate modal */}
+            {showScanner && (
+              <div className="rounded-lg border border-secondary/20 p-3 mb-3">
+                <ScannerInput
+                  onScan={handleScanDetected}
+                  placeholder="Scan or type barcode…"
+                  label="Scan Asset Tag"
+                  compact
+                />
+                <Button
+                  size="sm"
+                  variant="light"
+                  className="mt-1"
+                  onPress={() => setShowScanner(false)}
+                >
+                  Cancel
+                </Button>
+              </div>
+            )}
             
             {(form as any).assignedBarcode && (
               <Chip color="success" variant="flat" className="mb-2">
@@ -662,13 +697,6 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
         </ModalFooter>
       </ModalContent>
     </Modal>
-    
-    {/* Barcode Scanner Modal */}
-    <BarcodeScanner
-      isOpen={showScanner}
-      onClose={() => setShowScanner(false)}
-      onDetected={handleScanDetected}
-    />
     </>
   );
 }

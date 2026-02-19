@@ -207,7 +207,8 @@ function SortableStatpackItem({ item, index, onUpdate, onRemove, onAttachAsset, 
                           <SelectItem key="critical">Critical</SelectItem>
                         </Select>
                       </div>
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs">Must Ack</span>
                         <Switch
                           size="sm"
                           isSelected={warning.requiresAcknowledgment || false}
@@ -216,9 +217,8 @@ function SortableStatpackItem({ item, index, onUpdate, onRemove, onAttachAsset, 
                             warnings[wIdx] = { ...warnings[wIdx], requiresAcknowledgment: v };
                             onUpdate(index, { customWarnings: warnings });
                           }}
-                        >
-                          <span className="text-xs">Must Ack</span>
-                        </Switch>
+                        />
+                      </div>
                         <Button
                           isIconOnly
                           size="sm"
@@ -232,7 +232,6 @@ function SortableStatpackItem({ item, index, onUpdate, onRemove, onAttachAsset, 
                           <X size={12} />
                         </Button>
                       </div>
-                    </div>
                     <Input
                       size="sm"
                       placeholder="Warning message (e.g., Verify glucose strips match glucometer brand)"

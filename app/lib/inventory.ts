@@ -2,6 +2,7 @@ import { collection, doc, getDoc, getDocs, writeBatch, serverTimestamp, addDoc, 
 import { db } from '@/firebase';
 import type { InventoryItem, Statpack, StatpackItem, StatpackPocket, Container, BoxLog, StatpackLog, PurchaseInfo, ValidationWarning, AssetInstance, AssetCheckResult, StatpackAuditResult, AssetVerificationRules } from '@/app/types';
 import { recordAuditEvent, removeUndefined, deepRemoveUndefined } from '@/app/lib/audit';
+import { ASSET_CATEGORIES_CONFIG, THRESHOLDS } from '@/app/config/org-config';
 
 /**
  * Fetch an inventory item by ID and return enriched itemDetails + suggested verification rules.
@@ -45,7 +46,7 @@ export async function fetchAndEnrichItemDetails(itemId: string): Promise<{
     
     // Oxygen tanks require PSI check
     if (data.isOxygen || data.assetCategory === 'Oxygen Tank') {
-      suggestedVerificationRules.requireO2PsiMin = data.maxOxygenPsi ? Math.floor(data.maxOxygenPsi * 0.9) : 1800; // 90% of max or default 1800
+      suggestedVerificationRules.requireO2PsiMin = data.maxOxygenPsi ? Math.floor(data.maxOxygenPsi * 0.9) : THRESHOLDS.o2PsiMin; // 90% of max or org default
     }
     
     // AEDs and serialized assets require serial verification
@@ -715,6 +716,321 @@ export async function validateStatpackAssignments(params: {
   return warnings;
 }
 
+// ---------------------------------------------------------------------------
+// BATCH CHECKOUT / CHECKIN (Issue 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Batch checkout multiple assets in a single Firestore transaction.
+ * Designed for scenarios like checking out 10 radios for training.
+ *
+ * @param assets - Array of { itemId, instanceSerial? } to check out
+ * @param context - Checkout context (who, why, where)
+ * @param userId - ID of the user performing the operation
+ * @param userName - Name of the user
+ */
+export async function batchCheckoutAssets(
+  assets: Array<{ itemId: string; instanceSerial?: string }>,
+  context: { purpose: string; assignee: string; location: string; notes: string },
+  userId: string,
+  userName: string,
+): Promise<{ successCount: number; errors: string[] }> {
+  const errors: string[] = [];
+  let successCount = 0;
+
+  // Firestore batches support max 500 operations; chunk if needed
+  const CHUNK_SIZE = 100; // leave room for audit events per asset
+  for (let i = 0; i < assets.length; i += CHUNK_SIZE) {
+    const chunk = assets.slice(i, i + CHUNK_SIZE);
+    const batch = writeBatch(db);
+
+    for (const { itemId, instanceSerial } of chunk) {
+      try {
+        const itemRef = doc(db, 'inventory', itemId);
+
+        if (instanceSerial) {
+          // Update specific instance within the item
+          const itemSnap = await getDoc(itemRef);
+          if (!itemSnap.exists()) {
+            errors.push(`Item ${itemId} not found`);
+            continue;
+          }
+          const data = itemSnap.data() as InventoryItem;
+          const instances = data.assets || [];
+          const idx = instances.findIndex(inst => inst.serial === instanceSerial);
+          if (idx === -1) {
+            errors.push(`Instance ${instanceSerial} not found in ${data.name}`);
+            continue;
+          }
+          instances[idx] = {
+            ...instances[idx],
+            status: 'Checked Out',
+            checkedOutAt: new Date(),
+            checkedOutBy: userId,
+            currentLocation: context.location || undefined,
+          };
+          batch.update(itemRef, {
+            assets: instances,
+            assetStatus: 'Checked Out',
+            checkedOutAt: serverTimestamp(),
+            checkedOutBy: userId,
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          // Simple asset (no instances array)
+          batch.update(itemRef, {
+            assetStatus: 'Checked Out',
+            checkedOutAt: serverTimestamp(),
+            checkedOutBy: userId,
+            currentLocation: context.location || undefined,
+            updatedAt: serverTimestamp(),
+          });
+        }
+
+        // Audit event
+        const logRef = doc(collection(db, 'inventory_logs'));
+        batch.set(logRef, removeUndefined({
+          itemId,
+          action: 'batch_asset_checkout',
+          serialNumber: instanceSerial || undefined,
+          userId,
+          userName,
+          timestamp: serverTimestamp(),
+          location: context.location || undefined,
+          notes: `Batch checkout: ${context.purpose}. ${context.notes}`.trim(),
+          details: {
+            purpose: context.purpose,
+            assignee: context.assignee,
+            batchSize: assets.length,
+          },
+        }));
+
+        successCount++;
+      } catch (err) {
+        errors.push(`Failed to checkout ${itemId}: ${err instanceof Error ? err.message : 'Unknown'}`);
+      }
+    }
+
+    await batch.commit();
+  }
+
+  // Global audit event
+  await recordAuditEvent({
+    eventType: 'batch_checkout',
+    actor: { userId },
+    details: `Batch checkout of ${successCount} assets for ${context.purpose} by ${context.assignee}`,
+  });
+
+  return { successCount, errors };
+}
+
+/**
+ * Batch checkin multiple assets in a single Firestore transaction.
+ */
+export async function batchCheckinAssets(
+  assets: Array<{ itemId: string; instanceSerial?: string; condition?: string; notes?: string }>,
+  context: { assignee: string; location: string; notes: string },
+  userId: string,
+  userName: string,
+): Promise<{ successCount: number; errors: string[] }> {
+  const errors: string[] = [];
+  let successCount = 0;
+
+  const CHUNK_SIZE = 100;
+  for (let i = 0; i < assets.length; i += CHUNK_SIZE) {
+    const chunk = assets.slice(i, i + CHUNK_SIZE);
+    const batch = writeBatch(db);
+
+    for (const { itemId, instanceSerial, condition, notes } of chunk) {
+      try {
+        const itemRef = doc(db, 'inventory', itemId);
+
+        const newStatus = (condition === 'Needs Maintenance' || condition === 'Major Issue')
+          ? 'Not Ready' : 'Ready';
+
+        if (instanceSerial) {
+          const itemSnap = await getDoc(itemRef);
+          if (!itemSnap.exists()) { errors.push(`Item ${itemId} not found`); continue; }
+          const data = itemSnap.data() as InventoryItem;
+          const instances = data.assets || [];
+          const idx = instances.findIndex(inst => inst.serial === instanceSerial);
+          if (idx === -1) { errors.push(`Instance ${instanceSerial} not found in ${data.name}`); continue; }
+          instances[idx] = {
+            ...instances[idx],
+            status: newStatus as AssetInstance['status'],
+            lastCheckedInAt: new Date(),
+            lastCheckedInBy: userId,
+            currentLocation: context.location || undefined,
+          };
+          batch.update(itemRef, {
+            assets: instances,
+            assetStatus: newStatus,
+            lastCheckedInAt: serverTimestamp(),
+            lastCheckedInBy: userId,
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          batch.update(itemRef, {
+            assetStatus: newStatus,
+            lastCheckedInAt: serverTimestamp(),
+            lastCheckedInBy: userId,
+            lastKnownReturnLocation: context.location || undefined,
+            updatedAt: serverTimestamp(),
+          });
+        }
+
+        // Audit log
+        const logRef = doc(collection(db, 'inventory_logs'));
+        batch.set(logRef, removeUndefined({
+          itemId,
+          action: 'batch_asset_checkin',
+          serialNumber: instanceSerial || undefined,
+          userId,
+          userName,
+          timestamp: serverTimestamp(),
+          location: context.location || undefined,
+          notes: notes || context.notes || undefined,
+          newStatus,
+          details: { condition, assignee: context.assignee },
+        }));
+
+        successCount++;
+      } catch (err) {
+        errors.push(`Failed to checkin ${itemId}: ${err instanceof Error ? err.message : 'Unknown'}`);
+      }
+    }
+
+    await batch.commit();
+  }
+
+  await recordAuditEvent({
+    eventType: 'batch_checkin',
+    actor: { userId },
+    details: `Batch checkin of ${successCount} assets by ${context.assignee}`,
+  });
+
+  return { successCount, errors };
+}
+
+// ---------------------------------------------------------------------------
+// ENHANCED ASSET-STATPACK ASSIGNMENT (Issue 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Assign an asset to a statpack with full pocket/compartment tracking.
+ * Updates BOTH the asset document and the statpack item reference
+ * to maintain bidirectional visibility.
+ */
+export async function assignAssetToStatpack(
+  assetId: string,
+  statpackId: string,
+  pocket: StatpackPocket,
+  userId: string,
+  userName: string,
+  options?: {
+    compartmentLabel?: string;
+    positionIndex?: number;
+    instanceSerial?: string;
+  },
+): Promise<void> {
+  await runTransaction(db, async (transaction) => {
+    const assetRef = doc(db, 'inventory', assetId);
+    const statpackRef = doc(db, 'statpacks', statpackId);
+
+    const [assetSnap, statpackSnap] = await Promise.all([
+      transaction.get(assetRef),
+      transaction.get(statpackRef),
+    ]);
+
+    if (!assetSnap.exists()) throw new Error('Asset not found');
+    if (!statpackSnap.exists()) throw new Error('Statpack not found');
+
+    const assetData = assetSnap.data() as InventoryItem;
+    const statpackData = statpackSnap.data() as Statpack;
+
+    // Check for existing assignment to a different statpack
+    if (assetData.statpackAssignment?.statpackId &&
+        assetData.statpackAssignment.statpackId !== statpackId) {
+      throw new Error(
+        `Asset is already assigned to statpack "${assetData.statpackAssignment.statpackName}". ` +
+        `Remove it from that statpack first.`
+      );
+    }
+
+    // Update asset with statpack assignment
+    transaction.update(assetRef, {
+      assignedToId: statpackId,
+      statpackAssignment: {
+        statpackId,
+        statpackName: statpackData.name,
+        pocket,
+        compartmentLabel: options?.compartmentLabel || null,
+        positionIndex: options?.positionIndex ?? null,
+        assignedAt: serverTimestamp(),
+        assignedBy: userId,
+      },
+      updatedAt: serverTimestamp(),
+    });
+
+    // Update statpack content item with asset reference if matching item exists
+    const contents = [...(statpackData.contents || [])];
+    const matchingItemIdx = contents.findIndex(c =>
+      c.itemId === assetId && c.pocket === pocket
+    );
+    if (matchingItemIdx >= 0) {
+      contents[matchingItemIdx] = {
+        ...contents[matchingItemIdx],
+        assetInstanceId: options?.instanceSerial || assetId,
+        serialNumber: options?.instanceSerial || assetData.assetSerial || undefined,
+      };
+      transaction.update(statpackRef, { contents, updatedAt: serverTimestamp() });
+    }
+  });
+
+  // Audit event
+  await recordAuditEvent({
+    eventType: 'asset_assigned_to_statpack',
+    source: 'inventory',
+    sourceId: assetId,
+    actor: { userId, userName },
+    targets: [
+      { collection: 'inventory', docId: assetId },
+      { collection: 'statpacks', docId: statpackId },
+    ],
+    details: { statpackId, pocket, compartmentLabel: options?.compartmentLabel, positionIndex: options?.positionIndex },
+  });
+}
+
+/**
+ * Remove an asset from its current statpack assignment.
+ */
+export async function unassignAssetFromStatpack(
+  assetId: string,
+  userId: string,
+  userName: string,
+): Promise<void> {
+  const assetRef = doc(db, 'inventory', assetId);
+  const assetSnap = await getDoc(assetRef);
+  if (!assetSnap.exists()) throw new Error('Asset not found');
+
+  const assetData = assetSnap.data() as InventoryItem;
+  const prevStatpack = assetData.statpackAssignment?.statpackName || assetData.assignedToId || 'unknown';
+
+  await updateDoc(assetRef, {
+    assignedToId: null,
+    statpackAssignment: null,
+    updatedAt: serverTimestamp(),
+  });
+
+  await recordAuditEvent({
+    eventType: 'asset_unassigned_from_statpack',
+    source: 'inventory',
+    sourceId: assetId,
+    actor: { userId, userName },
+    details: { previousStatpack: prevStatpack },
+  });
+}
+
 export async function logValidationWarningsToCollections(params: {
   warnings: ValidationWarning[];
   statpackId: string;
@@ -885,15 +1201,15 @@ export function determineIsAsset(item: Partial<InventoryItem> | { category?: str
   // Explicit flag takes precedence
   if (item.isAsset !== undefined) return item.isAsset;
   
-  // Check category-based rules (ASSET_CATEGORIES)
+  // Check category-based rules from org-config
   const category = (item as any).category;
-  if (category && ['AED', 'Radio', 'Oxygen Tank', 'Generator', 'Monitor'].includes(category)) {
+  if (category && ASSET_CATEGORIES_CONFIG.some(c => c.id.toLowerCase() === category.toLowerCase())) {
     return true;
   }
   
-  // Check value threshold (ASSET_VALUE_THRESHOLD = 500)
+  // Check value threshold from org-config
   const value = (item as any).assetValue ?? 0;
-  if (value >= 500) return true;
+  if (value >= THRESHOLDS.assetValueThreshold) return true;
   
   return false;
 }

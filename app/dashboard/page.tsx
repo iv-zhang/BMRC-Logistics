@@ -308,17 +308,18 @@ export default function DashboardPage() {
 
         {/* --- Statpack Grid --- */}
         <section>
+          {/* Top: Active statpacks (sorted by name) */}
           <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-200">
-              Active Statpacks
-            </h2>
-            <Chip variant="flat" size="sm">
-              Total: {statpacks.length}
-            </Chip>
+            <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-200">Active Statpacks</h2>
+            <Chip variant="flat" size="sm">Total: {statpacks.length}</Chip>
           </div>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 items-start">
-            {statpacks.map((pack) => {
+
+          {/* Active row: only 'Ready' packs shown here and sorted by name */}
+          {(() => {
+            const activePacks = statpacks.filter(p => p.status === 'Ready').sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+            return (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 items-start mb-6">
+                {activePacks.map((pack) => {
               const isExpanded = expandedPackId === pack.id;
               const logs = packLogs[pack.id] || [];
               const isLoadingLogs = loadingLogs[pack.id];
@@ -443,29 +444,54 @@ export default function DashboardPage() {
                 </div>
               );
             })}
+              </div>
+            );
+          })()}
 
-            {/* Reports widget card: shows recent unresolved reports and a simulation form */}
-            <div className="col-span-1 md:col-span-2 lg:col-span-1">
-              <Card className="h-full bg-white/80 dark:bg-slate-800/80">
-                <CardHeader className="flex justify-between items-center">
-                  <span className="font-semibold">Reports & Alerts</span>
-                  <Button size="sm" variant="light" onPress={() => router.push('/reports')}>Open</Button>
-                </CardHeader>
-                <CardBody>
-                  <div id="reports-widget" className="space-y-3">
-                    <div className="text-sm text-gray-600">Recent unresolved restock reports</div>
-                    <div id="reports-list" className="space-y-2">
-                      {/* Lightweight client-only fetch of a few reports */}
-                      <ReportsWidgetPreview />
-                    </div>
+          {/* Second row: maintenance / needs auditing / in-use groups */}
+          {(() => {
+            const otherStatuses = Array.from(new Set(statpacks.map(p => p.status).filter(s => s !== 'Ready')));
+            if (otherStatuses.length === 0) return null;
+            return (
+              <div className="space-y-3">
+                <h3 className="text-md font-semibold text-gray-700 dark:text-gray-200">Maintenance / Audit / In Use</h3>
 
-                    {/* simplified: removed simulation UI; reports list renders below */}
-                  </div>
-                </CardBody>
-              </Card>
-            </div>
-
-          </div>
+                <div className="flex gap-4 overflow-x-auto py-2">
+                  {otherStatuses.map((status) => {
+                    const group = statpacks.filter(p => p.status === status).sort((a,b) => (a.name||'').localeCompare(b.name||''));
+                    return (
+                      <div key={status} className="min-w-[260px] flex-shrink-0">
+                        <Card className="bg-white/80 dark:bg-slate-800/80">
+                          <CardHeader className="flex justify-between items-center">
+                            <div className="text-sm font-semibold text-gray-700 dark:text-gray-200">{status}</div>
+                            <Chip size="sm" variant="flat" color={getStatusColor(status as any)}>{group.length}</Chip>
+                          </CardHeader>
+                          <CardBody className="p-2">
+                            <div className="flex flex-col gap-2">
+                              {group.map(p => (
+                                <div key={p.id} onClick={() => handleToggleExpand(p.id)} className="flex items-center justify-between p-2 rounded hover:bg-indigo-50/60 dark:hover:bg-slate-700/60 cursor-pointer">
+                                  <div className="flex items-center gap-3">
+                                    <div className={"w-10 h-10 rounded-md flex items-center justify-center bg-indigo-50 dark:bg-slate-700 text-indigo-700 dark:text-indigo-200 font-semibold"}>
+                                      {p.name ? p.name.charAt(0).toUpperCase() : '?'}
+                                    </div>
+                                    <div>
+                                      <div className="text-sm font-medium text-gray-800 dark:text-gray-100">{p.name}</div>
+                                      <div className="text-xs text-gray-500">{p.type}</div>
+                                    </div>
+                                  </div>
+                                  <Chip size="sm" variant="flat" color={getStatusColor(p.status)} className="text-xs">{p.status}</Chip>
+                                </div>
+                              ))}
+                            </div>
+                          </CardBody>
+                        </Card>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
         </section>
 
         {/* --- Alert Sections --- */}
@@ -565,59 +591,6 @@ export default function DashboardPage() {
   );
 }
 
-// --- Reports widget preview (client-only) ---
-function ReportsWidgetPreview() {
-  const [reports, setReports] = React.useState<any[]>([]);
-  const router = useRouter();
-
-  React.useEffect(() => {
-    const q = query(collection(db, 'restock_reports'), orderBy('createdAt', 'desc'));
-    const unsub = onSnapshot(q, snap => {
-      const out: any[] = [];
-      let count = 0;
-      snap.forEach(s => {
-        const d = { id: s.id, ...(s.data() as any) };
-        if (!d.resolved && count < 5) { out.push(d); count++; }
-      });
-      setReports(out);
-    }, err => {
-      console.error('reports preview error', err);
-    });
-    return () => unsub();
-  }, []);
-
-  if (reports.length === 0) return <div className="text-xs text-gray-500">No recent unresolved reports.</div>;
-
-  return (
-    <div className="divide-y divide-gray-100 dark:divide-slate-700">
-      {reports.map(r => {
-        let dateStr = '';
-        try {
-          const d = r.createdAt?.toDate ? r.createdAt.toDate() : new Date(r.createdAt);
-          dateStr = d.toLocaleString();
-        } catch (e) {
-          dateStr = String(r.createdAt || '');
-        }
-
-        return (
-          <div key={r.id} className="flex justify-between items-center p-3 hover:bg-indigo-50/70 dark:hover:bg-slate-700/60">
-            <div>
-              <p className="font-semibold text-gray-800 dark:text-gray-200">{r.statpackName || r.statpackId}</p>
-              <p className="text-xs text-gray-500">{r.reporter || r.reporterId}</p>
-              <p className="text-xs text-gray-700 mt-1">{(r.items || []).slice(0,2).map((it:any)=>it.name).join(', ')}</p>
-            </div>
-
-            <div className="text-right flex flex-col items-end gap-2">
-              <div className="text-xs text-gray-400">{dateStr}</div>
-              <Button size="sm" variant="light" onPress={(e:any) => { e?.stopPropagation?.(); router.push(`/reports?id=${r.id}`); }}>
-                Open
-              </Button>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
+// ReportsWidgetPreview removed — reports accessible via the main Reports page.
 
 // SimulateReportForm removed — replaced by a mobile report button above.

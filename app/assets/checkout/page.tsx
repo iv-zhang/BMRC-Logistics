@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Card,
@@ -16,28 +16,28 @@ import {
   ModalContent,
   ModalHeader,
   ModalBody,
-  Table,
-  TableBody,
-  TableCell,
-  TableColumn,
-  TableHeader,
+  Tabs,
+  Tab,
 } from '@heroui/react';
-import { ScanLine, Search, ArrowLeft, Radio } from 'lucide-react';
+import { ScanLine, Search, ArrowLeft, Radio, Layers } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
-import { collection, query, where, getDocs, Timestamp } from 'firebase/firestore';
+import { collection, query, where, getDocs, Timestamp, doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
-import type { InventoryItem } from '@/app/types';
+import type { InventoryItem, AssetInstance } from '@/app/types';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import CheckoutModal from '@/app/components/checkout-modal';
-import { findAssetByCode, type AssetScanMatch } from '@/app/lib/inventory';
+import BatchAssetCheckout, { type BatchItem, type BatchContext } from '@/app/components/batch-asset-checkout';
+import { findAssetByCode, batchCheckoutAssets, batchCheckinAssets, type AssetScanMatch } from '@/app/lib/inventory';
+import { useUserRole } from '@/app/hooks/useUserRole';
 
 export default function AssetCheckoutPage() {
   const router = useRouter();
-  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const { user, role, fullName } = useUserRole();
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [assets, setAssets] = useState<InventoryItem[]>([]);
   const [filteredAssets, setFilteredAssets] = useState<InventoryItem[]>([]);
+  const [activeTab, setActiveTab] = useState<string>('single');
 
   const [selectedAsset, setSelectedAsset] = useState<InventoryItem | null>(null);
   const [checkoutMode, setCheckoutMode] = useState<'checkout' | 'checkin' | null>(null);
@@ -47,14 +47,6 @@ export default function AssetCheckoutPage() {
   const checkoutDisclosure = useDisclosure();
   const multipleMatchDisclosure = useDisclosure();
   const [multipleMatches, setMultipleMatches] = useState<AssetScanMatch[]>([]);
-
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      if (!u) router.push('/login');
-    });
-    return () => unsub();
-  }, [router]);
 
   useEffect(() => {
     if (!user) return;
@@ -133,6 +125,55 @@ export default function AssetCheckoutPage() {
     return 'default';
   };
 
+  // Batch mode: lookup asset by barcode for batch component
+  const lookupAssetForBatch = useCallback(async (barcode: string): Promise<Array<{ item: InventoryItem; instance?: AssetInstance }>> => {
+    // First try local cache
+    const localMatches = findAssetByCode(assets, barcode);
+    if (localMatches.length > 0) {
+      return localMatches.map(m => ({ item: m.asset, instance: m.instance }));
+    }
+    // Fallback: query Firestore for assets with matching barcode/serial/assignedBarcode
+    try {
+      const snap = await getDocs(query(collection(db, 'inventory'), where('isAsset', '==', true)));
+      const allAssets = snap.docs.map(d => ({ id: d.id, ...d.data() } as InventoryItem));
+      const matches = findAssetByCode(allAssets, barcode);
+      return matches.map(m => ({ item: m.asset, instance: m.instance }));
+    } catch {
+      return [];
+    }
+  }, [assets]);
+
+  // Batch checkout handler
+  const handleBatchCheckout = useCallback(async (items: BatchItem[], context: BatchContext) => {
+    if (!user) return;
+    const assetList = items.map(i => ({
+      itemId: i.item.id,
+      instanceSerial: i.instance?.serial,
+    }));
+    await batchCheckoutAssets(assetList, context, user.uid, fullName || user.displayName || 'Unknown');
+    // Refresh assets
+    const q2 = query(collection(db, 'inventory'), where('isAsset', '==', true));
+    const snap = await getDocs(q2);
+    setAssets(snap.docs.map(d => ({ id: d.id, ...d.data() } as InventoryItem)));
+    setActiveTab('single');
+  }, [user, fullName]);
+
+  // Batch checkin handler
+  const handleBatchCheckin = useCallback(async (items: BatchItem[], context: BatchContext) => {
+    if (!user) return;
+    const assetList = items.map(i => ({
+      itemId: i.item.id,
+      instanceSerial: i.instance?.serial,
+      condition: i.condition,
+      notes: i.notes,
+    }));
+    await batchCheckinAssets(assetList, context, user.uid, fullName || user.displayName || 'Unknown');
+    const q2 = query(collection(db, 'inventory'), where('isAsset', '==', true));
+    const snap = await getDocs(q2);
+    setAssets(snap.docs.map(d => ({ id: d.id, ...d.data() } as InventoryItem)));
+    setActiveTab('single');
+  }, [user, fullName]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -153,98 +194,114 @@ export default function AssetCheckoutPage() {
         </Button>
       </div>
 
-      <Card>
-        <CardHeader className="flex gap-3">
-          <div className="flex flex-col">
-            <p className="text-lg font-semibold">Quick Scan</p>
-            <p className="text-small text-default-500">Scan a barcode or QR code to checkout/checkin an asset</p>
-          </div>
-        </CardHeader>
-        <Divider />
-        <CardBody className="gap-3">
-          <Button
-            color="primary"
-            startContent={<ScanLine className="w-5 h-5" />}
-            onPress={scannerDisclosure.onOpen}
-            size="lg"
-          >
-            Open Scanner
-          </Button>
-        </CardBody>
-      </Card>
+      {/* Mode tabs: Single vs Batch */}
+      <Tabs
+        selectedKey={activeTab}
+        onSelectionChange={(key) => setActiveTab(String(key))}
+        color="primary"
+        variant="solid"
+      >
+        <Tab key="single" title={<div className="flex items-center gap-2"><ScanLine size={16} />Single Asset</div>}>
+          <div className="space-y-6 mt-4">
+            <Card>
+              <CardHeader className="flex gap-3">
+                <div className="flex flex-col">
+                  <p className="text-lg font-semibold">Quick Scan</p>
+                  <p className="text-small text-default-500">Scan a barcode or QR code to checkout/checkin an asset</p>
+                </div>
+              </CardHeader>
+              <Divider />
+              <CardBody className="gap-3">
+                <Button
+                  color="primary"
+                  startContent={<ScanLine className="w-5 h-5" />}
+                  onPress={scannerDisclosure.onOpen}
+                  size="lg"
+                >
+                  Open Scanner
+                </Button>
+              </CardBody>
+            </Card>
 
-      <Card>
-        <CardHeader className="flex gap-3">
-          <div className="flex flex-col flex-1">
-            <p className="text-lg font-semibold">Search Assets</p>
-            <p className="text-small text-default-500">Or search manually from the list below</p>
-          </div>
-        </CardHeader>
-        <Divider />
-        <CardBody className="gap-3">
-          <Input
-            isClearable
-            placeholder="Search by name, serial, barcode, or QR code..."
-            startContent={<Search className="w-4 h-4" />}
-            value={searchQuery}
-            onValueChange={setSearchQuery}
-          />
-          {filteredAssets.length > 0 ? (
-            <Table hideHeader removeWrapper className="mt-4">
-              <TableHeader>
-                <TableColumn>Name</TableColumn>
-                <TableColumn>Serial</TableColumn>
-                <TableColumn>Status</TableColumn>
-                <TableColumn>Checked Out By</TableColumn>
-                <TableColumn>Action</TableColumn>
-              </TableHeader>
-              <TableBody>
-                {filteredAssets.map((asset) => (
-                  <TableRow key={asset.id}>
-                    <TableCell className="text-sm">
-                      <div>
-                        <p className="font-semibold">{asset.name}</p>
-                        {asset.assetCategory && (
-                          <p className="text-xs text-gray-500">{asset.assetCategory}</p>
-                        )}
-                        {Array.isArray(asset.assets) && asset.assets.length > 0 && (
-                          <p className="text-xs text-gray-500">{asset.assets.length} serialized units</p>
-                        )}
+            <Card>
+              <CardHeader className="flex gap-3">
+                <div className="flex flex-col flex-1">
+                  <p className="text-lg font-semibold">Search Assets</p>
+                  <p className="text-small text-default-500">Or search manually from the list below</p>
+                </div>
+              </CardHeader>
+              <Divider />
+              <CardBody className="gap-3">
+                <Input
+                  isClearable
+                  placeholder="Search by name, serial, barcode, or QR code..."
+                  startContent={<Search className="w-4 h-4" />}
+                  value={searchQuery}
+                  onValueChange={setSearchQuery}
+                />
+                {filteredAssets.length > 0 ? (
+                  <div className="space-y-2 mt-4">
+                    {filteredAssets.map((asset) => (
+                      <div
+                        key={asset.id}
+                        className="flex items-center justify-between px-4 py-3 rounded-lg bg-default-50 hover:bg-default-100 transition-colors"
+                      >
+                        <div className="flex-1">
+                          <p className="font-semibold text-sm">{asset.name}</p>
+                          {asset.assetCategory && (
+                            <p className="text-xs text-gray-500">{asset.assetCategory}</p>
+                          )}
+                          <p className="text-xs text-gray-400 font-mono">{asset.assetSerial || asset.assignedBarcode || '—'}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Chip size="sm" variant="flat" color={getStatusColor(asset.assetStatus)}>
+                            {asset.assetStatus || 'Unknown'}
+                          </Chip>
+                          <Button
+                            size="sm"
+                            color={asset.assetStatus === 'Checked Out' ? 'success' : 'primary'}
+                            onPress={() => handleSelectAsset(asset)}
+                          >
+                            {asset.assetStatus === 'Checked Out' ? 'Checkin' : 'Checkout'}
+                          </Button>
+                        </div>
                       </div>
-                    </TableCell>
-                    <TableCell className="text-xs text-gray-600">{asset.assetSerial || '—'}</TableCell>
-                    <TableCell>
-                      <Chip
-                        size="sm"
-                        variant="flat"
-                        color={getStatusColor(asset.assetStatus)}
-                      >
-                        {asset.assetStatus || 'Unknown'}
-                      </Chip>
-                    </TableCell>
-                    <TableCell className="text-xs">
-                      {asset.assetStatus === 'Checked Out' ? asset.checkedOutBy || '—' : '—'}
-                    </TableCell>
-                    <TableCell>
-                      <Button
-                        size="sm"
-                        color={asset.assetStatus === 'Checked Out' ? 'success' : 'primary'}
-                        onPress={() => handleSelectAsset(asset)}
-                      >
-                        {asset.assetStatus === 'Checked Out' ? 'Checkin' : 'Checkout'}
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          ) : (
-            <p className="text-center text-gray-500 py-8">
-              {searchQuery ? 'No assets found matching your search' : 'No assets available'}
-            </p>
-          )}
-        </CardBody>
-      </Card>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-center text-gray-500 py-8">
+                    {searchQuery ? 'No assets found matching your search' : 'No assets available'}
+                  </p>
+                )}
+              </CardBody>
+            </Card>
+          </div>
+        </Tab>
+
+        <Tab key="batch-checkout" title={<div className="flex items-center gap-2"><Layers size={16} />Batch Checkout</div>}>
+          <div className="mt-4">
+            <BatchAssetCheckout
+              lookupAsset={lookupAssetForBatch}
+              onCheckout={handleBatchCheckout}
+              onCancel={() => setActiveTab('single')}
+              mode="checkout"
+              defaultContext={{ assignee: fullName || '' }}
+            />
+          </div>
+        </Tab>
+
+        <Tab key="batch-checkin" title={<div className="flex items-center gap-2"><Layers size={16} />Batch Check-in</div>}>
+          <div className="mt-4">
+            <BatchAssetCheckout
+              lookupAsset={lookupAssetForBatch}
+              onCheckout={handleBatchCheckin}
+              onCancel={() => setActiveTab('single')}
+              mode="checkin"
+              defaultContext={{ assignee: fullName || '' }}
+            />
+          </div>
+        </Tab>
+      </Tabs>
 
       <BarcodeScanner
         isOpen={scannerDisclosure.isOpen}
@@ -295,14 +352,3 @@ export default function AssetCheckoutPage() {
     </div>
   );
 }
-
-// Custom table row component for type safety
-const TableRow = ({
-  children,
-  ...props
-}: {
-  children: React.ReactNode;
-  [key: string]: unknown;
-}) => {
-  return <tr {...props}>{children}</tr>;
-};

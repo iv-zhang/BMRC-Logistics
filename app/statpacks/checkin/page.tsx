@@ -613,7 +613,7 @@ export default function CheckinPage() {
                 {/* Quick Check-In — pinned at top for fastest access */}
                 <Card className="bg-emerald-50 dark:bg-emerald-900/20 border-2 border-emerald-300 dark:border-emerald-700">
                   <CardBody className="text-center py-4">
-                    <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-200 mb-1">🚀 Didn&apos;t use anything?</p>
+                    <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-200 mb-1">Didn&apos;t use anything?</p>
                     <p className="text-xs text-emerald-700 dark:text-emerald-300 mb-3">
                       If no items were used during the event, skip verification.
                     </p>
@@ -624,7 +624,7 @@ export default function CheckinPage() {
                       className="w-full font-semibold"
                       onPress={() => selectedPack && setQuickConfirmPack(selectedPack)}
                     >
-                      ⚡ Quick Check-In (nothing used)
+                      Quick Check-In (nothing used)
                     </Button>
                     <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-2">
                       This will be flagged for admin review

@@ -87,7 +87,7 @@ export default function StatpackLogHistory({ isOpen, onOpenChange, statpackId, s
               <Chip size="sm" variant="flat">{totalCheckouts} checkouts</Chip>
               <Chip size="sm" variant="flat">{totalCheckins} checkins</Chip>
               {quickCheckins > 0 && (
-                <Chip size="sm" variant="flat" color="warning">⚡ {quickCheckins} quick</Chip>
+                <Chip size="sm" variant="flat" color="warning">{quickCheckins} quick</Chip>
               )}
             </div>
           </ModalHeader>
@@ -129,13 +129,13 @@ export default function StatpackLogHistory({ isOpen, onOpenChange, statpackId, s
                               <Chip size="sm" variant="solid" color="warning" className="capitalize">Checkout</Chip>
                               <span className="text-xs text-default-500">→</span>
                               <Chip size="sm" variant="solid" color="success" className="capitalize">
-                                {isQuick ? '⚡ Quick Check-in' : 'Check-in'}
+                                {isQuick ? 'Quick Check-in' : 'Check-in'}
                               </Chip>
                               {duration !== null && (
                                 <Chip size="sm" variant="flat" className="text-xs">{formatDuration(duration)}</Chip>
                               )}
                               {lowO2 && (
-                                <Chip size="sm" variant="flat" color="warning" className="text-xs">⚠️ Low O₂</Chip>
+                                <Chip size="sm" variant="flat" color="warning" className="text-xs">Low O2</Chip>
                               )}
                             </div>
                             <span className="text-xs text-default-500 whitespace-nowrap">
@@ -155,12 +155,12 @@ export default function StatpackLogHistory({ isOpen, onOpenChange, statpackId, s
 
                           {isQuick && (
                             <div className="flex items-center gap-1">
-                              <Chip size="sm" color="warning" variant="flat">⚡ Quick check-in — no item verification</Chip>
+                              <Chip size="sm" color="warning" variant="flat">Quick check-in — no item verification</Chip>
                             </div>
                           )}
 
                           {item.checkout?.notes && (
-                            <p className="text-xs text-default-500 truncate">📝 {item.checkout.notes}</p>
+                            <p className="text-xs text-default-500 truncate">{item.checkout.notes}</p>
                           )}
                         </CardBody>
                       </Card>
@@ -191,7 +191,7 @@ export default function StatpackLogHistory({ isOpen, onOpenChange, statpackId, s
                             >
                               {log.action?.replace(/_/g, ' ') || 'Unknown'}
                             </Chip>
-                            {isQuick && <Chip size="sm" color="warning" variant="flat">⚡ Quick</Chip>}
+                            {isQuick && <Chip size="sm" color="warning" variant="flat">Quick</Chip>}
                             {!log.pairId && (
                               <Chip size="sm" color="danger" variant="flat">Unpaired</Chip>
                             )}
@@ -207,7 +207,7 @@ export default function StatpackLogHistory({ isOpen, onOpenChange, statpackId, s
                         </div>
 
                         {log.notes && (
-                          <p className="text-xs text-default-500 truncate">📝 {log.notes}</p>
+                          <p className="text-xs text-default-500 truncate">{log.notes}</p>
                         )}
                       </CardBody>
                     </Card>

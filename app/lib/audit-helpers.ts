@@ -325,6 +325,12 @@ export interface AuditEntry {
   condition: 'Good' | 'Damaged' | 'Expired';
   notes?: string;
   expirationDate?: string;
+  /** Optional: units per sealed box/bag as observed during audit */
+  itemsPerBox?: number;
+  /** Optional lot/batch identifier observed on sealed box/bag */
+  lotNumber?: string;
+  /** Optional batch open date or manufacture date (ISO string) */
+  batchDate?: string;
   /** Barcode scanned during audit (optional) */
   scannedBarcode?: string;
 }
@@ -368,7 +374,9 @@ export async function submitAuditEntries(
       batch.update(doc(db, 'inventory', entry.itemId), {
         unopenedBoxes: countedBoxes,
         // Also sync totalStockQuantity for legacy compat
-        totalStockQuantity: countedBoxes * (item.itemsPerBox ?? 1),
+        totalStockQuantity: countedBoxes * (entry.itemsPerBox ?? item.itemsPerBox ?? 1),
+        // Allow auditors to correct or record observed items-per-box
+        itemsPerBox: entry.itemsPerBox ?? item.itemsPerBox ?? 1,
         auditVerified: true,
         auditCondition: entry.condition,
         auditNotes: entry.notes ?? null,
@@ -391,7 +399,14 @@ export async function submitAuditEntries(
         : { unopenedBoxes: item.unopenedBoxes ?? 0 },
       after: isAsset
         ? { auditVerified: true, condition: entry.condition }
-        : { unopenedBoxes: entry.countedBoxes ?? 0, condition: entry.condition },
+        : {
+            unopenedBoxes: entry.countedBoxes ?? 0,
+            condition: entry.condition,
+            itemsPerBox: entry.itemsPerBox ?? item.itemsPerBox ?? 1,
+            lotNumber: entry.lotNumber ?? null,
+            batchDate: entry.batchDate ?? null,
+            expirationDate: entry.expirationDate ?? null,
+          },
     });
 
     logsToWrite.push({
@@ -413,6 +428,10 @@ export async function submitAuditEntries(
               countedBoxes: entry.countedBoxes,
               systemBoxes: item.unopenedBoxes ?? 0,
               variance: (entry.countedBoxes ?? 0) - (item.unopenedBoxes ?? 0),
+              itemsPerBox: entry.itemsPerBox ?? item.itemsPerBox ?? 1,
+              lotNumber: entry.lotNumber ?? null,
+              batchDate: entry.batchDate ?? null,
+              expirationDate: entry.expirationDate ?? null,
             }),
       },
     });

@@ -260,6 +260,30 @@ export interface InventoryItem {
   createdAt: Date;
   updatedAt: Date;
   
+  // --- STATPACK ASSIGNMENT (bidirectional link) ---
+  /** Structured assignment linking this asset to a specific statpack and pocket */
+  statpackAssignment?: {
+    statpackId: string;
+    statpackName: string;
+    pocket: StatpackPocket;
+    compartmentLabel?: string;
+    positionIndex?: number;
+    assignedAt: Date | FieldValue;
+    assignedBy: string;
+  };
+
+  // --- VERIFICATION TRACKING ---
+  /** Results from the last verification/checkout scan */
+  lastVerification?: {
+    verifiedAt: Date;
+    verifiedBy: string;
+    verifiedByName: string;
+    barcodeMatched?: boolean;
+    fieldValues?: Record<string, unknown>;
+    warnings?: Array<{ fieldId: string; message: string; severity: string }>;
+    passed: boolean;
+  };
+
   // Asset-specific fields (for non-disposable high-value items: O2 tanks, AEDs, bikes, radios, etc.)
   assetValue?: number; // Monetary value in dollars
   currentLocation?: string; // Where the asset is currently (GPS or room location)
@@ -377,7 +401,8 @@ export interface Statpack {
 
 // --- LOGGING & ISSUES ---
 
-export interface IssueReport {
+/** Issue recorded for a specific item during statpack checkout/checkin (NOT the global IssueReport) */
+export interface StatpackItemIssue {
   itemId: string;
   itemName: string;
   issueType: 'missing' | 'expired' | 'damaged' | 'other';
@@ -445,7 +470,7 @@ export interface StatpackLog {
   issues?: {
       sealChecks?: Record<string, { sealed: boolean; sealNumber?: string; expiration?: Date }>;
       oxygenReadings?: Record<string, string>;
-      issueReports?: Record<string, IssueReport>;
+      issueReports?: Record<string, StatpackItemIssue>;
       verifiedCount?: number;
   };
   

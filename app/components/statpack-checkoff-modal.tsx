@@ -19,7 +19,8 @@ import { useUserRole } from '@/app/hooks/useUserRole';
 import { logStatpackCheckOff, verifyAssetAgainstRules } from '@/app/lib/inventory';
 import { parseGs1Barcode } from '@/app/lib/gs1';
 import type { Statpack, ValidationWarning } from '@/app/types';
-import BarcodeScanner from './barcode-scanner';
+import ScannerInput from './scanner-input';
+import { THRESHOLDS } from '@/app/config/org-config';
 import { ScanLine, CheckCircle2, XCircle, AlertTriangle, PackageOpen, AlertCircle, RefreshCw } from 'lucide-react';
 
 interface StatpackCheckOffModalProps {
@@ -238,7 +239,7 @@ export default function StatpackCheckOffModal({
       // Check if any readings are below minimum threshold
       const lowO2Items = oxygenItems.filter(item => {
         const reading = Number(oxygenReadings[item.itemId]);
-        const minPsi = item.itemDetails?.verificationPolicy?.requireO2PsiMin || 1800;
+        const minPsi = item.itemDetails?.verificationPolicy?.requireO2PsiMin || THRESHOLDS.o2PsiMin;
         return reading < minPsi;
       });
       
@@ -297,9 +298,9 @@ export default function StatpackCheckOffModal({
 
         // Show success message inline
         if (isAdmin) {
-          setInlineAlert({ type: 'success', message: `✓ Pocket verified for ${statpack.name}.` });
+          setInlineAlert({ type: 'success', message: `Pocket verified for ${statpack.name}.` });
         } else {
-          setInlineAlert({ type: 'success', message: `✓ Pocket verification recorded for ${statpack.name}.` });
+          setInlineAlert({ type: 'success', message: `Pocket verification recorded for ${statpack.name}.` });
         }
 
         // Close modal and call callback after brief delay
@@ -330,7 +331,7 @@ export default function StatpackCheckOffModal({
       if (criticalWarnings.length > 0) {
         setValidationWarnings(warnings);
         setPendingComplete(true);
-        setInlineAlert({ type: 'warning', message: `✓ Saved with ${criticalWarnings.length} critical warning(s). Please review and acknowledge.` });
+        setInlineAlert({ type: 'warning', message: `Saved with ${criticalWarnings.length} critical warning(s). Please review and acknowledge.` });
         return;
       }
       // Show non-critical warnings but don't block submission
@@ -340,9 +341,9 @@ export default function StatpackCheckOffModal({
 
       // Show success message inline
       if (isAdmin) {
-        setInlineAlert({ type: 'success', message: `✓ Audit complete for ${statpack.name}. You are accountable for this bag.` });
+        setInlineAlert({ type: 'success', message: `Audit complete for ${statpack.name}. You are accountable for this bag.` });
       } else {
-        setInlineAlert({ type: 'success', message: `✓ Verification recorded for ${statpack.name}. Thank you.` });
+        setInlineAlert({ type: 'success', message: `Verification recorded for ${statpack.name}. Thank you.` });
       }
 
       // show inline HeroUI alert then close
@@ -409,8 +410,8 @@ export default function StatpackCheckOffModal({
       <ModalContent>
         <ModalHeader className="flex flex-col gap-1">
           {action === 'checkout' && 'Checkout: Digital Check-Off'}
-          {action === 'checkin' && '✓ Check-In: Bag Verification'}
-          {action === 'maintenance' && '🔧 Maintenance: Inventory Audit'}
+          {action === 'checkin' && 'Check-In: Bag Verification'}
+          {action === 'maintenance' && 'Maintenance: Inventory Audit'}
         </ModalHeader>
 
         <ModalBody className="gap-4">
@@ -592,7 +593,7 @@ export default function StatpackCheckOffModal({
                                   <IconComp size={16} className={`${textColor} mt-0.5 flex-shrink-0`} />
                                   <div className="flex-1">
                                     <p className={`text-xs font-semibold ${textColor}`}>
-                                      {cw.severity === 'critical' ? '⚠ ACTION REQUIRED' : cw.severity === 'warning' ? '⚠ Warning' : 'ℹ Note'}
+                                      {cw.severity === 'critical' ? 'ACTION REQUIRED' : cw.severity === 'warning' ? 'Warning' : 'Note'}
                                     </p>
                                     <p className="text-xs text-default-700">{cw.message}</p>
                                     {cw.requiresAcknowledgment && !isAcked && (
@@ -612,7 +613,7 @@ export default function StatpackCheckOffModal({
                                       </Checkbox>
                                     )}
                                     {isAcked && (
-                                      <Chip size="sm" color="success" variant="flat" className="mt-1">✓ Acknowledged</Chip>
+                                      <Chip size="sm" color="success" variant="flat" className="mt-1">Acknowledged</Chip>
                                     )}
                                   </div>
                                 </div>
@@ -651,7 +652,7 @@ export default function StatpackCheckOffModal({
                                   handleCountChange(itemId, item.requiredQuantity);
                                 }}
                               >
-                                I restocked it ✓
+                                I restocked it
                               </Button>
                               <Button
                                 size="sm"
@@ -666,7 +667,7 @@ export default function StatpackCheckOffModal({
                             {restockStatuses[itemId] === 'restocked' && (
                               <Card className="bg-success-50 dark:bg-success-900/20">
                                 <CardBody className="py-2 px-3">
-                                  <p className="text-xs text-success-700 dark:text-success-300">✓ Great! Count updated. Verify the replacement is correct.</p>
+                                  <p className="text-xs text-success-700 dark:text-success-300">Great! Count updated. Verify the replacement is correct.</p>
                                 </CardBody>
                               </Card>
                             )}
@@ -674,7 +675,7 @@ export default function StatpackCheckOffModal({
                               <div className="space-y-2">
                                 <Card className="bg-danger-50 dark:bg-danger-900/20">
                                   <CardBody className="py-2 px-3">
-                                    <p className="text-xs text-danger-700 dark:text-danger-300">⚠ Admin will be notified that the restock shelf needs to be refilled.</p>
+                                    <p className="text-xs text-danger-700 dark:text-danger-300">Admin will be notified that the restock shelf needs to be refilled.</p>
                                   </CardBody>
                                 </Card>
                                 <Input
@@ -692,7 +693,7 @@ export default function StatpackCheckOffModal({
                         {/* Mismatch hint (when not yet checked but count manually lowered) */}
                         {action === 'checkin' && !ok && !isChecked && (
                           <p className="text-xs text-warning-600 mt-1 italic">
-                            ☝ Tap to verify, then choose a restock action
+                            Tap to verify, then choose a restock action
                           </p>
                         )}
                         
@@ -700,80 +701,97 @@ export default function StatpackCheckOffModal({
                         {hasRules && (
                           <div className="mt-2 space-y-2" onClick={(e) => e.stopPropagation()}>
                             {!verification ? (
-                              <div className="flex gap-2">
-                                <div
-                                  role="button"
-                                  tabIndex={0}
-                                  onClick={(e) => { e.stopPropagation(); setScanningItemId(itemId); }}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter' || e.key === ' ') {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      setScanningItemId(itemId);
-                                    }
-                                  }}
-                                  className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-1 rounded text-sm font-medium text-primary bg-transparent hover:bg-primary/10 focus:outline-none"
-                                >
-                                  <span className="inline-flex items-center"><ScanLine size={14} /></span>
-                                  <span>Verify Asset</span>
-                                </div>
-                                {/* Allow manual expiration confirmation when required by rules */}
-                                {(item.verificationRules?.requireExpirationConfirmation || item.itemDetails?.verificationPolicy?.requireExpirationConfirmation) && (() => {
-                                  const currentVerif = itemVerifications[itemId];
-                                  return (
-                                    <Input
-                                      size="sm"
-                                      type="date"
-                                      placeholder="Confirm Expiration"
-                                      value={currentVerif?.scannedExpiration?.toISOString().slice(0,10) || ''}
-                                      onClick={(e) => e.stopPropagation()}
-                                      onValueChange={async (v) => {
-                                      const parsed = v ? new Date(v) : undefined;
-                                      setItemVerifications(prev => ({
-                                        ...prev,
-                                        [itemId]: {
-                                          ...(prev[itemId] || { warnings: [] }),
-                                          scannedExpiration: parsed,
-                                          scannedCode: prev[itemId]?.scannedCode,
-                                          o2Psi: prev[itemId]?.o2Psi,
-                                        }
-                                      }));
-
-                                      // Re-run verification with updated expiration
-                                      const statpackItem = statpack?.contents.find(i => i.itemId === itemId);
-                                      if (!statpackItem) return;
-                                      const currentVerif = itemVerifications[itemId];
-                                      const warnings = await verifyAssetAgainstRules({
-                                        statpackItem,
-                                        scannedCode: currentVerif?.scannedCode,
-                                        scannedExpiration: parsed,
-                                        scannedO2Psi: currentVerif?.o2Psi,
-                                      });
-                                      setItemVerifications(prev => ({
-                                        ...prev,
-                                        [itemId]: {
-                                          ...(prev[itemId] || { warnings: [] }),
-                                          scannedExpiration: parsed,
-                                          scannedCode: prev[itemId]?.scannedCode,
-                                          o2Psi: prev[itemId]?.o2Psi,
-                                          warnings,
-                                        }
-                                      }));
-                                    }}
+                              <div className="space-y-2">
+                                {/* Inline scanner — no separate modal needed */}
+                                {scanningItemId === itemId ? (
+                                  <div className="rounded-lg border border-primary/20 p-2">
+                                    <ScannerInput
+                                      onScan={(code) => handleScanComplete(code, itemId)}
+                                      placeholder="Scan asset barcode…"
+                                      label="Verify Asset"
+                                      compact
                                     />
-                                  );
-                                })()}
+                                    <Button
+                                      size="sm"
+                                      variant="light"
+                                      className="mt-1"
+                                      onPress={() => setScanningItemId(null)}
+                                    >
+                                      Cancel
+                                    </Button>
+                                  </div>
+                                ) : (
+                                  <div className="flex gap-2">
+                                    <Button
+                                      size="sm"
+                                      variant="flat"
+                                      color="primary"
+                                      startContent={<ScanLine size={14} />}
+                                      onPress={() => setScanningItemId(itemId)}
+                                    >
+                                      Verify Asset
+                                    </Button>
+                                    {/* Allow manual expiration confirmation when required by rules */}
+                                    {(item.verificationRules?.requireExpirationConfirmation || item.itemDetails?.verificationPolicy?.requireExpirationConfirmation) && (
+                                      <Input
+                                        size="sm"
+                                        type="date"
+                                        placeholder="Confirm Expiration"
+                                        value={itemVerifications[itemId]?.scannedExpiration?.toISOString().slice(0,10) || ''}
+                                        onClick={(e) => e.stopPropagation()}
+                                        onValueChange={async (v) => {
+                                          const parsed = v ? new Date(v) : undefined;
+                                          const statpackItem = statpack?.contents.find(i => i.itemId === itemId);
+                                          if (!statpackItem) return;
+                                          const currentVerif = itemVerifications[itemId];
+                                          const warnings = await verifyAssetAgainstRules({
+                                            statpackItem,
+                                            scannedCode: currentVerif?.scannedCode,
+                                            scannedExpiration: parsed,
+                                            scannedO2Psi: currentVerif?.o2Psi,
+                                          });
+                                          setItemVerifications(prev => ({
+                                            ...prev,
+                                            [itemId]: {
+                                              ...(prev[itemId] || { warnings: [] }),
+                                              scannedExpiration: parsed,
+                                              scannedCode: prev[itemId]?.scannedCode,
+                                              o2Psi: prev[itemId]?.o2Psi,
+                                              warnings,
+                                            }
+                                          }));
+                                        }}
+                                      />
+                                    )}
+                                  </div>
+                                )}
                               </div>
                             ) : (
                               <div className="space-y-1">
-                                <Card className="bg-blue-50">
+                                <Card className="bg-blue-50 dark:bg-blue-900/20">
                                   <CardBody className="py-1 px-2">
                                     <div className="flex items-center gap-2 text-xs">
-                                      <CheckCircle2 size={12} className="text-blue-700" />
-                                      <span className="text-blue-900">Scanned: {verification.scannedCode}</span>
+                                      <CheckCircle2 size={12} className="text-blue-700 dark:text-blue-300" />
+                                      <span className="text-blue-900 dark:text-blue-100">Scanned: {verification.scannedCode}</span>
+                                      {/* Allow re-scan */}
+                                      <Button
+                                        size="sm"
+                                        variant="light"
+                                        className="ml-auto min-w-0 h-5 px-1"
+                                        onPress={() => {
+                                          setItemVerifications(prev => {
+                                            const next = { ...prev };
+                                            delete next[itemId];
+                                            return next;
+                                          });
+                                          setScanningItemId(itemId);
+                                        }}
+                                      >
+                                        Re-scan
+                                      </Button>
                                     </div>
                                     {verification.scannedExpiration && (
-                                      <p className="text-xs text-blue-700 ml-4">
+                                      <p className="text-xs text-blue-700 dark:text-blue-300 ml-4">
                                         Exp: {verification.scannedExpiration.toLocaleDateString('en-US', { month: '2-digit', year: '2-digit' })}
                                       </p>
                                     )}
@@ -782,15 +800,15 @@ export default function StatpackCheckOffModal({
                                 
                                 {verification.warnings.map((warning, idx) => {
                                   const Icon = warning.severity === 'critical' ? XCircle : AlertTriangle;
-                                  const colorClass = warning.severity === 'critical' ? 'bg-red-50' : 'bg-yellow-50';
-                                  const textClass = warning.severity === 'critical' ? 'text-red-700' : 'text-yellow-700';
+                                  const colorClass = warning.severity === 'critical' ? 'bg-red-50 dark:bg-red-900/20' : 'bg-yellow-50 dark:bg-yellow-900/20';
+                                  const textClass = warning.severity === 'critical' ? 'text-red-700 dark:text-red-300' : 'text-yellow-700 dark:text-yellow-300';
                                   
                                   return (
                                     <Card key={idx} className={colorClass}>
                                       <CardBody className="py-1 px-2">
                                         <div className="flex items-start gap-1">
                                           <Icon size={12} className={`${textClass} mt-0.5`} />
-                                          <p className="text-xs text-gray-700">{warning.message}</p>
+                                          <p className="text-xs text-gray-700 dark:text-gray-300">{warning.message}</p>
                                         </div>
                                       </CardBody>
                                     </Card>
@@ -902,7 +920,7 @@ export default function StatpackCheckOffModal({
                     isRequired
                     min="0"
                     max="3000"
-                    description={`Minimum required: ${item.itemDetails?.verificationPolicy?.requireO2PsiMin || 1800} PSI`}
+                    description={`Minimum required: ${item.itemDetails?.verificationPolicy?.requireO2PsiMin || THRESHOLDS.o2PsiMin} PSI`}
                   />
                 ))}
             </div>
@@ -969,7 +987,7 @@ export default function StatpackCheckOffModal({
                   : pendingComplete
                     ? 'Acknowledge & Continue'
                     : allItemsChecked
-                      ? '✓ Submit Verification'
+                      ? 'Submit Verification'
                       : `Verify All Items (${checkedCount}/${totalItems})`}
               </Button>
             );
@@ -977,13 +995,6 @@ export default function StatpackCheckOffModal({
         </ModalFooter>
       </ModalContent>
       
-      {scanningItemId && (
-        <BarcodeScanner
-          isOpen={!!scanningItemId}
-          onDetected={(code) => handleScanComplete(code, scanningItemId)}
-          onClose={() => setScanningItemId(null)}
-        />
-      )}
     </Modal>
   );
 }

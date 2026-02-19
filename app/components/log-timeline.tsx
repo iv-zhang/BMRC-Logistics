@@ -229,7 +229,7 @@ export default function LogTimeline({ statpackId, maxRows = 8, onViewAll }: LogT
                         {log.action === 'checkin' ? 'Check-in' : log.action === 'checkout' ? 'Check-out' : log.action.replace(/_/g, ' ')}
                       </Chip>
                       {isQuick && (
-                        <Chip size="sm" variant="flat" color="warning">⚡</Chip>
+                        <Chip size="sm" variant="flat" color="warning">Quick</Chip>
                       )}
                       <span className="text-xs text-default-600 truncate">{log.userName || 'Unknown'}</span>
                       {total > 0 && (
@@ -239,7 +239,7 @@ export default function LogTimeline({ statpackId, maxRows = 8, onViewAll }: LogT
                       )}
                       {warnings.length > 0 && (
                         <Chip size="sm" variant="flat" color="danger">
-                          {warnings.length} ⚠
+                          {warnings.length} issues
                         </Chip>
                       )}
                     </div>

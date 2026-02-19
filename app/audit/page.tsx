@@ -389,6 +389,56 @@ export default function AuditPage() {
                   )}
               </div>
 
+              {/* New: units-per-box and batch/lot inputs */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-sm font-medium block mb-1">Units per sealed box/bag</label>
+                  <Input
+                    type="number"
+                    size="sm"
+                    className="w-full"
+                    value={String(entry.itemsPerBox ?? currentAuditItem.itemsPerBox ?? '')}
+                    onValueChange={(v) => {
+                      const n = v ? Number(v) : undefined;
+                      updateEntry(currentAuditItem.id, { itemsPerBox: n });
+                    }}
+                    placeholder="e.g., 10"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium block mb-1">Lot / Batch #</label>
+                  <Input
+                    size="sm"
+                    value={entry.lotNumber || ''}
+                    onValueChange={(v) => updateEntry(currentAuditItem.id, { lotNumber: v })}
+                    placeholder="Batch or lot ID"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
+                <div>
+                  <label className="text-sm font-medium block mb-1">Batch / Mfg Date</label>
+                  <Input
+                    type="date"
+                    size="sm"
+                    value={entry.batchDate || ''}
+                    onValueChange={(v) => updateEntry(currentAuditItem.id, { batchDate: v })}
+                  />
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium block mb-1">Expiration Date</label>
+                  <Input
+                    type="date"
+                    size="sm"
+                    value={entry.expirationDate || ''}
+                    onValueChange={(v) => updateEntry(currentAuditItem.id, { expirationDate: v })}
+                  />
+                </div>
+              </div>
+
               {/* Condition */}
               <ConditionToggle
                 value={(entry.condition as ConditionValue) || 'Good'}
@@ -437,6 +487,10 @@ export default function AuditPage() {
                     countedBoxes:
                       entry.countedBoxes ?? currentAuditItem.unopenedBoxes,
                     condition: entry.condition || 'Good',
+                    itemsPerBox: entry.itemsPerBox,
+                    lotNumber: entry.lotNumber,
+                    batchDate: entry.batchDate,
+                    expirationDate: entry.expirationDate,
                   });
                 }
                 if (auditIndex < auditItems.length - 1) {
@@ -496,6 +550,14 @@ export default function AuditPage() {
                           Condition: {entry.condition || 'Good'}
                           {entry.notes && ` · ${entry.notes}`}
                         </div>
+                        {(entry.itemsPerBox || entry.lotNumber || entry.batchDate || entry.expirationDate) && (
+                          <div className="text-xs mt-2 text-default-500">
+                            {entry.itemsPerBox !== undefined && <div>Units/box: {entry.itemsPerBox}</div>}
+                            {entry.lotNumber && <div>Lot: {entry.lotNumber}</div>}
+                            {entry.batchDate && <div>Batch date: {entry.batchDate}</div>}
+                            {entry.expirationDate && <div>Expiration: {entry.expirationDate}</div>}
+                          </div>
+                        )}
                       </CardBody>
                     </Card>
                   );

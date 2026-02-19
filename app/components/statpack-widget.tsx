@@ -25,6 +25,7 @@ import {
   Wrench,
   Boxes,
   Activity,
+  Search,
 } from 'lucide-react';
 import type { Statpack, StatpackPocket } from '@/app/types';
 import LogTimeline from '@/app/components/log-timeline';
@@ -131,10 +132,11 @@ export default function StatpackWidget({
       <Divider />
       <CardBody className="space-y-3">
         <div className="space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-default-500">Pockets</span>
+          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+            <span className="text-xs text-default-500 w-full sm:w-auto">Pockets</span>
             <Button
               size="sm"
+              className="min-h-[32px] px-3"
               variant={selectedPocket === 'all' ? 'solid' : 'flat'}
               color={selectedPocket === 'all' ? 'primary' : 'default'}
               onPress={() => setSelectedPocket('all')}
@@ -145,6 +147,7 @@ export default function StatpackWidget({
               <Button
                 key={key}
                 size="sm"
+                className="min-h-[32px] px-3"
                 variant={selectedPocket === key ? 'solid' : 'flat'}
                 color={selectedPocket === key ? 'primary' : 'default'}
                 onPress={() => setSelectedPocket(key)}
@@ -189,23 +192,29 @@ export default function StatpackWidget({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" color="primary" onPress={() => onCheckin(statpack)}>
-            <ClipboardCheck size={14} className="mr-1" />
+          <Button size="md" className="min-w-[100px] sm:min-w-0 sm:size-sm" color="primary" onPress={() => onCheckin(statpack)}>
+            <ClipboardCheck size={16} className="mr-1 sm:size-[14px]" />
             Check-In
           </Button>
           {onCheckout && (
-            <Button size="sm" variant="flat" onPress={() => onCheckout(statpack)}>
-              <ClipboardList size={14} className="mr-1" />
+            <Button size="md" className="min-w-[100px] sm:min-w-0 sm:size-sm" variant="flat" onPress={() => onCheckout(statpack)}>
+              <ClipboardList size={16} className="mr-1 sm:size-[14px]" />
               Check-Out
             </Button>
           )}
-          <Button size="sm" variant="flat" onPress={() => onMaintenance(statpack)}>
-            <Wrench size={14} className="mr-1" />
+          <Button size="md" className="min-w-[100px] sm:min-w-0 sm:size-sm" variant="flat" onPress={() => onMaintenance(statpack)}>
+            <Wrench size={16} className="mr-1 sm:size-[14px]" />
             Maintenance
           </Button>
-          <Button size="sm" variant="light" onPress={() => setShowActivity((prev) => !prev)}>
-            <Activity size={14} className="mr-1" />
-            {showActivity ? 'Hide activity' : 'Show activity'}
+          {onAudit && userRole === 'admin' && (
+            <Button size="md" className="min-w-[100px] sm:min-w-0 sm:size-sm" variant="flat" color="secondary" onPress={() => onAudit(statpack)}>
+              <Search size={16} className="mr-1 sm:size-[14px]" />
+              Audit
+            </Button>
+          )}
+          <Button size="md" className="sm:size-sm" variant="light" onPress={() => setShowActivity((prev) => !prev)}>
+            <Activity size={16} className="mr-1 sm:size-[14px]" />
+            {showActivity ? 'Hide' : 'Activity'}
           </Button>
         </div>
 
@@ -221,20 +230,20 @@ export default function StatpackWidget({
 
         <div className="flex flex-wrap items-center gap-2">
           <Tooltip content="Scan location">
-            <Button size="sm" variant="light" isIconOnly onPress={() => onScan?.(statpack)}>
-              <MapPin size={14} />
+            <Button size="sm" className="min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0" variant="light" isIconOnly onPress={() => onScan?.(statpack)}>
+              <MapPin size={16} className="sm:size-[14px]" />
             </Button>
           </Tooltip>
           <Tooltip content="Generate checkout QR">
-            <Button size="sm" variant="light" isIconOnly onPress={() => onGenerateQr?.(statpack)}>
-              <QrCode size={14} />
+            <Button size="sm" className="min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0" variant="light" isIconOnly onPress={() => onGenerateQr?.(statpack)}>
+              <QrCode size={16} className="sm:size-[14px]" />
             </Button>
           </Tooltip>
           {userRole === 'admin' && (
             <>
               <Tooltip content="Manual audit">
                 <Button size="sm" variant="light" isIconOnly onPress={() => onAudit?.(statpack)}>
-                  <Wrench size={14} />
+                  <Search size={14} />
                 </Button>
               </Tooltip>
               <Tooltip content="Duplicate statpack">
@@ -253,11 +262,13 @@ export default function StatpackWidget({
         </div>
       </CardBody>
 
-      <Modal isOpen={historyDisclosure.isOpen} onOpenChange={historyDisclosure.onOpenChange} size="2xl">
-        <ModalContent>
+      <Modal isOpen={historyDisclosure.isOpen} onOpenChange={historyDisclosure.onOpenChange} size="2xl" scrollBehavior="inside">
+        <ModalContent className="max-h-[85vh]">
           <ModalHeader>Statpack Activity</ModalHeader>
-          <ModalBody className="pb-6">
-            <StatpackHistory statpackId={statpack.id || ''} maxRows={20} />
+          <ModalBody className="pb-6 overflow-y-auto max-h-[72vh]">
+            <div className="pt-1">
+              <StatpackHistory statpackId={statpack.id || ''} maxRows={200} />
+            </div>
           </ModalBody>
         </ModalContent>
       </Modal>

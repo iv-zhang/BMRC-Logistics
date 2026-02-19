@@ -45,6 +45,8 @@ import {
   doc,
   serverTimestamp,
 } from 'firebase/firestore';
+import { recordAuditEvent } from '@/app/lib/audit';
+import { deleteDoc } from 'firebase/firestore';
 import { getDoc } from 'firebase/firestore';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { auth, db } from '@/firebase';
@@ -69,6 +71,7 @@ import {
   Unlock,
   ScanBarcode,
   MoreVertical,
+  Trash,
   AlertTriangle,
 } from 'lucide-react';
 import AssetModal from '@/app/components/assetmodal';
@@ -76,6 +79,7 @@ import BarcodeScanner from '@/app/components/barcode-scanner';
 import AssetHistory from '@/app/components/asset-history';
 import AdminAuditModal from '@/app/components/admin-audit-modal';
 import AssetAttachModal from '@/app/components/asset-attach-modal';
+import AssetStatpackBadge from '@/app/components/asset-statpack-badge';
 
   
 interface AssetRecord {
@@ -115,6 +119,9 @@ export default function AssetsPage() {
   const [editorSelectedPocket, setEditorSelectedPocket] = useState<StatpackPocket | 'all'>('all');
   const assetModalDisclosure = useDisclosure();
   const [editingAsset, setEditingAsset] = useState<any | null>(null);
+  // Deletion state for assets/statpacks (admin only)
+  const [deletingAsset, setDeletingAsset] = useState<AssetRecord | null>(null);
+  const [deleting, setDeleting] = useState(false);
   // Admin audit modal state
   const auditModalDisclosure = useDisclosure();
   const [auditType, setAuditType] = useState<'asset' | 'statpack'>('asset');
@@ -703,13 +710,9 @@ export default function AssetsPage() {
     setQuickAssignAsset(null);
   };
 
-  const sortedAssets = [...assets].sort((a, b) => {
-    const aActive = getMaintenanceStatus(a);
-    const bActive = getMaintenanceStatus(b);
-    if (aActive && !bActive) return -1;
-    if (!aActive && bActive) return 1;
-    return a.name.localeCompare(b.name);
-  });
+  // Preserve original ordering from Firestore snapshot to avoid accidental
+  // re-selection or mis-clicks when status changes. Do not reorder on status.
+  const sortedAssets = [...assets];
 
   if (loading) return <div className="h-screen flex items-center justify-center"><Spinner /></div>;
 
@@ -813,7 +816,17 @@ export default function AssetsPage() {
                           />
                         )}
                       </TableCell>
-                      <TableCell className="font-medium">{asset.name}</TableCell>
+                      <TableCell className="font-medium">
+                        <div className="flex flex-col gap-1">
+                          <span>{asset.name}</span>
+                          {asset.type === 'inventory' && (asset.data as InventoryItem).statpackAssignment && (
+                            <AssetStatpackBadge
+                              assignment={(asset.data as InventoryItem).statpackAssignment as any}
+                              size="sm"
+                            />
+                          )}
+                        </div>
+                      </TableCell>
                       <TableCell className="hidden md:table-cell">
                         <Chip size="sm" variant="flat">
                           {asset.type === 'statpack' ? 'Statpack' : (asset.data as InventoryItem).category || 'Item'}
@@ -936,6 +949,13 @@ export default function AssetsPage() {
                               ) : (
                                 <DropdownItem key="noop4" className="hidden">.</DropdownItem>
                               )}
+                              {userRole === 'admin' ? (
+                                <DropdownItem key="delete" startContent={<Trash size={14} />} onPress={() => setDeletingAsset(asset)}>
+                                  Delete
+                                </DropdownItem>
+                              ) : (
+                                <DropdownItem key="noop5" className="hidden">.</DropdownItem>
+                              )}
                             </DropdownMenu>
                           </Dropdown>
                         </div>
@@ -995,6 +1015,64 @@ export default function AssetsPage() {
             <Button color="primary" onPress={handleSubmitMaintenance}>
               Start Maintenance
             </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <Modal isOpen={!!deletingAsset} onOpenChange={(open) => { if (!open) setDeletingAsset(null); }} size="sm">
+        <ModalContent>
+          <ModalHeader>Confirm Deletion</ModalHeader>
+          <ModalBody>
+            <p className="text-sm">Are you sure you want to delete <strong>{deletingAsset?.name}</strong>? This action cannot be undone.</p>
+            <p className="text-xs text-default-500 mt-2">{deletingAsset?.type === 'statpack' ? 'Deleting a statpack will remove its configuration and contents references.' : 'Deleting an asset will remove it from inventory.'}</p>
+          </ModalBody>
+          <ModalFooter>
+            <div className="flex gap-2">
+              <Button variant="light" onPress={() => setDeletingAsset(null)}>Cancel</Button>
+              <Button color="danger" isLoading={deleting} onPress={async () => {
+                if (!deletingAsset) return;
+                setDeleting(true);
+                try {
+                  if (deletingAsset.type === 'statpack') {
+                    await deleteDoc(doc(db, 'statpacks', deletingAsset.id));
+                    await recordAuditEvent({
+                      eventType: 'delete_statpack',
+                      source: 'statpacks',
+                      sourceId: deletingAsset.id,
+                      actor: {
+                        userId: user?.uid ?? null,
+                        userName: user?.displayName ?? null,
+                      },
+                      targets: [{ collection: 'statpacks', docId: deletingAsset.id }],
+                      details: { name: deletingAsset.name },
+                    });
+                  } else {
+                    await deleteDoc(doc(db, 'inventory', deletingAsset.id));
+                    await recordAuditEvent({
+                      eventType: 'delete_asset',
+                      source: 'inventory',
+                      sourceId: deletingAsset.id,
+                      actor: {
+                        userId: user?.uid ?? null,
+                        userName: user?.displayName ?? null,
+                      },
+                      targets: [{ collection: 'inventory', docId: deletingAsset.id }],
+                      details: { name: deletingAsset.name },
+                    });
+                  }
+                  setAssets(prev => prev.filter(a => a.id !== deletingAsset.id));
+                  setSelectedAsset(prev => prev && prev.id === deletingAsset.id ? null : prev);
+                  setSelectedRowId(prev => prev === deletingAsset.id ? null : prev);
+                  setDeletingAsset(null);
+                } catch (e) {
+                  console.error('Failed to delete:', e);
+                  alert('Failed to delete item. See console for details.');
+                } finally {
+                  setDeleting(false);
+                }
+              }}>Delete</Button>
+            </div>
           </ModalFooter>
         </ModalContent>
       </Modal>
@@ -1074,6 +1152,14 @@ export default function AssetsPage() {
                   <p className="text-sm font-semibold text-gray-600">Asset Value</p>
                   <p className="text-sm">{selectedAsset?.assetValue ? `$${selectedAsset.assetValue.toFixed(2)}` : 'Not specified'}</p>
                 </div>
+                {selectedAsset?.type === 'inventory' && (selectedAsset.data as InventoryItem).statpackAssignment && (
+                  <div className="col-span-2">
+                    <p className="text-sm font-semibold text-gray-600 mb-1">Assigned Statpack</p>
+                    <AssetStatpackBadge
+                      assignment={(selectedAsset.data as InventoryItem).statpackAssignment as any}
+                    />
+                  </div>
+                )}
               </div>
             )}
 

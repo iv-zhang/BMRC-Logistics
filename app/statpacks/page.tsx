@@ -21,8 +21,9 @@ import {
 import { Package, Clipboard, AlertTriangle, ClipboardList, FileSpreadsheet } from 'lucide-react';
 import QRCode from 'qrcode';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
-import { collection, onSnapshot, query, orderBy, updateDoc, doc, serverTimestamp, getDoc, getDocs, where, documentId } from 'firebase/firestore';
+import { collection, onSnapshot, query, orderBy, updateDoc, doc, serverTimestamp, getDoc, getDocs, where, documentId, deleteDoc } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
+import { recordAuditEvent } from '@/app/lib/audit';
 import type { Statpack, StatpackPocket, StatpackItem } from '@/app/types';
 import StatpackCheckOffModal from '@/app/components/statpack-checkoff-modal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
@@ -38,6 +39,7 @@ import { useUserRole } from '@/app/hooks/useUserRole';
 import { duplicateStatpack } from '@/app/lib/statpacks';
 import { fetchAndEnrichItemDetails } from '@/app/lib/inventory';
 import { formatDuration } from '@/app/lib/logs';
+import { StatpackAssetSummary } from '@/app/components/asset-statpack-badge';
 
 export default function StatpacksListPage() {
   const router = useRouter();
@@ -48,6 +50,9 @@ export default function StatpacksListPage() {
 
   const [selectedPack, setSelectedPack] = useState<Statpack | null>(null);
   const editorDisclosure = useDisclosure();
+  // Deletion state for statpacks
+  const [deletingPack, setDeletingPack] = useState<Statpack | null>(null);
+  const [deletingPackLoading, setDeletingPackLoading] = useState(false);
   const [editingPack, setEditingPack] = useState<Statpack | null>(null);
   const checkoffDisclosure = useDisclosure();
   const [checkoffAction, setCheckoffAction] = useState<'checkin' | 'maintenance' | 'checkout'>('checkin');
@@ -835,10 +840,10 @@ export default function StatpacksListPage() {
       <BarcodeScanner isOpen={scannerOpen} onClose={() => { setScannerOpen(false); setScannerTarget(null); }} onDetected={onDetected} />
 
       {/* In-page Statpack Editor Modal */}
-      <Modal isOpen={editorDisclosure.isOpen} onOpenChange={editorDisclosure.onOpenChange} size="3xl">
-        <ModalContent className="max-h-[90vh]">
+      <Modal isOpen={editorDisclosure.isOpen} onOpenChange={editorDisclosure.onOpenChange} size="4xl" scrollBehavior="inside">
+        <ModalContent className="max-h-[calc(100vh-4rem)]">
           <ModalHeader>Statpack Editor - {editingPack?.name || selectedPack?.name}</ModalHeader>
-          <ModalBody className="space-y-4 overflow-y-auto max-h-[80vh]">
+          <ModalBody className="space-y-4 overflow-y-auto max-h-[calc(100vh-8rem)]">
             {!selectedPack && <p className="text-sm text-gray-500">No statpack selected.</p>}
             {selectedPack && (
               <div className="space-y-4">
@@ -875,6 +880,20 @@ export default function StatpacksListPage() {
                   <Input value={editingPack?.currentLocation ?? selectedPack.currentLocation ?? ''} onValueChange={(v) => setEditingPack(prev => ({ ...(prev || selectedPack), currentLocation: v } as Statpack))} />
                 </div>
 
+                {/* Assets assigned to this statpack */}
+                <StatpackAssetSummary
+                  assets={(editingPack?.contents ?? selectedPack.contents ?? [])
+                    .filter(item => item.itemDetails?.isAsset || item.assetInstanceId)
+                    .map(item => ({
+                      id: item.itemId,
+                      name: item.itemDetails?.name || 'Unknown Asset',
+                      assetSerial: item.serialNumber,
+                      assetCategory: item.itemDetails?.category,
+                      pocket: item.pocket,
+                    }))
+                  }
+                />
+
                 {/* Contents editor: compact list with drag-to-reorder */}
                 <div>
                   <div className="flex items-center justify-between flex-wrap gap-2">
@@ -884,7 +903,7 @@ export default function StatpacksListPage() {
                         {selectedPocketView === 'all' ? 'All Pockets' : selectedPocketView === 'main' ? 'Main' : selectedPocketView === 'front_aux' ? 'Front' : selectedPocketView === 'side_left' ? 'Left' : 'Right'}
                       </Chip>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <Select
                         className="min-w-[140px]"
                         label="Pocket"
@@ -903,18 +922,21 @@ export default function StatpacksListPage() {
                         <SelectItem key="side_right">Right</SelectItem>
                       </Select>
                       <Button size="sm" color="primary" variant="flat" onPress={addNewContentItem}>+ Add Item</Button>
-                      <Button size="sm" variant="light" onPress={() => { setAttachingItemIndex(null); setAttachingItemName(''); assetAttachDisclosure.onOpen(); }}>
-                        <span className="text-sm mr-2">+</span>
-                        Attach Asset
-                      </Button>
-                      <Button size="sm" variant="light" onPress={() => importModalDisclosure.onOpen()}>
-                        <FileSpreadsheet size={14} className="mr-1" />
-                        Import from Sheets
-                      </Button>
-                      {selectedPocketView !== 'all' && (
-                        <Button size="sm" variant="light" color="default" onPress={() => { setSelectedPocketView('all'); }}>Show All</Button>
-                      )}
                     </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 mt-2 flex-wrap">
+                    <Button size="sm" variant="light" onPress={() => { setAttachingItemIndex(null); setAttachingItemName(''); assetAttachDisclosure.onOpen(); }}>
+                      <span className="text-sm mr-2">+</span>
+                      Attach Asset
+                    </Button>
+                    <Button size="sm" variant="light" onPress={() => importModalDisclosure.onOpen()}>
+                      <FileSpreadsheet size={14} className="mr-1" />
+                      Import from Sheets
+                    </Button>
+                    {selectedPocketView !== 'all' && (
+                      <Button size="sm" variant="light" color="default" onPress={() => { setSelectedPocketView('all'); }}>Show All</Button>
+                    )}
                   </div>
 
                   <div className="mt-2 max-h-64 overflow-y-auto">
@@ -1018,6 +1040,11 @@ export default function StatpacksListPage() {
                   }
                 }}>Save</Button>
               )}
+              {userRole === 'admin' && (
+                <Button color="danger" variant="light" onPress={() => { const packToDelete = editingPack || selectedPack; if (packToDelete) setDeletingPack(packToDelete); }}>
+                  Delete
+                </Button>
+              )}
             </div>
           </ModalFooter>
         </ModalContent>
@@ -1032,6 +1059,47 @@ export default function StatpacksListPage() {
         userName={user?.displayName || 'Unknown'}
         onAuditComplete={() => auditModalDisclosure.onClose()}
       />
+      {/* Delete confirmation for statpack */}
+      <Modal isOpen={!!deletingPack} onOpenChange={(open) => { if (!open) setDeletingPack(null); }} size="sm">
+        <ModalContent>
+          <ModalHeader>Confirm Delete</ModalHeader>
+          <ModalBody>
+            <p className="text-sm">Are you sure you want to delete the statpack <strong>{deletingPack?.name}</strong>? This cannot be undone and will remove the statpack configuration.</p>
+          </ModalBody>
+          <ModalFooter>
+            <div className="flex gap-2">
+              <Button variant="light" onPress={() => setDeletingPack(null)}>Cancel</Button>
+              <Button color="danger" isLoading={deletingPackLoading} onPress={async () => {
+                if (!deletingPack) return;
+                setDeletingPackLoading(true);
+                try {
+                  await deleteDoc(doc(db, 'statpacks', deletingPack.id as string));
+                  await recordAuditEvent({
+                    eventType: 'delete_statpack',
+                    source: 'statpacks',
+                    sourceId: deletingPack.id as string,
+                    actor: {
+                      userId: user?.uid ?? null,
+                      userName: user?.displayName ?? null,
+                    },
+                    targets: [{ collection: 'statpacks', docId: deletingPack.id as string }],
+                    details: { name: deletingPack.name },
+                  });
+                  // close editor if it was open
+                  editorDisclosure.onClose();
+                  setEditingPack(null);
+                  setDeletingPack(null);
+                } catch (e) {
+                  console.error('Failed to delete statpack', e);
+                  alert('Failed to delete statpack. See console for details.');
+                } finally {
+                  setDeletingPackLoading(false);
+                }
+              }}>Delete</Button>
+            </div>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
       {/* QR Code Modal for Checkout Link */}
       <Modal isOpen={qrDisclosure.isOpen} onOpenChange={qrDisclosure.onOpenChange} size="sm">
         <ModalContent>
@@ -1159,7 +1227,6 @@ export default function StatpacksListPage() {
         isOpen={importModalDisclosure.isOpen}
         onOpenChange={importModalDisclosure.onOpenChange}
         onImportComplete={handleImportComplete}
-        existingItems={editingPack?.contents || selectedPack?.contents || []}
       />
     </div>
   );

@@ -591,12 +591,19 @@ export default function InventoryPage() {
             return (
               <div key={item.id}>
                 {/* ── Item Card ───────────────────────────────────────────── */}
-                <Card
-                  isPressable
-                  onPress={() => toggleExpand(item.id)}
-                  className={`transition-all ${isLowStock ? 'border-l-4 border-l-amber-400' : ''} ${hasExpiredBatches ? 'border-l-4 border-l-red-400' : ''}`}
-                >
-                  <CardBody className="p-4">
+                <Card className={`transition-all ${isLowStock ? 'border-l-4 border-l-amber-400' : ''} ${hasExpiredBatches ? 'border-l-4 border-l-red-400' : ''}`}>
+                  <CardBody
+                    className="p-4"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => toggleExpand(item.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        toggleExpand(item.id);
+                      }
+                    }}
+                  >
                     <div className="flex items-start justify-between gap-4">
                       {/* ── Left: Info ──────────────────────────────────── */}
                       <div className="flex-1 min-w-0">
