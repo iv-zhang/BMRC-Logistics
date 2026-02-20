@@ -538,7 +538,7 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
           <div className="border-t pt-4 mt-2">
             <div className="flex items-center justify-between mb-2">
               <h4 className="text-sm font-semibold">External Asset Tag</h4>
-              {initial?.id && !showScanner && (
+              {!showScanner && (
                 <Button
                   size="sm"
                   color="secondary"
@@ -598,7 +598,16 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
                     </Button>
                   </div>
                 ) : (
-                  <p className="text-xs text-blue-700">Save asset first to assign barcode</p>
+                  <div className="flex items-center gap-2">
+                    <Chip color="primary" variant="flat" size="sm">Will be assigned on save</Chip>
+                    <Button
+                      size="sm"
+                      variant="light"
+                      onPress={() => { setScannedBarcode(''); setForm({ ...form, assignedBarcode: undefined } as any); }}
+                    >
+                      Clear
+                    </Button>
+                  </div>
                 )}
               </div>
             )}

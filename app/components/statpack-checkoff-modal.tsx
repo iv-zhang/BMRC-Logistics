@@ -551,9 +551,12 @@ export default function StatpackCheckOffModal({
               return (
                 <Card
                   key={itemId}
-                  isPressable
-                  onPress={() => handleItemChecked(itemId)}
-                  className={`transition-colors bg-default-100 ${ok ? 'ring-1 ring-primary/10' : ''}`}
+                  className={`transition-colors bg-default-100 ${ok ? 'ring-1 ring-primary/10' : ''} cursor-pointer`}
+                  onClick={(e) => {
+                    // Avoid toggling when an inner button was clicked
+                    if ((e.target as HTMLElement).closest('button')) return;
+                    handleItemChecked(itemId);
+                  }}
                 >
                   <CardBody className="gap-3 py-4">
                     <div className="flex gap-3 items-start">
@@ -866,9 +869,11 @@ export default function StatpackCheckOffModal({
               {statpack.compartments.map(comp => (
                 <Card
                   key={comp.id}
-                  isPressable
-                  onPress={() => handleSealCheck(comp.id, !(sealChecks[comp.id]?.sealed ?? comp.isSealed))}
-                  className="bg-default-100"
+                  className="bg-default-100 cursor-pointer"
+                  onClick={(e) => {
+                    if ((e.target as HTMLElement).closest('button')) return;
+                    handleSealCheck(comp.id, !(sealChecks[comp.id]?.sealed ?? comp.isSealed));
+                  }}
                 >
                   <CardBody className="gap-2 py-4">
                     <div className="flex gap-2 items-center">

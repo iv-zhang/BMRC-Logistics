@@ -308,25 +308,31 @@ export default function DashboardPage() {
 
         {/* --- Statpack Grid --- */}
         <section>
-          {/* Top: Active statpacks (sorted by name) */}
           <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-200">Active Statpacks</h2>
-            <Chip variant="flat" size="sm">Total: {statpacks.length}</Chip>
+            <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-200">Statpacks</h2>
+            <div className="flex items-center gap-2">
+              <Chip variant="flat" size="sm" color="success">{statpacks.filter(p => p.status === 'Ready').length} Ready</Chip>
+              {statpacks.filter(p => p.status !== 'Ready').length > 0 && (
+                <Chip variant="flat" size="sm" color="warning">{statpacks.filter(p => p.status !== 'Ready').length} Other</Chip>
+              )}
+              <Chip variant="flat" size="sm">Total: {statpacks.length}</Chip>
+            </div>
           </div>
 
-          {/* Active row: only 'Ready' packs shown here and sorted by name */}
-          {(() => {
-            const activePacks = statpacks.filter(p => p.status === 'Ready').sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-            return (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 items-start mb-6">
-                {activePacks.map((pack) => {
+          {/* Unified grid: all statpacks rendered as identical widgets */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 items-start">
+            {[...statpacks].sort((a, b) => {
+              // Ready first, then by name
+              if (a.status === 'Ready' && b.status !== 'Ready') return -1;
+              if (a.status !== 'Ready' && b.status === 'Ready') return 1;
+              return (a.name || '').localeCompare(b.name || '');
+            }).map((pack) => {
               const isExpanded = expandedPackId === pack.id;
               const logs = packLogs[pack.id] || [];
               const isLoadingLogs = loadingLogs[pack.id];
 
               return (
-                // WRAPPER DIV: Handles the Click and Grid Layout
-                <div 
+                <div
                   key={pack.id}
                   onClick={() => handleToggleExpand(pack.id)}
                   className={`
@@ -335,8 +341,7 @@ export default function DashboardPage() {
                     ${isExpanded ? 'row-span-2' : ''}
                   `}
                 >
-                  {/* CARD: Handles only the Visuals (Borders, Background, Shadow) */}
-                  <Card 
+                  <Card
                     className={`
                       h-full bg-white/80 dark:bg-slate-800/80 hover:shadow-lg transition-shadow
                       ${getStatusBorderClass(pack.status)}
@@ -346,45 +351,49 @@ export default function DashboardPage() {
                       <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
                         {pack.type}
                       </span>
-                      <Chip 
-                        color={getStatusColor(pack.status)} 
-                        variant="flat" 
+                      <Chip
+                        color={getStatusColor(pack.status)}
+                        variant="flat"
                         size="sm"
                         className="font-medium"
                       >
                         {pack.status}
                       </Chip>
                     </CardHeader>
-                    
+
                     <CardBody className="pt-2">
                       <h3 className="text-lg font-bold text-gray-800 dark:text-white mb-1">
                         {pack.name}
                       </h3>
                       <div className="text-sm text-gray-500 mb-2">
-                        {pack.lastCheckedAt 
-                          ? `Last Check: ${pack.lastCheckedAt.toLocaleDateString()}` 
-                          : 'Status: Pending Initial Check'}
+                        {pack.lastCheckedAt
+                          ? `Last Check: ${pack.lastCheckedAt.toLocaleDateString()}`
+                          : 'Pending Initial Check'}
                       </div>
+                      {pack.currentLocation && (
+                        <div className="text-xs text-gray-400 mb-1">
+                          Location: {pack.currentLocation}
+                        </div>
+                      )}
 
                       {/* EXPANDED CONTENT */}
                       {isExpanded && (
                         <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700 animate-appearance-in">
                           <div className="flex justify-between items-end mb-2">
                             <h4 className="text-xs font-semibold text-gray-400 uppercase">Recent Activity</h4>
-                            <Button 
-                              size="sm" 
-                              variant="light" 
+                            <Button
+                              size="sm"
+                              variant="light"
                               color="primary"
                               className="h-6 text-xs"
                               onPress={() => router.push(`/assets?id=${pack.id}`)}
-                              onClick={(e) => e.stopPropagation()} 
+                              onClick={(e) => e.stopPropagation()}
                               endContent={<ArrowUpRight size={14} />}
                             >
                               Manage Details
                             </Button>
                           </div>
-                          
-                          {/* Logs Section */}
+
                           <div className="bg-white/80 dark:bg-slate-800/80 rounded-lg p-2 min-h-[100px]">
                             {isLoadingLogs ? (
                               <div className="flex justify-center py-4">
@@ -396,18 +405,16 @@ export default function DashboardPage() {
                                   {logs.map((log) => (
                                     <li key={log.id} className="border-b border-gray-200 dark:border-gray-700 pb-2 last:border-0">
                                       <div className="flex justify-between items-start">
-                                        <div className="flex items-center gap-2">
-                                          <Chip
-                                            size="sm"
-                                            variant="flat"
-                                            color={log.action === 'checkout' ? 'warning' : log.action === 'checkin' ? 'success' : log.action === 'maintenance' ? 'secondary' : 'default'}
-                                            className="capitalize font-medium"
-                                          >
-                                            {log.action === 'checkin' ? 'Check-in' : log.action === 'checkout' ? 'Checkout' : log.action?.replace(/_/g, ' ') || 'Log'}
-                                          </Chip>
-                                        </div>
+                                        <Chip
+                                          size="sm"
+                                          variant="flat"
+                                          color={log.action === 'checkout' ? 'warning' : log.action === 'checkin' ? 'success' : log.action === 'maintenance' ? 'secondary' : 'default'}
+                                          className="capitalize font-medium"
+                                        >
+                                          {log.action === 'checkin' ? 'Check-in' : log.action === 'checkout' ? 'Checkout' : log.action?.replace(/_/g, ' ') || 'Log'}
+                                        </Chip>
                                         <span className="text-[10px] text-gray-400 whitespace-nowrap ml-2">
-                                            {log.timestamp ? (log.timestamp instanceof Date ? log.timestamp.toLocaleString() : new Date(log.timestamp as any).toLocaleString()) : '—'}
+                                          {log.timestamp ? (log.timestamp instanceof Date ? log.timestamp.toLocaleString() : new Date(log.timestamp as any).toLocaleString()) : '—'}
                                         </span>
                                       </div>
                                       {log.notes && (
@@ -430,8 +437,8 @@ export default function DashboardPage() {
                           </div>
                         </div>
                       )}
-                      
-                      {/* TOGGLE ARROW (Always visible, changes direction) */}
+
+                      {/* TOGGLE ARROW */}
                       <div className="mt-2 flex justify-center">
                         {isExpanded ? (
                           <ChevronUp className="text-gray-400 group-hover:text-gray-600 transition-colors" size={16} />
@@ -444,54 +451,7 @@ export default function DashboardPage() {
                 </div>
               );
             })}
-              </div>
-            );
-          })()}
-
-          {/* Second row: maintenance / needs auditing / in-use groups */}
-          {(() => {
-            const otherStatuses = Array.from(new Set(statpacks.map(p => p.status).filter(s => s !== 'Ready')));
-            if (otherStatuses.length === 0) return null;
-            return (
-              <div className="space-y-3">
-                <h3 className="text-md font-semibold text-gray-700 dark:text-gray-200">Maintenance / Audit / In Use</h3>
-
-                <div className="flex gap-4 overflow-x-auto py-2">
-                  {otherStatuses.map((status) => {
-                    const group = statpacks.filter(p => p.status === status).sort((a,b) => (a.name||'').localeCompare(b.name||''));
-                    return (
-                      <div key={status} className="min-w-[260px] flex-shrink-0">
-                        <Card className="bg-white/80 dark:bg-slate-800/80">
-                          <CardHeader className="flex justify-between items-center">
-                            <div className="text-sm font-semibold text-gray-700 dark:text-gray-200">{status}</div>
-                            <Chip size="sm" variant="flat" color={getStatusColor(status as any)}>{group.length}</Chip>
-                          </CardHeader>
-                          <CardBody className="p-2">
-                            <div className="flex flex-col gap-2">
-                              {group.map(p => (
-                                <div key={p.id} onClick={() => handleToggleExpand(p.id)} className="flex items-center justify-between p-2 rounded hover:bg-indigo-50/60 dark:hover:bg-slate-700/60 cursor-pointer">
-                                  <div className="flex items-center gap-3">
-                                    <div className={"w-10 h-10 rounded-md flex items-center justify-center bg-indigo-50 dark:bg-slate-700 text-indigo-700 dark:text-indigo-200 font-semibold"}>
-                                      {p.name ? p.name.charAt(0).toUpperCase() : '?'}
-                                    </div>
-                                    <div>
-                                      <div className="text-sm font-medium text-gray-800 dark:text-gray-100">{p.name}</div>
-                                      <div className="text-xs text-gray-500">{p.type}</div>
-                                    </div>
-                                  </div>
-                                  <Chip size="sm" variant="flat" color={getStatusColor(p.status)} className="text-xs">{p.status}</Chip>
-                                </div>
-                              ))}
-                            </div>
-                          </CardBody>
-                        </Card>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })()}
+          </div>
         </section>
 
         {/* --- Alert Sections --- */}

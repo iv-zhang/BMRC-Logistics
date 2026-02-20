@@ -17,15 +17,18 @@ import {
   ModalHeader,
   ModalBody,
   ModalFooter,
+  Tabs,
+  Tab,
 } from '@heroui/react';
-import { Package, ScanLine, Search, LogOut, ArrowLeft } from 'lucide-react';
+import { Package, ScanLine, Search, LogOut, ArrowLeft, Radio } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { collection, onSnapshot, query, where, orderBy, Timestamp, doc, getDocs, documentId, getDoc } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
 import type { InventoryItem, Statpack, StatpackItem } from '@/app/types';
 import StatpackCheckOffModal from '@/app/components/statpack-checkoff-modal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
-import { logStatpackCheckOff } from '@/app/lib/inventory';
+import { logStatpackCheckOff, findAssetByCode } from '@/app/lib/inventory';
+import CheckoutModal from '@/app/components/checkout-modal';
 
 const chunkArray = <T,>(items: T[], size: number) => {
   const chunks: T[][] = [];
@@ -80,6 +83,18 @@ export default function CheckoutPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showReview, setShowReview] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Tab and asset checkout state
+  const [activeTab, setActiveTab] = useState<string>('statpacks');
+  const [assetItems, setAssetItems] = useState<InventoryItem[]>([]);
+  const [assetSearchQuery, setAssetSearchQuery] = useState('');
+  const [filteredAssetItems, setFilteredAssetItems] = useState<InventoryItem[]>([]);
+  const [assetLoading, setAssetLoading] = useState(true);
+  const assetScannerDisclosure = useDisclosure();
+  const assetCheckoutDisclosure = useDisclosure();
+  const [selectedAsset, setSelectedAsset] = useState<InventoryItem | null>(null);
+  const [assetCheckoutMode, setAssetCheckoutMode] = useState<'checkout' | 'checkin' | null>(null);
+  const [selectedAssetSerial, setSelectedAssetSerial] = useState<string | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => setUser(u));
@@ -197,6 +212,77 @@ export default function CheckoutPage() {
     );
     setFilteredPacks(filtered);
   }, [searchQuery, statpacks]);
+
+  // Fetch asset items for asset tab
+  useEffect(() => {
+    if (!user) return;
+    setAssetLoading(true);
+    const q2 = query(collection(db, 'inventory'), where('isAsset', '==', true));
+    const unsub = onSnapshot(q2, (snap) => {
+      const items: InventoryItem[] = snap.docs.map((d) => {
+        const data = d.data();
+        return {
+          id: d.id,
+          ...data,
+          checkedOutAt: data.checkedOutAt instanceof Timestamp ? data.checkedOutAt.toDate() : data.checkedOutAt,
+          lastCheckedInAt: data.lastCheckedInAt instanceof Timestamp ? data.lastCheckedInAt.toDate() : data.lastCheckedInAt,
+        } as InventoryItem;
+      });
+      setAssetItems(items);
+      setFilteredAssetItems(items);
+      setAssetLoading(false);
+    }, () => setAssetLoading(false));
+    return () => unsub();
+  }, [user]);
+
+  // Filter assets by search
+  useEffect(() => {
+    if (!assetSearchQuery.trim()) {
+      setFilteredAssetItems(assetItems);
+      return;
+    }
+    const q3 = assetSearchQuery.toLowerCase();
+    setFilteredAssetItems(
+      assetItems.filter((a) =>
+        a.name?.toLowerCase().includes(q3) ||
+        a.assetSerial?.toLowerCase().includes(q3) ||
+        a.barcode?.toLowerCase().includes(q3) ||
+        a.qr?.toLowerCase().includes(q3) ||
+        (a.assetCategory as string)?.toLowerCase().includes(q3)
+      )
+    );
+  }, [assetSearchQuery, assetItems]);
+
+  // Handle asset barcode scan
+  const handleAssetBarcodeScan = (value: string) => {
+    assetScannerDisclosure.onClose();
+    const matches = findAssetByCode(assetItems, value);
+    if (matches.length === 0) {
+      alert(`No asset found with code: ${value}`);
+      return;
+    }
+    const match = matches[0];
+    setSelectedAsset(match.asset);
+    setSelectedAssetSerial(match.serial ?? null);
+    const status = match.instance?.status ?? match.asset.assetStatus;
+    setAssetCheckoutMode(status === 'Checked Out' ? 'checkin' : 'checkout');
+    assetCheckoutDisclosure.onOpen();
+  };
+
+  // Handle asset selection from list
+  const handleSelectAssetItem = (asset: InventoryItem) => {
+    setSelectedAsset(asset);
+    setSelectedAssetSerial(null);
+    setAssetCheckoutMode(asset.assetStatus === 'Checked Out' ? 'checkin' : 'checkout');
+    assetCheckoutDisclosure.onOpen();
+  };
+
+  const getAssetStatusColor = (status?: string) => {
+    if (status === 'Checked Out') return 'warning';
+    if (status === 'Ready') return 'success';
+    if (status === 'In Use') return 'warning';
+    return 'default';
+  };
 
   const handleSelectPack = useCallback((pack: Statpack) => {
     setSelectedPack(pack);
@@ -482,16 +568,24 @@ export default function CheckoutPage() {
               <div className="flex items-center gap-2 mb-1">
                 <LogOut className="text-blue-600" size={24} />
                 <h1 className="text-2xl md:text-3xl font-bold text-gray-900 dark:text-white">
-                  Check Out Statpack
+                  Check Out
                 </h1>
               </div>
               <p className="text-sm text-gray-600 dark:text-gray-400">
-                Select a pack or scan its barcode to check it out
+                Select a statpack or scan an asset barcode to check out
               </p>
             </div>
           </div>
 
-          <Divider />
+          <Tabs
+            selectedKey={activeTab}
+            onSelectionChange={(key) => setActiveTab(String(key))}
+            color="primary"
+            variant="solid"
+            className="w-full"
+          >
+            <Tab key="statpacks" title={<div className="flex items-center gap-2"><Package size={16} />Statpacks</div>}>
+              <div className="space-y-6 mt-4">
 
           {/* Search and Scan Section */}
           <Card>
@@ -587,6 +681,90 @@ export default function CheckoutPage() {
               ))
             )}
           </div>
+              </div>{/* end statpacks tab content */}
+            </Tab>
+
+            <Tab key="assets" title={<div className="flex items-center gap-2"><Radio size={16} />Assets</div>}>
+              <div className="space-y-6 mt-4">
+                {/* Asset Quick Scan */}
+                <Card>
+                  <CardBody className="gap-4">
+                    <div className="flex flex-col md:flex-row gap-3">
+                      <Input
+                        placeholder="Search by name, serial, barcode..."
+                        value={assetSearchQuery}
+                        onValueChange={setAssetSearchQuery}
+                        startContent={<Search size={18} />}
+                        className="flex-1"
+                        isClearable
+                        onClear={() => setAssetSearchQuery('')}
+                      />
+                      <Button
+                        color="primary"
+                        variant="flat"
+                        startContent={<ScanLine size={18} />}
+                        onPress={assetScannerDisclosure.onOpen}
+                        className="md:w-auto"
+                      >
+                        Scan Asset
+                      </Button>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-gray-600">
+                      <Chip size="sm" variant="flat" color="success">
+                        {filteredAssetItems.length} Assets
+                      </Chip>
+                    </div>
+                  </CardBody>
+                </Card>
+
+                {/* Asset List */}
+                <div className="space-y-2">
+                  {assetLoading ? (
+                    <div className="flex justify-center py-8"><Spinner /></div>
+                  ) : filteredAssetItems.length === 0 ? (
+                    <Card>
+                      <CardBody className="text-center py-8 text-gray-500">
+                        {assetSearchQuery ? 'No assets match your search' : 'No assets available'}
+                      </CardBody>
+                    </Card>
+                  ) : (
+                    filteredAssetItems.map((asset) => (
+                      <Card
+                        key={asset.id}
+                        isPressable
+                        onPress={() => handleSelectAssetItem(asset)}
+                        className="hover:shadow-md transition-shadow"
+                      >
+                        <CardBody className="flex-row items-center justify-between py-3 px-4">
+                          <div className="flex-1">
+                            <p className="font-semibold text-sm">{asset.name}</p>
+                            {asset.assetCategory && (
+                              <p className="text-xs text-gray-500">{asset.assetCategory as string}</p>
+                            )}
+                            <p className="text-xs text-gray-400 font-mono">
+                              {asset.assetSerial || asset.assignedBarcode || '—'}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Chip size="sm" variant="flat" color={getAssetStatusColor(asset.assetStatus)}>
+                              {asset.assetStatus || 'Unknown'}
+                            </Chip>
+                            <Button
+                              size="sm"
+                              color={asset.assetStatus === 'Checked Out' ? 'success' : 'primary'}
+                              onPress={() => handleSelectAssetItem(asset)}
+                            >
+                              {asset.assetStatus === 'Checked Out' ? 'Check In' : 'Check Out'}
+                            </Button>
+                          </div>
+                        </CardBody>
+                      </Card>
+                    ))
+                  )}
+                </div>
+              </div>
+            </Tab>
+          </Tabs>
         </div>
       </div>
 
@@ -596,6 +774,24 @@ export default function CheckoutPage() {
         onClose={scannerDisclosure.onClose}
         onDetected={handleScanDetected}
       />
+
+      {/* Asset Barcode Scanner */}
+      <BarcodeScanner
+        isOpen={assetScannerDisclosure.isOpen}
+        onClose={assetScannerDisclosure.onClose}
+        onDetected={handleAssetBarcodeScan}
+      />
+
+      {/* Asset Checkout Modal */}
+      {selectedAsset && (
+        <CheckoutModal
+          isOpen={assetCheckoutDisclosure.isOpen}
+          onOpenChange={assetCheckoutDisclosure.onClose}
+          asset={selectedAsset}
+          mode={assetCheckoutMode}
+          serial={selectedAssetSerial}
+        />
+      )}
       {/* Pocket Selection Modal */}
       <Modal isOpen={pocketDisclosure.isOpen} onOpenChange={pocketDisclosure.onOpenChange} backdrop="blur" size="lg" placement="center">
         <ModalContent>

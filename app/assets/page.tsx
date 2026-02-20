@@ -80,6 +80,7 @@ import AssetHistory from '@/app/components/asset-history';
 import AdminAuditModal from '@/app/components/admin-audit-modal';
 import AssetAttachModal from '@/app/components/asset-attach-modal';
 import AssetStatpackBadge from '@/app/components/asset-statpack-badge';
+import AssetCheckoutModal from '@/app/components/asset-checkout-modal';
 
   
 interface AssetRecord {
@@ -254,6 +255,12 @@ export default function AssetsPage() {
 
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scannerTargetAsset, setScannerTargetAsset] = useState<AssetRecord | null>(null);
+
+  // Asset checkout/checkin state
+  const checkoutModalDisclosure = useDisclosure();
+  const [selectedCheckoutAsset, setSelectedCheckoutAsset] = useState<InventoryItem | null>(null);
+  const [checkoutMode, setCheckoutMode] = useState<'checkout' | 'checkin'>('checkout');
+  const [checkoutScannerOpen, setCheckoutScannerOpen] = useState(false);
 
   const [isEditingDetails, setIsEditingDetails] = useState(false);
   const [detailsForm, setDetailsForm] = useState({
@@ -502,6 +509,62 @@ export default function AssetsPage() {
     }
   };
 
+  // Handle checkout scanner - search for asset and open checkout modal
+  const handleCheckoutScan = async (barcode: string) => {
+    setCheckoutScannerOpen(false);
+    
+    // Search for asset by barcode, qr, or serial
+    const foundAsset = assets.find((a) => {
+      if (a.type !== 'inventory') return false;
+      const item = a.data as InventoryItem;
+      return item.qr === barcode || 
+             item.barcode === barcode || 
+             item.assetSerial === barcode;
+    });
+
+    if (!foundAsset) {
+      alert(`No asset found with barcode: ${barcode}`);
+      return;
+    }
+
+    const item = foundAsset.data as InventoryItem;
+    setSelectedCheckoutAsset(item);
+    
+    // Determine mode based on current status
+    if (item.checkedOutBy) {
+      setCheckoutMode('checkin');
+    } else {
+      setCheckoutMode('checkout');
+    }
+    
+    checkoutModalDisclosure.onOpen();
+  };
+
+  // Helper to open checkout modal
+  const openCheckout = (asset: AssetRecord) => {
+    if (asset.type !== 'inventory') return;
+    const item = asset.data as InventoryItem;
+    setSelectedCheckoutAsset(item);
+    setCheckoutMode('checkout');
+    checkoutModalDisclosure.onOpen();
+  };
+
+  // Helper to open checkin modal
+  const openCheckin = (asset: AssetRecord) => {
+    if (asset.type !== 'inventory') return;
+    const item = asset.data as InventoryItem;
+    setSelectedCheckoutAsset(item);
+    setCheckoutMode('checkin');
+    checkoutModalDisclosure.onOpen();
+  };
+
+  // Handle checkout completion - refresh assets list
+  const handleCheckoutComplete = () => {
+    // Assets list will refresh automatically via onSnapshot
+    checkoutModalDisclosure.onClose();
+    setSelectedCheckoutAsset(null);
+  };
+
   const startLocationEdit = (asset: AssetRecord) => {
     setEditingLocationId(asset.id);
     setEditingLocationValue(asset.currentLocation || '');
@@ -710,9 +773,51 @@ export default function AssetsPage() {
     setQuickAssignAsset(null);
   };
 
-  // Preserve original ordering from Firestore snapshot to avoid accidental
-  // re-selection or mis-clicks when status changes. Do not reorder on status.
-  const sortedAssets = [...assets];
+  // Category filter state
+  const [categoryFilter, setCategoryFilter] = useState<string>('all');
+
+  // Compute category for an asset
+  const getAssetCategory = (asset: AssetRecord): string => {
+    if (asset.type === 'statpack') return 'Statpack';
+    const item = asset.data as InventoryItem;
+    return (item.assetCategory as string) || item.category || 'Uncategorized';
+  };
+
+  // Get unique categories and their counts
+  const categoryStats = useMemo(() => {
+    const map = new Map<string, number>();
+    assets.forEach((a) => {
+      const cat = getAssetCategory(a);
+      map.set(cat, (map.get(cat) || 0) + 1);
+    });
+    // Sort: Statpack first, then alphabetical
+    return Array.from(map.entries()).sort(([a], [b]) => {
+      if (a === 'Statpack') return -1;
+      if (b === 'Statpack') return 1;
+      return a.localeCompare(b);
+    });
+  }, [assets]);
+
+  // Filter then group by category
+  const groupedAssets = useMemo(() => {
+    const filtered = categoryFilter === 'all'
+      ? [...assets]
+      : assets.filter((a) => getAssetCategory(a) === categoryFilter);
+
+    const groups = new Map<string, AssetRecord[]>();
+    filtered.forEach((a) => {
+      const cat = getAssetCategory(a);
+      if (!groups.has(cat)) groups.set(cat, []);
+      groups.get(cat)!.push(a);
+    });
+
+    // Sort groups: Statpack first, then alphabetical
+    return Array.from(groups.entries()).sort(([a], [b]) => {
+      if (a === 'Statpack') return -1;
+      if (b === 'Statpack') return 1;
+      return a.localeCompare(b);
+    });
+  }, [assets, categoryFilter]);
 
   if (loading) return <div className="h-screen flex items-center justify-center"><Spinner /></div>;
 
@@ -761,12 +866,43 @@ export default function AssetsPage() {
                 Print ({selectedForPrint.size})
               </Button>
             )}
+            <Button
+              color="primary"
+              variant="flat"
+              startContent={<ScanBarcode size={16} />}
+              onPress={() => setCheckoutScannerOpen(true)}
+            >
+              Scan to Checkout
+            </Button>
             {userRole === 'admin' && (
               <Button onPress={() => { setEditingAsset(null); assetModalDisclosure.onOpen(); }}>Add Asset</Button>
             )}
           </div>
         </div>
         <Divider />
+
+        {/* Category Filter */}
+        <div className="flex gap-2 flex-wrap">
+          <Chip
+            variant={categoryFilter === 'all' ? 'solid' : 'flat'}
+            color={categoryFilter === 'all' ? 'primary' : 'default'}
+            className="cursor-pointer"
+            onClick={() => setCategoryFilter('all')}
+          >
+            All ({assets.length})
+          </Chip>
+          {categoryStats.map(([cat, count]) => (
+            <Chip
+              key={cat}
+              variant={categoryFilter === cat ? 'solid' : 'flat'}
+              color={categoryFilter === cat ? 'primary' : 'default'}
+              className="cursor-pointer"
+              onClick={() => setCategoryFilter(cat)}
+            >
+              {cat} ({count})
+            </Chip>
+          ))}
+        </div>
 
         {/* Assets Table */}
         <Card>
@@ -788,9 +924,30 @@ export default function AssetsPage() {
                 <TableColumn className="w-16">Actions</TableColumn>
               </TableHeader>
               <TableBody emptyContent="No assets found">
-                {sortedAssets.map((asset) => {
+                {groupedAssets.flatMap(([category, groupAssets]) => {
+                  const rows: React.JSX.Element[] = [];
+                  // Category header row
+                  if (categoryFilter === 'all' && groupedAssets.length > 1) {
+                    rows.push(
+                      <TableRow key={`header-${category}`} className="bg-default-100 dark:bg-slate-700/50 pointer-events-none">
+                        <TableCell className={userRole === 'admin' ? '' : 'hidden'}>{' '}</TableCell>
+                        <TableCell>
+                          <span className="text-xs font-bold uppercase tracking-wider text-default-500">
+                            {category} ({groupAssets.length})
+                          </span>
+                        </TableCell>
+                        <TableCell className="hidden md:table-cell">{' '}</TableCell>
+                        <TableCell>{' '}</TableCell>
+                        <TableCell className="hidden lg:table-cell">{' '}</TableCell>
+                        <TableCell className="hidden lg:table-cell">{' '}</TableCell>
+                        <TableCell className="hidden md:table-cell">{' '}</TableCell>
+                        <TableCell>{' '}</TableCell>
+                      </TableRow>
+                    );
+                  }
+                  groupAssets.forEach((asset) => {
                   const activeMaintenance = getMaintenanceStatus(asset);
-                  return (
+                  const row = (
                     <TableRow
                       key={asset.id}
                       onClick={() => { setSelectedRowId(asset.id); setSelectedAsset(asset); setIsEditingDetails(false); detailsDisclosure.onOpen(); }}
@@ -908,6 +1065,15 @@ export default function AssetsPage() {
                               <DropdownItem key="scan" startContent={<MapPin size={14} />} onPress={() => openScannerForAsset(asset)}>
                                 Scan Location
                               </DropdownItem>
+                              {asset.type === 'inventory' && asset.status === 'Ready' ? (
+                                <DropdownItem key="checkout" startContent={<Package size={14} />} onPress={() => openCheckout(asset)}>
+                                  Check Out
+                                </DropdownItem>
+                              ) : asset.type === 'inventory' && (asset.data as InventoryItem).checkedOutBy ? (
+                                <DropdownItem key="checkin" startContent={<CheckCircle size={14} />} color="success" onPress={() => openCheckin(asset)}>
+                                  Check In
+                                </DropdownItem>
+                              ) : null}
                               {asset.type === 'statpack' ? (
                                 <DropdownItem key="edit" startContent={<Pencil size={14} />} onPress={() => openStatpackEditorModal(asset)}>
                                   Edit Statpack
@@ -962,6 +1128,9 @@ export default function AssetsPage() {
                       </TableCell>
                     </TableRow>
                   );
+                  rows.push(row);
+                });
+                  return rows;
                 })}
               </TableBody>
             </Table>
@@ -1965,12 +2134,32 @@ export default function AssetsPage() {
         onDetected={handleBarcodeDetected}
       />
 
+      {/* Checkout Barcode Scanner */}
+      <BarcodeScanner
+        isOpen={checkoutScannerOpen}
+        onClose={() => setCheckoutScannerOpen(false)}
+        onDetected={handleCheckoutScan}
+      />
+
       {/* Quick Assign Barcode Scanner */}
       <BarcodeScanner
         isOpen={showQuickAssignScanner}
         onClose={() => setShowQuickAssignScanner(false)}
         onDetected={handleQuickScanDetected}
       />
+
+      {/* Asset Checkout/Checkin Modal */}
+      {selectedCheckoutAsset && (
+        <AssetCheckoutModal
+          isOpen={checkoutModalDisclosure.isOpen}
+          onOpenChange={checkoutModalDisclosure.onOpenChange}
+          asset={selectedCheckoutAsset}
+          mode={checkoutMode}
+          userId={user?.uid || ''}
+          userName={user?.displayName || user?.email || 'Unknown'}
+          onComplete={handleCheckoutComplete}
+        />
+      )}
 
       {/* Quick Assign Result/Duplicate Warning Modal */}
       <Modal
