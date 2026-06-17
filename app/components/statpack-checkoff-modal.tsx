@@ -14,6 +14,7 @@ import {
   Input,
   Divider,
   Chip,
+  Textarea,
 } from '@heroui/react';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { logStatpackCheckOff, verifyAssetAgainstRules } from '@/app/lib/inventory';
@@ -88,6 +89,9 @@ export default function StatpackCheckOffModal({
   // Restock tracking state for check-in flow
   const [restockStatuses, setRestockStatuses] = useState<Record<string, 'restocked' | 'shelf_empty' | null>>({});
   const [restockNotes, setRestockNotes] = useState<Record<string, string>>({});
+
+  // Shortage reason tracking for checkout (when member changes count below par)
+  const [shortageReasons, setShortageReasons] = useState<Record<string, string>>({});
 
   // Asset verification state
   const [scanningItemId, setScanningItemId] = useState<string | null>(null);
@@ -263,6 +267,7 @@ export default function StatpackCheckOffModal({
         const o2Reading = oxygenReadings[item.itemId] ? Number(oxygenReadings[item.itemId]) : undefined;
         const assetCheckResult = o2Reading !== undefined ? { oxygenPsi: o2Reading } : undefined;
         
+        const shortageNote = shortageReasons[item.itemId] ? `Shortage reason: ${shortageReasons[item.itemId]}` : '';
         const baseEntry = {
           itemId: item.itemId,
           itemName: item.itemDetails?.name || 'Unknown',
@@ -274,7 +279,7 @@ export default function StatpackCheckOffModal({
           ok: counted >= item.requiredQuantity,
           serialNumber: item.serialNumber,
           expirationDate: item.expirationDate,
-          notes: '',
+          notes: shortageNote,
           assetCheckResult,
           // Include restock tracking data when checking in
           restockStatus: restockStatuses[item.itemId] ?? (counted < item.requiredQuantity ? undefined : 'not_needed' as const),
@@ -375,6 +380,7 @@ export default function StatpackCheckOffModal({
     setOxygenReadings({});
     setRestockStatuses({});
     setRestockNotes({});
+    setShortageReasons({});
     setAcknowledgedWarnings(new Set());
     // asset condition tracking temporarily disabled
     setNotes('');
@@ -551,89 +557,116 @@ export default function StatpackCheckOffModal({
               return (
                 <Card
                   key={itemId}
-                  className={`transition-colors bg-default-100 ${ok ? 'ring-1 ring-primary/10' : ''} cursor-pointer`}
-                  onClick={(e) => {
-                    // Avoid toggling when an inner button was clicked
-                    if ((e.target as HTMLElement).closest('button')) return;
-                    handleItemChecked(itemId);
-                  }}
+                  className={`transition-colors bg-default-100 ${ok ? 'ring-1 ring-primary/10' : ''}`}
                 >
                   <CardBody className="gap-3 py-4">
                     <div className="flex gap-3 items-start">
-                      <Checkbox
-                        isSelected={isChecked}
-                        onChange={() => handleItemChecked(itemId)}
-                        onClick={(e) => e.stopPropagation()}
-                        className="mt-1"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className="font-semibold text-sm">
-                            {item.itemDetails?.name || 'Unnamed Item'}
-                          </p>
-                          {hasRules && (
-                            <Chip size="sm" color="primary" variant="flat">Rules</Chip>
-                          )}
-                        </div>
-                        <p className="text-xs text-default-500">
-                          {checkinUsageMode ? 'Mark if you used and replaced this item' : `Required: ${item.requiredQuantity}x | Category: ${item.itemDetails?.category || 'Other'}`}
-                        </p>
-                        <div className="flex flex-wrap items-center gap-2 text-xs text-default-500">
-                          {item.pocket && <span className="bg-default-200/60 dark:bg-default-700/60 px-2 py-0.5 rounded">Pocket: {item.pocket.replace('_', ' ')}</span>}
-                          {item.compartmentId && <span className="bg-default-200/60 dark:bg-default-700/60 px-2 py-0.5 rounded">Compartment: {item.compartmentId}</span>}
-                        </div>
-
-                        {/* Custom admin warnings */}
-                        {customWarnings.length > 0 && (
-                          <div className="mt-2 space-y-1.5" onClick={(e) => e.stopPropagation()}>
-                            {customWarnings.map((cw) => {
-                              const isAcked = acknowledgedWarnings.has(cw.id);
-                              const bgColor = cw.severity === 'critical' ? 'bg-danger-50 border-danger-200' : cw.severity === 'warning' ? 'bg-warning-50 border-warning-200' : 'bg-primary-50 border-primary-200';
-                              const textColor = cw.severity === 'critical' ? 'text-danger-700' : cw.severity === 'warning' ? 'text-warning-700' : 'text-primary-700';
-                              const IconComp = cw.severity === 'critical' ? AlertCircle : cw.severity === 'warning' ? AlertTriangle : AlertTriangle;
-                              return (
-                                <div key={cw.id} className={`flex items-start gap-2 p-2 rounded-lg border ${bgColor} ${isAcked ? 'opacity-60' : ''}`}>
-                                  <IconComp size={16} className={`${textColor} mt-0.5 flex-shrink-0`} />
-                                  <div className="flex-1">
-                                    <p className={`text-xs font-semibold ${textColor}`}>
-                                      {cw.severity === 'critical' ? 'ACTION REQUIRED' : cw.severity === 'warning' ? 'Warning' : 'Note'}
-                                    </p>
-                                    <p className="text-xs text-default-700">{cw.message}</p>
-                                    {cw.requiresAcknowledgment && !isAcked && (
-                                      <Checkbox
-                                        size="sm"
-                                        className="mt-1"
-                                        isSelected={false}
-                                        onValueChange={() => {
-                                          setAcknowledgedWarnings(prev => {
-                                            const next = new Set(prev);
-                                            next.add(cw.id);
-                                            return next;
-                                          });
-                                        }}
-                                      >
-                                        <span className="text-xs">I have verified this</span>
-                                      </Checkbox>
-                                    )}
-                                    {isAcked && (
-                                      <Chip size="sm" color="success" variant="flat" className="mt-1">Acknowledged</Chip>
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            })}
+                      <button
+                        type="button"
+                        aria-pressed={isChecked}
+                        aria-label={`Toggle ${item.itemDetails?.name || 'item'}`}
+                        className="flex-1 min-w-0 text-left rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                        onClick={() => handleItemChecked(itemId)}
+                      >
+                        <div className="flex gap-3 items-center">
+                          <div className="w-16 h-16 md:w-14 md:h-14 flex items-center justify-center rounded-lg bg-default-100 dark:bg-slate-800 border border-default-200 dark:border-slate-700 touch-manipulation transition-transform active:scale-95">
+                            <Checkbox
+                              size="lg"
+                              isSelected={isChecked}
+                              isReadOnly
+                              className="pointer-events-none"
+                            />
                           </div>
-                        )}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p className="font-semibold text-sm">
+                                {item.itemDetails?.name || 'Unnamed Item'}
+                              </p>
+                              {hasRules && (
+                                <Chip size="sm" color="primary" variant="flat">Rules</Chip>
+                              )}
+                            </div>
+                            <p className="text-xs text-default-500">
+                              {checkinUsageMode ? 'Mark if you used and replaced this item' : `Required: ${item.requiredQuantity}x | Category: ${item.itemDetails?.category || 'Other'}`}
+                            </p>
+                            {isAdmin && (
+                              <div className="flex flex-wrap items-center gap-2 text-xs text-default-500">
+                                {item.pocket && <span className="bg-default-200/60 dark:bg-default-700/60 px-2 py-0.5 rounded">Pocket: {item.pocket.replace('_', ' ')}</span>}
+                                {item.compartmentId && <span className="bg-default-200/60 dark:bg-default-700/60 px-2 py-0.5 rounded">Compartment: {item.compartmentId}</span>}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </button>
+                      <div className="flex-shrink-0">
+                        {/* All users can edit counts — members get a restock reminder if below par */}
+                        <Input
+                          type="number"
+                          min="0"
+                          value={String(counted)}
+                          onChange={e =>
+                            handleCountChange(itemId, parseInt(e.target.value, 10) || 0)
+                          }
+                          className="w-20"
+                          size="sm"
+                          label={checkinUsageMode ? 'Used' : 'Count'}
+                          inputMode="numeric"
+                          classNames={{ input: 'text-center text-base font-semibold' }}
+                        />
+                      </div>
+                    </div>
 
-                        {item.expirationDate && (
-                          <p className={`text-xs ${new Date(item.expirationDate).getTime() < Date.now() ? 'text-danger font-semibold' : 'text-default-500'}`}>
-                            Expires: {new Date(item.expirationDate).toLocaleDateString()}
-                          </p>
-                        )}
+                    {/* Custom admin warnings */}
+                    {customWarnings.length > 0 && (
+                      <div className="mt-2 space-y-1.5">
+                        {customWarnings.map((cw) => {
+                          const isAcked = acknowledgedWarnings.has(cw.id);
+                          const bgColor = cw.severity === 'critical' ? 'bg-danger-50 border-danger-200' : cw.severity === 'warning' ? 'bg-warning-50 border-warning-200' : 'bg-primary-50 border-primary-200';
+                          const textColor = cw.severity === 'critical' ? 'text-danger-700' : cw.severity === 'warning' ? 'text-warning-700' : 'text-primary-700';
+                          const IconComp = cw.severity === 'critical' ? AlertCircle : cw.severity === 'warning' ? AlertTriangle : AlertTriangle;
+                          return (
+                            <div key={cw.id} className={`flex items-start gap-2 p-2 rounded-lg border ${bgColor} ${isAcked ? 'opacity-60' : ''}`}>
+                              <IconComp size={16} className={`${textColor} mt-0.5 flex-shrink-0`} />
+                              <div className="flex-1">
+                                <p className={`text-xs font-semibold ${textColor}`}>
+                                  {cw.severity === 'critical' ? 'ACTION REQUIRED' : cw.severity === 'warning' ? 'Warning' : 'Note'}
+                                </p>
+                                <p className="text-xs text-default-700">{cw.message}</p>
+                                {cw.requiresAcknowledgment && !isAcked && (
+                                  <Checkbox
+                                    size="sm"
+                                    className="mt-1"
+                                    isSelected={false}
+                                    onValueChange={() => {
+                                      setAcknowledgedWarnings(prev => {
+                                        const next = new Set(prev);
+                                        next.add(cw.id);
+                                        return next;
+                                      });
+                                    }}
+                                  >
+                                    <span className="text-xs">I have verified this</span>
+                                  </Checkbox>
+                                )}
+                                {isAcked && (
+                                  <Chip size="sm" color="success" variant="flat" className="mt-1">Acknowledged</Chip>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {item.expirationDate && (
+                      <p className={`text-xs ${new Date(item.expirationDate).getTime() < Date.now() ? 'text-danger font-semibold' : 'text-default-500'}`}>
+                        Expires: {new Date(item.expirationDate).toLocaleDateString()}
+                      </p>
+                    )}
 
                         {/* Restock Action Panel — shown during check-in when item count is short */}
-                        {action === 'checkin' && !ok && isChecked && (
-                          <div className="mt-2 p-3 rounded-lg bg-warning-50 dark:bg-warning-900/20 border border-warning-200 dark:border-warning-700 space-y-2" onClick={(e) => e.stopPropagation()}>
+                    {action === 'checkin' && !ok && isChecked && (
+                      <div className="mt-2 p-3 rounded-lg bg-warning-50 dark:bg-warning-900/20 border border-warning-200 dark:border-warning-700 space-y-2">
                             <div className="flex items-center gap-2">
                               <AlertCircle size={14} className="text-warning-600" />
                               <p className="text-xs font-semibold text-warning-800 dark:text-warning-200">
@@ -690,24 +723,71 @@ export default function StatpackCheckOffModal({
                                 />
                               </div>
                             )}
-                          </div>
-                        )}
+                      </div>
+                    )}
+
+                        {/* Checkout: Restock reminder when count is below par */}
+                    {action === 'checkout' && !ok && isChecked && (
+                      <div className="mt-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 space-y-2">
+                            <div className="flex items-center gap-2">
+                              <AlertTriangle size={14} className="text-amber-600 flex-shrink-0" />
+                              <p className="text-xs font-semibold text-amber-800 dark:text-amber-200">
+                                Below par! Need {item.requiredQuantity}x, only {counted}x counted
+                              </p>
+                            </div>
+                            <p className="text-xs text-amber-700 dark:text-amber-300">
+                              Please restock to <strong>{item.requiredQuantity}x</strong> before checking out. If that&apos;s not possible, explain why below.
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                              <Button
+                                size="sm"
+                                color={restockStatuses[itemId] === 'restocked' ? 'success' : 'default'}
+                                variant={restockStatuses[itemId] === 'restocked' ? 'solid' : 'flat'}
+                                startContent={<RefreshCw size={14} />}
+                                onPress={() => {
+                                  setRestockStatuses(prev => ({ ...prev, [itemId]: 'restocked' }));
+                                  handleCountChange(itemId, item.requiredQuantity);
+                                }}
+                              >
+                                I restocked it
+                              </Button>
+                            </div>
+                            {restockStatuses[itemId] === 'restocked' && (
+                              <Card className="bg-success-50 dark:bg-success-900/20">
+                                <CardBody className="py-2 px-3">
+                                  <p className="text-xs text-success-700 dark:text-success-300">Count updated to par level.</p>
+                                </CardBody>
+                              </Card>
+                            )}
+                            {restockStatuses[itemId] !== 'restocked' && (
+                              <Textarea
+                                size="sm"
+                                minRows={2}
+                                placeholder="Why can't you restock? (e.g., shelf empty, item unavailable)"
+                                value={shortageReasons[itemId] || ''}
+                                onValueChange={(v) => setShortageReasons(prev => ({ ...prev, [itemId]: v }))}
+                                onClick={(e) => e.stopPropagation()}
+                                classNames={{ input: 'text-xs' }}
+                              />
+                            )}
+                      </div>
+                    )}
 
                         {/* Mismatch hint (when not yet checked but count manually lowered) */}
-                        {action === 'checkin' && !ok && !isChecked && (
-                          <p className="text-xs text-warning-600 mt-1 italic">
-                            Tap to verify, then choose a restock action
-                          </p>
-                        )}
+                    {action === 'checkin' && !ok && !isChecked && (
+                      <p className="text-xs text-warning-600 mt-1 italic">
+                        Tap to verify, then choose a restock action
+                      </p>
+                    )}
                         
-                        {/* Verification UI */}
-                        {hasRules && (
-                          <div className="mt-2 space-y-2" onClick={(e) => e.stopPropagation()}>
-                            {!verification ? (
-                              <div className="space-y-2">
+                    {/* Verification UI */}
+                    {hasRules && (
+                      <div className="mt-2 space-y-2">
+                        {!verification ? (
+                          <div className="space-y-2">
                                 {/* Inline scanner — no separate modal needed */}
                                 {scanningItemId === itemId ? (
-                                  <div className="rounded-lg border border-primary/20 p-2">
+                                  <div className="w-full rounded-lg border border-primary/30 p-3 bg-primary-50/30 dark:bg-primary-900/10">
                                     <ScannerInput
                                       onScan={(code) => handleScanComplete(code, itemId)}
                                       placeholder="Scan asset barcode…"
@@ -717,20 +797,21 @@ export default function StatpackCheckOffModal({
                                     <Button
                                       size="sm"
                                       variant="light"
-                                      className="mt-1"
+                                      className="mt-2 w-full"
                                       onPress={() => setScanningItemId(null)}
                                     >
-                                      Cancel
+                                      Cancel Scan
                                     </Button>
                                   </div>
                                 ) : (
-                                  <div className="flex gap-2">
+                                  <div className="flex flex-col gap-2 w-full">
                                     <Button
-                                      size="sm"
+                                      size="md"
                                       variant="flat"
                                       color="primary"
-                                      startContent={<ScanLine size={14} />}
+                                      startContent={<ScanLine size={16} />}
                                       onPress={() => setScanningItemId(itemId)}
+                                      className="w-full min-h-[44px] text-sm font-medium"
                                     >
                                       Verify Asset
                                     </Button>
@@ -768,9 +849,9 @@ export default function StatpackCheckOffModal({
                                     )}
                                   </div>
                                 )}
-                              </div>
-                            ) : (
-                              <div className="space-y-1">
+                          </div>
+                        ) : (
+                          <div className="space-y-1">
                                 <Card className="bg-blue-50 dark:bg-blue-900/20">
                                   <CardBody className="py-1 px-2">
                                     <div className="flex items-center gap-2 text-xs">
@@ -817,39 +898,22 @@ export default function StatpackCheckOffModal({
                                     </Card>
                                   );
                                 })}
-                              </div>
-                            )}
-                            
-                            {item.verificationRules?.requireO2PsiMin !== undefined && item.verificationRules.requireO2PsiMin > 0 && (
-                              <Input
-                                size="sm"
-                                type="number"
-                                label="O₂ PSI"
-                                placeholder={`Min: ${item.verificationRules.requireO2PsiMin}`}
-                                value={oxygenReadings[itemId] || ''}
-                                onValueChange={(v) => updateItemO2Psi(itemId, v)}
-                                className="w-32"
-                              />
-                            )}
                           </div>
                         )}
+                            
+                        {item.verificationRules?.requireO2PsiMin !== undefined && item.verificationRules.requireO2PsiMin > 0 && (
+                          <Input
+                            size="sm"
+                            type="number"
+                            label="O₂ PSI"
+                            placeholder={`Min: ${item.verificationRules.requireO2PsiMin}`}
+                            value={oxygenReadings[itemId] || ''}
+                            onValueChange={(v) => updateItemO2Psi(itemId, v)}
+                            className="w-32"
+                          />
+                        )}
                       </div>
-                      <div onClick={(e) => e.stopPropagation()}>
-                        {/* Members get a simple checkbox/count field; Admins see and may edit counts */}
-                        <Input
-                          type="number"
-                          min="0"
-                          value={String(counted)}
-                          onChange={e =>
-                            handleCountChange(itemId, parseInt(e.target.value, 10) || 0)
-                          }
-                          className="w-24"
-                          size="sm"
-                          label={checkinUsageMode ? 'Used' : 'Counted'}
-                          disabled={!isAdmin && !checkinUsageMode}
-                        />
-                      </div>
-                    </div>
+                    )}
                   </CardBody>
                 </Card>
               );

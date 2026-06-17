@@ -175,8 +175,8 @@ export default function AuditPage() {
       const q = searchQuery.toLowerCase();
       items = items.filter(
         (i) =>
-          i.name.toLowerCase().includes(q) ||
-          i.category.toLowerCase().includes(q)
+          (i.name || '').toLowerCase().includes(q) ||
+          (i.category || '').toLowerCase().includes(q)
       );
     }
     if (showVerifiedOnly) {
@@ -192,8 +192,8 @@ export default function AuditPage() {
       const q = searchQuery.toLowerCase();
       items = items.filter(
         (i) =>
-          i.name.toLowerCase().includes(q) ||
-          i.category.toLowerCase().includes(q) ||
+          (i.name || '').toLowerCase().includes(q) ||
+          (i.category || '').toLowerCase().includes(q) ||
           (i.assetSerial || '').toLowerCase().includes(q)
       );
     }
@@ -397,9 +397,9 @@ export default function AuditPage() {
                     type="number"
                     size="sm"
                     className="w-full"
-                    value={String(entry.itemsPerBox ?? currentAuditItem.itemsPerBox ?? '')}
+                    value={entry.itemsPerBox !== undefined ? String(entry.itemsPerBox) : ''}
                     onValueChange={(v) => {
-                      const n = v ? Number(v) : undefined;
+                      const n = v === '' ? undefined : (v == null ? undefined : Number(v));
                       updateEntry(currentAuditItem.id, { itemsPerBox: n });
                     }}
                     placeholder="e.g., 10"

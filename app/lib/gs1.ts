@@ -1,7 +1,7 @@
 // Simple GS1 parser helpers
 // Parses common GS1 Application Identifiers (AIs) from barcode strings.
 // Supports AI (17) expiration date (YYMMDD) and AI (10) lot/batch.
-export function parseGs1Barcode(code: string): { expiration?: string; lot?: string } {
+export function parseGs1Barcode(code: string): { expiration?: string; lot?: string; gtin?: string } {
   if (!code) return {};
   const cleaned = String(code).replace(/[\s\(\)\x1D]/g, '');
   // AI 17 - expiration date YYMMDD
@@ -16,7 +16,12 @@ export function parseGs1Barcode(code: string): { expiration?: string; lot?: stri
     expiration = `${yyyy}-${mm}-${dd}`;
   }
   // AI 10 - batch/lot (variable length)
-  const m10 = cleaned.match(/10([A-Za-z0-9\-\_\.]+)/);
-  const lot = m10 ? m10[1] : undefined;
-  return { expiration, lot };
+  const m10 = cleaned.match(/10([A-Za-z0-9\-\_\.]*)/);
+  const lot = m10 && m10[1] ? m10[1] : undefined;
+
+  // AI 01 - GTIN (14 digits)
+  const m01 = cleaned.match(/01(\d{14})/);
+  const gtin = m01 ? m01[1] : undefined;
+
+  return { expiration, lot, gtin };
 }

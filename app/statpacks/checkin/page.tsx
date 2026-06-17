@@ -20,7 +20,7 @@ import {
   Tabs,
   Tab,
 } from '@heroui/react';
-import { Package, ScanLine, Search, LogIn, ArrowLeft, Radio } from 'lucide-react';
+import { Package, ScanLine, Search, LogIn, ArrowLeft, Radio, Monitor } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { collection, onSnapshot, query, where, orderBy, Timestamp, getDocs, documentId } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
@@ -718,29 +718,42 @@ export default function CheckinPage() {
                         key={asset.id}
                         isPressable
                         onPress={() => handleSelectAssetItem(asset)}
-                        className="hover:shadow-md transition-shadow"
+                        className="hover:shadow-lg transition-shadow"
                       >
-                        <CardBody className="flex-row items-center justify-between py-3 px-4">
-                          <div className="flex-1">
-                            <p className="font-semibold text-sm">{asset.name}</p>
-                            {(asset as any).assetCategory && (
-                              <p className="text-xs text-gray-500">{(asset as any).assetCategory}</p>
-                            )}
-                            <p className="text-xs text-gray-400 font-mono">
-                              {(asset as any).assetSerial || asset.assignedBarcode || '—'}
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Chip size="sm" variant="flat" color="warning">
-                              Checked Out
-                            </Chip>
-                            <Button
-                              size="sm"
-                              color="success"
-                              onPress={() => handleSelectAssetItem(asset)}
-                            >
-                              Check In
-                            </Button>
+                        <CardBody className="p-4">
+                          <div className="flex items-center justify-between gap-4">
+                            <div className="flex items-center gap-3 flex-1 min-w-0">
+                              <Avatar
+                                icon={<Monitor />}
+                                className="bg-emerald-100 dark:bg-emerald-900"
+                              />
+                              <div className="flex-1 min-w-0">
+                                <h3 className="font-semibold text-lg text-gray-900 dark:text-white truncate">
+                                  {asset.name}
+                                </h3>
+                                {(asset as any).assetCategory && (
+                                  <p className="text-sm text-gray-600 dark:text-gray-400">
+                                    {(asset as any).assetCategory}
+                                  </p>
+                                )}
+                                <p className="text-xs text-gray-500 font-mono mt-1">
+                                  {(asset as any).assetSerial || asset.assignedBarcode || '—'}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex flex-col items-end gap-2">
+                              <Chip size="sm" variant="flat" color="warning">
+                                Checked Out
+                              </Chip>
+                              <Button
+                                size="sm"
+                                color="success"
+                                variant="flat"
+                                onPress={() => handleSelectAssetItem(asset)}
+                              >
+                                Check In
+                              </Button>
+                            </div>
                           </div>
                         </CardBody>
                       </Card>

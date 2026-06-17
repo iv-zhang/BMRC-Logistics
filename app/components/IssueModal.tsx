@@ -28,13 +28,14 @@ interface Props {
 }
 
 export default function IssueModal({ isOpen, onOpenChange, currentIssueItem, tempIssueData, setTempIssueData, saveIssueReport, aedChecks, handleAedToggle, handleAedExpirationChange }: Props) {
+  const closeModal = () => onOpenChange(false);
+
   return (
     <Modal isOpen={isOpen} onOpenChange={onOpenChange} placement="center" size="sm" backdrop="blur">
       <ModalContent>
-        {(onClose) => (
-          <>
-            <ModalHeader>Report Issue: {currentIssueItem?.itemDetails?.name}</ModalHeader>
-            <ModalBody>
+        <>
+          <ModalHeader>Report Issue: {currentIssueItem?.itemDetails?.name}</ModalHeader>
+          <ModalBody>
               <p className="text-sm text-gray-500 mb-2">What is wrong with this item?</p>
               <RadioGroup
                 className="space-y-3"
@@ -115,12 +116,11 @@ export default function IssueModal({ isOpen, onOpenChange, currentIssueItem, tem
                 onValueChange={(v) => setTempIssueData(prev => ({ ...prev, notes: v }))}
               />
             </ModalBody>
-            <ModalFooter>
-              <Button variant="light" color="danger" onPress={onClose}>Cancel</Button>
-              <Button color="warning" onPress={saveIssueReport} className="font-bold shadow-md">Log Issue</Button>
-            </ModalFooter>
-          </>
-        )}
+          <ModalFooter>
+            <Button variant="light" color="danger" onPress={closeModal}>Cancel</Button>
+            <Button color="warning" onPress={saveIssueReport} className="font-bold shadow-md">Log Issue</Button>
+          </ModalFooter>
+        </>
       </ModalContent>
     </Modal>
   );

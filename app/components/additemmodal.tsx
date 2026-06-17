@@ -26,7 +26,7 @@ const BATCH_STATUSES: { key: BatchStatus; label: string; color: 'default' | 'suc
 
 interface InventoryModalProps {
   isOpen: boolean;
-  onOpenChange: () => void;
+  onOpenChange: (open: boolean) => void;
   onAddItem: (item: Partial<InventoryItem>) => void;
   onUpdateItem: (id: string, item: Partial<InventoryItem>) => void;
   initialData?: InventoryItem | null;
@@ -61,8 +61,8 @@ type InventoryFormState = {
 };
 
 const uniqueId = () =>
-  typeof crypto !== 'undefined' && (crypto as any).randomUUID
-    ? (crypto as any).randomUUID()
+  typeof crypto !== 'undefined' && (crypto as Crypto).randomUUID
+    ? (crypto as Crypto).randomUUID()
     : `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
 const DEFAULT_STATE: InventoryFormState = {
@@ -91,48 +91,58 @@ export default function InventoryModal({
     if (!data) return { ...DEFAULT_STATE };
 
     const rawBatches = data.batches || [];
-    const batches: InventoryBatch[] = rawBatches.map((b: any) => ({
-      ...b,
-      expirationDate: safeParseDate(b.expirationDate),
-      openDate: safeParseDate(b.openDate),
-      receivedAt: safeParseDate(b.receivedAt),
-      openedAt: safeParseDate(b.openedAt),
-    }));
+    const batches: InventoryBatch[] = rawBatches.map((b: unknown) => {
+      const bData = b as Partial<InventoryBatch> & Record<string, unknown>;
+      return {
+        ...bData,
+        expirationDate: safeParseDate(bData.expirationDate),
+        openDate: safeParseDate(bData.openDate),
+        receivedAt: safeParseDate(bData.receivedAt),
+        openedAt: safeParseDate(bData.openedAt),
+      } as InventoryBatch;
+    });
 
+    const dataRecord = data as unknown as Record<string, unknown>;
     return {
       name: data.name || '',
-      sku: (data as any).sku || '',
-      barcode: (data as any).barcode || '',
+      sku: (dataRecord.sku as string) || '',
+      barcode: (dataRecord.barcode as string) || '',
       category: data.category || 'Other',
       unit: data.unit || 'box',
       reorderThreshold: data.reorderThreshold ?? 5,
       description: data.description || '',
       storageLocation: data.storageLocation,
       batches,
-      requiresExpirationCheck: (data as any).requiresExpirationCheck ?? false,
-      isOxygen: (data as any).isOxygen ?? false,
-      oxygenPsi: (data as any).oxygenPsi ?? 2000,
-      maxOxygenPsi: (data as any).maxOxygenPsi ?? 2000,
-      oxygenModel: (data as any).oxygenModel ?? '',
-      isReagent: (data as any).isReagent ?? false,
-      daysValidAfterOpening: (data as any).daysValidAfterOpening ?? 90,
+      requiresExpirationCheck: (dataRecord.requiresExpirationCheck as boolean) ?? false,
+      isOxygen: (dataRecord.isOxygen as boolean) ?? false,
+      oxygenPsi: (dataRecord.oxygenPsi as number) ?? 2000,
+      maxOxygenPsi: (dataRecord.maxOxygenPsi as number) ?? 2000,
+      oxygenModel: (dataRecord.oxygenModel as string) ?? '',
+      isReagent: (dataRecord.isReagent as boolean) ?? false,
+      daysValidAfterOpening: (dataRecord.daysValidAfterOpening as number) ?? 90,
       unopenedBoxes: data.unopenedBoxes ?? 0,
       itemsPerBox: data.itemsPerBox,
-      looseUnits: (data as any).looseUnits ?? 0,
+      looseUnits: (dataRecord.looseUnits as number) ?? 0,
       totalStockQuantity: data.totalStockQuantity ?? 0,
     };
   };
 
   const [formData, setFormData] = useState<InventoryFormState>(() => getInitialFormData(initialData));
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [duplicates, setDuplicates] = useState<any[]>([]);
+  const [duplicates, setDuplicates] = useState<Array<Record<string, unknown>>>([]);
   const [checkingDuplicates, setCheckingDuplicates] = useState(false);
-  const debounceRef = useRef<any>(null);
+  const [error, setError] = useState<string>('');
+  const debounceRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Reset form when modal opens
+  // Reset form when initialData changes or modal opens
   useEffect(() => {
-    if (isOpen) setFormData(getInitialFormData(initialData));
-  }, [isOpen, initialData]);
+    if (isOpen) {
+      const newData = getInitialFormData(initialData);
+      // Use flushSync to avoid batching issues
+      setFormData(newData);
+      setError('');
+    }
+  }, [initialData]); // Only depend on initialData, not isOpen
 
   // --- Duplicate detection ---
   const levenshtein = (a: string, b: string) => {
@@ -157,12 +167,15 @@ export default function InventoryModal({
     const name = (formData.name ?? '').trim();
     const sku = (formData.sku ?? '').trim();
     const barcode = (formData.barcode ?? '').trim();
-    if ((!name || name.length < 2) && !sku && !barcode) { setDuplicates([]); return; }
+    if ((!name || name.length < 2) && !sku && !barcode) { 
+      setDuplicates([]); 
+      return; 
+    }
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(async () => {
       setCheckingDuplicates(true);
       try {
-        const collected: Record<string, any> = {};
+        const collected: Record<string, Record<string, unknown>> = {};
         if (name.length >= 2) {
           const prefix = name.slice(0, 3);
           const qref = q(coll(db, 'inventory'), where('name', '>=', prefix), where('name', '<=', prefix + '\uf8ff'), limit(12));
@@ -184,10 +197,10 @@ export default function InventoryModal({
           } catch { /* ignore */ }
         }
         const results = Object.values(collected);
-        const scored = results.map((r: any) => {
-          const dist = name ? levenshtein(name, r.name ?? '') : Infinity;
-          const skuMatch = !!(sku && r.sku && r.sku.toLowerCase() === sku.toLowerCase());
-          const barMatch = !!(barcode && r.barcode && r.barcode.toLowerCase() === barcode.toLowerCase());
+        const scored = results.map((r: Record<string, unknown>) => {
+          const dist = name ? levenshtein(name, (r.name as string) ?? '') : Infinity;
+          const skuMatch = !!(sku && (r.sku as string) && (r.sku as string).toLowerCase() === sku.toLowerCase());
+          const barMatch = !!(barcode && (r.barcode as string) && (r.barcode as string).toLowerCase() === barcode.toLowerCase());
           return { r, score: Math.min(dist, skuMatch ? 0 : Infinity, barMatch ? 0 : Infinity), skuMatch, barMatch };
         });
         const exacts = scored.filter(s => s.skuMatch || s.barMatch).map(s => s.r);
@@ -221,22 +234,22 @@ export default function InventoryModal({
     setFormData(prev => ({ ...prev, batches: prev.batches.filter(b => b.id !== id) }));
   };
 
-  const updateBatch = (id: string, field: string, value: any) => {
+  const updateBatch = (id: string, field: string, value: unknown) => {
     setFormData(prev => ({
       ...prev,
       batches: prev.batches.map(b => {
         if (b.id !== id) return b;
-        const updated = { ...b, [field]: value } as any;
+        const updated = { ...b, [field]: value };
         // Auto-compute stock from bags + loose when bag tracking is active
         if (['bagCount', 'itemsPerBag', 'looseItems'].includes(field)) {
-          const bags = Number(updated.bagCount ?? 0);
-          const perBag = Number(updated.itemsPerBag ?? 0);
-          const loose = Number(updated.looseItems ?? 0);
+          const bags = Number((updated as Record<string, unknown>).bagCount ?? 0);
+          const perBag = Number((updated as Record<string, unknown>).itemsPerBag ?? 0);
+          const loose = Number((updated as Record<string, unknown>).looseItems ?? 0);
           if (perBag > 0) {
-            updated.stock = bags * perBag + loose;
+            (updated as Record<string, unknown>).stock = bags * perBag + loose;
           }
         }
-        return updated;
+        return updated as InventoryBatch;
       }),
     }));
   };
@@ -248,9 +261,9 @@ export default function InventoryModal({
   const hasBatches = formData.batches.length > 0;
 
   // --- Date helper ---
-  const getDateString = (date?: Date | string) => {
+  const getDateString = (date?: Date | string | unknown) => {
     if (!date) return '';
-    const d = new Date(date as any);
+    const d = new Date(date as string | Date);
     if (isNaN(d.getTime())) return '';
     return d.toISOString().split('T')[0];
   };
@@ -270,7 +283,7 @@ export default function InventoryModal({
     const perBagValues = formData.batches.map(b => Number(b.itemsPerBag ?? 0)).filter(v => v > 0);
     const primaryItemsPerBox = perBagValues.length > 0 ? perBagValues[0] : formData.itemsPerBox;
 
-    const payload: Record<string, any> = {
+    const payload: Record<string, unknown> = {
       name: formData.name.trim(),
       sku: formData.sku || undefined,
       barcode: formData.barcode || undefined,
@@ -284,16 +297,16 @@ export default function InventoryModal({
       batches: formData.batches.map(b => ({
         id: b.id,
         lotNumber: b.lotNumber || undefined,
-        expirationDate: safeParseDate(b.expirationDate as any) || undefined,
-        openDate: safeParseDate((b as any).openDate as any) || undefined,
+        expirationDate: safeParseDate(b.expirationDate as unknown as string | Date | undefined) || undefined,
+        openDate: safeParseDate((b as unknown as Record<string, unknown>).openDate as unknown as string | Date | undefined) || undefined,
         stock: Number(b.stock ?? 0),
         bagCount: Number(b.bagCount ?? 0),
         itemsPerBag: b.itemsPerBag != null ? Number(b.itemsPerBag) : undefined,
         looseItems: Number(b.looseItems ?? 0),
         status: b.status || 'sealed',
-        openedAt: safeParseDate(b.openedAt as any) || undefined,
+        openedAt: safeParseDate((b as unknown as Record<string, unknown>).openedAt as unknown as string | Date | undefined) || undefined,
         openedBy: b.openedBy || undefined,
-        receivedAt: safeParseDate(b.receivedAt as any) || undefined,
+        receivedAt: safeParseDate((b as unknown as Record<string, unknown>).receivedAt as unknown as string | Date | undefined) || undefined,
         notes: b.notes || undefined,
         purchase: b.purchase || undefined,
       })),
@@ -314,24 +327,57 @@ export default function InventoryModal({
       isAsset: false,
     };
 
+    // Remove undefined fields recursively to avoid Firestore rejecting undefined values
+    const stripUndefined = (val: unknown): unknown => {
+      if (val === undefined) return undefined;
+      if (val === null) return null;
+      if (Array.isArray(val)) return val.map(v => stripUndefined(v));
+      if (typeof val === 'object' && !(val instanceof Date)) {
+        const out: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(val)) {
+          const cleaned = stripUndefined(v as unknown);
+          if (cleaned !== undefined) out[k] = cleaned;
+        }
+        return out;
+      }
+      return val;
+    };
+
+    const payloadToWrite = stripUndefined(payload);
+
     if (initialData?.id) {
       onUpdateItem(initialData.id, payload as Partial<InventoryItem>);
     } else {
       try {
         const batch = writeBatch(db);
         const newRef = doc(coll(db, 'inventory'));
-        batch.set(newRef, payload);
+        const payloadRecord = payloadToWrite as Record<string, unknown>;
+        batch.set(newRef, payloadRecord);
+        // Build after object with only defined fields
+        const afterRecord: Record<string, unknown> = {};
+        if (payloadRecord.name !== undefined) afterRecord.name = payloadRecord.name;
+        if (payloadRecord.sku !== undefined) afterRecord.sku = payloadRecord.sku;
+        if (payloadRecord.barcode !== undefined) afterRecord.barcode = payloadRecord.barcode;
+        if (payloadRecord.totalStockQuantity !== undefined) afterRecord.totalStockQuantity = payloadRecord.totalStockQuantity;
         addAuditEventToBatch(batch, {
           eventType: 'inventory.create',
           source: 'inventory',
           sourceId: newRef.id,
-          after: { name: payload.name, sku: payload.sku, barcode: payload.barcode, totalStockQuantity: payload.totalStockQuantity },
+          after: afterRecord,
         });
         await batch.commit();
-        onAddItem({ ...(payload as any), id: newRef.id });
-      } catch (err) {
+        onAddItem({ ...payloadRecord, id: newRef.id });
+      } catch (err: unknown) {
         console.error('Create item failed', err);
-        alert('Failed to create item. Please try again.');
+        let errorMessage = 'Failed to create item. Please try again.';
+        if (err instanceof Error) {
+          errorMessage = err.message;
+        } else if (typeof err === 'string') {
+          errorMessage = err;
+        } else if (err && typeof err === 'object' && 'message' in err) {
+          errorMessage = String((err as Record<string, unknown>).message);
+        }
+        setError(errorMessage);
         return;
       }
     }
@@ -339,6 +385,14 @@ export default function InventoryModal({
   };
 
   const isEditMode = !!initialData;
+
+  const closeModal = () => {
+    try {
+      onOpenChange(false);
+    } catch (_e: unknown) {
+      try { (onOpenChange as () => void)(); } catch (_err: unknown) { /* ignore */ }
+    }
+  };
 
   return (
     <Modal
@@ -349,14 +403,13 @@ export default function InventoryModal({
       size="3xl"
       scrollBehavior="inside"
       classNames={{
-        base: 'dark:bg-slate-800',
+        base: 'dark:bg-slate-800 max-w-[95vw] md:max-w-3xl',
         header: 'border-b border-gray-200 dark:border-slate-700',
         footer: 'border-t border-gray-200 dark:border-slate-700',
       }}
     >
       <ModalContent>
-        {(onClose) => (
-          <>
+        <>
             <ModalHeader className="flex flex-col gap-1">
               <h2 className="text-xl font-bold">
                 {isEditMode ? 'Edit Inventory Item' : 'Add New Inventory Item'}
@@ -367,6 +420,19 @@ export default function InventoryModal({
             </ModalHeader>
 
             <ModalBody className="py-5 space-y-5">
+              {/* Error display */}
+              {error && (
+                <div className="p-3 bg-red-50 dark:bg-red-900/10 rounded-md border border-red-200 text-sm">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle size={16} className="mt-0.5 flex-shrink-0 text-red-600" />
+                    <div>
+                      <strong>Error Creating Item</strong>
+                      <p className="text-xs mt-1 text-red-700 dark:text-red-300">{error}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Asset guard */}
               {initialData && (initialData as any).isAsset && (
                 <div className="p-3 bg-red-50 dark:bg-red-900/10 rounded-md border border-red-200 text-sm">
@@ -414,10 +480,10 @@ export default function InventoryModal({
                         <div className="p-2 bg-warning-50 dark:bg-warning-900/10 rounded-md border border-warning-200 text-sm space-y-1">
                           <p className="text-xs font-semibold">Similar items found:</p>
                           {duplicates.map((d) => (
-                            <div key={d.id} className="flex items-center justify-between text-xs">
-                              <span>{d.name} {d.unit ? `(${d.unit})` : ''}</span>
+                            <div key={String(d.id)} className="flex items-center justify-between text-xs">
+                              <span>{String(d.name)} {d.unit ? `(${String(d.unit)})` : ''}</span>
                               <Button size="sm" variant="flat" onPress={() => {
-                                if (d.id) onUpdateItem(d.id, {});
+                                if (d.id) onUpdateItem(String(d.id), {});
                               }}>Open</Button>
                             </div>
                           ))}
@@ -432,6 +498,12 @@ export default function InventoryModal({
                     size="sm"
                     selectedKeys={formData.category ? [formData.category] : []}
                     onSelectionChange={(keys) => setFormData(prev => ({ ...prev, category: Array.from(keys)[0] as ItemCategory }))}
+                    className="overflow-visible"
+                    popoverProps={{
+                      classNames: {
+                        content: "w-fit",
+                      },
+                    }}
                   >
                     {CATEGORIES.map((cat) => (
                       <SelectItem key={cat}>{cat}</SelectItem>
@@ -515,7 +587,7 @@ export default function InventoryModal({
                     const perBag = Number(b.itemsPerBag ?? 0);
                     const loose = Number(b.looseItems ?? 0);
                     const computedTotal = perBag > 0 ? bags * perBag + loose : Number(b.stock ?? 0);
-                    const isExpired = b.expirationDate && new Date(b.expirationDate as any) < new Date();
+                    const isExpired = b.expirationDate && new Date(b.expirationDate as string | Date) < new Date();
                     const statusInfo = BATCH_STATUSES.find(s => s.key === (b.status || 'sealed'));
 
                     return (
@@ -557,7 +629,7 @@ export default function InventoryModal({
                             type="date"
                             label="Expiration"
                             variant="bordered"
-                            value={getDateString(b.expirationDate as any)}
+                            value={getDateString(b.expirationDate as string | Date | unknown)}
                             onValueChange={(v) => updateBatch(b.id, 'expirationDate', v ? new Date(v) : undefined)}
                           />
                           <Select
@@ -566,6 +638,12 @@ export default function InventoryModal({
                             variant="bordered"
                             selectedKeys={b.status ? [b.status] : ['sealed']}
                             onSelectionChange={(keys) => updateBatch(b.id, 'status', Array.from(keys)[0] as BatchStatus)}
+                            className="overflow-visible"
+                            popoverProps={{
+                              classNames: {
+                                content: "w-fit",
+                              },
+                            }}
                           >
                             {BATCH_STATUSES.map((s) => (
                               <SelectItem key={s.key}>{s.label}</SelectItem>
@@ -576,7 +654,7 @@ export default function InventoryModal({
                             type="date"
                             label="Received"
                             variant="bordered"
-                            value={getDateString(b.receivedAt as any)}
+                            value={getDateString(b.receivedAt as string | Date | unknown)}
                             onValueChange={(v) => updateBatch(b.id, 'receivedAt', v ? new Date(v) : undefined)}
                           />
                         </div>
@@ -638,7 +716,7 @@ export default function InventoryModal({
                               label="Supplier"
                               placeholder="e.g., Medline"
                               variant="bordered"
-                              value={(b.purchase as any)?.supplierName ?? ''}
+                              value={((b.purchase as Record<string, unknown> | undefined)?.supplierName as string) ?? ''}
                               onValueChange={(v) => updateBatch(b.id, 'purchase', { ...(b.purchase || {}), supplierName: v })}
                             />
                             <Input
@@ -647,7 +725,7 @@ export default function InventoryModal({
                               type="number"
                               placeholder="0.00"
                               variant="bordered"
-                              value={(b.purchase as any)?.pricePerUnit?.toString() ?? ''}
+                              value={((b.purchase as Record<string, unknown> | undefined)?.pricePerUnit as number | undefined)?.toString() ?? ''}
                               onValueChange={(v) => updateBatch(b.id, 'purchase', { ...(b.purchase || {}), pricePerUnit: v ? Number(v) : undefined })}
                             />
                             <Input
@@ -655,7 +733,7 @@ export default function InventoryModal({
                               label="PO / Invoice #"
                               placeholder="PO-1234"
                               variant="bordered"
-                              value={(b.purchase as any)?.purchaseOrderId ?? ''}
+                              value={((b.purchase as Record<string, unknown> | undefined)?.purchaseOrderId as string) ?? ''}
                               onValueChange={(v) => updateBatch(b.id, 'purchase', { ...(b.purchase || {}), purchaseOrderId: v })}
                             />
                             <Input
@@ -770,12 +848,12 @@ export default function InventoryModal({
             </ModalBody>
 
             <ModalFooter>
-              <Button color="danger" variant="light" onPress={onClose}>
+              <Button color="danger" variant="light" onPress={() => closeModal()}>
                 Cancel
               </Button>
               <Button
                 color="primary"
-                onPress={() => handleSubmit(onClose)}
+                onPress={() => handleSubmit(() => closeModal())}
                 className="font-semibold shadow-lg"
                 isDisabled={!formData.name?.trim()}
               >
@@ -783,7 +861,6 @@ export default function InventoryModal({
               </Button>
             </ModalFooter>
           </>
-        )}
       </ModalContent>
     </Modal>
   );

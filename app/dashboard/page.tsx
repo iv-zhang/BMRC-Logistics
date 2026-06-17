@@ -20,12 +20,14 @@ import {
   ArrowUpRight, 
   ChevronDown, 
   ChevronUp, 
-  Clock
+  Clock,
+  GraduationCap,
 } from 'lucide-react';
 
 import type { Statpack, InventoryItem, StatpackLog, StatpackItem } from '@/app/types';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import MemberDashboard from './member-dashboard';
+import TutorialOverlay from '@/app/components/tutorial-overlay';
 
 interface ExpiryAlert {
   bagName: string; // Used for Bag Name OR Location String
@@ -46,6 +48,9 @@ export default function DashboardPage() {
   // --- Derived Alert State ---
   const [lowStockItems, setLowStockItems] = useState<InventoryItem[]>([]);
   const [expiryAlerts, setExpiryAlerts] = useState<ExpiryAlert[]>([]);
+
+  // --- Tutorial State ---
+  const [showTutorial, setShowTutorial] = useState(false);
 
   // --- Expansion & Logs State ---
   const [expandedPackId, setExpandedPackId] = useState<string | null>(null);
@@ -255,6 +260,19 @@ export default function DashboardPage() {
     processAlerts(statpacks, inventory);
   }, [statpacks, inventory]);
 
+  // Show tutorial for new users only once per session
+  useEffect(() => {
+    try {
+      const shown = typeof window !== 'undefined' ? sessionStorage.getItem('bmrc_tutorial_shown') : null;
+      if (userData && !userData.tutorialCompleted && !shown) {
+        setShowTutorial(true);
+        if (typeof window !== 'undefined') sessionStorage.setItem('bmrc_tutorial_shown', '1');
+      }
+    } catch (e) {
+      if (userData && !userData.tutorialCompleted) setShowTutorial(true);
+    }
+  }, [userData]);
+
   const getStatusColor = (status: Statpack['status']) => {
     switch (status) {
       case 'Ready': return 'success';
@@ -285,20 +303,43 @@ export default function DashboardPage() {
 
   // Render member dashboard for non-admin users
   if (role && role !== 'admin' && role !== 'quartermaster' && userData) {
-    return <MemberDashboard userData={userData} />;
+    return (
+      <>
+        {showTutorial && user && (
+          <TutorialOverlay userId={user.uid} onComplete={() => setShowTutorial(false)} />
+        )}
+        <MemberDashboard userData={userData} />
+      </>
+    );
   }
 
   // Render admin dashboard below
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-3 md:p-6">
+      {showTutorial && user && (
+        <TutorialOverlay userId={user.uid} onComplete={() => setShowTutorial(false)} />
+      )}
       <div className="max-w-7xl mx-auto space-y-6 md:space-y-8">
         
         {/* --- Header --- */}
         <div className="mb-4 md:mb-6">
-          <h1 className="text-xl md:text-3xl font-bold text-gray-900 dark:text-white flex items-center gap-3">
-            <Image src="/images/NewLogoWhiteLong_NoHeartbeat.PNG" alt="BMRC Logo" width={200} height={50} className="hidden sm:block" />
-            Dashboard
-          </h1>
+          <div className="flex items-center justify-between">
+            <h1 className="text-xl md:text-3xl font-bold text-gray-900 dark:text-white flex items-center gap-3">
+              <Image src="/images/NewLogoWhiteLong_NoHeartbeat.PNG" alt="BMRC Logo" width={200} height={50} className="hidden sm:block" />
+              Dashboard
+            </h1>
+            {(role === 'admin' || role === 'quartermaster') && (
+              <Button
+                size="sm"
+                variant="flat"
+                color="secondary"
+                startContent={<GraduationCap size={14} />}
+                onPress={() => setShowTutorial(true)}
+              >
+                Test Tutorial
+              </Button>
+            )}
+          </div>
           <p className="text-sm md:text-base text-gray-600 dark:text-gray-400 mt-2">
             Overview of fleet readiness and supply levels
           </p>

@@ -181,8 +181,14 @@ export default function BarcodeScanner({ isOpen, onClose, onDetected, minLength 
               <div className="w-full h-64 bg-black rounded-lg overflow-hidden flex items-center justify-center relative">
                 <video ref={videoRef} className="w-full h-full object-cover" playsInline muted />
                 {scanning && (
-                  <div className="absolute inset-0 pointer-events-none">
-                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-48 border-2 border-primary rounded-lg opacity-50" />
+                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                    <div className="w-[85%] h-[85%] max-w-[300px] max-h-[240px] border-2 border-primary rounded-lg opacity-70">
+                      {/* Corner brackets for alignment */}
+                      <div className="absolute top-0 left-0 w-6 h-6 border-t-3 border-l-3 border-primary rounded-tl-lg" />
+                      <div className="absolute top-0 right-0 w-6 h-6 border-t-3 border-r-3 border-primary rounded-tr-lg" />
+                      <div className="absolute bottom-0 left-0 w-6 h-6 border-b-3 border-l-3 border-primary rounded-bl-lg" />
+                      <div className="absolute bottom-0 right-0 w-6 h-6 border-b-3 border-r-3 border-primary rounded-br-lg" />
+                    </div>
                   </div>
                 )}
               </div>

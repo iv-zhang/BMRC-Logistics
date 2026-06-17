@@ -120,15 +120,14 @@ export default function IssueReportForm({
       backdrop="blur"
     >
       <ModalContent>
-        {(onClose) => (
-          <>
-            <ModalHeader className="flex flex-col gap-1">
-              Report an Issue
-              <p className="text-sm text-gray-500 font-normal">
-                Help us improve the platform by reporting bugs and feedback
-              </p>
-            </ModalHeader>
-            <ModalBody className="gap-4">
+        <>
+          <ModalHeader className="flex flex-col gap-1">
+            Report an Issue
+            <p className="text-sm text-gray-500 font-normal">
+              Help us improve the platform by reporting bugs and feedback
+            </p>
+          </ModalHeader>
+          <ModalBody className="gap-4">
               {error && (
                 <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg flex items-start gap-2">
                   <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
@@ -252,26 +251,25 @@ export default function IssueReportForm({
                 />
               </div>
             </ModalBody>
-            <ModalFooter>
-              <Button
-                color="default"
-                variant="light"
-                onPress={onClose}
-                disabled={submitting}
-              >
-                Cancel
-              </Button>
-              <Button
-                color="primary"
-                onPress={handleSubmit}
-                isLoading={submitting}
-                className="font-semibold"
-              >
-                Submit Report
-              </Button>
-            </ModalFooter>
-          </>
-        )}
+          <ModalFooter>
+            <Button
+              color="default"
+              variant="light"
+              onPress={() => onOpenChange(false)}
+              disabled={submitting}
+            >
+              Cancel
+            </Button>
+            <Button
+              color="primary"
+              onPress={handleSubmit}
+              isLoading={submitting}
+              className="font-semibold"
+            >
+              Submit Report
+            </Button>
+          </ModalFooter>
+        </>
       </ModalContent>
     </Modal>
   );

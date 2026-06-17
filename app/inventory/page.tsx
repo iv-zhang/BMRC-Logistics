@@ -8,7 +8,7 @@ import {
 } from '@heroui/react';
 import {
   Boxes, Plus, Minus, Search, Wind, PackageOpen, Filter, X, Edit2,
-  ChevronDown, MapPin, Download, AlertTriangle, CalendarClock
+  ChevronDown, MapPin, Download, AlertTriangle, CalendarClock, Pill, ShieldAlert
 } from 'lucide-react';
 
 // Firebase
@@ -23,6 +23,7 @@ import { recordAuditEvent } from '../lib/audit';
 // Components
 import InventoryModal from '@/app/components/additemmodal';
 import ConsumeBoxModal from '@/app/components/consume-box-modal';
+import MedicationCabinetModal from '@/app/components/medication-cabinet-modal';
 
 // Utilities
 import { getOldestValidBatch, isBatchExpired } from '@/app/utils/batchHelpers';
@@ -30,7 +31,7 @@ import { preparePayload, safeParseDate } from '@/app/utils/inventoryNormalizatio
 import { formatStorageLocation } from '@/app/utils/storage-location';
 
 // Types
-import type { InventoryItem, InventoryBatch, ItemCategory, User, BatchStatus } from '@/app/types';
+import type { InventoryItem, InventoryBatch, ItemCategory, User, BatchStatus, MedicationInfo } from '@/app/types';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 const CATEGORIES: ItemCategory[] = ['Airway', 'Trauma', 'Vitals', 'Meds', 'PPE', 'Splinting', 'Hygiene', 'Other'];
@@ -115,6 +116,9 @@ export default function InventoryPage() {
   const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null);
   const [consumeBoxModalOpen, setConsumeBoxModalOpen] = useState(false);
   const [consumeBoxItem, setConsumeBoxItem] = useState<InventoryItem | null>(null);
+  const [medCabinetOpen, setMedCabinetOpen] = useState(false);
+  const [medCabinetItem, setMedCabinetItem] = useState<InventoryItem | null>(null);
+  const [showMedsOnly, setShowMedsOnly] = useState(false);
 
   // ── Auth ──────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -170,6 +174,8 @@ export default function InventoryPage() {
           isReagent: raw.isReagent ?? false,
           daysValidAfterOpening: raw.daysValidAfterOpening ? Number(raw.daysValidAfterOpening) : undefined,
           isAsset: raw.isAsset ?? false,
+          isMedication: raw.isMedication ?? false,
+          medicationInfo: raw.medicationInfo as MedicationInfo | undefined,
           barcode: raw.barcode,
           unit: raw.unit,
           description: raw.description,
@@ -466,8 +472,12 @@ export default function InventoryPage() {
       list = list.filter(i => i.category === categoryFilter);
     }
 
+    if (showMedsOnly) {
+      list = list.filter(i => i.isMedication);
+    }
+
     return list;
-  }, [inventory, searchTerm, categoryFilter]);
+  }, [inventory, searchTerm, categoryFilter, showMedsOnly]);
 
   // ── Modal helpers ─────────────────────────────────────────────────────────
   function openNewModal() { setSelectedItem(null); onOpen(); }
@@ -501,6 +511,15 @@ export default function InventoryPage() {
             <Chip size="sm" variant="flat">{filteredInventory.length} items</Chip>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant={showMedsOnly ? 'solid' : 'flat'}
+              color={showMedsOnly ? 'danger' : 'default'}
+              startContent={<Pill size={14} />}
+              onPress={() => setShowMedsOnly(!showMedsOnly)}
+            >
+              Meds
+            </Button>
             <Button size="sm" variant="flat" startContent={<Download size={14} />} onPress={() => exportCSV()}>
               Export
             </Button>
@@ -625,6 +644,12 @@ export default function InventoryPage() {
                               <CalendarClock size={10} className="mr-1 inline" />Expired
                             </Chip>
                           )}
+                          {item.isMedication && (
+                            <Chip size="sm" variant="flat" color="danger">
+                              {item.medicationInfo?.isControlled ? <ShieldAlert size={10} className="mr-1 inline" /> : <Pill size={10} className="mr-1 inline" />}
+                              {item.medicationInfo?.isControlled ? `Sched ${item.medicationInfo.deaSchedule || 'C'}` : 'Med'}
+                            </Chip>
+                          )}
                         </div>
 
                         {/* Location */}
@@ -693,6 +718,19 @@ export default function InventoryPage() {
                               onPress={() => handleRestockForward(item)}
                             >
                               Restock Forward
+                            </Button>
+                          )}
+
+                          {item.isMedication && (
+                            <Button
+                              size="sm" variant="flat" color="danger"
+                              startContent={<Pill size={12} />}
+                              onPress={() => {
+                                setMedCabinetItem(item);
+                                setMedCabinetOpen(true);
+                              }}
+                            >
+                              Med Cabinet
                             </Button>
                           )}
                         </div>
@@ -968,6 +1006,16 @@ export default function InventoryPage() {
             onSuccess={() => { /* auto-refresh via onSnapshot */ }}
           />
         )}
+
+        {/* ── Medication Cabinet Modal ────────────────────────────────────── */}
+        <MedicationCabinetModal
+          isOpen={medCabinetOpen}
+          onOpenChange={(open) => { setMedCabinetOpen(open); if (!open) setMedCabinetItem(null); }}
+          medication={medCabinetItem}
+          userId={user?.uid || ''}
+          userName={user?.displayName || user?.email || ''}
+          onComplete={() => { /* auto-refresh via onSnapshot */ }}
+        />
       </div>
     </div>
   );

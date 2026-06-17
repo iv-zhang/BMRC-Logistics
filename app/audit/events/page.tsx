@@ -226,7 +226,7 @@ export default function AuditEventsPage() {
         .toLowerCase();
       const detailsText = JSON.stringify(ev.details || {}).toLowerCase();
       return (
-        ev.eventType.toLowerCase().includes(needle) ||
+        (ev.eventType || '').toLowerCase().includes(needle) ||
         actor.includes(needle) ||
         targetText.includes(needle) ||
         detailsText.includes(needle)
@@ -239,6 +239,15 @@ export default function AuditEventsPage() {
     setShowRaw(false);
     setIsModalOpen(true);
   };
+
+  // Derived values for selected event modal
+  const selectedDetails = (selected?.details || {}) as Record<string, unknown>;
+  const selectedActorLabel = getActorLabel(selected?.actor);
+  const selectedCheckoutAt = findFirst(selectedDetails, ['checkedOutAt', 'checkoutAt', 'checked_out_at']);
+  const selectedCheckinAt = findFirst(selectedDetails, ['checkedInAt', 'checkinAt', 'lastCheckedInAt', 'returnedAt']);
+  const selectedReason = findFirst(selectedDetails, ['reason', 'notes', 'message', 'issueType']);
+  const selectedItemsUsed = extractUsedItems(selectedDetails);
+  const selectedIssueReports = extractIssueReports(selectedDetails);
 
   if (roleLoading) {
     return (
@@ -361,110 +370,90 @@ export default function AuditEventsPage() {
 
       <Modal isOpen={isModalOpen} onOpenChange={setIsModalOpen} size="3xl" scrollBehavior="inside">
         <ModalContent>
-          {(onClose) => {
-            const details = (selected?.details || {}) as Record<string, unknown>;
-            const actor = getActorLabel(selected?.actor);
-            const checkoutAt = findFirst(details, ['checkedOutAt', 'checkoutAt', 'checked_out_at']);
-            const checkinAt = findFirst(details, ['checkedInAt', 'checkinAt', 'lastCheckedInAt', 'returnedAt']);
-            const reason = findFirst(details, ['reason', 'notes', 'message', 'issueType']);
-            const itemsUsed = extractUsedItems(details);
-            const issueReports = extractIssueReports(details);
-            // Note: don't create state inside render; implement a tiny local toggle using closure
-            let rawVisible = false;
-            const toggleRaw = () => {
-              rawVisible = !rawVisible;
-              // force re-render by toggling modal open state briefly (simple approach)
-              // but to avoid complex state here, we'll rely on user opening the raw via the provided button which triggers a re-render by resetting selected
-              // Simpler: when user clicks 'Show raw', replace selected with same object to trigger rerender in React's modal context
-              setSelected((s) => (s ? { ...s } : s));
-            };
-            return (
-              <>
-                <ModalHeader className="flex flex-col gap-2">
-                  <div className="flex items-center gap-2">
-                    <div className="text-default-500">{getEventIcon(selected?.eventType || '')}</div>
-                    <span className="text-base font-semibold">{formatEventType(selected?.eventType || selected?.source || 'Event Details')}</span>
+          <>
+            <ModalHeader className="flex flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <div className="text-default-500">{getEventIcon(selected?.eventType || '')}</div>
+                <span className="text-base font-semibold">{formatEventType(selected?.eventType || selected?.source || 'Event Details')}</span>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-muted">
+                <User size={14} /> {selectedActorLabel}
+              </div>
+              <div className="text-xs text-muted">{formatTimestamp(selected?.timestamp)}</div>
+            </ModalHeader>
+            <ModalBody className="gap-4">
+              <div className="grid gap-3">
+                {selected?.targets && selected.targets.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {selected.targets.map((t) => (
+                      <Chip key={`${selected.id}-${t.collection}-${t.docId}`} size="sm" variant="flat">
+                        {t.collection}/{t.docId}
+                      </Chip>
+                    ))}
                   </div>
-                  <div className="flex items-center gap-2 text-xs text-muted">
-                    <User size={14} /> {actor}
-                  </div>
-                  <div className="text-xs text-muted">{formatTimestamp(selected?.timestamp)}</div>
-                </ModalHeader>
-                <ModalBody className="gap-4">
-                  <div className="grid gap-3">
-                    {selected?.targets && selected.targets.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
-                        {selected.targets.map((t) => (
-                          <Chip key={`${selected.id}-${t.collection}-${t.docId}`} size="sm" variant="flat">
-                            {t.collection}/{t.docId}
-                          </Chip>
-                        ))}
-                      </div>
-                    )}
+                )}
 
+                <Divider />
+
+                <div className="grid gap-2 text-sm">
+                  <div className="font-semibold">Timeline</div>
+                  <div className="text-xs">Checked out: {selectedCheckoutAt ? formatTimestamp(selectedCheckoutAt) : '—'}</div>
+                  <div className="text-xs">Checked in: {selectedCheckinAt ? formatTimestamp(selectedCheckinAt) : '—'}</div>
+                  <div className="text-xs">Reason / Notes: {selectedReason ? String(selectedReason) : '—'}</div>
+                </div>
+
+                {(selectedItemsUsed.length > 0 || selectedIssueReports.length > 0) && (
+                  <>
                     <Divider />
-
                     <div className="grid gap-2 text-sm">
-                      <div className="font-semibold">Timeline</div>
-                      <div className="text-xs">Checked out: {checkoutAt ? formatTimestamp(checkoutAt) : '—'}</div>
-                      <div className="text-xs">Checked in: {checkinAt ? formatTimestamp(checkinAt) : '—'}</div>
-                      <div className="text-xs">Reason / Notes: {reason ? String(reason) : '—'}</div>
-                    </div>
-
-                    {(itemsUsed.length > 0 || issueReports.length > 0) && (
-                      <>
-                        <Divider />
-                        <div className="grid gap-2 text-sm">
-                          <div className="font-semibold">Statpack Usage / Issues</div>
-                          {itemsUsed.length > 0 && (
-                            <div className="text-xs">
-                              <div className="font-medium">Items used</div>
-                              <ul className="list-disc ml-4">
-                                {itemsUsed.map((item) => (
-                                  <li key={`${item.name}-${item.quantity}`}>{item.name}: {item.quantity}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                          {issueReports.length > 0 && (
-                            <div className="text-xs">
-                              <div className="font-medium">Reported issues</div>
-                              <ul className="list-disc ml-4">
-                                {issueReports.map((item) => (
-                                  <li key={`${item.name}-${item.issueType || 'issue'}`}>
-                                    {item.name} — {item.issueType || 'issue'} {item.notes ? `(${item.notes})` : ''}
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
+                      <div className="font-semibold">Statpack Usage / Issues</div>
+                      {selectedItemsUsed.length > 0 && (
+                        <div className="text-xs">
+                          <div className="font-medium">Items used</div>
+                          <ul className="list-disc ml-4">
+                            {selectedItemsUsed.map((item) => (
+                              <li key={`${item.name}-${item.quantity}`}>{item.name}: {item.quantity}</li>
+                            ))}
+                          </ul>
                         </div>
-                      </>
-                    )}
-
-                    <Divider />
-
-                    <div className="grid gap-2">
-                      <div className="flex justify-between items-center">
-                        <div className="font-semibold text-sm">Raw details</div>
-                        <Button size="sm" variant="bordered" onPress={toggleRaw}>
-                          {rawVisible ? 'Hide raw' : 'Show raw'}
-                        </Button>
-                      </div>
-                      {rawVisible && selected && (
-                        <pre className="text-xs overflow-auto whitespace-pre-wrap bg-default-50 dark:bg-slate-900 p-3 rounded-lg">
-                          {JSON.stringify(selected.details || selected.delta || { before: selected.before, after: selected.after }, null, 2)}
-                        </pre>
+                      )}
+                      {selectedIssueReports.length > 0 && (
+                        <div className="text-xs">
+                          <div className="font-medium">Reported issues</div>
+                          <ul className="list-disc ml-4">
+                            {selectedIssueReports.map((item) => (
+                              <li key={`${item.name}-${item.issueType || 'issue'}`}>
+                                {item.name} — {item.issueType || 'issue'} {item.notes ? `(${item.notes})` : ''}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
                       )}
                     </div>
+                  </>
+                )}
+
+                <Divider />
+
+                <div className="grid gap-2">
+                  <div className="flex justify-between items-center">
+                    <div className="font-semibold text-sm">Raw details</div>
+                    <Button size="sm" variant="bordered" onPress={() => setShowRaw((s) => !s)}>
+                      {showRaw ? 'Hide raw' : 'Show raw'}
+                    </Button>
                   </div>
-                </ModalBody>
-                <ModalFooter>
-                  <Button variant="bordered" onPress={onClose}>Close</Button>
-                </ModalFooter>
-              </>
-            );
-          }}
+                  {showRaw && selected && (
+                    <pre className="text-xs overflow-auto whitespace-pre-wrap bg-default-50 dark:bg-slate-900 p-3 rounded-lg">
+                      {JSON.stringify(selected.details || selected.delta || { before: selected.before, after: selected.after }, null, 2)}
+                    </pre>
+                  )}
+                </div>
+              </div>
+            </ModalBody>
+            <ModalFooter>
+              <Button variant="bordered" onPress={() => { setIsModalOpen(false); setSelected(null); }}>Close</Button>
+            </ModalFooter>
+          </>
         </ModalContent>
       </Modal>
     </div>

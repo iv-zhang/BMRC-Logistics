@@ -1,6 +1,6 @@
 'use client';
 import React, { useEffect, useMemo, useState } from 'react';
-import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button, Input, Textarea, Card, CardBody, Chip, Select, SelectItem, Divider } from '@heroui/react';
+import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button, Input, Textarea, Card, CardBody, Chip, Select, SelectItem, Divider, Avatar, Progress } from '@heroui/react';
 import type { InventoryItem, User, AssetInstance, StatpackItem, ValidationWarning } from '@/app/types';
 import { checkoutAsset, checkinAsset, verifyAssetAgainstRules, findAssetByCode } from '@/app/lib/inventory';
 import { parseGs1Barcode } from '@/app/lib/gs1';
@@ -8,7 +8,7 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
 import BarcodeScanner from './barcode-scanner';
-import { ScanLine, CheckCircle2, AlertTriangle, XCircle } from 'lucide-react';
+import { ScanLine, CheckCircle2, AlertTriangle, XCircle, LogOut, LogIn, MapPin, Package, FileText, User as UserIcon, CheckCircle } from 'lucide-react';
 
 interface CheckoutModalProps {
   isOpen: boolean;
@@ -235,38 +235,68 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
 
   const effectiveStatus = selectedInstance?.status ?? asset.assetStatus;
   const isCheckedOut = effectiveStatus === 'Checked Out';
-  const buttonText = mode === 'checkout' ? 'Confirm Checkout' : 'Confirm Checkin';
-  const cardTitle = mode === 'checkout' ? 'Checkout Asset' : 'Checkin Asset';
+  const isCheckoutMode = mode === 'checkout';
+  const buttonText = isCheckoutMode ? 'Confirm Checkout' : 'Confirm Check-In';
+  const ActionIcon = isCheckoutMode ? LogOut : LogIn;
+  const accentColor = isCheckoutMode ? 'primary' : 'success';
 
   return (
-    <Modal isOpen={isOpen} onOpenChange={onOpenChange} size="md">
+    <Modal 
+      isOpen={isOpen} 
+      onOpenChange={onOpenChange} 
+      size="lg"
+      backdrop="blur"
+      scrollBehavior="inside"
+      placement="center"
+    >
       <ModalContent>
-        <ModalHeader>{cardTitle}</ModalHeader>
-        <ModalBody className="space-y-4">
+        <ModalHeader className="flex items-center gap-3">
+          <ActionIcon size={22} className={isCheckoutMode ? 'text-primary' : 'text-success'} />
+          <span>{isCheckoutMode ? 'Asset Checkout' : 'Asset Check-In'}</span>
+        </ModalHeader>
+        <ModalBody className="gap-4 max-h-[70vh] overflow-y-auto">
           {success ? (
-            <Card className="bg-default-100">
-              <CardBody className="text-center py-6">
-                <p className="text-default-700 font-semibold">
-                  {mode === 'checkout' ? 'Asset checked out successfully!' : 'Asset checked in successfully!'}
-                </p>
-              </CardBody>
-            </Card>
+            <div className="flex flex-col items-center py-10 gap-4">
+              <div className={`w-20 h-20 rounded-full flex items-center justify-center ${isCheckoutMode ? 'bg-primary-100' : 'bg-success-100'} animate-[scale-in_0.3s_ease-out]`}>
+                <CheckCircle size={40} className={isCheckoutMode ? 'text-primary' : 'text-success'} />
+              </div>
+              <p className="text-lg font-semibold text-default-800">
+                {isCheckoutMode ? 'Checked Out Successfully!' : 'Checked In Successfully!'}
+              </p>
+              <p className="text-sm text-default-500">Redirecting...</p>
+            </div>
           ) : (
             <>
-              <Card className="bg-slate-50">
-                <CardBody className="space-y-2 py-3">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-semibold">{asset.name}</span>
+              {/* Asset Info Card — matching statpack card style */}
+              <Card className={`${isCheckoutMode ? 'bg-blue-50/50 dark:bg-blue-900/10' : 'bg-green-50/50 dark:bg-green-900/10'}`}>
+                <CardBody className="gap-3">
+                  <div className="flex items-center gap-3">
+                    <Avatar
+                      icon={<Package />}
+                      className={isCheckoutMode ? 'bg-blue-100 dark:bg-blue-900' : 'bg-green-100 dark:bg-green-900'}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <h3 className="font-semibold text-lg text-default-800 truncate">{asset.name}</h3>
+                      {asset.assetCategory && (
+                        <p className="text-xs text-default-500">{asset.assetCategory}</p>
+                      )}
+                    </div>
                     <Chip size="sm" variant="flat" color={isCheckedOut ? 'warning' : 'success'}>
                       {asset.assetStatus || 'Unknown'}
                     </Chip>
                   </div>
-                  {asset.assetCategory && (
-                    <p className="text-xs text-gray-600">Category: {asset.assetCategory}</p>
-                  )}
-                  {(selectedInstance?.serial || asset.assetSerial) && (
-                    <p className="text-xs text-gray-600">Serial: {selectedInstance?.serial || asset.assetSerial}</p>
-                  )}
+                  <div className="flex flex-wrap gap-2">
+                    {(selectedInstance?.serial || asset.assetSerial) && (
+                      <Chip size="sm" variant="flat" color="default" startContent={<ScanLine size={12} />}>
+                        {selectedInstance?.serial || asset.assetSerial}
+                      </Chip>
+                    )}
+                    {asset.currentLocation && (
+                      <Chip size="sm" variant="flat" color="secondary" startContent={<MapPin size={12} />}>
+                        {asset.currentLocation}
+                      </Chip>
+                    )}
+                  </div>
                 </CardBody>
               </Card>
 
@@ -276,6 +306,7 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
                   <div className="flex gap-2">
                     <Select
                       className="flex-1"
+                      size="md"
                       selectedKeys={selectedSerial ? [selectedSerial] : []}
                       onChange={(e) => setSelectedSerial(e.target.value)}
                       placeholder="Select serial/tag"
@@ -290,10 +321,11 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
                       <Button
                         isIconOnly
                         variant="flat"
+                        size="md"
                         onPress={() => setShowScanner(true)}
                         title="Scan asset tag"
                       >
-                        <ScanLine size={18} />
+                        <ScanLine size={20} />
                       </Button>
                     )}
                   </div>
@@ -303,23 +335,26 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
               {hasVerificationRules && (
                 <>
                   <Divider />
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2">
+                  <div className="space-y-3 w-full">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                       <span className="text-sm font-semibold">Asset Verification</span>
-                      {!requiresSerial && (
-                        <Button
-                          size="sm"
-                          variant="flat"
-                          startContent={<ScanLine size={14} />}
-                          onPress={() => setShowScanner(true)}
-                        >
-                          Scan Tag
-                        </Button>
-                      )}
+                      <div className="flex gap-2">
+                        {!requiresSerial && (
+                          <Button
+                            size="sm"
+                            variant="flat"
+                            startContent={<ScanLine size={16} />}
+                            onPress={() => setShowScanner(true)}
+                            className="flex-1 sm:flex-none"
+                          >
+                            Scan Tag
+                          </Button>
+                        )}
+                      </div>
                     </div>
                     
                     {scannedCode && (
-                      <Card className="bg-blue-50">
+                      <Card className="bg-blue-50 w-full">
                         <CardBody className="py-2">
                           <div className="flex items-center gap-2 text-xs">
                             <CheckCircle2 size={14} className="text-blue-700" />
@@ -333,43 +368,85 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
                         </CardBody>
                       </Card>
                     )}
-                          {/* If admin requires expiration confirmation, allow user to confirm or edit the date here */}
-                          {hasVerificationRules && (statpackItem?.verificationRules?.requireExpirationConfirmation || asset?.verificationPolicy?.requireExpirationConfirmation) && (
-                            <div className="mt-2">
-                              <label className="text-xs font-medium block mb-1">Confirm Expiration</label>
-                              <Input
-                                size="sm"
-                                type="date"
-                                value={confirmedExpiration ? confirmedExpiration.toISOString().slice(0,10) : (scannedExpiration ? scannedExpiration.toISOString().slice(0,10) : '')}
-                                onValueChange={(v) => setConfirmedExpiration(v ? new Date(v) : null)}
-                              />
-                            </div>
-                          )}
+
+                    {/* Manual barcode input for when scanning isn't possible */}
+                    <div>
+                      <label className="text-sm font-medium block mb-1">Barcode/Serial (if not scanning)</label>
+                      <Input
+                        size="md"
+                        placeholder="Enter barcode or serial number"
+                        value={scannedCode || ''}
+                        onValueChange={(value) => {
+                          setScannedCode(value);
+                          // Try to parse GS1 for expiration if it's a GS1 barcode
+                          if (value) {
+                            const gs1Data = parseGs1Barcode(value);
+                            if (gs1Data.expiration) {
+                              try {
+                                setScannedExpiration(new Date(gs1Data.expiration));
+                                setConfirmedExpiration(new Date(gs1Data.expiration));
+                              } catch (e) {
+                                console.warn('Failed to parse GS1 expiration', e);
+                              }
+                            }
+                            // Try to match asset instance
+                            if (asset) {
+                              try {
+                                const matches = findAssetByCode([asset], value);
+                                if (matches.length > 0 && matches[0].instance) {
+                                  setSelectedSerial(matches[0].instance.serial);
+                                }
+                              } catch (e) {
+                                console.warn('Asset match failed', e);
+                              }
+                            }
+                          }
+                        }}
+                        startContent={<ScanLine size={16} className="text-gray-400" />}
+                      />
+                    </div>
+
+                    {/* If admin requires expiration confirmation, allow user to confirm or edit the date here */}
+                    {hasVerificationRules && (statpackItem?.verificationRules?.requireExpirationConfirmation || asset?.verificationPolicy?.requireExpirationConfirmation) && (
+                      <div className="w-full">
+                        <label className="text-sm font-medium block mb-1">Confirm Expiration Date</label>
+                        <Input
+                          size="md"
+                          type="date"
+                          placeholder="MM/YYYY"
+                          value={confirmedExpiration ? confirmedExpiration.toISOString().slice(0,10) : (scannedExpiration ? scannedExpiration.toISOString().slice(0,10) : '')}
+                          onValueChange={(v) => setConfirmedExpiration(v ? new Date(v) : null)}
+                          className="w-full"
+                        />
+                      </div>
+                    )}
                     
                     {statpackItem?.verificationRules?.requireO2PsiMin !== undefined && statpackItem.verificationRules.requireO2PsiMin > 0 && (
-                      <div>
-                        <label className="text-xs font-medium block mb-1">
+                      <div className="w-full">
+                        <label className="text-sm font-medium block mb-1">
                           O₂ PSI Reading (min: {statpackItem.verificationRules.requireO2PsiMin})
                         </label>
                         <Input
-                          size="sm"
+                          size="md"
                           type="number"
-                          placeholder="Enter PSI"
+                          placeholder="Enter PSI reading"
                           value={manualO2Psi}
                           onValueChange={setManualO2Psi}
+                          className="w-full"
+                          inputMode="numeric"
                         />
                       </div>
                     )}
                     
                     {verificationWarnings.length > 0 && (
-                      <div className="space-y-2">
+                      <div className="space-y-2 w-full">
                         {verificationWarnings.map((warning, idx) => {
                           const Icon = warning.severity === 'critical' ? XCircle : AlertTriangle;
                           const colorClass = warning.severity === 'critical' ? 'bg-red-50' : 'bg-yellow-50';
                           const textClass = warning.severity === 'critical' ? 'text-red-700' : 'text-yellow-700';
                           
                           return (
-                            <Card key={idx} className={colorClass}>
+                            <Card key={idx} className={colorClass + ' w-full'}>
                               <CardBody className="py-2">
                                 <div className="flex items-start gap-2">
                                   <Icon size={14} className={`${textClass} mt-0.5`} />
@@ -394,40 +471,48 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
                 </>
               )}
 
-              <div>
-                <label className="text-sm font-semibold block mb-1">Member</label>
-                <Input
-                  isReadOnly
-                  value={user?.fullName || 'Loading...'}
-                  description={`(${user?.email})`}
-                />
-              </div>
+              {/* Member Info */}
+              <Card className={`${isCheckoutMode ? 'bg-blue-50 dark:bg-blue-900/20' : 'bg-green-50 dark:bg-green-900/20'}`}>
+                <CardBody className="py-3">
+                  <div className="flex items-center gap-2">
+                    <UserIcon size={14} className="text-default-500" />
+                    <div>
+                      <p className="text-xs text-default-500">
+                        {isCheckoutMode ? 'Checking out as' : 'Checking in as'}
+                      </p>
+                      <p className="text-sm font-semibold">{user?.fullName || 'Loading...'}</p>
+                    </div>
+                  </div>
+                </CardBody>
+              </Card>
 
-              <div>
-                <label className="text-sm font-semibold block mb-1">
-                  {mode === 'checkout' ? 'Location (where will you use it)' : 'Return Location'}
-                </label>
-                <Input
-                  placeholder={mode === 'checkout' ? 'e.g., Vehicle 1, Field Site A' : 'e.g., Back Room, Equipment Closet'}
-                  value={location}
-                  onValueChange={setLocation}
-                />
-              </div>
+              {/* Location */}
+              <Input
+                label={isCheckoutMode ? 'Location — where will you use it?' : 'Return Location'}
+                placeholder={isCheckoutMode ? 'e.g., Vehicle 1, Field Site A' : 'e.g., Back Room, Equipment Closet'}
+                value={location}
+                onValueChange={setLocation}
+                startContent={<MapPin size={16} className="text-default-400" />}
+                size="md"
+              />
 
-              <div>
-                <label className="text-sm font-semibold block mb-1">Notes (optional)</label>
-                <Textarea
-                  placeholder={mode === 'checkout' ? 'e.g., Assigned to Shift A' : 'e.g., Returned in good condition'}
-                  value={note}
-                  onValueChange={setNote}
-                  minRows={2}
-                />
-              </div>
+              {/* Notes */}
+              <Textarea
+                label="Notes (optional)"
+                placeholder={isCheckoutMode ? 'e.g., Assigned to Shift A' : 'e.g., Returned in good condition'}
+                value={note}
+                onValueChange={setNote}
+                minRows={2}
+                startContent={<FileText size={16} className="text-default-400" />}
+              />
 
               {friendlyError && (
-                <Card className="bg-red-50">
-                  <CardBody>
-                    <p className="text-red-700 text-sm">{friendlyError}</p>
+                <Card className="bg-danger-50 border border-danger-200 w-full">
+                  <CardBody className="py-2">
+                    <div className="flex items-center gap-2">
+                      <XCircle size={16} className="text-danger flex-shrink-0" />
+                      <p className="text-danger text-sm">{friendlyError}</p>
+                    </div>
                   </CardBody>
                 </Card>
               )}
@@ -440,9 +525,11 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
           </Button>
           {!success && (
             <Button
+              color={accentColor}
               isLoading={loading}
               onPress={handleConfirm}
-              disabled={loading || !user}
+              isDisabled={loading || !user}
+              startContent={!loading && <ActionIcon size={16} />}
             >
               {buttonText}
             </Button>

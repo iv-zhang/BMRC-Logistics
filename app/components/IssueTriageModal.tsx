@@ -132,36 +132,35 @@ export default function IssueTriageModal({
       backdrop="blur"
     >
       <ModalContent>
-        {(onClose) => (
-          <>
-            <ModalHeader className="flex flex-col gap-1">
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex-1">
-                  <h2 className="text-lg font-bold">{report.title}</h2>
-                  <p className="text-xs text-gray-500 mt-1">
-                    ID: {report.id.slice(0, 8)}...
-                  </p>
-                </div>
-                <div className="flex gap-2">
-                  <Chip
-                    variant="flat"
-                    color={priorityColor[report.priority]}
-                    size="sm"
-                    className="font-semibold"
-                  >
-                    {report.priority}
-                  </Chip>
-                  <Chip
-                    variant="flat"
-                    color={statusColor[report.status]}
-                    size="sm"
-                  >
-                    {report.status}
-                  </Chip>
-                </div>
+        <>
+          <ModalHeader className="flex flex-col gap-1">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1">
+                <h2 className="text-lg font-bold">{report.title}</h2>
+                <p className="text-xs text-gray-500 mt-1">
+                  ID: {report.id.slice(0, 8)}...
+                </p>
               </div>
-            </ModalHeader>
-            <ModalBody className="gap-4">
+              <div className="flex gap-2">
+                <Chip
+                  variant="flat"
+                  color={priorityColor[report.priority]}
+                  size="sm"
+                  className="font-semibold"
+                >
+                  {report.priority}
+                </Chip>
+                <Chip
+                  variant="flat"
+                  color={statusColor[report.status]}
+                  size="sm"
+                >
+                  {report.status}
+                </Chip>
+              </div>
+            </div>
+          </ModalHeader>
+          <ModalBody className="gap-4">
               {/* Reporter Info */}
               <Card className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800">
                 <CardBody className="gap-2">
@@ -360,26 +359,25 @@ export default function IssueTriageModal({
                 }
               />
             </ModalBody>
-            <ModalFooter>
-              <Button
-                color="default"
-                variant="light"
-                onPress={onClose}
-                disabled={submitting}
-              >
-                Cancel
-              </Button>
-              <Button
-                color="primary"
-                onPress={handleSubmit}
-                isLoading={submitting}
-                className="font-semibold"
-              >
-                Save Changes
-              </Button>
-            </ModalFooter>
-          </>
-        )}
+          <ModalFooter>
+            <Button
+              color="default"
+              variant="light"
+              onPress={() => onOpenChange(false)}
+              disabled={submitting}
+            >
+              Cancel
+            </Button>
+            <Button
+              color="primary"
+              onPress={handleSubmit}
+              isLoading={submitting}
+              className="font-semibold"
+            >
+              Save Changes
+            </Button>
+          </ModalFooter>
+        </>
       </ModalContent>
     </Modal>
   );

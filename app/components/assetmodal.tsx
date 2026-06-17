@@ -3,6 +3,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db, auth } from '@/firebase';
 import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button, Input, Select, SelectItem, Textarea, Chip, Switch } from '@heroui/react';
+import BarcodeScanner from './barcode-scanner';
 import type { InventoryItem } from '@/app/types';
 import QRCode from 'qrcode';
 import JsBarcode from 'jsbarcode';
@@ -12,6 +13,52 @@ import LabelCard from '@/app/components/label-card';
 import ScannerInput from '@/app/components/scanner-input';
 import { assignBarcode } from '@/app/lib/inventory';
 import { ASSET_CATEGORIES_CONFIG, ITEM_CATEGORIES } from '@/app/config/org-config';
+
+type ExpirationPrecision = 'day' | 'month';
+
+function formatExpirationInput(date: Date | undefined, precision: ExpirationPrecision) {
+  if (!date) return '';
+  const normalized = new Date(date);
+  const year = normalized.getUTCFullYear();
+  const month = String(normalized.getUTCMonth() + 1).padStart(2, '0');
+  if (precision === 'month') return `${year}/${month}`;
+  const day = String(normalized.getUTCDate()).padStart(2, '0');
+  return `${year}/${month}/${day}`;
+}
+
+function parseExpirationInput(rawValue: string, precision: ExpirationPrecision) {
+  const value = rawValue.trim();
+  if (!value) return undefined;
+
+  const normalized = value.replace(/[-.]/g, '/');
+
+  if (precision === 'month') {
+    const match = normalized.match(/^(\d{4})\/(\d{1,2})$/) || normalized.match(/^(\d{1,2})\/(\d{4})$/);
+    if (!match) return undefined;
+    const year = Number(match[1].length === 4 ? match[1] : match[2]);
+    const month = Number(match[1].length === 4 ? match[2] : match[1]);
+    if (!year || !month || month < 1 || month > 12) return undefined;
+    return new Date(Date.UTC(year, month - 1, 1));
+  }
+
+  const match = normalized.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/) || normalized.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!match) return undefined;
+  const year = Number(match[1].length === 4 ? match[1] : match[3]);
+  const month = Number(match[1].length === 4 ? match[2] : match[1]);
+  const day = Number(match[1].length === 4 ? match[3] : match[2]);
+  if (!year || !month || !day || month < 1 || month > 12 || day < 1 || day > 31) return undefined;
+
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day
+  ) {
+    return undefined;
+  }
+
+  return parsed;
+}
 
 interface AssetModalProps {
   isOpen: boolean;
@@ -23,6 +70,7 @@ interface AssetModalProps {
 
 export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, initial }: AssetModalProps) {
   const [form, setForm] = useState<Partial<InventoryItem>>({});
+  const [expirationInput, setExpirationInput] = useState('');
   const [knownLocations, setKnownLocations] = useState<string[]>([]);
   const [useCustomLocation, setUseCustomLocation] = useState(false);
   const [statpacks, setStatpacks] = useState<Array<{ id: string; name: string }>>([]);
@@ -30,6 +78,8 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
   const [validationError, setValidationError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [historySerial, setHistorySerial] = useState<string>('');
+  const [showTopScanner, setShowTopScanner] = useState(false);
+  const [scannedTopCode, setScannedTopCode] = useState<string>('');
   const svgRef = useRef<SVGSVGElement | null>(null);
   
   // Scanner and barcode assignment state
@@ -56,15 +106,31 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
         if ((initial as any).padExpiration && typeof (initial as any).padExpiration.toDate === 'function') {
           norm.padExpiration = (initial as any).padExpiration.toDate();
         }
+        if (norm.assetCategory === 'Oxygen Tank') {
+          norm.isOxygen = true;
+        }
         setForm(norm);
+        const inferredExpirationPrecision: ExpirationPrecision = norm.expirationPrecision ?? (
+          norm.expirationDate instanceof Date && norm.expirationDate.getUTCDate() === 1 ? 'month' : 'day'
+        );
+        setExpirationInput(formatExpirationInput(norm.expirationDate as Date | undefined, inferredExpirationPrecision));
       } else {
         setForm({ name: '', isAsset: true, assetStatus: 'Ready' });
+        setExpirationInput('');
       }
       setValidationError(null);
       setSaving(false);
       setHistorySerial('');
+      setScannedTopCode('');
     }
   }, [isOpen, initial]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (form.assetCategory === 'Oxygen Tank' && !form.isOxygen) {
+      setForm((prev) => ({ ...prev, isOxygen: true }));
+    }
+  }, [form.assetCategory, form.isOxygen, form.maxOxygenPsi, form.oxygenPsi, form.verificationPolicy?.requireO2PsiMin, isOpen]);
 
   // Populate known locations from statpacks and inventory currentLocation fields
   useEffect(() => {
@@ -95,6 +161,36 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
   }, [isOpen]);
 
   const tagValue = String((form.assetSerial ?? (form as any).assetTag ?? form.name) || '');
+
+  const handleCategoryChange = (category: string) => {
+    setForm((prev) => {
+      const next: Partial<InventoryItem> = { ...prev, assetCategory: category as any };
+      if (category === 'Oxygen Tank') {
+        next.isOxygen = true;
+      } else {
+        next.isOxygen = false;
+        next.oxygenPsi = undefined;
+        next.maxOxygenPsi = undefined;
+        next.verificationPolicy = next.verificationPolicy
+          ? { ...next.verificationPolicy, requireO2PsiMin: undefined }
+          : next.verificationPolicy;
+      }
+      return next;
+    });
+  };
+
+  const handleExpirationPrecisionChange = (precision: ExpirationPrecision) => {
+    setForm((prev) => ({ ...prev, expirationPrecision: precision }));
+    const parsedCurrentValue = parseExpirationInput(expirationInput, form.expirationPrecision ?? 'month');
+    setExpirationInput(formatExpirationInput(parsedCurrentValue ?? (form.expirationDate as Date | undefined), precision));
+  };
+
+  const handleExpirationInputChange = (value: string) => {
+    setExpirationInput(value);
+    const precision = form.expirationPrecision ?? 'month';
+    const parsed = parseExpirationInput(value, precision);
+    setForm((prev) => ({ ...prev, expirationPrecision: precision, expirationDate: parsed }));
+  };
 
   const generateTag = () => {
     const id = (typeof crypto !== 'undefined' && (crypto as any).randomUUID) ? (crypto as any).randomUUID() : `asset_${Date.now()}`;
@@ -217,6 +313,17 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
       setSaving(true);
       // Ensure there is a barcode or QR; if not present, generate one on-the-fly
       let payload: Partial<InventoryItem> = { ...form } as Partial<InventoryItem>;
+      const expirationPrecision: ExpirationPrecision = payload.expirationPrecision ?? 'month';
+      const parsedExpiration = parseExpirationInput(expirationInput, expirationPrecision);
+      if (expirationInput.trim() && !parsedExpiration) {
+        setValidationError(expirationPrecision === 'month'
+          ? 'Enter expiration as YYYY/MM or MM/YYYY.'
+          : 'Enter expiration as YYYY/MM/DD or MM/DD/YYYY.');
+        setSaving(false);
+        return;
+      }
+      payload.expirationPrecision = expirationInput.trim() ? expirationPrecision : undefined;
+      payload.expirationDate = parsedExpiration;
       if (!payload.barcode && !payload.qr) {
         const gen = (typeof crypto !== 'undefined' && (crypto as any).randomUUID) ? (crypto as any).randomUUID() : `asset_${Date.now()}`;
         payload = { ...payload, assetSerial: gen, assetTag: gen, barcode: gen, qr: gen } as Partial<InventoryItem>;
@@ -276,6 +383,13 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
     setShowScanner(false);
     // Populate the assignedBarcode field in the form preview
     setForm({ ...form, assignedBarcode: code } as any);
+  };
+
+  const handleTopScanDetected = async (code: string) => {
+    setScannedTopCode(code);
+    setShowTopScanner(false);
+    // Simple behavior: populate the barcode field so user doesn't need to type an asset tag
+    setForm((prev) => ({ ...prev, barcode: code } as any));
   };
 
   const handleAssignBarcode = async (allowDuplicate = false) => {
@@ -348,6 +462,16 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
       <ModalContent>
         <ModalHeader>{initial ? `Edit Asset: ${initial.name}` : 'Add Asset'}</ModalHeader>
         <ModalBody className="space-y-3">
+          {!initial && (
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="flat" color="secondary" onPress={() => setShowTopScanner(true)}>
+                  Scan Existing Barcode
+                </Button>
+                {scannedTopCode ? <Chip color="primary" variant="flat">Scanned: {scannedTopCode}</Chip> : null}
+              </div>
+            </div>
+          )}
           {validationError && (
             <div className="bg-red-50 border border-red-200 rounded p-2">
               <p className="text-red-700 text-sm">{validationError}</p>
@@ -355,7 +479,7 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
           )}
           
           <Input label="Name" value={String(form.name ?? '')} onValueChange={(v) => setForm({ ...form, name: v })} />
-          <Select label="Category" selectedKeys={[String((form.assetCategory as any) ?? 'Generic')]} onChange={(e) => setForm({ ...form, assetCategory: e.target.value as any })}>
+          <Select label="Category" selectedKeys={[String((form.assetCategory as any) ?? 'Generic')]} onChange={(e) => handleCategoryChange(e.target.value)}>
             <SelectItem key="Generic">Generic</SelectItem>
             {(() => {
               const seen = new Set<string>();
@@ -437,10 +561,12 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
                 <div className="text-sm">Require Expiration Confirmation</div>
                 <Switch size="sm" isSelected={!!form.verificationPolicy?.requireExpirationConfirmation} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), requireExpirationConfirmation: v } as any })} />
               </div>
-              <div className="flex items-center gap-2">
-                <div className="text-sm flex-1">Minimum O₂ PSI (optional)</div>
-                <Input size="sm" type="number" className="w-32" value={String(form.verificationPolicy?.requireO2PsiMin ?? '')} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), requireO2PsiMin: v ? Number(v) : undefined } as any })} placeholder="e.g., 1800" />
-              </div>
+              {form.assetCategory === 'Oxygen Tank' && (
+                <div className="flex items-center gap-2">
+                  <div className="text-sm flex-1">Minimum O₂ PSI (optional)</div>
+                  <Input size="sm" type="number" className="w-32" value={String(form.verificationPolicy?.requireO2PsiMin ?? '')} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), requireO2PsiMin: v ? Number(v) : undefined } as any })} placeholder="e.g., 1800" />
+                </div>
+              )}
               <div className="flex items-center justify-between">
                 <div className="text-sm">Advisory Only (non-blocking)</div>
                 <Switch size="sm" isSelected={!!form.verificationPolicy?.advisoryOnly} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), advisoryOnly: v } as any })} />
@@ -449,7 +575,7 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
           </div>
 
           {/* Asset-specific fields: O2 tanks, AEDs, Epipens */}
-          {(form.assetCategory === 'O2' || form.isOxygen) && (
+          {form.assetCategory === 'Oxygen Tank' && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <Input
                 label="Oxygen PSI (current)"
@@ -492,45 +618,43 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
           )}
 
           {/* Expiration (optional) - available for any asset that expires */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div>
-              <p className="text-sm font-medium mb-1">Expiration Precision</p>
-              <Select
-                selectedKeys={[String(form.expirationPrecision ?? 'day')]}
-                onChange={(e) => setForm({ ...form, expirationPrecision: e.target.value as 'day' | 'month' })}
-              >
-                <SelectItem key="day">Month / Day / Year</SelectItem>
-                <SelectItem key="month">Month / Year</SelectItem>
-              </Select>
-            </div>
+          <div className="space-y-2">
+            <div className="grid grid-cols-1 md:grid-cols-[180px_minmax(0,1fr)] gap-3 items-start">
+              <div>
+                <Select
+                  label="Expiration format"
+                  labelPlacement="outside"
+                  classNames={{ label: 'text-xs font-medium' }}
+                  selectedKeys={[String(form.expirationPrecision ?? 'month')]}
+                  onChange={(e) => handleExpirationPrecisionChange(e.target.value as ExpirationPrecision)}
+                >
+                  <SelectItem key="month">Year / Month</SelectItem>
+                  <SelectItem key="day">Full date</SelectItem>
+                </Select>
+              </div>
 
-            <div>
-              {((form.expirationPrecision ?? 'day') === 'day') ? (
-                <Input
-                  label="Item Expiration Date (optional)"
-                  type="date"
-                  value={form.expirationDate ? new Date(form.expirationDate).toISOString().slice(0,10) : ''}
-                  onValueChange={(v) => setForm({ ...form, expirationPrecision: 'day', expirationDate: v ? new Date(v) : undefined })}
-                  description="Set full expiration date (MM/DD/YYYY)"
-                />
-              ) : (
-                <Input
-                  label="Item Expiration Month (optional)"
-                  type="month"
-                  value={form.expirationDate ? (() => { const d = new Date(form.expirationDate); return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}`; })() : ''}
-                  onValueChange={(v) => {
-                    if (!v) {
-                      setForm({ ...form, expirationPrecision: 'month', expirationDate: undefined });
-                      return;
-                    }
-                    // v is YYYY-MM; store as the first day of that month (UTC)
-                    const [y, m] = v.split('-').map(Number);
-                    const dt = new Date(Date.UTC(y, m - 1, 1));
-                    setForm({ ...form, expirationPrecision: 'month', expirationDate: dt });
-                  }}
-                  description="Set expiration by month and year"
-                />
-              )}
+              <Input
+                label="Item expiration"
+                labelPlacement="outside"
+                classNames={{ label: 'text-xs font-medium' }}
+                value={expirationInput}
+                onValueChange={handleExpirationInputChange}
+                onBlur={() => {
+                  const precision = form.expirationPrecision ?? 'month';
+                  const parsed = parseExpirationInput(expirationInput, precision);
+                  if (!parsed && expirationInput.trim()) {
+                    setValidationError(precision === 'month'
+                      ? 'Enter expiration as YYYY/MM or MM/YYYY.'
+                      : 'Enter expiration as YYYY/MM/DD or MM/DD/YYYY.');
+                    return;
+                  }
+                  setValidationError(null);
+                  setForm((prev) => ({ ...prev, expirationDate: parsed, expirationPrecision: precision }));
+                }}
+                placeholder={(form.expirationPrecision ?? 'month') === 'month' ? 'YYYY/MM' : 'YYYY/MM/DD'}
+                inputMode="text"
+                description={(form.expirationPrecision ?? 'month') === 'month' ? 'Type the month and year directly. Example: 2026/05' : 'Type the full date directly. Example: 2026/05/02'}
+              />
             </div>
           </div>
 
@@ -538,7 +662,7 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
           <div className="border-t pt-4 mt-2">
             <div className="flex items-center justify-between mb-2">
               <h4 className="text-sm font-semibold">External Asset Tag</h4>
-              {!showScanner && (
+              {initial?.id && !showScanner && (
                 <Button
                   size="sm"
                   color="secondary"
@@ -680,7 +804,7 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
           </Select>
           <Textarea label="Notes" value={String((form as any).notes ?? '')} onValueChange={(v) => setForm({ ...form, notes: v } as any)} />
           
-          {initial && initial.id && (
+            {initial && initial.id && (
             <div>
               <h4 className="text-sm font-semibold mb-2">Activity History</h4>
               {Array.isArray(initial.assets) && initial.assets.length > 0 && (
@@ -699,7 +823,8 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
               <AssetHistory assetId={initial.id} maxRows={5} serialNumber={historySerial || undefined} />
             </div>
           )}
-        </ModalBody>
+          </ModalBody>
+          <BarcodeScanner isOpen={showTopScanner} onClose={() => setShowTopScanner(false)} onDetected={handleTopScanDetected} />
           <ModalFooter>
           <Button variant="light" onPress={() => onOpenChange(false)}>Cancel</Button>
           <Button color="primary" onPress={save} isLoading={saving}>{initial ? 'Save' : 'Add Asset'}</Button>

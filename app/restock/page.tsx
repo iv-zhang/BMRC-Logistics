@@ -428,10 +428,9 @@ export default function RestockPage() {
 
       <Modal isOpen={restockOpen} onOpenChange={setRestockOpen} placement="center" size="sm">
         <ModalContent>
-          {(onClose: any) => (
-            <>
-              <ModalHeader>Confirm Restock</ModalHeader>
-              <ModalBody>
+          <>
+            <ModalHeader>Confirm Restock</ModalHeader>
+            <ModalBody>
                 <div className="space-y-3">
                     <div className="text-sm">Shelf: {activeShelf?.name}</div>
                     {availableBatches.length > 0 ? (
@@ -449,21 +448,19 @@ export default function RestockPage() {
                     <Input label="Note (optional)" value={note} onValueChange={setNote} />
                 </div>
               </ModalBody>
-              <ModalFooter>
-                <Button variant="light" onPress={() => { onClose(); setAvailableBatches([]); setSelectedBatchId(null); }}>Cancel</Button>
-                <Button color="primary" onPress={confirmRestock} isLoading={opLoading}>Confirm</Button>
-              </ModalFooter>
-            </>
-          )}
-        </ModalContent>
+            <ModalFooter>
+              <Button variant="light" onPress={() => { setRestockOpen(false); setAvailableBatches([]); setSelectedBatchId(null); }}>Cancel</Button>
+              <Button color="primary" onPress={confirmRestock} isLoading={opLoading}>Confirm</Button>
+            </ModalFooter>
+        </>
+      </ModalContent>
       </Modal>
 
       <Modal isOpen={editOpen} onOpenChange={setEditOpen} placement="center" size="sm">
         <ModalContent>
-          {(onClose: any) => (
-            <>
-              <ModalHeader>Edit Shelf</ModalHeader>
-              <ModalBody>
+          <>
+            <ModalHeader>Edit Shelf</ModalHeader>
+            <ModalBody>
                 <div className="space-y-3">
                   <Input label="Shelf Name" value={activeShelf?.name || ''} onValueChange={(v: any) => setActiveShelf((s: any) => ({ ...s, name: v }))} />
                   <Select label="Inventory Item (optional)" selectedKeys={activeShelf?.itemId ? [activeShelf.itemId] : []} onSelectionChange={(keys: any) => { const v = Array.from(keys)[0] as string | undefined; setActiveShelf((s: any) => ({ ...s, itemId: v || null })); }}>
@@ -485,21 +482,20 @@ export default function RestockPage() {
                   </div>
                 </div>
               </ModalBody>
-              <ModalFooter>
-                <Button variant="light" onPress={() => onClose()}>Cancel</Button>
-                <Button color="primary" onPress={async () => {
-                  if (!activeShelf?.id) return;
-                  setOpLoading(true);
-                  try {
-                    await setDoc(doc(db, 'restock_shelves', activeShelf.id), { ...activeShelf, updatedAt: serverTimestamp() }, { merge: true });
-                    setEditOpen(false);
-                  } catch (e) { console.error(e); }
-                  setOpLoading(false);
-                }} isLoading={opLoading}>Save</Button>
-              </ModalFooter>
-            </>
-          )}
-        </ModalContent>
+            <ModalFooter>
+              <Button variant="light" onPress={() => setEditOpen(false)}>Cancel</Button>
+              <Button color="primary" onPress={async () => {
+                if (!activeShelf?.id) return;
+                setOpLoading(true);
+                try {
+                  await setDoc(doc(db, 'restock_shelves', activeShelf.id), { ...activeShelf, updatedAt: serverTimestamp() }, { merge: true });
+                  setEditOpen(false);
+                } catch (e) { console.error(e); }
+                setOpLoading(false);
+              }} isLoading={opLoading}>Save</Button>
+            </ModalFooter>
+        </>
+      </ModalContent>
       </Modal>
 
       

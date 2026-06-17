@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import {
   Card,
   CardBody,
@@ -20,7 +20,7 @@ import {
   Tabs,
   Tab,
 } from '@heroui/react';
-import { Package, ScanLine, Search, LogOut, ArrowLeft, Radio } from 'lucide-react';
+import { Package, ScanLine, Search, LogOut, ArrowLeft, Radio, Monitor, Toolbox, BatteryCharging, Thermometer, HardDrive, Box } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { collection, onSnapshot, query, where, orderBy, Timestamp, doc, getDocs, documentId, getDoc } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
@@ -56,7 +56,7 @@ const fetchInventoryMap = async (itemIds: string[]) => {
 
 export default function CheckoutPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const [initialPackQuery, setInitialPackQuery] = useState<string | null>(null);
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [statpacks, setStatpacks] = useState<Statpack[]>([]);
   const [filteredPacks, setFilteredPacks] = useState<Statpack[]>([]);
@@ -99,6 +99,14 @@ export default function CheckoutPage() {
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => setUser(u));
     return () => unsub();
+  }, []);
+
+  // Read query params from the URL on the client to support direct QR links.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get('pack') || params.get('packId') || params.get('id');
+    if (raw) setInitialPackQuery(raw);
   }, []);
 
   useEffect(() => {
@@ -294,16 +302,14 @@ export default function CheckoutPage() {
     pocketDisclosure.onOpen();
   }, [pocketDisclosure]);
 
-  // Open a specific pack if a `pack` query param is present (e.g., from QR)
+  // Open a specific pack if an initial pack query param was captured (e.g., from QR)
   useEffect(() => {
-    if (!searchParams) return;
-    
-    const raw = searchParams.get('pack') || searchParams.get('packId') || searchParams.get('id');
+    const raw = initialPackQuery;
     if (!raw) return;
-    
+
     // Skip if we already auto-opened this exact pack
     if (autoOpenedPackId.current === raw) return;
-    
+
     // If user is not signed in, redirect to login and preserve the requested URL
     if (!user) {
       const redirect = window.location.href;
@@ -366,7 +372,7 @@ export default function CheckoutPage() {
         setTimeout(() => handleSelectPack(foundPack), 100);
       }
     })();
-  }, [statpacks, searchParams, handleSelectPack, user, router]);
+  }, [statpacks, initialPackQuery, handleSelectPack, user, router]);
 
   const handleScanDetected = (value: string) => {
     // Try to match scanned value to a statpack ID or name
@@ -733,29 +739,44 @@ export default function CheckoutPage() {
                         key={asset.id}
                         isPressable
                         onPress={() => handleSelectAssetItem(asset)}
-                        className="hover:shadow-md transition-shadow"
+                        className="hover:shadow-lg transition-shadow"
                       >
-                        <CardBody className="flex-row items-center justify-between py-3 px-4">
-                          <div className="flex-1">
-                            <p className="font-semibold text-sm">{asset.name}</p>
-                            {asset.assetCategory && (
-                              <p className="text-xs text-gray-500">{asset.assetCategory as string}</p>
-                            )}
-                            <p className="text-xs text-gray-400 font-mono">
-                              {asset.assetSerial || asset.assignedBarcode || '—'}
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Chip size="sm" variant="flat" color={getAssetStatusColor(asset.assetStatus)}>
-                              {asset.assetStatus || 'Unknown'}
-                            </Chip>
-                            <Button
-                              size="sm"
-                              color={asset.assetStatus === 'Checked Out' ? 'success' : 'primary'}
-                              onPress={() => handleSelectAssetItem(asset)}
-                            >
-                              {asset.assetStatus === 'Checked Out' ? 'Check In' : 'Check Out'}
-                            </Button>
+                        <CardBody className="p-4">
+                          <div className="flex items-center justify-between gap-4">
+                            <div className="flex items-center gap-3 flex-1 min-w-0">
+                              <Avatar
+                                icon={(() => {
+                                  const cat = (asset.assetCategory || '').toString().toLowerCase();
+                                  if (cat.includes('radio')) return <Radio />;
+                                  if (cat.includes('monitor')) return <Monitor />;
+                                  if (cat.includes('battery')) return <BatteryCharging />;
+                                  if (cat.includes('therm') || cat.includes('temp')) return <Thermometer />;
+                                  if (cat.includes('tool') || cat.includes('defib') || cat.includes('pump')) return <Toolbox />;
+                                  if (cat.includes('drive') || cat.includes('hard')) return <HardDrive />;
+                                  if (cat.includes('box') || cat.includes('case') || cat.includes('supply')) return <Box />;
+                                  return <Package />;
+                                })()}
+                                className="bg-indigo-100 dark:bg-indigo-900"
+                              />
+                              <div className="flex-1 min-w-0">
+                                <h3 className="font-semibold text-lg text-gray-900 dark:text-white truncate">
+                                  {asset.name}
+                                </h3>
+                                {asset.assetCategory && (
+                                  <p className="text-sm text-gray-600 dark:text-gray-400">
+                                    {asset.assetCategory as string}
+                                  </p>
+                                )}
+                                <p className="text-xs text-gray-500 font-mono mt-1">
+                                  {asset.assetSerial || asset.assignedBarcode || '—'}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex flex-col items-end gap-2">
+                              <Chip size="sm" variant="flat" color={getAssetStatusColor(asset.assetStatus)}>
+                                {asset.assetStatus || 'Unknown'}
+                              </Chip>
+                            </div>
                           </div>
                         </CardBody>
                       </Card>

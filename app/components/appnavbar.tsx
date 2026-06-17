@@ -42,9 +42,11 @@ import {
   ScanBarcode,
   RefreshCw,
   CheckSquare,
+  GraduationCap,
 } from 'lucide-react';
 
 import IssueReportForm from './IssueReportForm';
+import TutorialOverlay from './tutorial-overlay';
 
 export default function AppNavbar() {
   const pathname = usePathname();
@@ -54,6 +56,7 @@ export default function AppNavbar() {
   const [isReportOpen, setIsReportOpen] = useState(false);
 
   const isAdmin = role === 'admin' || role === 'quartermaster';
+  const [showTutorial, setShowTutorial] = useState(false);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
@@ -111,6 +114,14 @@ export default function AppNavbar() {
       }
     };
   }, []);
+
+  // When admin enables role override (test role), treat them as new user and show tutorial
+  useEffect(() => {
+    if (role === 'admin' && roleOverrideActive) {
+      try { if (typeof window !== 'undefined') sessionStorage.removeItem('bmrc_tutorial_shown'); } catch (e) {}
+      setShowTutorial(true);
+    }
+  }, [roleOverrideActive, role]);
 
   const isActive = (path: string) => pathname === path;
   const isActivePrefix = (prefix: string) => pathname.startsWith(prefix);
@@ -218,6 +229,13 @@ export default function AppNavbar() {
       {/* User avatar */}
       <NavbarContent justify="end" className="gap-3">
         <NavbarItem>
+          <Tooltip content="Tutorial">
+            <Button isIconOnly size="sm" variant="light" onPress={() => { setShowTutorial(true); }}>
+              <GraduationCap className="w-4 h-4" />
+            </Button>
+          </Tooltip>
+        </NavbarItem>
+        <NavbarItem>
           <Dropdown placement="bottom-end" offset={10} className="dark:bg-slate-800">
             <DropdownTrigger>
               <button className="flex items-center justify-center w-10 h-10 bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-700 dark:hover:bg-indigo-600 text-white rounded-full transition-colors cursor-pointer font-semibold text-lg border-2 border-indigo-500 dark:border-indigo-600 outline-none">
@@ -237,6 +255,10 @@ export default function AppNavbar() {
           </Dropdown>
         </NavbarItem>
       </NavbarContent>
+
+      {showTutorial && user && (
+        <TutorialOverlay userId={user.uid} onComplete={() => setShowTutorial(false)} />
+      )}
 
       {/* Mobile Menu */}
       <NavbarMenu className="pt-4 pb-6 gap-0 bg-white/95 dark:bg-slate-900/95 backdrop-blur-lg">

@@ -612,27 +612,81 @@ export async function validateStatpackAssignments(params: {
   }
 
   for (const entry of checkEntries || []) {
-    const item = itemMap.get(entry.itemId);
+    let item = itemMap.get(entry.itemId);
     const serial = entry.serialNumber?.trim();
 
     if (!item) {
-      // Only warn about missing inventory items for serialized/asset entries.
-      // Non-asset items (disposables, consumables) may not have matching inventory docs
-      // until a full inventory audit is performed — skip these to avoid noise.
-      if (serial) {
-        warnings.push({
-          warningType: 'missing_asset',
-          severity: 'warning',
-          itemId: entry.itemId,
-          itemName: entry.itemName,
-          serialNumber: serial,
-          message: `Inventory item not found for ${entry.itemName || entry.itemId}.`,
-        });
-      }
-      continue;
-    }
+      // Attempt fallback lookups: try by itemName, then by serial fields on inventory.
+      let foundItem: InventoryItem | undefined;
+      try {
+        if (entry.itemName) {
+          const q = query(collection(db, 'inventory'), where('name', '==', entry.itemName));
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            const d = snap.docs[0];
+            foundItem = { ...(d.data() as InventoryItem), id: d.id } as InventoryItem;
+            itemMap.set(entry.itemId, foundItem);
+          }
+        }
 
-    const isAsset = determineIsAsset(item);
+        // If still not found, and we have a serial, try matching common serial/barcode/qr fields
+        if (!foundItem && serial) {
+          // Try assetSerial
+          let snap = await getDocs(query(collection(db, 'inventory'), where('assetSerial', '==', serial)));
+          if (!snap.empty) {
+            const d = snap.docs[0];
+            foundItem = { ...(d.data() as InventoryItem), id: d.id } as InventoryItem;
+            itemMap.set(entry.itemId, foundItem);
+          }
+          // Try barcode field
+          if (!foundItem) {
+            snap = await getDocs(query(collection(db, 'inventory'), where('barcode', '==', serial)));
+            if (!snap.empty) {
+              const d = snap.docs[0];
+              foundItem = { ...(d.data() as InventoryItem), id: d.id } as InventoryItem;
+              itemMap.set(entry.itemId, foundItem);
+            }
+          }
+          // Try qr field
+          if (!foundItem) {
+            snap = await getDocs(query(collection(db, 'inventory'), where('qr', '==', serial)));
+            if (!snap.empty) {
+              const d = snap.docs[0];
+              foundItem = { ...(d.data() as InventoryItem), id: d.id } as InventoryItem;
+              itemMap.set(entry.itemId, foundItem);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('validateStatpackAssignments: fallback lookup failed', e);
+      }
+
+      if (!foundItem) {
+        // Only warn about missing inventory items for serialized/asset entries.
+        // Non-asset items (disposables, consumables) may not have matching inventory docs
+        // until a full inventory audit is performed — skip these to avoid noise.
+        if (serial) {
+          warnings.push({
+            warningType: 'missing_asset',
+            severity: 'warning',
+            itemId: entry.itemId,
+            itemName: entry.itemName,
+            serialNumber: serial,
+            message: `Inventory item not found for ${entry.itemName || entry.itemId}.`,
+          });
+        }
+        continue;
+      }
+
+        // If we found a fallback item, update local item variable
+        if (foundItem) {
+          item = foundItem;
+        }
+      }
+
+      if (!item) continue;
+
+      const isAsset = determineIsAsset(item);
     if (isAsset && !serial) {
       warnings.push({
         warningType: 'missing_asset',

@@ -45,7 +45,7 @@ import {
   doc,
   serverTimestamp,
 } from 'firebase/firestore';
-import { recordAuditEvent } from '@/app/lib/audit';
+import { recordAuditEvent, removeUndefined } from '@/app/lib/audit';
 import { deleteDoc } from 'firebase/firestore';
 import { getDoc } from 'firebase/firestore';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
@@ -1946,12 +1946,12 @@ export default function AssetsPage() {
         initial={editingAsset}
         onAdd={async (payload) => {
           try {
-            const ref = await addDoc(collection(db, 'inventory'), {
+            const ref = await addDoc(collection(db, 'inventory'), removeUndefined({
               ...payload,
               isAsset: true,
               createdAt: serverTimestamp(),
               updatedAt: serverTimestamp(),
-            });
+            }));
             const assignedToId = (payload as any)?.assignedToId;
             if (assignedToId) {
               await updateAssetAssignment({
@@ -1977,7 +1977,7 @@ export default function AssetsPage() {
             const rest = { ...(payload as any) };
             delete rest.assignedToId;
 
-            await updateDoc(doc(db, 'inventory', id), { ...rest, updatedAt: serverTimestamp() });
+            await updateDoc(doc(db, 'inventory', id), removeUndefined({ ...rest, updatedAt: serverTimestamp() }));
 
             if (assignedChanged) {
               await updateAssetAssignment({

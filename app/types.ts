@@ -31,6 +31,9 @@ export interface User {
   role: 'admin' | 'member' | 'FTO' | 'quartermaster' | 'inventory_helper';
   /** When true, this member can perform inventory audits even if not admin/quartermaster */
   canAudit?: boolean;
+  /** Whether the user has completed the onboarding tutorial */
+  tutorialCompleted?: boolean;
+  tutorialCompletedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -248,6 +251,10 @@ export interface InventoryItem {
   // Reagent-specific handling (Glucose, Control Solution, Eye Wash)
   isReagent?: boolean; // Items that degrade after opening
   daysValidAfterOpening?: number; // e.g., 90 for glucose strips
+
+  // Medication-specific tracking (for EMS medical cabinet compliance)
+  isMedication?: boolean;
+  medicationInfo?: MedicationInfo;
 
   // Audit tracking
   auditVerified?: boolean; // Semester audit verification flag
@@ -774,4 +781,65 @@ export interface IssueReport {
   linkedAuditId?: string; // Reference to an auditEvents doc
   createdAt: Date | FieldValue;
   updatedAt: Date | FieldValue;
+}
+
+// --- MEDICATION CABINET TRACKING ---
+// Mirrors a 911 EMS agency medical cabinet with strict chain-of-custody
+
+export interface MedicationLog {
+  id?: string;
+  medicationId: string; // Reference to InventoryItem.id
+  medicationName: string;
+  action: 'check_out' | 'check_in' | 'administered' | 'wasted' | 'expired_disposal' | 'inventory_count' | 'received';
+  /** Lot number of the specific unit transacted */
+  lotNumber: string;
+  /** Expiration date of the specific unit */
+  expirationDate: Date;
+  /** Quantity transacted (e.g., 1 vial, 2 ampules) */
+  quantity: number;
+  /** Running count after this transaction (like a paper narcotic log) */
+  runningCount: number;
+  /** Who performed the action */
+  performedBy: {
+    userId: string;
+    userName: string;
+  };
+  /** Witness/cosigner for controlled substances */
+  witness?: {
+    userId: string;
+    userName: string;
+  };
+  /** Where the medication was taken from or returned to */
+  location?: string;
+  /** Reason for wasting / administering */
+  reason?: string;
+  /** Patient care report number (if administered) */
+  pcrNumber?: string;
+  /** General notes */
+  notes?: string;
+  /** Concentration / dosage info confirmed during transaction */
+  concentration?: string;
+  /** Route confirmed (IM, IV, SQ, etc.) */
+  route?: string;
+  timestamp: Date | FieldValue;
+}
+
+/** Medication-specific fields added to InventoryItem when isMedication is true */
+export interface MedicationInfo {
+  /** Whether this is a controlled substance */
+  isControlled?: boolean;
+  /** DEA schedule (II, III, IV, V) if controlled */
+  deaSchedule?: 'II' | 'III' | 'IV' | 'V';
+  /** Drug concentration (e.g., "1mg/1mL", "0.3mg auto-injector") */
+  concentration?: string;
+  /** Administration route (IM, IV, SQ, PO, IN, etc.) */
+  route?: string;
+  /** Storage requirements (e.g., "Room temp", "Refrigerate 2-8°C", "Protect from light") */
+  storageRequirements?: string;
+  /** Whether a witness/cosigner is required for all transactions */
+  requiresWitness?: boolean;
+  /** Minimum stock level for this medication (triggers alert) */
+  parLevel?: number;
+  /** National Drug Code */
+  ndcNumber?: string;
 }
