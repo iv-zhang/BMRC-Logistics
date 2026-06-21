@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   Modal,
   ModalContent,
@@ -39,6 +40,8 @@ interface StatpackCheckOffModalProps {
   onQuickCheckIn?: () => void;
   // When true, collect check data but don't log it. Caller is responsible for logging.
   skipLogging?: boolean;
+  // Human-readable pocket name shown in the modal title when verifying a single pocket.
+  pocketName?: string;
   // Called with check entries when skipLogging is true. Caller handles logging.
   onDataCollected?: (params: {
     checkEntries: Parameters<typeof logStatpackCheckOff>[0]['checkEntries'];
@@ -69,8 +72,10 @@ export default function StatpackCheckOffModal({
   checkinUsageMode,
   onQuickCheckIn,
   skipLogging = false,
+  pocketName,
   onDataCollected,
 }: StatpackCheckOffModalProps) {
+  const router = useRouter();
   const { role } = useUserRole();
   const isAdmin = role === 'admin' || role === 'quartermaster';
   const [checkCounts, setCheckCounts] = useState<Record<string, number>>({});
@@ -415,7 +420,7 @@ export default function StatpackCheckOffModal({
     <Modal isOpen={isOpen} onOpenChange={onOpenChange} backdrop="blur" size="2xl" placement="center">
       <ModalContent>
         <ModalHeader className="flex flex-col gap-1">
-          {action === 'checkout' && 'Checkout: Digital Check-Off'}
+          {action === 'checkout' && (pocketName ? `Verifying: ${pocketName}` : 'Checkout: Digital Check-Off')}
           {action === 'checkin' && 'Check-In: Bag Verification'}
           {action === 'maintenance' && 'Maintenance: Inventory Audit'}
         </ModalHeader>
@@ -469,7 +474,7 @@ export default function StatpackCheckOffModal({
                 {isAdmin ? (
                   <>Accountability: You are responsible for the accuracy of this check.</>
                 ) : (
-                  <>This is a light verification. If discrepancies are found, escalate to an audit.</>
+                  <>This is a light verification. Use the report buttons below if you find a discrepancy.</>
                 )}
               </p>
             </CardBody>
@@ -751,6 +756,17 @@ export default function StatpackCheckOffModal({
                               >
                                 I restocked it
                               </Button>
+                              {!isAdmin && (
+                                <Button
+                                  size="sm"
+                                  color="warning"
+                                  variant="flat"
+                                  startContent={<AlertTriangle size={14} />}
+                                  onPress={() => router.push('/member/report')}
+                                >
+                                  Report Issue
+                                </Button>
+                              )}
                             </div>
                             {restockStatuses[itemId] === 'restocked' && (
                               <Card className="bg-success-50 dark:bg-success-900/20">
@@ -1056,8 +1072,8 @@ export default function StatpackCheckOffModal({
                   : pendingComplete
                     ? 'Acknowledge & Continue'
                     : allItemsChecked
-                      ? 'Submit Verification'
-                      : `Verify All Items (${checkedCount}/${totalItems})`}
+                      ? (skipLogging ? 'Complete Pocket' : 'Submit Verification')
+                      : (skipLogging ? `Verify Pocket Items (${checkedCount}/${totalItems})` : `Verify All Items (${checkedCount}/${totalItems})`)}
               </Button>
             );
           })()}

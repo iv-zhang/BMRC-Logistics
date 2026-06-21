@@ -23,6 +23,7 @@ export default function RestockPage() {
   const [frontLevel, setFrontLevel] = useState('');
   const [pendingCount, setPendingCount] = useState<number>(0);
 
+  const [inventoryLoaded, setInventoryLoaded] = useState(false);
   const [opLoading, setOpLoading] = useState(false);
   const [restockOpen, setRestockOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -46,7 +47,10 @@ export default function RestockPage() {
     });
 
     const iq = collection(db, 'inventory');
-    const unsub2 = onSnapshot(iq, snap => setInventoryOptions(snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }))));
+    const unsub2 = onSnapshot(iq, snap => {
+      setInventoryOptions(snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })));
+      setInventoryLoaded(true);
+    });
 
     return () => { unsub(); unsub2(); };
   }, []);
@@ -388,7 +392,7 @@ export default function RestockPage() {
                       </div>
                       <div className="flex items-center gap-2 mt-2">
                         <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-indigo-50 text-indigo-700 dark:bg-slate-700 dark:text-white">Last: {formatDate(s.lastRestockedAt)}</span>
-                        {s.itemId ? <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-slate-100 text-gray-700 dark:bg-slate-700 dark:text-white">Item: {(inventoryOptions.find((i:any)=>i.id===s.itemId)?.name) || s.itemId}</span> : null}
+                        {s.itemId ? <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-slate-100 text-gray-700 dark:bg-slate-700 dark:text-white">Item: {inventoryOptions.find((i:any)=>i.id===s.itemId)?.name || s.itemName || (inventoryLoaded ? 'Unknown Item' : '…')}</span> : null}
                       </div>
                     </div>
                     <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>

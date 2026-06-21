@@ -35,6 +35,10 @@ interface InventoryItem {
   expirationDate?: Date;
   tracksExpiration?: boolean;
   batches?: Array<{ expirationDate?: Date }>;
+  location?: string;
+  room?: string;
+  shelf?: string;
+  level?: number;
 }
 
 interface DocumentData {
@@ -44,6 +48,10 @@ interface DocumentData {
   expirationDate?: Timestamp;
   tracksExpiration?: boolean;
   batches?: Array<{ expirationDate?: Timestamp }>;
+  location?: string;
+  room?: string;
+  shelf?: string;
+  level?: number;
 }
 
 export default function MemberReportPage() {
@@ -99,6 +107,10 @@ export default function MemberReportPage() {
                 expirationDate: b.expirationDate instanceof Timestamp ? b.expirationDate.toDate() : undefined,
               }))
             : undefined,
+          location: data.location,
+          room: data.room,
+          shelf: data.shelf,
+          level: data.level,
         };
       });
       setInventory(items);
@@ -329,6 +341,10 @@ export default function MemberReportPage() {
                             onClick={() => {
                               setItemId(item.id);
                               setSearchTerm(item.name);
+                              if (item.room) setFrontRoom(item.room);
+                              if (item.shelf) setFrontShelf(item.shelf);
+                              if (item.level != null) setFrontLevel(String(item.level));
+                              if (item.location) setLocation(item.location as 'HQ/Storage' | 'Statpack' | 'Other');
                             }}
                             className={`w-full flex flex-col p-3 border-b last:border-b-0 text-left transition-colors ${
                               itemId === item.id 

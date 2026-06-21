@@ -459,6 +459,13 @@ export default function CheckoutPage() {
   };
 
   // Pocket list component to keep JSX clean and avoid in-place IIFEs
+  const POCKET_NAMES: Record<string, string> = {
+    main: 'Center Pocket',
+    front_aux: 'Front Pocket',
+    side_left: 'Left Side Pocket',
+    side_right: 'Right Side Pocket',
+  };
+
   const PocketList = () => {
     if (!selectedPack) return null;
     const pockets = [
@@ -871,6 +878,7 @@ export default function CheckoutPage() {
           userId={user.uid}
           userName={user.displayName || user.email || 'Unknown User'}
           skipLogging={true}
+          pocketName={selectedPocketId ? POCKET_NAMES[selectedPocketId] : undefined}
           onDataCollected={async (data) => {
             // Collect check data from this pocket for later logging
             setAllPocketCheckData(prev => [...prev, data]);

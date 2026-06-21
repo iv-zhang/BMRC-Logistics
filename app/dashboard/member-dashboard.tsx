@@ -309,12 +309,21 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
               <h2 className="text-xl md:text-2xl font-bold mb-2">Keep Us Safe</h2>
               <p className="text-sm md:text-base opacity-90">Found expired items or untracked boxes? Report them now.</p>
               <div className="flex flex-wrap gap-2 mt-3">
-                <Chip size="sm" color="warning" variant="flat" className="text-white border border-white/30 bg-white/20">
-                  {lowStockCount} low
-                </Chip>
-                <Chip size="sm" color="danger" variant="flat" className="text-white border border-white/30 bg-white/20">
-                  {expiringCount} expiring
-                </Chip>
+                {lowStockCount > 0 && (
+                  <Chip size="sm" color="warning" variant="flat" className="text-white border border-white/30 bg-white/20">
+                    Stock alerts
+                  </Chip>
+                )}
+                {expiringCount > 0 && (
+                  <Chip size="sm" color="danger" variant="flat" className="text-white border border-white/30 bg-white/20">
+                    {expiringCount} expiring
+                  </Chip>
+                )}
+                {lowStockCount === 0 && expiringCount === 0 && (
+                  <Chip size="sm" color="success" variant="flat" className="text-white border border-white/30 bg-white/20">
+                    All clear
+                  </Chip>
+                )}
               </div>
             </div>
             <Button
@@ -477,7 +486,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
                 </p>
               ) : assignedPacks.length === 0 ? (
                 <p className="text-gray-500 dark:text-gray-400 text-xs md:text-sm">
-                  No packs assigned yet. Check out a pack to get started!
+                  No packs currently assigned. Packs appear here once you check them out.
                 </p>
               ) : (
                 assignedPacks.map((pack) => (

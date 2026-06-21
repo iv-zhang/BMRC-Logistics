@@ -35,7 +35,7 @@ const TUTORIAL_STEPS: TutorialStep[] = [
   {
     title: 'Dashboard',
     description:
-      'Your home base. The dashboard shows your upcoming shifts, recent activity, and quick links to common actions like statpack checkout.',
+      'Your home base. The dashboard shows recent activity, inventory alerts, and quick links to check out or return a statpack.',
     icon: <Home size={32} className="text-indigo-500" />,
     tip: 'Check the dashboard at the start of every shift to see any alerts or announcements.',
   },

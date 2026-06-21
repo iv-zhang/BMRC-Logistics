@@ -170,19 +170,21 @@ export default function AppNavbar() {
             </Tooltip>
           </NavbarItem>
 
-          <Dropdown>
-            <NavbarItem>
-              <DropdownTrigger>
-                <button className={`flex items-center ${isActive('/assets') || isActivePrefix('/statpacks') ? 'font-semibold text-primary' : 'text-gray-500 dark:text-gray-400'}`}>
-                  <Box className="w-4 h-4 mr-1" /> Assets
-                </button>
-              </DropdownTrigger>
-            </NavbarItem>
-            <DropdownMenu aria-label="Assets menu">
-              <DropdownItem key="assets" onClick={() => router.push('/assets')} startContent={<Package size={16} />}>Manage Assets</DropdownItem>
-              <DropdownItem key="statpacks" onClick={() => router.push('/statpacks')} startContent={<ClipboardList size={16} />}>Statpacks</DropdownItem>
-            </DropdownMenu>
-          </Dropdown>
+          {isAdmin && (
+            <Dropdown>
+              <NavbarItem>
+                <DropdownTrigger>
+                  <button className={`flex items-center ${isActive('/assets') || isActivePrefix('/statpacks') ? 'font-semibold text-primary' : 'text-gray-500 dark:text-gray-400'}`}>
+                    <Box className="w-4 h-4 mr-1" /> Assets
+                  </button>
+                </DropdownTrigger>
+              </NavbarItem>
+              <DropdownMenu aria-label="Assets menu">
+                <DropdownItem key="assets" onClick={() => router.push('/assets')} startContent={<Package size={16} />}>Manage Assets</DropdownItem>
+                <DropdownItem key="statpacks" onClick={() => router.push('/statpacks')} startContent={<ClipboardList size={16} />}>Statpacks</DropdownItem>
+              </DropdownMenu>
+            </Dropdown>
+          )}
 
           {isAdmin && (
             <Dropdown>
@@ -267,18 +269,20 @@ export default function AppNavbar() {
             <Home size={18} /> Dashboard
           </Link>
         </NavbarMenuItem>
-        <Divider className="my-1" />
-        <NavbarMenuItem className="py-1"><p className="px-3 py-1 text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide">Assets</p></NavbarMenuItem>
-        <NavbarMenuItem className="py-1">
-          <Link href="/assets" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/assets') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-gray-700 dark:text-gray-300'}`} onPress={() => navigateMobile('/assets')}>
-            <Package size={18} /> Manage Assets
-          </Link>
-        </NavbarMenuItem>
-        <NavbarMenuItem className="py-1">
-          <Link href="/statpacks" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActivePrefix('/statpacks') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-gray-700 dark:text-gray-300'}`} onPress={() => navigateMobile('/statpacks')}>
-            <ClipboardList size={18} /> Statpacks
-          </Link>
-        </NavbarMenuItem>
+        {isAdmin && (<>
+          <Divider className="my-1" />
+          <NavbarMenuItem className="py-1"><p className="px-3 py-1 text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide">Assets</p></NavbarMenuItem>
+          <NavbarMenuItem className="py-1">
+            <Link href="/assets" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/assets') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-gray-700 dark:text-gray-300'}`} onPress={() => navigateMobile('/assets')}>
+              <Package size={18} /> Manage Assets
+            </Link>
+          </NavbarMenuItem>
+          <NavbarMenuItem className="py-1">
+            <Link href="/statpacks" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActivePrefix('/statpacks') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-gray-700 dark:text-gray-300'}`} onPress={() => navigateMobile('/statpacks')}>
+              <ClipboardList size={18} /> Statpacks
+            </Link>
+          </NavbarMenuItem>
+        </>)}
         {isAdmin && (<>
           <Divider className="my-1" />
           <NavbarMenuItem className="py-1"><p className="px-3 py-1 text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide">Inventory</p></NavbarMenuItem>
