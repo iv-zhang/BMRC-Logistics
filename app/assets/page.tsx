@@ -73,6 +73,9 @@ import {
   MoreVertical,
   Trash,
   AlertTriangle,
+  ChevronDown,
+  ChevronUp,
+  Search,
 } from 'lucide-react';
 import AssetModal from '@/app/components/assetmodal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
@@ -114,6 +117,8 @@ export default function AssetsPage() {
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
   const [hoveredRowId, setHoveredRowId] = useState<string | null>(null);
   const [selectedForPrint, setSelectedForPrint] = useState<Set<string>>(new Set());
+  const [searchTerm, setSearchTerm] = useState('');
+  const [expandedAssetId, setExpandedAssetId] = useState<string | null>(null);
   // Statpack editor state (admin-only)
   const statpackDisclosure = useDisclosure();
   const [editingPack, setEditingPack] = useState<Statpack | null>(null);
@@ -800,9 +805,17 @@ export default function AssetsPage() {
 
   // Filter then group by category
   const groupedAssets = useMemo(() => {
-    const filtered = categoryFilter === 'all'
-      ? [...assets]
-      : assets.filter((a) => getAssetCategory(a) === categoryFilter);
+    const lowerSearch = searchTerm.toLowerCase();
+    const filtered = assets.filter((a) => {
+      if (categoryFilter !== 'all' && getAssetCategory(a) !== categoryFilter) return false;
+      if (lowerSearch) {
+        const name = ((a.data as any).name || (a.data as any).packId || '').toLowerCase();
+        const status = (a.status || '').toLowerCase();
+        const location = ((a.data as any).location || '').toLowerCase();
+        if (!name.includes(lowerSearch) && !status.includes(lowerSearch) && !location.includes(lowerSearch)) return false;
+      }
+      return true;
+    });
 
     const groups = new Map<string, AssetRecord[]>();
     filtered.forEach((a) => {
@@ -817,19 +830,19 @@ export default function AssetsPage() {
       if (b === 'Statpack') return 1;
       return a.localeCompare(b);
     });
-  }, [assets, categoryFilter]);
+  }, [assets, categoryFilter, searchTerm]);
 
-  if (loading) return <div className="h-screen flex items-center justify-center"><Spinner /></div>;
+  if (loading) return <div className="min-h-screen bg-background flex items-center justify-center"><Spinner size="lg" color="primary" /></div>;
 
   // Restrict access: general members should not access the Asset Management UI
   if (!loading && userRole === 'member') {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
+      <div className="min-h-screen bg-background p-6">
         <div className="max-w-3xl mx-auto">
           <Card>
             <CardBody className="text-center">
               <h2 className="text-xl font-semibold">Access Denied</h2>
-              <p className="mt-2 text-sm text-gray-600">You do not have permission to view the Asset Management area.</p>
+              <p className="mt-2 text-sm text-foreground-500">You do not have permission to view the Asset Management area.</p>
               <div className="mt-4">
                 <Button onPress={() => router.push('/dashboard')}>Back to Dashboard</Button>
               </div>
@@ -841,16 +854,16 @@ export default function AssetsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-3 md:p-6">
+    <div className="min-h-screen bg-background p-3 md:p-6">
       <div className="max-w-7xl mx-auto space-y-4 md:space-y-6">
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
           <div>
-            <h1 className="text-xl md:text-3xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
-              <Package className="text-indigo-600" size={24} />
+            <h1 className="text-xl md:text-3xl font-semibold flex items-center gap-2">
+              <Package className="text-primary" size={24} />
               Asset Management
             </h1>
-            <p className="text-xs md:text-sm text-gray-500">Manage statpacks, O2 tanks, AEDs, bikes, radios, and other valuable equipment</p>
+            <p className="text-xs md:text-sm text-foreground-500">Manage statpacks, O2 tanks, AEDs, bikes, radios, and other valuable equipment</p>
           </div>
           <div className="flex gap-2">
             {userRole === 'admin' && selectedForPrint.size > 0 && (
@@ -904,238 +917,232 @@ export default function AssetsPage() {
           ))}
         </div>
 
-        {/* Assets Table */}
-        <Card>
-          <CardBody className="overflow-x-auto">
-            <Table
-              aria-label="Assets table"
-              classNames={{
-                table: 'text-sm min-w-[700px]',
-              }}
-            >
-              <TableHeader>
-                <TableColumn key="checkbox" className={userRole === 'admin' ? 'w-10' : 'hidden'}>{" "}</TableColumn>
-                <TableColumn>Asset Name</TableColumn>
-                <TableColumn className="hidden md:table-cell">Type</TableColumn>
-                <TableColumn>Status</TableColumn>
-                <TableColumn className="hidden lg:table-cell">Location</TableColumn>
-                <TableColumn className="hidden lg:table-cell">Value</TableColumn>
-                <TableColumn className="hidden md:table-cell">Maintenance</TableColumn>
-                <TableColumn className="w-16">Actions</TableColumn>
-              </TableHeader>
-              <TableBody emptyContent="No assets found">
-                {groupedAssets.flatMap(([category, groupAssets]) => {
-                  const rows: React.JSX.Element[] = [];
-                  // Category header row
-                  if (categoryFilter === 'all' && groupedAssets.length > 1) {
-                    rows.push(
-                      <TableRow key={`header-${category}`} className="bg-default-100 dark:bg-slate-700/50 pointer-events-none">
-                        <TableCell className={userRole === 'admin' ? '' : 'hidden'}>{' '}</TableCell>
-                        <TableCell>
-                          <span className="text-xs font-bold uppercase tracking-wider text-default-500">
-                            {category} ({groupAssets.length})
-                          </span>
-                        </TableCell>
-                        <TableCell className="hidden md:table-cell">{' '}</TableCell>
-                        <TableCell>{' '}</TableCell>
-                        <TableCell className="hidden lg:table-cell">{' '}</TableCell>
-                        <TableCell className="hidden lg:table-cell">{' '}</TableCell>
-                        <TableCell className="hidden md:table-cell">{' '}</TableCell>
-                        <TableCell>{' '}</TableCell>
-                      </TableRow>
-                    );
-                  }
-                  groupAssets.forEach((asset) => {
-                  const activeMaintenance = getMaintenanceStatus(asset);
-                  const row = (
-                    <TableRow
-                      key={asset.id}
-                      onClick={() => { setSelectedRowId(asset.id); setSelectedAsset(asset); setIsEditingDetails(false); detailsDisclosure.onOpen(); }}
-                      onMouseEnter={() => setHoveredRowId(asset.id)}
-                      onMouseLeave={() => setHoveredRowId((id) => id === asset.id ? null : id)}
-                      className={`cursor-pointer transition-colors duration-150 ease-in-out ${selectedRowId === asset.id || hoveredRowId === asset.id ? 'bg-gray-100 dark:bg-slate-800' : ''}`}
-                    >
-                      <TableCell className={userRole === 'admin' ? '' : 'hidden'}>
-                        {userRole === 'admin' && (
-                          <Checkbox
-                            size="sm"
-                            isSelected={selectedForPrint.has(asset.id)}
-                            onValueChange={(checked) => {
-                              const newSelected = new Set(selectedForPrint);
-                              if (checked) {
-                                newSelected.add(asset.id);
-                              } else {
-                                newSelected.delete(asset.id);
-                              }
-                              setSelectedForPrint(newSelected);
-                            }}
-                            onClick={(e: React.MouseEvent) => e.stopPropagation()}
-                          />
-                        )}
-                      </TableCell>
-                      <TableCell className="font-medium">
-                        <div className="flex flex-col gap-1">
-                          <span>{asset.name}</span>
-                          {asset.type === 'inventory' && (asset.data as InventoryItem).statpackAssignment && (
-                            <AssetStatpackBadge
-                              assignment={(asset.data as InventoryItem).statpackAssignment as any}
+        {/* Search */}
+        <Input
+          placeholder="Search assets by name, status, or location..."
+          value={searchTerm}
+          onValueChange={setSearchTerm}
+          startContent={<Search size={16} className="text-foreground-400" />}
+          isClearable
+          onClear={() => setSearchTerm('')}
+          classNames={{ inputWrapper: 'bg-content1' }}
+        />
+
+        {/* Assets List */}
+        {groupedAssets.length === 0 ? (
+          <p className="text-sm text-foreground-500 text-center py-8">No assets found</p>
+        ) : (
+          <div className="space-y-4">
+            {groupedAssets.map(([category, groupAssets]) => (
+              <div key={category}>
+                {(categoryFilter === 'all' && groupedAssets.length > 1) && (
+                  <p className="text-xs font-semibold uppercase tracking-wider text-foreground-400 mb-2 px-1">
+                    {category} ({groupAssets.length})
+                  </p>
+                )}
+                <div className="divide-y divide-divider border border-divider rounded-xl overflow-hidden">
+                  {groupAssets.map((asset) => {
+                    const activeMaintenance = getMaintenanceStatus(asset);
+                    const isExpanded = expandedAssetId === asset.id;
+                    return (
+                      <div key={asset.id} className="bg-content1">
+                        <div
+                          className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-content2 transition-colors"
+                          onClick={() => setExpandedAssetId(isExpanded ? null : asset.id)}
+                        >
+                          {userRole === 'admin' && (
+                            <Checkbox
                               size="sm"
+                              isSelected={selectedForPrint.has(asset.id)}
+                              onValueChange={(checked) => {
+                                const newSelected = new Set(selectedForPrint);
+                                if (checked) { newSelected.add(asset.id); } else { newSelected.delete(asset.id); }
+                                setSelectedForPrint(newSelected);
+                              }}
+                              onClick={(e: React.MouseEvent) => e.stopPropagation()}
                             />
                           )}
-                        </div>
-                      </TableCell>
-                      <TableCell className="hidden md:table-cell">
-                        <Chip size="sm" variant="flat">
-                          {asset.type === 'statpack' ? 'Statpack' : (asset.data as InventoryItem).category || 'Item'}
-                        </Chip>
-                      </TableCell>
-                      <TableCell>
-                        <Chip size="sm" color={getStatusColor(asset.status)} variant="flat">
-                          {asset.status}
-                        </Chip>
-                      </TableCell>
-                      <TableCell className="hidden lg:table-cell">
-                        {editingLocationId === asset.id ? (
-                          <div className="flex items-center gap-2">
-                            <Input
-                              size="sm"
-                              value={editingLocationValue}
-                              onValueChange={setEditingLocationValue}
-                              onKeyDown={(e: any) => {
-                                if (e.key === 'Enter') saveLocationEdit(asset);
-                                if (e.key === 'Escape') cancelLocationEdit();
-                              }}
-                            />
-                            <Button size="sm" onPress={() => saveLocationEdit(asset)}>
-                              <Save size={14} />
-                            </Button>
-                            <Button size="sm" variant="light" onPress={() => cancelLocationEdit()}>
-                              <X size={14} />
-                            </Button>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-semibold text-sm truncate">{asset.name}</span>
+                              <Chip size="sm" color={getStatusColor(asset.status)} variant="flat">
+                                {asset.status}
+                              </Chip>
+                              {asset.type === 'inventory' && (asset.data as InventoryItem).statpackAssignment && (
+                                <AssetStatpackBadge
+                                  assignment={(asset.data as InventoryItem).statpackAssignment as any}
+                                  size="sm"
+                                />
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1 mt-1 text-xs text-foreground-400">
+                              <MapPin size={12} className="text-foreground-400" />
+                              <span>{asset.currentLocation || 'No location'}</span>
+                              <span className="mx-1">·</span>
+                              <Chip size="sm" variant="flat" className="text-xs">
+                                {asset.type === 'statpack' ? 'Statpack' : (asset.data as InventoryItem).category || 'Item'}
+                              </Chip>
+                              {asset.assetValue && (
+                                <>
+                                  <span className="mx-1">·</span>
+                                  <span className="tabular-nums">${asset.assetValue.toFixed(2)}</span>
+                                </>
+                              )}
+                            </div>
                           </div>
-                        ) : (
-                          <div className="flex items-center gap-2 text-sm">
-                            <MapPin size={14} className="text-gray-400" />
-                            <span>{asset.currentLocation || '—'}</span>
-                            <Tooltip content="Edit location">
-                              <Button isIconOnly size="sm" variant="light" onPress={() => startLocationEdit(asset)}>
-                                <Pencil size={14} />
+                          <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                            <Tooltip content="View details">
+                              <Button
+                                isIconOnly
+                                size="sm"
+                                variant="light"
+                                onPress={() => { setSelectedRowId(asset.id); setSelectedAsset(asset); setIsEditingDetails(false); detailsDisclosure.onOpen(); }}
+                              >
+                                <Eye size={16} />
                               </Button>
                             </Tooltip>
-                          </div>
-                        )}
-                      </TableCell>
-                      <TableCell className="hidden lg:table-cell">
-                        {asset.assetValue ? `$${asset.assetValue.toFixed(2)}` : '—'}
-                      </TableCell>
-                      <TableCell className="hidden md:table-cell">
-                          {activeMaintenance ? (
-                            <div className="flex items-center gap-2">
-                              <Chip size="sm" color={activeMaintenance.status === 'in-progress' ? 'warning' : 'secondary'} variant="flat">
-                                {activeMaintenance.status === 'in-progress' ? 'In Progress' : 'Pending'}
-                              </Chip>
-                              <div className="text-xs">
-                                <div className="font-semibold">{activeMaintenance.serviceType}</div>
-                                <div className="text-gray-600 dark:text-gray-400">{activeMaintenance.reason}</div>
-                              </div>
-                            </div>
-                          ) : (
-                            <span className="text-xs text-gray-500">—</span>
-                          )}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                          <Tooltip content="View details">
-                            <Button
-                              isIconOnly
-                              size="sm"
-                              variant="light"
-                              onPress={() => { setSelectedRowId(asset.id); setSelectedAsset(asset); setIsEditingDetails(false); detailsDisclosure.onOpen(); }}
-                            >
-                              <Eye size={16} />
-                            </Button>
-                          </Tooltip>
-                          <Dropdown>
-                            <DropdownTrigger>
-                              <Button isIconOnly size="sm" variant="light">
-                                <MoreVertical size={16} />
-                              </Button>
-                            </DropdownTrigger>
-                            <DropdownMenu aria-label="Asset actions">
-                              <DropdownItem key="scan" startContent={<MapPin size={14} />} onPress={() => openScannerForAsset(asset)}>
-                                Scan Location
-                              </DropdownItem>
-                              {asset.type === 'inventory' && asset.status === 'Ready' ? (
-                                <DropdownItem key="checkout" startContent={<Package size={14} />} onPress={() => openCheckout(asset)}>
-                                  Check Out
+                            <Dropdown>
+                              <DropdownTrigger>
+                                <Button isIconOnly size="sm" variant="light">
+                                  <MoreVertical size={16} />
+                                </Button>
+                              </DropdownTrigger>
+                              <DropdownMenu aria-label="Asset actions">
+                                <DropdownItem key="scan" startContent={<MapPin size={14} />} onPress={() => openScannerForAsset(asset)}>
+                                  Scan Location
                                 </DropdownItem>
-                              ) : asset.type === 'inventory' && (asset.data as InventoryItem).checkedOutBy ? (
-                                <DropdownItem key="checkin" startContent={<CheckCircle size={14} />} color="success" onPress={() => openCheckin(asset)}>
-                                  Check In
-                                </DropdownItem>
-                              ) : null}
-                              {asset.type === 'statpack' ? (
-                                <DropdownItem key="edit" startContent={<Pencil size={14} />} onPress={() => openStatpackEditorModal(asset)}>
-                                  Edit Statpack
-                                </DropdownItem>
-                              ) : userRole === 'admin' ? (
-                                <DropdownItem key="edit" startContent={<Pencil size={14} />} onPress={() => { setEditingAsset({ ...(asset.data as any), id: asset.id }); assetModalDisclosure.onOpen(); }}>
-                                  Edit Asset
-                                </DropdownItem>
-                              ) : (
-                                <DropdownItem key="noop" className="hidden">.</DropdownItem>
-                              )}
-                              {userRole === 'admin' ? (
-                                activeMaintenance ? (
-                                  <DropdownItem key="maint" startContent={<CheckCircle size={14} />} color="success" onPress={() => handleCompleteMaintenance(asset, activeMaintenance.id)}>
-                                    Complete Maintenance
+                                {asset.type === 'inventory' && asset.status === 'Ready' ? (
+                                  <DropdownItem key="checkout" startContent={<Package size={14} />} onPress={() => openCheckout(asset)}>
+                                    Check Out
+                                  </DropdownItem>
+                                ) : asset.type === 'inventory' && (asset.data as InventoryItem).checkedOutBy ? (
+                                  <DropdownItem key="checkin" startContent={<CheckCircle size={14} />} color="success" onPress={() => openCheckin(asset)}>
+                                    Check In
+                                  </DropdownItem>
+                                ) : null}
+                                {asset.type === 'statpack' ? (
+                                  <DropdownItem key="edit" startContent={<Pencil size={14} />} onPress={() => openStatpackEditorModal(asset)}>
+                                    Edit Statpack
+                                  </DropdownItem>
+                                ) : userRole === 'admin' ? (
+                                  <DropdownItem key="edit" startContent={<Pencil size={14} />} onPress={() => { setEditingAsset({ ...(asset.data as any), id: asset.id }); assetModalDisclosure.onOpen(); }}>
+                                    Edit Asset
                                   </DropdownItem>
                                 ) : (
-                                  <DropdownItem key="maint" startContent={<Wrench size={14} />} onPress={() => handleStartMaintenance(asset)}>
-                                    Start Maintenance
+                                  <DropdownItem key="noop" className="hidden">.</DropdownItem>
+                                )}
+                                {userRole === 'admin' ? (
+                                  activeMaintenance ? (
+                                    <DropdownItem key="maint" startContent={<CheckCircle size={14} />} color="success" onPress={() => handleCompleteMaintenance(asset, activeMaintenance.id)}>
+                                      Complete Maintenance
+                                    </DropdownItem>
+                                  ) : (
+                                    <DropdownItem key="maint" startContent={<Wrench size={14} />} onPress={() => handleStartMaintenance(asset)}>
+                                      Start Maintenance
+                                    </DropdownItem>
+                                  )
+                                ) : (
+                                  <DropdownItem key="noop2" className="hidden">.</DropdownItem>
+                                )}
+                                {asset.type === 'inventory' && (userRole === 'admin' || userRole === 'quartermaster' || userRole === 'inventory_helper') ? (
+                                  <DropdownItem key="barcode" startContent={<ScanBarcode size={14} />} onPress={() => handleQuickAssignBarcode(asset)}>
+                                    Assign Barcode Tag
                                   </DropdownItem>
-                                )
-                              ) : (
-                                <DropdownItem key="noop2" className="hidden">.</DropdownItem>
-                              )}
-                              {asset.type === 'inventory' && (userRole === 'admin' || userRole === 'quartermaster' || userRole === 'inventory_helper') ? (
-                                <DropdownItem key="barcode" startContent={<ScanBarcode size={14} />} onPress={() => handleQuickAssignBarcode(asset)}>
-                                  Assign Barcode Tag
-                                </DropdownItem>
-                              ) : (
-                                <DropdownItem key="noop3" className="hidden">.</DropdownItem>
-                              )}
-                              {userRole === 'admin' ? (
-                                <DropdownItem key="audit" startContent={<ShieldCheck size={14} />} onPress={() => {
-                                  if (asset.type === 'statpack') { openStatpackAudit(asset); return; }
-                                  setAuditTarget(asset); setAuditType('asset'); auditModalDisclosure.onOpen();
-                                }}>
-                                  Run Audit
-                                </DropdownItem>
-                              ) : (
-                                <DropdownItem key="noop4" className="hidden">.</DropdownItem>
-                              )}
-                              {userRole === 'admin' ? (
-                                <DropdownItem key="delete" startContent={<Trash size={14} />} onPress={() => setDeletingAsset(asset)}>
-                                  Delete
-                                </DropdownItem>
-                              ) : (
-                                <DropdownItem key="noop5" className="hidden">.</DropdownItem>
-                              )}
-                            </DropdownMenu>
-                          </Dropdown>
+                                ) : (
+                                  <DropdownItem key="noop3" className="hidden">.</DropdownItem>
+                                )}
+                                {userRole === 'admin' ? (
+                                  <DropdownItem key="audit" startContent={<ShieldCheck size={14} />} onPress={() => {
+                                    if (asset.type === 'statpack') { openStatpackAudit(asset); return; }
+                                    setAuditTarget(asset); setAuditType('asset'); auditModalDisclosure.onOpen();
+                                  }}>
+                                    Run Audit
+                                  </DropdownItem>
+                                ) : (
+                                  <DropdownItem key="noop4" className="hidden">.</DropdownItem>
+                                )}
+                                {userRole === 'admin' ? (
+                                  <DropdownItem key="delete" startContent={<Trash size={14} />} onPress={() => setDeletingAsset(asset)}>
+                                    Delete
+                                  </DropdownItem>
+                                ) : (
+                                  <DropdownItem key="noop5" className="hidden">.</DropdownItem>
+                                )}
+                              </DropdownMenu>
+                            </Dropdown>
+                            <button
+                              className="p-1 text-foreground-400 transition-colors"
+                              onClick={(e) => { e.stopPropagation(); setExpandedAssetId(isExpanded ? null : asset.id); }}
+                            >
+                              {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                            </button>
+                          </div>
                         </div>
-                      </TableCell>
-                    </TableRow>
-                  );
-                  rows.push(row);
-                });
-                  return rows;
-                })}
-              </TableBody>
-            </Table>
-          </CardBody>
-        </Card>
+                        {isExpanded && (
+                          <div className="px-4 py-3 bg-content2 border-t border-divider space-y-3">
+                            <div className="flex flex-wrap gap-4 text-sm">
+                              <div>
+                                <p className="text-xs text-foreground-400 mb-1">Location</p>
+                                {editingLocationId === asset.id ? (
+                                  <div className="flex items-center gap-2">
+                                    <Input
+                                      size="sm"
+                                      value={editingLocationValue}
+                                      onValueChange={setEditingLocationValue}
+                                      onKeyDown={(e: any) => {
+                                        if (e.key === 'Enter') saveLocationEdit(asset);
+                                        if (e.key === 'Escape') cancelLocationEdit();
+                                      }}
+                                    />
+                                    <Button size="sm" onPress={() => saveLocationEdit(asset)}>
+                                      <Save size={14} />
+                                    </Button>
+                                    <Button size="sm" variant="light" onPress={() => cancelLocationEdit()}>
+                                      <X size={14} />
+                                    </Button>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center gap-2">
+                                    <span>{asset.currentLocation || '—'}</span>
+                                    <Tooltip content="Edit location">
+                                      <Button isIconOnly size="sm" variant="light" onPress={() => startLocationEdit(asset)}>
+                                        <Pencil size={14} />
+                                      </Button>
+                                    </Tooltip>
+                                  </div>
+                                )}
+                              </div>
+                              {asset.assetValue && (
+                                <div>
+                                  <p className="text-xs text-foreground-400 mb-1">Value</p>
+                                  <span className="tabular-nums">${asset.assetValue.toFixed(2)}</span>
+                                </div>
+                              )}
+                              {activeMaintenance && (
+                                <div>
+                                  <p className="text-xs text-foreground-400 mb-1">Maintenance</p>
+                                  <div className="flex items-center gap-2">
+                                    <Chip size="sm" color={activeMaintenance.status === 'in-progress' ? 'warning' : 'secondary'} variant="flat">
+                                      {activeMaintenance.status === 'in-progress' ? 'In Progress' : 'Pending'}
+                                    </Chip>
+                                    <span className="text-xs font-semibold">{activeMaintenance.serviceType}</span>
+                                    {activeMaintenance.reason && (
+                                      <span className="text-xs text-foreground-500">{activeMaintenance.reason}</span>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Maintenance Modal */}
@@ -1304,26 +1311,26 @@ export default function AssetsPage() {
             ) : (
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <p className="text-sm font-semibold text-gray-600">Type</p>
+                  <p className="text-sm font-semibold text-foreground-500">Type</p>
                   <p className="text-sm">{selectedAsset?.type === 'statpack' ? 'Statpack' : 'Inventory Item'}</p>
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-gray-600">Status</p>
+                  <p className="text-sm font-semibold text-foreground-500">Status</p>
                   <Chip color={getStatusColor(selectedAsset?.status || '')} size="sm">
                     {selectedAsset?.status}
                   </Chip>
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-gray-600">Location</p>
+                  <p className="text-sm font-semibold text-foreground-500">Location</p>
                   <p className="text-sm">{selectedAsset?.currentLocation || 'Not specified'}</p>
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-gray-600">Asset Value</p>
+                  <p className="text-sm font-semibold text-foreground-500">Asset Value</p>
                   <p className="text-sm">{selectedAsset?.assetValue ? `$${selectedAsset.assetValue.toFixed(2)}` : 'Not specified'}</p>
                 </div>
                 {selectedAsset?.type === 'inventory' && (selectedAsset.data as InventoryItem).statpackAssignment && (
                   <div className="col-span-2">
-                    <p className="text-sm font-semibold text-gray-600 mb-1">Assigned Statpack</p>
+                    <p className="text-sm font-semibold text-foreground-500 mb-1">Assigned Statpack</p>
                     <AssetStatpackBadge
                       assignment={(selectedAsset.data as InventoryItem).statpackAssignment as any}
                     />
@@ -1345,23 +1352,23 @@ export default function AssetsPage() {
                   {(selectedAsset.data as Statpack).contents && (selectedAsset.data as Statpack).contents.length > 0 ? (
                     <div className="space-y-2 max-h-60 overflow-y-auto">
                       {(selectedAsset.data as Statpack).contents.map((item, idx) => (
-                        <div key={idx} className="p-2 border rounded-md bg-gray-50 dark:bg-slate-800 text-sm">
+                        <div key={idx} className="p-2 border border-divider rounded-md bg-content2 text-sm">
                           <div className="flex justify-between items-start">
                             <div className="flex-1">
                               <p className="font-medium">{item.itemDetails?.name || item.itemId}</p>
-                              <p className="text-xs text-gray-500">
-                                Qty: {item.currentQuantity}/{item.requiredQuantity}
+                              <p className="text-xs text-foreground-500">
+                                Qty: <span className="tabular-nums">{item.currentQuantity}/{item.requiredQuantity}</span>
                                 {item.serialNumber && ` • Serial: ${item.serialNumber}`}
                                 {item.lotNumber && ` • Lot: ${item.lotNumber}`}
                               </p>
                               {item.expirationDate && (
-                                <p className="text-xs text-gray-500">
+                                <p className="text-xs text-foreground-500">
                                   Exp: {item.expirationDate instanceof Date ? item.expirationDate.toLocaleDateString() : new Date(item.expirationDate).toLocaleDateString()}
                                 </p>
                               )}
                             </div>
                             {item.itemValue && (
-                              <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+                              <p className="text-xs font-semibold tabular-nums">
                                 ${(item.itemValue * item.currentQuantity).toFixed(2)}
                               </p>
                             )}
@@ -1370,7 +1377,7 @@ export default function AssetsPage() {
                       ))}
                     </div>
                   ) : (
-                    <p className="text-sm text-gray-500">No contents recorded</p>
+                    <p className="text-sm text-foreground-500">No contents recorded</p>
                   )}
                 </div>
                 <Divider />
@@ -1431,7 +1438,7 @@ export default function AssetsPage() {
                         return (
                           <Card>
                             <CardHeader className="flex justify-between items-center bg-default-50 px-4 py-3 border-b border-default-200">
-                              <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Maintenance History ({logs.length})</h3>
+                              <h3 className="text-sm font-semibold">Maintenance History ({logs.length})</h3>
                             </CardHeader>
                             <CardBody className="p-0">
                               <Table hideHeader removeWrapper>
@@ -1444,7 +1451,7 @@ export default function AssetsPage() {
                                 </TableHeader>
                                 <TableBody>
                                   {logs.map((log: any, idx: number) => (
-                                    <TableRow key={log.id || idx} className={idx === 0 ? 'bg-default-50 dark:bg-slate-800 text-gray-700 dark:text-gray-200' : ''}>
+                                    <TableRow key={log.id || idx} className={idx === 0 ? 'bg-content2' : ''}>
                                       <TableCell>
                                         <Chip size="sm" variant="solid" color={getMaintenanceColor(log.status)} className="capitalize">
                                           {log.serviceType}
@@ -1469,7 +1476,7 @@ export default function AssetsPage() {
                     ) : (
                       <Card>
                         <CardBody>
-                          <p className="text-gray-500 text-sm text-center py-4">No maintenance records</p>
+                          <p className="text-foreground-500 text-sm text-center py-4">No maintenance records</p>
                         </CardBody>
                       </Card>
                     )}
@@ -1503,7 +1510,7 @@ export default function AssetsPage() {
         <ModalContent>
           <ModalHeader>Statpack Editor - {editingPack?.name}</ModalHeader>
           <ModalBody className="space-y-4">
-            {!editingPack && <p className="text-sm text-gray-500">No statpack loaded.</p>}
+            {!editingPack && <p className="text-sm text-foreground-500">No statpack loaded.</p>}
             {editingPack && (
               <div ref={statpackBodyRef} className="space-y-4 max-h-[70vh] overflow-y-auto p-2">
                 <div className="flex justify-center">
@@ -1537,7 +1544,7 @@ export default function AssetsPage() {
                 <div className="space-y-4">
                   <div>
                     <h3 className="font-semibold mb-2">Statpack Pockets</h3>
-                    <p className="text-xs text-gray-500 mb-3">Configure items for each pocket (Center • Front • Left • Right)</p>
+                    <p className="text-xs text-foreground-500 mb-3">Configure items for each pocket (Center • Front • Left • Right)</p>
                     
                     {/* Pocket tabs */}
                     <div className="flex gap-2 mb-4 flex-wrap">
@@ -1571,7 +1578,7 @@ export default function AssetsPage() {
                             {editorSelectedPocket === 'side_left' && 'Left Side Pocket'}
                             {editorSelectedPocket === 'side_right' && 'Right Side Pocket'}
                           </h4>
-                          <p className="text-xs text-gray-500">Sealed compartments and loose items</p>
+                          <p className="text-xs text-foreground-500">Sealed compartments and loose items</p>
                         </div>
                         <Button
                           size="sm"
@@ -1596,7 +1603,7 @@ export default function AssetsPage() {
                         <div className="space-y-2">
                           <h5 className="text-sm font-medium">Loose Items</h5>
                           {((editingPack.contents || []).filter((it) => it.pocket === editorSelectedPocket)).length === 0 && (
-                            <p className="text-xs text-gray-500">No loose items yet.</p>
+                            <p className="text-xs text-foreground-500">No loose items yet.</p>
                           )}
                           {((editingPack.contents || [])
                             .map((c, idx) => ({ c, idx }))
@@ -1665,7 +1672,7 @@ export default function AssetsPage() {
                         <div className="space-y-2">
                           <h5 className="text-sm font-medium">Sealed Compartments</h5>
                           {((editingPack.compartments || []).filter((c) => c.parentPocket === editorSelectedPocket)).length === 0 && (
-                            <p className="text-xs text-gray-500">No sealed compartments yet.</p>
+                            <p className="text-xs text-foreground-500">No sealed compartments yet.</p>
                           )}
                           {((editingPack.compartments || []).filter((c) => c.parentPocket === editorSelectedPocket)).map((comp, ci) => {
                             const origIndex = (editingPack.compartments || []).indexOf(comp);
@@ -1729,12 +1736,12 @@ export default function AssetsPage() {
                                   
                                   <Divider />
                                   
-                                  <div className="text-xs text-gray-500 font-medium">Items in this compartment:</div>
+                                  <div className="text-xs text-foreground-500 font-medium">Items in this compartment:</div>
                                   {((comp as any).items || []).length === 0 && (
-                                    <p className="text-xs text-gray-500 italic">No items assigned yet.</p>
+                                    <p className="text-xs text-foreground-500 italic">No items assigned yet.</p>
                                   )}
                                   {((comp as any).items || []).map((it: any, ii: number) => (
-                                    <div key={it.id || it.itemId || ii} className="flex items-center gap-2 p-2 bg-white dark:bg-slate-700 rounded text-xs">
+                                    <div key={it.id || it.itemId || ii} className="flex items-center gap-2 p-2 bg-content1 rounded text-xs">
                                       <Input
                                         label="Item"
                                         size="sm"
@@ -2048,7 +2055,7 @@ export default function AssetsPage() {
                           auditPocketDisclosure.onClose();
                           auditCheckoffDisclosure.onOpen();
                         }}
-                        className={`w-full transition-shadow ${isDone ? 'border-2 border-green-400 bg-green-50 opacity-90' : 'hover:shadow-md'}`}
+                        className={`w-full transition-shadow ${isDone ? 'border-2 border-success bg-success-50 opacity-90' : 'hover:shadow-md'}`}
                       >
                         <CardBody className="flex flex-col items-center text-center gap-3 py-6">
                           <div className="space-y-1">
@@ -2064,7 +2071,7 @@ export default function AssetsPage() {
                               <div
                                 role="button"
                                 tabIndex={0}
-                                className="w-full h-12 rounded-md bg-blue-600 text-white flex items-center justify-center"
+                                className="w-full h-12 rounded-md bg-primary text-primary-foreground flex items-center justify-center"
                                 aria-label={`Start audit for ${p.name}`}
                               >
                                 Tap to start
@@ -2178,15 +2185,15 @@ export default function AssetsPage() {
           <ModalBody>
             {quickAssignAsset && (
               <div className="space-y-3">
-                <div className="bg-blue-50 border border-blue-200 rounded p-3">
-                  <p className="text-sm font-medium text-blue-900">Asset: {quickAssignAsset.name}</p>
-                  <p className="text-sm text-blue-700 mt-1">Scanned: <span className="font-mono">{scannedBarcodeQuick}</span></p>
+                <div className="bg-primary-50 border border-primary-200 rounded p-3">
+                  <p className="text-sm font-medium text-primary">Asset: {quickAssignAsset.name}</p>
+                  <p className="text-sm text-primary mt-1">Scanned: <span className="font-mono">{scannedBarcodeQuick}</span></p>
                 </div>
 
                 {duplicateWarningQuick?.show && (
-                  <div className="bg-yellow-50 border border-yellow-300 rounded p-3">
-                    <p className="text-sm font-semibold text-yellow-900 mb-1 flex items-center gap-1"><AlertTriangle size={14} /> Duplicate Barcode</p>
-                    <p className="text-sm text-yellow-800 mb-2">
+                  <div className="bg-warning-50 border border-warning-200 rounded p-3">
+                    <p className="text-sm font-semibold text-warning mb-1 flex items-center gap-1"><AlertTriangle size={14} /> Duplicate Barcode</p>
+                    <p className="text-sm text-warning-700 mb-2">
                       This barcode is already assigned to{' '}
                       <strong>{duplicateWarningQuick.duplicateItem?.name}</strong>
                       {duplicateWarningQuick.duplicateItem?.serial && (

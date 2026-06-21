@@ -550,23 +550,23 @@ export default function CheckoutPage() {
 
   if (!user) {
     return (
-      <div className="h-screen flex items-center justify-center">
-        <Spinner size="lg" />
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Spinner size="lg" color="primary" />
       </div>
     );
   }
 
   if (loading) {
     return (
-      <div className="h-screen flex items-center justify-center">
-        <Spinner size="lg" />
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Spinner size="lg" color="primary" />
       </div>
     );
   }
 
   return (
     <>
-      <div className="min-h-screen p-4 md:p-6 bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-slate-900 dark:to-slate-800">
+      <div className="min-h-screen p-4 md:p-6 bg-background">
         <div className="max-w-4xl mx-auto space-y-6">
           {/* Header */}
           <div className="flex items-center gap-3">
@@ -579,12 +579,12 @@ export default function CheckoutPage() {
             </Button>
             <div className="flex-1">
               <div className="flex items-center gap-2 mb-1">
-                <LogOut className="text-blue-600" size={24} />
-                <h1 className="text-2xl md:text-3xl font-bold text-gray-900 dark:text-white">
+                <LogOut className="text-primary" size={24} />
+                <h1 className="text-2xl md:text-3xl font-semibold">
                   Check Out
                 </h1>
               </div>
-              <p className="text-sm text-gray-600 dark:text-gray-400">
+              <p className="text-sm text-foreground-500">
                 Select a statpack or scan an asset barcode to check out
               </p>
             </div>
@@ -624,7 +624,7 @@ export default function CheckoutPage() {
                 </Button>
               </div>
               
-              <div className="flex items-center gap-2 text-sm text-gray-600">
+              <div className="flex items-center gap-2 text-sm text-foreground-500">
                 <Chip size="sm" variant="flat" color="success">
                   {filteredPacks.length} Available
                 </Chip>
@@ -637,8 +637,8 @@ export default function CheckoutPage() {
             {filteredPacks.length === 0 ? (
               <Card>
                 <CardBody className="text-center py-12">
-                  <Package size={48} className="mx-auto mb-3 text-gray-400" />
-                  <p className="text-gray-600 dark:text-gray-400">
+                  <Package size={48} className="mx-auto mb-3 text-foreground-400" />
+                  <p className="text-foreground-500">
                     {searchQuery ? 'No statpacks match your search' : 'No statpacks available for checkout'}
                   </p>
                 </CardBody>
@@ -656,17 +656,17 @@ export default function CheckoutPage() {
                       <div className="flex items-center gap-3 flex-1 min-w-0">
                         <Avatar
                           icon={<Package />}
-                          className="bg-blue-100 dark:bg-blue-900"
+                          className="bg-primary-100"
                         />
                         <div className="flex-1 min-w-0">
-                          <h3 className="font-semibold text-lg text-gray-900 dark:text-white truncate">
+                          <h3 className="font-semibold text-lg truncate">
                             {pack.name}
                           </h3>
-                          <p className="text-sm text-gray-600 dark:text-gray-400">
+                          <p className="text-sm text-foreground-500">
                             {pack.type}
                           </p>
                           {pack.currentLocation && (
-                            <p className="text-xs text-gray-500 dark:text-gray-500 flex items-center gap-1 mt-1">
+                            <p className="text-xs text-foreground-400 flex items-center gap-1 mt-1">
                               <Package size={12} />
                               {pack.currentLocation}
                             </p>
@@ -683,7 +683,7 @@ export default function CheckoutPage() {
                           {pack.status}
                         </Chip>
                         {pack.contents && (
-                          <span className="text-xs text-gray-500">
+                          <span className="text-xs text-foreground-500 tabular-nums">
                             {pack.contents.length} items
                           </span>
                         )}
@@ -722,7 +722,7 @@ export default function CheckoutPage() {
                         Scan Asset
                       </Button>
                     </div>
-                    <div className="flex items-center gap-2 text-sm text-gray-600">
+                    <div className="flex items-center gap-2 text-sm text-foreground-500">
                       <Chip size="sm" variant="flat" color="success">
                         {filteredAssetItems.length} Assets
                       </Chip>
@@ -736,7 +736,7 @@ export default function CheckoutPage() {
                     <div className="flex justify-center py-8"><Spinner /></div>
                   ) : filteredAssetItems.length === 0 ? (
                     <Card>
-                      <CardBody className="text-center py-8 text-gray-500">
+                      <CardBody className="text-center py-8 text-foreground-500">
                         {assetSearchQuery ? 'No assets match your search' : 'No assets available'}
                       </CardBody>
                     </Card>
@@ -763,18 +763,18 @@ export default function CheckoutPage() {
                                   if (cat.includes('box') || cat.includes('case') || cat.includes('supply')) return <Box />;
                                   return <Package />;
                                 })()}
-                                className="bg-indigo-100 dark:bg-indigo-900"
+                                className="bg-primary-100"
                               />
                               <div className="flex-1 min-w-0">
-                                <h3 className="font-semibold text-lg text-gray-900 dark:text-white truncate">
+                                <h3 className="font-semibold text-lg truncate">
                                   {asset.name}
                                 </h3>
                                 {asset.assetCategory && (
-                                  <p className="text-sm text-gray-600 dark:text-gray-400">
+                                  <p className="text-sm text-foreground-500">
                                     {asset.assetCategory as string}
                                   </p>
                                 )}
-                                <p className="text-xs text-gray-500 font-mono mt-1">
+                                <p className="text-xs text-foreground-400 font-mono mt-1">
                                   {asset.assetSerial || asset.assignedBarcode || '—'}
                                 </p>
                               </div>
@@ -951,20 +951,20 @@ export default function CheckoutPage() {
                 <div className="grid grid-cols-2 gap-3">
                   <Card className="bg-success-50">
                     <CardBody className="text-center py-3">
-                      <p className="text-2xl font-bold text-success">{okItems}</p>
+                      <p className="text-2xl font-semibold tabular-nums text-success">{okItems}</p>
                       <p className="text-xs text-success-600">Items OK</p>
                     </CardBody>
                   </Card>
                   <Card className="bg-default-50">
                     <CardBody className="text-center py-3">
-                      <p className="text-2xl font-bold">{totalItems}</p>
+                      <p className="text-2xl font-semibold tabular-nums">{totalItems}</p>
                       <p className="text-xs text-default-600">Total Items</p>
                     </CardBody>
                   </Card>
                   {mismatchItems > 0 && (
                     <Card className="bg-warning-50">
                       <CardBody className="text-center py-3">
-                        <p className="text-2xl font-bold text-warning">{mismatchItems}</p>
+                        <p className="text-2xl font-semibold tabular-nums text-warning">{mismatchItems}</p>
                         <p className="text-xs text-warning-600">Count Mismatches</p>
                       </CardBody>
                     </Card>
@@ -972,7 +972,7 @@ export default function CheckoutPage() {
                   {expiredItems > 0 && (
                     <Card className="bg-danger-50">
                       <CardBody className="text-center py-3">
-                        <p className="text-2xl font-bold text-danger">{expiredItems}</p>
+                        <p className="text-2xl font-semibold tabular-nums text-danger">{expiredItems}</p>
                         <p className="text-xs text-danger-600">Expired Items</p>
                       </CardBody>
                     </Card>

@@ -280,7 +280,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
 
   return (
     <>
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-3 md:p-6">
+    <div className="min-h-screen bg-background p-3 md:p-6">
       <div className="max-w-4xl mx-auto space-y-4 md:space-y-8">
         {/* Header - Mobile Optimized */}
         <div className="mb-4 md:mb-6">
@@ -293,10 +293,10 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
               className="h-8 md:h-12 w-auto"
             />
           </div>
-          <h1 className="text-2xl md:text-3xl font-bold text-gray-900 dark:text-white">
+          <h1 className="text-2xl md:text-3xl font-semibold">
             Dashboard
           </h1>
-          <p className="text-sm md:text-base text-gray-600 dark:text-gray-400 mt-1">
+          <p className="text-sm md:text-base text-foreground-500 mt-1">
             Welcome, {userData.fullName}! Your inventory & packs at a glance.
           </p>
         </div>
@@ -306,7 +306,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
         <Card className="bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 text-white shadow-lg">
           <CardBody className="flex flex-col gap-4 py-6">
             <div>
-              <h2 className="text-xl md:text-2xl font-bold mb-2">Keep Us Safe</h2>
+              <h2 className="text-xl md:text-2xl font-semibold mb-2">Keep Us Safe</h2>
               <p className="text-sm md:text-base opacity-90">Found expired items or untracked boxes? Report them now.</p>
               <div className="flex flex-wrap gap-2 mt-3">
                 {lowStockCount > 0 && (
@@ -328,7 +328,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
             </div>
             <Button
               size="lg"
-              className="bg-white text-orange-600 font-bold w-full"
+              className="bg-white text-warning-600 font-semibold w-full"
               onPress={() => router.push('/member/report')}
             >
               Report an Issue
@@ -338,18 +338,18 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
 
         {/* Quick Actions - Mobile Optimized */}
         <section>
-          <h2 className="text-lg md:text-xl font-semibold text-gray-800 dark:text-gray-200 mb-3 md:mb-4">
+          <h2 className="text-lg md:text-xl font-semibold mb-3 md:mb-4">
             Quick Actions
           </h2>
           <div className="grid grid-cols-2 md:grid-cols-2 gap-2 md:gap-4">
             <Card
               isPressable
               onPress={() => router.push('/statpacks/checkout')}
-              className="bg-gradient-to-br from-blue-500 to-blue-600 text-white hover:scale-105 transition-transform"
+              className="bg-gradient-to-br from-blue-500 to-blue-600 text-white transition-transform"
             >
               <CardBody className="flex flex-col items-center justify-center py-4 md:py-8 gap-2 md:gap-3">
                 <LogOut size={36} className="md:w-12 md:h-12" />
-                <h3 className="text-sm md:text-xl font-bold">Check Out</h3>
+                <h3 className="text-sm md:text-xl font-semibold">Check Out</h3>
                 <p className="text-xs md:text-sm text-center opacity-90 hidden md:block">
                   Take supplies
                 </p>
@@ -359,11 +359,11 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
             <Card
               isPressable
               onPress={() => router.push('/statpacks/checkin')}
-              className="bg-gradient-to-br from-green-500 to-green-600 text-white hover:scale-105 transition-transform"
+              className="bg-gradient-to-br from-green-500 to-green-600 text-white transition-transform"
             >
               <CardBody className="flex flex-col items-center justify-center py-4 md:py-8 gap-2 md:gap-3">
                 <LogIn size={36} className="md:w-12 md:h-12" />
-                <h3 className="text-sm md:text-xl font-bold">Check In</h3>
+                <h3 className="text-sm md:text-xl font-semibold">Check In</h3>
                 <p className="text-xs md:text-sm text-center opacity-90 hidden md:block">
                   Return supplies
                 </p>
@@ -375,11 +375,11 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
                 <Card
                   isPressable
                   onPress={() => router.push('/inventory')}
-                  className="bg-gradient-to-br from-purple-500 to-purple-600 text-white hover:scale-105 transition-transform"
+                  className="bg-gradient-to-br from-purple-500 to-purple-600 text-white transition-transform"
                 >
                   <CardBody className="flex flex-col items-center justify-center py-4 md:py-8 gap-2 md:gap-3">
                     <PackageCheck size={36} className="md:w-12 md:h-12" />
-                    <h3 className="text-sm md:text-xl font-bold">Quick Count</h3>
+                    <h3 className="text-sm md:text-xl font-semibold">Quick Count</h3>
                     <p className="text-xs md:text-sm text-center opacity-90 hidden md:block">
                       Count inventory
                     </p>
@@ -389,11 +389,11 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
                 <Card
                   isPressable
                   onPress={() => router.push('/reports')}
-                  className="bg-gradient-to-br from-orange-500 to-orange-600 text-white hover:scale-105 transition-transform"
+                  className="bg-gradient-to-br from-orange-500 to-orange-600 text-white transition-transform"
                 >
                   <CardBody className="flex flex-col items-center justify-center py-4 md:py-8 gap-2 md:gap-3">
                     <ScanLine size={36} className="md:w-12 md:h-12" />
-                    <h3 className="text-sm md:text-xl font-bold">Scan Report</h3>
+                    <h3 className="text-sm md:text-xl font-semibold">Scan Report</h3>
                     <p className="text-xs md:text-sm text-center opacity-90 hidden md:block">
                       Report items
                     </p>
@@ -407,11 +407,11 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
               <Card
                 isPressable
                 onPress={() => router.push('/audit')}
-                className="bg-gradient-to-br from-teal-500 to-cyan-600 text-white hover:scale-105 transition-transform"
+                className="bg-gradient-to-br from-teal-500 to-cyan-600 text-white transition-transform"
               >
                 <CardBody className="flex flex-col items-center justify-center py-4 md:py-8 gap-2 md:gap-3">
                   <ClipboardCheck size={36} className="md:w-12 md:h-12" />
-                  <h3 className="text-sm md:text-xl font-bold">Audit</h3>
+                  <h3 className="text-sm md:text-xl font-semibold">Audit</h3>
                   <p className="text-xs md:text-sm text-center opacity-90 hidden md:block">
                     Count boxes & verify
                   </p>
@@ -424,10 +424,10 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
         {/* Smart Ordering - Admin Only */}
         {(role === 'admin' || role === 'quartermaster') && (
           <section>
-            <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-200 mb-4">Smart Ordering</h2>
+            <h2 className="text-xl font-semibold mb-4">Smart Ordering</h2>
             <Card>
               <CardBody className="space-y-3">
-                <p className="text-sm text-gray-600">Suggested orders to meet par levels. Shows recent suppliers and the cheapest recent option.</p>
+                <p className="text-sm text-foreground-500">Suggested orders to meet par levels. Shows recent suppliers and the cheapest recent option.</p>
                 {(lowStockItems || []).slice(0, 8).map(item => {
                   const par = typeof item.reorderThreshold === 'number' ? item.reorderThreshold : 0;
                   const current = Number(item.totalStockQuantity ?? 0);
@@ -437,11 +437,11 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
                     <div key={item.id} className="flex items-center justify-between p-3 border rounded-md">
                       <div>
                         <div className="font-medium">{item.name}</div>
-                        <div className="text-xs text-gray-500">Current: {current} • Par: {par} • Suggested: {suggested}</div>
+                        <div className="text-xs text-foreground-500">Current: {current} • Par: {par} • Suggested: {suggested}</div>
                         {cheapest ? (
-                          <div className="text-xs text-gray-600">Cheapest: {cheapest.supplierName || cheapest.name} @ {typeof cheapest.pricePerUnit === 'number' ? `$${cheapest.pricePerUnit.toFixed(2)}` : '—'}</div>
+                          <div className="text-xs text-foreground-500">Cheapest: {cheapest.supplierName || cheapest.name} @ {typeof cheapest.pricePerUnit === 'number' ? `$${cheapest.pricePerUnit.toFixed(2)}` : '—'}</div>
                         ) : (
-                          <div className="text-xs text-gray-400">No recent purchase history</div>
+                          <div className="text-xs text-foreground-400">No recent purchase history</div>
                         )}
                       </div>
                       <div className="flex items-center gap-2">
@@ -459,7 +459,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
                   );
                 })}
                 {lowStockItems.length === 0 && (
-                  <div className="text-sm text-gray-500">No items currently below par.</div>
+                  <div className="text-sm text-foreground-500">No items currently below par.</div>
                 )}
               </CardBody>
             </Card>
@@ -471,7 +471,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
           {/* Assigned Statpacks */}
           <Card>
             <CardHeader className="flex flex-col items-start gap-2 pb-3 md:pb-4">
-              <h3 className="text-base md:text-lg font-semibold text-gray-800 dark:text-gray-200">
+              <h3 className="text-base md:text-lg font-semibold">
                 My Assigned Packs
               </h3>
               <Chip size="sm" variant="flat">
@@ -481,28 +481,28 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
             <Divider />
             <CardBody className="gap-2 md:gap-3">
               {loading ? (
-                <p className="text-gray-500 dark:text-gray-400 text-xs md:text-sm">
+                <p className="text-foreground-500 text-xs md:text-sm">
                   Loading...
                 </p>
               ) : assignedPacks.length === 0 ? (
-                <p className="text-gray-500 dark:text-gray-400 text-xs md:text-sm">
+                <p className="text-foreground-500 text-xs md:text-sm">
                   No packs currently assigned. Packs appear here once you check them out.
                 </p>
               ) : (
                 assignedPacks.map((pack) => (
                   <Card
                     key={pack.id}
-                    className="bg-gray-50 dark:bg-slate-800 cursor-pointer hover:shadow-md transition-shadow"
+                    className="bg-content2 cursor-pointer hover:shadow-md transition-shadow"
                     isPressable
                     onPress={() => router.push(`/statpacks/?id=${pack.id}`)}
                   >
                     <CardBody className="py-2 md:py-3 px-3 md:px-4">
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex-1 min-w-0">
-                          <h4 className="font-semibold text-sm md:text-base text-gray-900 dark:text-white truncate">
+                          <h4 className="font-semibold text-sm md:text-base truncate">
                             {pack.name}
                           </h4>
-                          <p className="text-xs text-gray-500 dark:text-gray-400">
+                          <p className="text-xs text-foreground-500">
                             {pack.type}
                           </p>
                         </div>
@@ -530,7 +530,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
           {/* Recent Activity */}
           <Card>
             <CardHeader className="flex flex-col items-start gap-2 pb-3 md:pb-4">
-              <h3 className="text-base md:text-lg font-semibold text-gray-800 dark:text-gray-200">
+              <h3 className="text-base md:text-lg font-semibold">
                 Your Activity
               </h3>
               <Chip size="sm" variant="flat">
@@ -540,18 +540,18 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
             <Divider />
             <CardBody className="gap-2 md:gap-3">
               {loading ? (
-                <p className="text-gray-500 dark:text-gray-400 text-xs md:text-sm">
+                <p className="text-foreground-500 text-xs md:text-sm">
                   Loading...
                 </p>
               ) : recentActivity.length === 0 ? (
-                <p className="text-gray-500 dark:text-gray-400 text-xs md:text-sm">
+                <p className="text-foreground-500 text-xs md:text-sm">
                   No activity yet. Start by checking out a pack!
                 </p>
               ) : (
                 recentActivity.map((log) => (
                   <Card
                     key={log.id}
-                    className="bg-gray-50 dark:bg-slate-800"
+                    className="bg-content2"
                     shadow="sm"
                   >
                     <CardBody className="py-2 md:py-3 px-3 md:px-4">
@@ -572,16 +572,16 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
                               {log.action === 'checkout' ? 'Checked Out' : log.action === 'checkin' ? 'Checked In' : log.action}
                             </Chip>
                           </div>
-                          <p className="text-xs md:text-sm font-medium text-gray-900 dark:text-white truncate">
+                          <p className="text-xs md:text-sm font-medium truncate">
                             {log.statpackName || 'Unknown Pack'}
                           </p>
                           {log.notes && (
-                            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">
+                            <p className="text-xs text-foreground-500 mt-1 line-clamp-2">
                               {log.notes}
                             </p>
                           )}
                         </div>
-                        <div className="flex items-center gap-1 text-xs text-gray-400 whitespace-nowrap">
+                        <div className="flex items-center gap-1 text-xs text-foreground-400 whitespace-nowrap">
                           <Clock size={12} />
                           {log.timestamp instanceof Date ? formatTimestamp(log.timestamp) : 'Just now'}
                         </div>
@@ -601,7 +601,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
               <div className="flex items-center gap-3">
                 <Smartphone size={32} className="hidden md:block" />
                 <div>
-                  <h3 className="text-lg md:text-xl font-bold mb-1">Manage Your Packs</h3>
+                  <h3 className="text-lg md:text-xl font-semibold mb-1">Manage Your Packs</h3>
                   <p className="text-xs md:text-sm opacity-90">
                     Check items in and out from your mobile device
                   </p>

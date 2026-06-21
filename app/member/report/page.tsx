@@ -214,21 +214,21 @@ export default function MemberReportPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-slate-900">
-        <Spinner size="lg" />
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Spinner size="lg" color="primary" />
       </div>
     );
   }
 
   if (success) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-slate-900">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <Card className="max-w-md w-full mx-4">
           <CardBody className="text-center py-8 space-y-4">
             <div className="text-5xl">✓</div>
-            <h2 className="text-2xl font-bold text-green-600">Report Submitted</h2>
-            <p className="text-gray-600 dark:text-gray-400">Thank you for helping keep our inventory safe.</p>
-            <p className="text-sm text-gray-500">Redirecting you back to the dashboard...</p>
+            <h2 className="text-2xl font-semibold text-success">Report Submitted</h2>
+            <p className="text-foreground-500">Thank you for helping keep our inventory safe.</p>
+            <p className="text-sm text-foreground-400">Redirecting you back to the dashboard...</p>
           </CardBody>
         </Card>
       </div>
@@ -236,16 +236,16 @@ export default function MemberReportPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-slate-900 pb-20">
+    <div className="min-h-screen bg-background pb-20">
       {/* Header */}
-      <div className="bg-white dark:bg-slate-800 sticky top-0 z-20 border-b border-gray-200 dark:border-slate-700 shadow-sm">
+      <div className="bg-content1 sticky top-0 z-20 border-b border-divider shadow-sm">
         <div className="max-w-2xl mx-auto px-4 py-4 flex items-center gap-3">
           <Button isIconOnly size="sm" variant="light" onPress={() => router.back()}>
             <ArrowLeft size={20} />
           </Button>
           <div>
-            <h1 className="text-xl font-bold">Report an Issue</h1>
-            <p className="text-xs text-gray-500">Help us keep everyone safe</p>
+            <h1 className="text-xl font-semibold">Report an Issue</h1>
+            <p className="text-xs text-foreground-500">Help us keep everyone safe</p>
           </div>
         </div>
       </div>
@@ -262,31 +262,31 @@ export default function MemberReportPage() {
               <Radio value="low_stock" className="mb-3">
                 <div className="ml-2">
                   <div className="font-medium">Open Box Running Low</div>
-                  <div className="text-xs text-gray-500">Front room open box needs refill from sealed box</div>
+                  <div className="text-xs text-foreground-500">Front room open box needs refill from sealed box</div>
                 </div>
               </Radio>
               <Radio value="expiration" className="mb-3">
                 <div className="ml-2">
                   <div className="font-medium">Expiration</div>
-                  <div className="text-xs text-gray-500">Item is expired or expiring soon</div>
+                  <div className="text-xs text-foreground-500">Item is expired or expiring soon</div>
                 </div>
               </Radio>
               <Radio value="oxygen" className="mb-3">
                 <div className="ml-2">
                   <div className="font-medium">Oxygen Level</div>
-                  <div className="text-xs text-gray-500">Report oxygen tank PSI level</div>
+                  <div className="text-xs text-foreground-500">Report oxygen tank PSI level</div>
                 </div>
               </Radio>
               <Radio value="damaged" className="mb-3">
                 <div className="ml-2">
                   <div className="font-medium">Damaged/Defective</div>
-                  <div className="text-xs text-gray-500">Item is damaged or not working</div>
+                  <div className="text-xs text-foreground-500">Item is damaged or not working</div>
                 </div>
               </Radio>
               <Radio value="open_box" className="mb-0">
                 <div className="ml-2">
                   <div className="font-medium">Untracked/Open Box</div>
-                  <div className="text-xs text-gray-500">Found items on open shelves</div>
+                  <div className="text-xs text-foreground-500">Found items on open shelves</div>
                 </div>
               </Radio>
             </RadioGroup>
@@ -318,7 +318,7 @@ export default function MemberReportPage() {
                     <Button size="sm" variant={lowStockOnly ? 'solid' : 'flat'} onPress={() => setLowStockOnly((s) => !s)}>
                       {lowStockOnly ? 'Showing: Low stock only' : 'Show low stock only'}
                     </Button>
-                    <div className="text-sm text-gray-500">Filter list for easier selection</div>
+                    <div className="text-sm text-foreground-500">Filter list for easier selection</div>
                   </div>
 
                   {/* Filtered item dropdown with dynamic height */}
@@ -334,7 +334,7 @@ export default function MemberReportPage() {
                     const maxH = maxVisible * itemHeight;
 
                     return (
-                      <div style={{ maxHeight: maxH, overflowY: 'auto' }} className="border rounded-md bg-white dark:bg-slate-800 shadow-md">
+                      <div style={{ maxHeight: maxH, overflowY: 'auto' }} className="border border-divider rounded-md bg-content1 shadow-md">
                         {filtered.map((item) => (
                           <button
                             key={item.id}
@@ -346,14 +346,14 @@ export default function MemberReportPage() {
                               if (item.level != null) setFrontLevel(String(item.level));
                               if (item.location) setLocation(item.location as 'HQ/Storage' | 'Statpack' | 'Other');
                             }}
-                            className={`w-full flex flex-col p-3 border-b last:border-b-0 text-left transition-colors ${
-                              itemId === item.id 
-                                ? 'bg-blue-100 dark:bg-blue-900' 
-                                : 'hover:bg-gray-50 dark:hover:bg-slate-700'
+                            className={`w-full flex flex-col p-3 border-b border-divider last:border-b-0 text-left transition-colors ${
+                              itemId === item.id
+                                ? 'bg-primary-50'
+                                : 'hover:bg-content2'
                             }`}
                           >
-                            <span className="font-medium text-gray-900 dark:text-white">{item.name}</span>
-                            <span className="text-xs text-gray-500">Stock: {item.totalStockQuantity} {item.reorderThreshold ? `/ Par: ${item.reorderThreshold}` : ''}</span>
+                            <span className="font-medium">{item.name}</span>
+                            <span className="text-xs text-foreground-500">Stock: <span className="tabular-nums">{item.totalStockQuantity}</span> {item.reorderThreshold ? `/ Par: ${item.reorderThreshold}` : ''}</span>
                           </button>
                         ))}
                       </div>

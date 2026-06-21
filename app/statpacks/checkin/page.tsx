@@ -506,22 +506,22 @@ export default function CheckinPage() {
 
   if (!user) {
     return (
-      <div className="h-screen flex items-center justify-center">
-        <Spinner size="lg" />
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Spinner size="lg" color="primary" />
       </div>
     );
   }
 
   if (loading) {
     return (
-      <div className="h-screen flex items-center justify-center">
-        <Spinner size="lg" />
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Spinner size="lg" color="primary" />
       </div>
     );
   }
 
   return (
-    <>
+<>
       <div className="min-h-screen p-4 md:p-6 bg-gradient-to-br from-green-50 to-emerald-50 dark:from-slate-900 dark:to-slate-800">
         <div className="max-w-4xl mx-auto space-y-6">
           {/* Header */}

@@ -173,25 +173,25 @@ export default function RosterPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex justify-center items-center bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
-        <Spinner size="lg" label="Loading Roster..." />
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Spinner size="lg" color="primary" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
+    <div className="min-h-screen bg-background p-6">
       <div className="max-w-7xl mx-auto space-y-6">
         <div className="flex flex-col gap-2">
-          <h1 className="text-3xl font-bold tracking-tight text-gray-900 dark:text-gray-100 flex items-center gap-2">
-            <Users className="text-indigo-600" size={26} />
+          <h1 className="text-3xl font-semibold tracking-tight flex items-center gap-2">
+            <Users className="text-primary" size={26} />
             Team Roster
           </h1>
-          <p className="text-gray-500 dark:text-gray-400">Manage member permissions and roles.</p>
+          <p className="text-foreground-500">Manage member permissions and roles.</p>
         </div>
         <Divider />
 
-        <Card className="border border-gray-200/70 dark:border-slate-700 shadow-lg bg-white/80 dark:bg-slate-800/80 rounded-xl">
+        <Card className="border border-divider shadow-lg rounded-xl">
           <CardBody className="p-0">
             <Table aria-label="Team Roster Table" shadow="none" removeWrapper>
               <TableHeader columns={COLUMNS}>

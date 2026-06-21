@@ -290,16 +290,16 @@ export default function TasksPage() {
   };
 
   if (loading) {
-    return <div className="h-screen flex items-center justify-center"><Spinner /></div>;
+    return <div className="min-h-screen bg-background flex items-center justify-center"><Spinner size="lg" color="primary" /></div>;
   }
 
   if (userRole !== "admin" && userRole !== "quartermaster") {
     return (
-      <div className="min-h-screen p-6 bg-gradient-to-br from-slate-50 to-indigo-50 dark:from-slate-900 dark:to-slate-800">
+      <div className="min-h-screen p-6 bg-background">
         <div className="max-w-3xl mx-auto">
           <Card><CardBody className="text-center">
             <h2 className="text-xl font-semibold">Access Denied</h2>
-            <p className="mt-2 text-sm text-gray-600">Only admins and quartermasters can access the Tasks page.</p>
+            <p className="mt-2 text-sm text-foreground-500">Only admins and quartermasters can access the Tasks page.</p>
             <div className="mt-4"><Button onPress={() => router.push("/dashboard")}>Back to Dashboard</Button></div>
           </CardBody></Card>
         </div>
@@ -313,8 +313,8 @@ export default function TasksPage() {
         {/* Header */}
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <CheckSquare className="text-indigo-600" size={24} />
-            <h1 className="text-xl md:text-2xl font-bold">Logistics Tasks</h1>
+            <CheckSquare className="text-primary" size={24} />
+            <h1 className="text-xl md:text-2xl font-semibold">Logistics Tasks</h1>
             {todoCount > 0 && (
               <Chip size="sm" color="warning" variant="solid">{todoCount} to do</Chip>
             )}
@@ -338,15 +338,15 @@ export default function TasksPage() {
         {/* Stats cards */}
         <div className="grid grid-cols-3 gap-2 md:gap-3">
           <Card className="bg-default-50"><CardBody className="text-center py-2 md:py-3">
-            <p className="text-xl md:text-2xl font-bold">{todoCount}</p>
+            <p className="text-xl md:text-2xl font-semibold tabular-nums">{todoCount}</p>
             <p className="text-xs text-default-500">To Do</p>
           </CardBody></Card>
           <Card className="bg-primary-50"><CardBody className="text-center py-2 md:py-3">
-            <p className="text-xl md:text-2xl font-bold text-primary">{inProgressCount}</p>
+            <p className="text-xl md:text-2xl font-semibold tabular-nums text-primary">{inProgressCount}</p>
             <p className="text-xs text-primary-600">In Progress</p>
           </CardBody></Card>
           <Card className="bg-success-50"><CardBody className="text-center py-2 md:py-3">
-            <p className="text-xl md:text-2xl font-bold text-success">{doneCount}</p>
+            <p className="text-xl md:text-2xl font-semibold tabular-nums text-success">{doneCount}</p>
             <p className="text-xs text-success-600">Done</p>
           </CardBody></Card>
         </div>
@@ -403,8 +403,8 @@ export default function TasksPage() {
         {/* Task list */}
         {filteredItems.length === 0 ? (
           <Card><CardBody className="text-center py-12">
-            <CheckSquare size={48} className="mx-auto mb-3 text-gray-400" />
-            <p className="text-gray-600 dark:text-gray-400">
+            <CheckSquare size={48} className="mx-auto mb-3 text-foreground-400" />
+            <p className="text-foreground-500">
               {allItems.length === 0 ? "No tasks yet. Add items to buy, things to fix, or tasks to track!" : "No tasks match your filters."}
             </p>
           </CardBody></Card>
@@ -433,7 +433,7 @@ export default function TasksPage() {
                         ) : task.status === "in_progress" ? (
                           <Clock size={20} className="text-primary" />
                         ) : (
-                          <Circle size={20} className="text-gray-400" />
+                          <Circle size={20} className="text-foreground-400" />
                         )}
                       </button>
 

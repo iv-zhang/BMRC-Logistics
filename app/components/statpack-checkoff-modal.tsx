@@ -574,7 +574,7 @@ export default function StatpackCheckOffModal({
                         onClick={() => handleItemChecked(itemId)}
                       >
                         <div className="flex gap-3 items-center">
-                          <div className="w-16 h-16 md:w-14 md:h-14 flex items-center justify-center rounded-lg bg-default-100 dark:bg-slate-800 border border-default-200 dark:border-slate-700 touch-manipulation transition-transform active:scale-95">
+                          <div className="w-16 h-16 md:w-14 md:h-14 flex items-center justify-center rounded-lg bg-default-100 border border-default-200 touch-manipulation transition-transform active:scale-95">
                             <Checkbox
                               size="lg"
                               isSelected={isChecked}
@@ -868,11 +868,11 @@ export default function StatpackCheckOffModal({
                           </div>
                         ) : (
                           <div className="space-y-1">
-                                <Card className="bg-blue-50 dark:bg-blue-900/20">
+                                <Card className="bg-primary-50 dark:bg-primary-900/20">
                                   <CardBody className="py-1 px-2">
                                     <div className="flex items-center gap-2 text-xs">
-                                      <CheckCircle2 size={12} className="text-blue-700 dark:text-blue-300" />
-                                      <span className="text-blue-900 dark:text-blue-100">Scanned: {verification.scannedCode}</span>
+                                      <CheckCircle2 size={12} className="text-primary" />
+                                      <span className="text-primary-900 dark:text-primary-100">Scanned: {verification.scannedCode}</span>
                                       {/* Allow re-scan */}
                                       <Button
                                         size="sm"
@@ -891,7 +891,7 @@ export default function StatpackCheckOffModal({
                                       </Button>
                                     </div>
                                     {verification.scannedExpiration && (
-                                      <p className="text-xs text-blue-700 dark:text-blue-300 ml-4">
+                                      <p className="text-xs text-primary ml-4">
                                         Exp: {verification.scannedExpiration.toLocaleDateString('en-US', { month: '2-digit', year: '2-digit' })}
                                       </p>
                                     )}
@@ -900,15 +900,15 @@ export default function StatpackCheckOffModal({
                                 
                                 {verification.warnings.map((warning, idx) => {
                                   const Icon = warning.severity === 'critical' ? XCircle : AlertTriangle;
-                                  const colorClass = warning.severity === 'critical' ? 'bg-red-50 dark:bg-red-900/20' : 'bg-yellow-50 dark:bg-yellow-900/20';
-                                  const textClass = warning.severity === 'critical' ? 'text-red-700 dark:text-red-300' : 'text-yellow-700 dark:text-yellow-300';
+                                  const colorClass = warning.severity === 'critical' ? 'bg-danger-50 dark:bg-danger-900/20' : 'bg-warning-50 dark:bg-warning-900/20';
+                                  const textClass = warning.severity === 'critical' ? 'text-danger' : 'text-warning';
                                   
                                   return (
                                     <Card key={idx} className={colorClass}>
                                       <CardBody className="py-1 px-2">
                                         <div className="flex items-start gap-1">
                                           <Icon size={12} className={`${textClass} mt-0.5`} />
-                                          <p className="text-xs text-gray-700 dark:text-gray-300">{warning.message}</p>
+                                          <p className="text-xs text-foreground-700">{warning.message}</p>
                                         </div>
                                       </CardBody>
                                     </Card>

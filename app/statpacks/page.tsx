@@ -599,17 +599,17 @@ export default function StatpacksListPage() {
     setAttachingItemName('');
   };
 
-  if (loading) return <div className="h-screen flex items-center justify-center"><Spinner /></div>;
+  if (loading) return <div className="min-h-screen bg-background flex items-center justify-center"><Spinner size="lg" color="primary" /></div>;
 
   // Restrict access: general members should not access the Statpacks management UI
   if (!loading && userRole === 'member') {
     return (
-      <div className="min-h-screen p-6 bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
+      <div className="min-h-screen p-6 bg-background">
         <div className="max-w-3xl mx-auto">
           <Card>
             <CardBody className="text-center">
               <h2 className="text-xl font-semibold">Access Denied</h2>
-              <p className="mt-2 text-sm text-gray-600">You do not have permission to view Statpack management.</p>
+              <p className="mt-2 text-sm text-foreground-500">You do not have permission to view Statpack management.</p>
               <div className="mt-4">
                 <Button onPress={() => router.push('/dashboard')}>Back to Dashboard</Button>
               </div>
@@ -662,12 +662,12 @@ export default function StatpacksListPage() {
   })();
 
   return (
-    <div className="min-h-screen p-3 md:p-6 bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
+    <div className="min-h-screen p-3 md:p-6 bg-background">
       <div className="max-w-6xl mx-auto space-y-4 md:space-y-6">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
           <div className="flex items-center gap-2">
-            <Package className="text-indigo-600" size={24} />
-            <h1 className="text-xl md:text-2xl font-bold">Statpacks</h1>
+            <Package className="text-primary" size={24} />
+            <h1 className="text-xl md:text-2xl font-semibold">Statpacks</h1>
           </div>
           <div className="flex gap-2">
             <Button variant="light" size="sm" onPress={() => router.push('/assets')}>Back to Assets</Button>
@@ -693,7 +693,7 @@ export default function StatpacksListPage() {
                     {expirationWarnings.map((w, i) => (
                       <div
                         key={`exp-${i}`}
-                        className="flex items-center justify-between rounded-lg border border-danger-100 bg-white dark:bg-default-100 px-3 py-2"
+                        className="flex items-center justify-between rounded-lg border border-danger-100 bg-content1 px-3 py-2"
                       >
                         <div className="flex items-center gap-2 min-w-0">
                           <Chip
@@ -742,7 +742,7 @@ export default function StatpacksListPage() {
                         return (
                           <div
                             key={`co-${p.id}`}
-                            className="rounded-lg border border-warning-200 bg-white dark:bg-default-100 p-3 flex flex-col gap-1.5"
+                            className="rounded-lg border border-warning-200 bg-content1 p-3 flex flex-col gap-1.5"
                           >
                             <div className="flex items-center justify-between">
                               <span className="font-semibold text-sm truncate">{p.name}</span>
@@ -844,7 +844,7 @@ export default function StatpacksListPage() {
         <ModalContent className="max-h-[calc(100vh-4rem)]">
           <ModalHeader>Statpack Editor - {editingPack?.name || selectedPack?.name}</ModalHeader>
           <ModalBody className="space-y-4 overflow-y-auto max-h-[calc(100vh-8rem)]">
-            {!selectedPack && <p className="text-sm text-gray-500">No statpack selected.</p>}
+            {!selectedPack && <p className="text-sm text-foreground-500">No statpack selected.</p>}
             {selectedPack && (
               <div className="space-y-4">
                 <div className="flex justify-center">

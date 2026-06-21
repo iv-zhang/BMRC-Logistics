@@ -283,8 +283,8 @@ export default function AuditPage() {
   // ─── Loading / auth states ────────────────────────────────────────────────
   if (authLoading || loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Spinner size="lg" />
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Spinner size="lg" color="primary" />
       </div>
     );
   }
@@ -317,7 +317,7 @@ export default function AuditPage() {
 
     return (
       <div
-        className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-slate-900 dark:to-slate-800 p-4"
+        className="min-h-screen bg-background p-4"
         onTouchStart={onTouchStart}
         onTouchEnd={onTouchEnd}
       >
@@ -325,7 +325,7 @@ export default function AuditPage() {
           {/* Header */}
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-bold flex items-center gap-2"><ClipboardCheck size={20} /> Box Count Audit</h2>
+              <h2 className="text-lg font-semibold flex items-center gap-2"><ClipboardCheck size={20} /> Box Count Audit</h2>
               <div className="text-sm text-default-500">
                 Item {auditIndex + 1} of {auditItems.length} · {stagedCount} verified
               </div>
@@ -341,7 +341,7 @@ export default function AuditPage() {
           <Card>
             <CardBody className="p-4 space-y-4">
               <div>
-                <div className="text-xl font-bold">{currentAuditItem.name}</div>
+                <div className="text-xl font-semibold">{currentAuditItem.name}</div>
                 <div className="text-sm text-default-500">
                   {currentAuditItem.category} · {currentAuditItem.location}
                   {currentAuditItem.room ? ` — ${currentAuditItem.room}` : ''}
@@ -612,12 +612,12 @@ export default function AuditPage() {
   const totalVerified = verifiedDisposables + verifiedAssets;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-slate-900 dark:to-slate-800">
+    <div className="min-h-screen bg-background">
       <div className="max-w-7xl mx-auto p-4 md:p-6 space-y-6">
         {/* Header */}
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold flex items-center gap-2">
+            <h1 className="text-2xl font-semibold flex items-center gap-2">
               <ClipboardCheck size={28} /> Supply Audit
             </h1>
             <p className="text-sm text-default-500 mt-1">
@@ -660,7 +660,7 @@ export default function AuditPage() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <Card>
               <CardBody className="p-3 text-center">
-                <div className="text-2xl font-bold text-primary">
+                <div className="text-2xl font-semibold tabular-nums text-primary">
                   {snapshot.totalDisposableTypes}
                 </div>
                 <div className="text-xs text-default-500">Disposable Types</div>
@@ -668,7 +668,7 @@ export default function AuditPage() {
             </Card>
             <Card>
               <CardBody className="p-3 text-center">
-                <div className="text-2xl font-bold text-secondary">
+                <div className="text-2xl font-semibold tabular-nums text-secondary">
                   {snapshot.totalAssetTypes}
                 </div>
                 <div className="text-xs text-default-500">Asset Types</div>
@@ -676,7 +676,7 @@ export default function AuditPage() {
             </Card>
             <Card>
               <CardBody className="p-3 text-center">
-                <div className="text-2xl font-bold text-warning">
+                <div className="text-2xl font-semibold tabular-nums text-warning">
                   {snapshot.lowStockCount}
                 </div>
                 <div className="text-xs text-default-500">Low Stock</div>
@@ -684,7 +684,7 @@ export default function AuditPage() {
             </Card>
             <Card>
               <CardBody className="p-3 text-center">
-                <div className="text-2xl font-bold text-success">
+                <div className="text-2xl font-semibold tabular-nums text-success">
                   {totalVerified}/{totalItems}
                 </div>
                 <div className="text-xs text-default-500">Verified</div>

@@ -134,7 +134,7 @@ export default function AppNavbar() {
   return (
     <Navbar 
       maxWidth="xl" 
-      className="py-1 px-[5px] bg-white/70 dark:bg-slate-900/70 backdrop-blur-md border-b border-gray-200 dark:border-slate-800 [&_ul]:list-none [&_li]:list-none"
+      className="py-1 px-[5px] bg-content1/70 backdrop-blur-md border-b border-divider [&_ul]:list-none [&_li]:list-none"
       onMenuOpenChange={setIsMenuOpen}
       isMenuOpen={isMenuOpen}
     >
@@ -164,7 +164,7 @@ export default function AppNavbar() {
         <div className="flex gap-4 ml-0">
           <NavbarItem isActive={isActive('/dashboard')}>
             <Tooltip content="View main dashboard">
-              <Link href="/dashboard" color={isActive('/dashboard') ? "primary" : "foreground"} className={isActive('/dashboard') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}>
+              <Link href="/dashboard" color={isActive('/dashboard') ? "primary" : "foreground"} className={isActive('/dashboard') ? "font-semibold" : "text-foreground-500"}>
                 <Home className="w-4 h-4 mr-1" /> Dashboard
               </Link>
             </Tooltip>
@@ -174,7 +174,7 @@ export default function AppNavbar() {
             <Dropdown>
               <NavbarItem>
                 <DropdownTrigger>
-                  <button className={`flex items-center ${isActive('/assets') || isActivePrefix('/statpacks') ? 'font-semibold text-primary' : 'text-gray-500 dark:text-gray-400'}`}>
+                  <button className={`flex items-center ${isActive('/assets') || isActivePrefix('/statpacks') ? 'font-semibold text-primary' : 'text-foreground-500'}`}>
                     <Box className="w-4 h-4 mr-1" /> Assets
                   </button>
                 </DropdownTrigger>
@@ -190,7 +190,7 @@ export default function AppNavbar() {
             <Dropdown>
               <NavbarItem>
                 <DropdownTrigger>
-                  <button className={`flex items-center ${isActive('/inventory') || isActive('/restock') || isActive('/restock-stats') || isActive('/storage') || isActive('/audit') ? 'font-semibold text-primary' : 'text-gray-500 dark:text-gray-400'}`}>
+                  <button className={`flex items-center ${isActive('/inventory') || isActive('/restock') || isActive('/restock-stats') || isActive('/storage') || isActive('/audit') ? 'font-semibold text-primary' : 'text-foreground-500'}`}>
                     <Warehouse className="w-4 h-4 mr-1" /> Inventory
                   </button>
                 </DropdownTrigger>
@@ -209,7 +209,7 @@ export default function AppNavbar() {
           {isAdmin && (
             <NavbarItem isActive={isActive('/roster')}>
               <Tooltip content="View team roster">
-                <Link href="/roster" color={isActive('/roster') ? "primary" : "foreground"} className={isActive('/roster') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}>
+                <Link href="/roster" color={isActive('/roster') ? "primary" : "foreground"} className={isActive('/roster') ? "font-semibold" : "text-foreground-500"}>
                   <Users className="w-4 h-4 mr-1" /> Roster
                 </Link>
               </Tooltip>
@@ -219,7 +219,7 @@ export default function AppNavbar() {
           {isAdmin && (
             <NavbarItem isActive={isActive('/issue-reports') || isActive('/reports')}>
               <Tooltip content="View reports">
-                <Link href="/issue-reports" color={isActive('/issue-reports') || isActive('/reports') ? "primary" : "foreground"} className={isActive('/issue-reports') || isActive('/reports') ? "font-semibold" : "text-gray-500 dark:text-gray-400"}>
+                <Link href="/issue-reports" color={isActive('/issue-reports') || isActive('/reports') ? "primary" : "foreground"} className={isActive('/issue-reports') || isActive('/reports') ? "font-semibold" : "text-foreground-500"}>
                   <AlertTriangle className="w-4 h-4 mr-1" /> Reports
                 </Link>
               </Tooltip>
@@ -263,77 +263,77 @@ export default function AppNavbar() {
       )}
 
       {/* Mobile Menu */}
-      <NavbarMenu className="pt-4 pb-6 gap-0 bg-white/95 dark:bg-slate-900/95 backdrop-blur-lg">
+      <NavbarMenu className="pt-4 pb-6 gap-0 bg-content1/95 backdrop-blur-lg">
         <NavbarMenuItem className="py-2">
-          <Link href="/dashboard" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/dashboard') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-gray-700 dark:text-gray-300'}`} onPress={() => navigateMobile('/dashboard')}>
+          <Link href="/dashboard" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/dashboard') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/dashboard')}>
             <Home size={18} /> Dashboard
           </Link>
         </NavbarMenuItem>
         {isAdmin && (<>
           <Divider className="my-1" />
-          <NavbarMenuItem className="py-1"><p className="px-3 py-1 text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide">Assets</p></NavbarMenuItem>
+          <NavbarMenuItem className="py-1"><p className="px-3 py-1 text-xs font-semibold text-foreground-400 uppercase tracking-wide">Assets</p></NavbarMenuItem>
           <NavbarMenuItem className="py-1">
-            <Link href="/assets" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/assets') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-gray-700 dark:text-gray-300'}`} onPress={() => navigateMobile('/assets')}>
+            <Link href="/assets" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/assets') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/assets')}>
               <Package size={18} /> Manage Assets
             </Link>
           </NavbarMenuItem>
           <NavbarMenuItem className="py-1">
-            <Link href="/statpacks" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActivePrefix('/statpacks') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-gray-700 dark:text-gray-300'}`} onPress={() => navigateMobile('/statpacks')}>
+            <Link href="/statpacks" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActivePrefix('/statpacks') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/statpacks')}>
               <ClipboardList size={18} /> Statpacks
             </Link>
           </NavbarMenuItem>
         </>)}
         {isAdmin && (<>
           <Divider className="my-1" />
-          <NavbarMenuItem className="py-1"><p className="px-3 py-1 text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide">Inventory</p></NavbarMenuItem>
+          <NavbarMenuItem className="py-1"><p className="px-3 py-1 text-xs font-semibold text-foreground-400 uppercase tracking-wide">Inventory</p></NavbarMenuItem>
           <NavbarMenuItem className="py-1">
-            <Link href="/inventory" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/inventory') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-gray-700 dark:text-gray-300'}`} onPress={() => navigateMobile('/inventory')}>
+            <Link href="/inventory" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/inventory') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/inventory')}>
               <Package size={18} /> View Inventory
             </Link>
           </NavbarMenuItem>
           <NavbarMenuItem className="py-1">
-            <Link href="/audit" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/audit') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-gray-700 dark:text-gray-300'}`} onPress={() => navigateMobile('/audit')}>
+            <Link href="/audit" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/audit') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/audit')}>
               <ScanBarcode size={18} /> Supply Audit
             </Link>
           </NavbarMenuItem>
           <NavbarMenuItem className="py-1">
-            <Link href="/restock" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/restock') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-gray-700 dark:text-gray-300'}`} onPress={() => navigateMobile('/restock')}>
+            <Link href="/restock" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/restock') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/restock')}>
               <RefreshCw size={18} /> Restock Items
             </Link>
           </NavbarMenuItem>
           <NavbarMenuItem className="py-1">
-            <Link href="/restock-stats" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/restock-stats') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-gray-700 dark:text-gray-300'}`} onPress={() => navigateMobile('/restock-stats')}>
+            <Link href="/restock-stats" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/restock-stats') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/restock-stats')}>
               <BarChart2 size={18} /> Restock Stats
             </Link>
           </NavbarMenuItem>
           <NavbarMenuItem className="py-1">
-            <Link href="/storage" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/storage') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-gray-700 dark:text-gray-300'}`} onPress={() => navigateMobile('/storage')}>
+            <Link href="/storage" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/storage') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/storage')}>
               <Warehouse size={18} /> Storage
             </Link>
           </NavbarMenuItem>
           <NavbarMenuItem className="py-1">
-            <Link href="/tasks" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/tasks') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-gray-700 dark:text-gray-300'}`} onPress={() => navigateMobile('/tasks')}>
+            <Link href="/tasks" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/tasks') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/tasks')}>
               <CheckSquare size={18} /> Tasks & Buy List
             </Link>
           </NavbarMenuItem>
         </>)}
         {isAdmin && (<>
           <Divider className="my-1" />
-          <NavbarMenuItem className="py-1"><p className="px-3 py-1 text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide">Admin</p></NavbarMenuItem>
+          <NavbarMenuItem className="py-1"><p className="px-3 py-1 text-xs font-semibold text-foreground-400 uppercase tracking-wide">Admin</p></NavbarMenuItem>
           <NavbarMenuItem className="py-1">
-            <Link href="/roster" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/roster') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-gray-700 dark:text-gray-300'}`} onPress={() => navigateMobile('/roster')}>
+            <Link href="/roster" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/roster') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/roster')}>
               <Users size={18} /> Roster
             </Link>
           </NavbarMenuItem>
           <NavbarMenuItem className="py-1">
-            <Link href="/issue-reports" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/issue-reports') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-gray-700 dark:text-gray-300'}`} onPress={() => navigateMobile('/issue-reports')}>
+            <Link href="/issue-reports" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/issue-reports') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/issue-reports')}>
               <AlertTriangle size={18} /> Reports
             </Link>
           </NavbarMenuItem>
         </>)}
         <Divider className="my-2" />
         <NavbarMenuItem className="py-1">
-          <Link href="/profile" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/profile') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-gray-700 dark:text-gray-300'}`} onPress={() => navigateMobile('/profile')}>
+          <Link href="/profile" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/profile') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/profile')}>
             <User size={18} /> Profile
           </Link>
         </NavbarMenuItem>

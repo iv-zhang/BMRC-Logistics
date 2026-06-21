@@ -15,7 +15,30 @@ const config: Config = {
     extend: {},
   },
   darkMode: "class",
-  plugins: [heroui()], // 3. Register the plugin
+  plugins: [
+    heroui({
+      themes: {
+        light: {
+          colors: {
+            background: "#F4F5FA",
+            content1:   "#FFFFFF",
+            content2:   "#EEF0F8",
+            content3:   "#E4E6F2",
+            divider:    "#DDE0EE",
+          },
+        },
+        dark: {
+          colors: {
+            background: "#0C0E14",
+            content1:   "#141820",
+            content2:   "#1C2030",
+            content3:   "#242840",
+            divider:    "#2A2F45",
+          },
+        },
+      },
+    }),
+  ],
 };
 
 export default config;

@@ -62,3 +62,6 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code worktrees (temporary agent working directories)
+.claude/worktrees/

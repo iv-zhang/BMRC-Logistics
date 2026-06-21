@@ -140,7 +140,7 @@ export default function StoragePage() {
       seedMissing();
     }, [user, isAuthorized, zones]);
 
-  if (loading) return <div className="h-screen flex items-center justify-center"><Spinner /></div>;
+  if (loading) return <div className="min-h-screen bg-background flex items-center justify-center"><Spinner size="lg" color="primary" /></div>;
   if (!isAuthorized) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4">
@@ -265,15 +265,15 @@ export default function StoragePage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-4 md:p-6">
+    <div className="min-h-screen bg-background p-4 md:p-6">
       <div className="max-w-6xl mx-auto">
         {/* Header */}
         <div className="mb-6 flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-gray-800 dark:text-white flex items-center gap-2">
+            <h1 className="text-3xl font-semibold flex items-center gap-2">
               Storage Management
             </h1>
-            <p className="text-gray-600 dark:text-gray-400">Manage shelves, containers, and storage zones.</p>
+            <p className="text-foreground-500">Manage shelves, containers, and storage zones.</p>
           </div>
           <div className="flex items-center gap-2">
             <Button size="sm" variant="flat" onPress={exportContainerLabels}>Export Container Labels (CSV)</Button>
@@ -288,9 +288,9 @@ export default function StoragePage() {
             <Card className="mt-4">
               <CardBody className="p-6">
                 <div className="mb-4">
-                  <h2 className="text-xl font-bold mb-4">Storage Zones</h2>
-                  <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">High-level location groupings (HQ Back Room, CPR Closet, Shed, etc.)</p>
-                  {zones.length === 0 && <p className="text-gray-500">No zones created yet. Zones are typically predefined.</p>}
+                  <h2 className="text-xl font-semibold mb-4">Storage Zones</h2>
+                  <p className="text-sm text-foreground-500 mb-4">High-level location groupings (HQ Back Room, CPR Closet, Shed, etc.)</p>
+                  {zones.length === 0 && <p className="text-foreground-500">No zones created yet. Zones are typically predefined.</p>}
                   {zones.length > 0 && (
                     <Table aria-label="Storage zones">
                       <TableHeader>
@@ -309,7 +309,7 @@ export default function StoragePage() {
                             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { setEditingZone(z); zoneDisclosure.onOpen(); } }}
                           >
                             <TableCell>
-                              <div className="text-sm text-indigo-700 dark:text-indigo-300">{z.name}</div>
+                              <div className="text-sm text-primary">{z.name}</div>
                             </TableCell>
                             <TableCell>{z.locationType}</TableCell>
                             <TableCell>{z.room || '—'}</TableCell>
@@ -328,7 +328,7 @@ export default function StoragePage() {
             <Card className="mt-4">
               <CardBody className="p-6">
                 <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-xl font-bold">Shelves</h2>
+                  <h2 className="text-xl font-semibold">Shelves</h2>
                   <Button
                     color="primary"
                     startContent={<Plus size={16} />}
@@ -340,7 +340,7 @@ export default function StoragePage() {
                     Add Shelf
                   </Button>
                 </div>
-                {shelves.length === 0 && <p className="text-gray-500">No shelves created yet.</p>}
+                {shelves.length === 0 && <p className="text-foreground-500">No shelves created yet.</p>}
                 {shelves.length > 0 && (
                   <Table aria-label="Shelves">
                     <TableHeader>
@@ -360,7 +360,7 @@ export default function StoragePage() {
                             <TableCell>{zone?.name || '—'}</TableCell>
                             <TableCell>{s.numberOfLevels || '—'}</TableCell>
                             <TableCell>{s.capacity || '—'}</TableCell>
-                            <TableCell className="text-xs text-gray-500">{s.barcode ? `${s.barcode.substring(0, 10)}...` : '—'}</TableCell>
+                            <TableCell className="text-xs text-foreground-500">{s.barcode ? `${s.barcode.substring(0, 10)}...` : '—'}</TableCell>
                             <TableCell>
                               <div className="flex gap-2">
                                 <Button
@@ -400,7 +400,7 @@ export default function StoragePage() {
             <Card className="mt-4">
               <CardBody className="p-6">
                 <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-xl font-bold">Containers / Boxes</h2>
+                  <h2 className="text-xl font-semibold">Containers / Boxes</h2>
                   <Button
                     color="primary"
                     startContent={<Plus size={16} />}
@@ -412,7 +412,7 @@ export default function StoragePage() {
                     Add Container
                   </Button>
                 </div>
-                {containers.length === 0 && <p className="text-gray-500">No containers created yet.</p>}
+                {containers.length === 0 && <p className="text-foreground-500">No containers created yet.</p>}
                 {containers.length > 0 && (
                   <Table aria-label="Containers">
                     <TableHeader>
@@ -428,7 +428,7 @@ export default function StoragePage() {
                           <TableRow key={c.id}>
                             <TableCell>{c.name}</TableCell>
                             <TableCell>{shelf?.name || '—'}</TableCell>
-                            <TableCell className="text-xs text-gray-500">{c.barcode ? `${c.barcode.substring(0, 10)}...` : '—'}</TableCell>
+                            <TableCell className="text-xs text-foreground-500">{c.barcode ? `${c.barcode.substring(0, 10)}...` : '—'}</TableCell>
                             <TableCell>
                               <div className="flex gap-2">
                                 <Button
@@ -482,7 +482,7 @@ export default function StoragePage() {
             <ModalHeader className="flex items-center justify-between">
               <div className="flex flex-col">
                 <div className="text-lg font-semibold">{editingZone ? editingZone.name : 'Zone'}</div>
-                <div className="text-sm text-gray-500">View or edit zone details, and inspect shelves/containers in this zone.</div>
+                <div className="text-sm text-foreground-500">View or edit zone details, and inspect shelves/containers in this zone.</div>
               </div>
               
             </ModalHeader>
@@ -490,30 +490,30 @@ export default function StoragePage() {
               {editingZone ? (
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 gap-2">
-                    <label className="text-xs text-gray-600">Name</label>
+                    <label className="text-xs text-foreground-500">Name</label>
                     <Input value={editingZone.name} onValueChange={(v) => setEditingZone({ ...editingZone, name: v } as StorageZone)} />
                   </div>
 
                   <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <label className="text-xs text-gray-600">Type</label>
+                      <label className="text-xs text-foreground-500">Type</label>
                       <Input value={editingZone.locationType} onValueChange={(v) => setEditingZone({ ...editingZone, locationType: v as any } as StorageZone)} />
                     </div>
                     <div>
-                      <label className="text-xs text-gray-600">Room</label>
+                      <label className="text-xs text-foreground-500">Room</label>
                       <Input value={(editingZone.room as any) ?? ''} onValueChange={(v) => setEditingZone({ ...editingZone, room: (v || undefined) as any } as StorageZone)} />
                     </div>
                   </div>
 
                   <div>
-                    <label className="text-xs text-gray-600">Description</label>
+                    <label className="text-xs text-foreground-500">Description</label>
                     <Input value={editingZone.description || ''} onValueChange={(v) => setEditingZone({ ...editingZone, description: v } as StorageZone)} />
                   </div>
 
                   <div>
                     <h3 className="font-semibold">Shelves in this zone</h3>
                     {shelves.filter(s => s.zoneId === editingZone.id).length === 0 ? (
-                      <p className="text-sm text-gray-500">No shelves assigned to this zone.</p>
+                      <p className="text-sm text-foreground-500">No shelves assigned to this zone.</p>
                     ) : (
                       <Table aria-label="Shelves in zone" className="mt-2">
                         <TableHeader>
@@ -543,7 +543,7 @@ export default function StoragePage() {
                     {(() => {
                       const shelfIds = shelves.filter(s => s.zoneId === editingZone.id).map(s => s.id);
                       const containersForZone = containers.filter(c => c.shelfId && shelfIds.includes(c.shelfId));
-                      if (containersForZone.length === 0) return <p className="text-sm text-gray-500">No containers found for this zone.</p>;
+                      if (containersForZone.length === 0) return <p className="text-sm text-foreground-500">No containers found for this zone.</p>;
                       return (
                         <Table aria-label="Containers in zone" className="mt-2">
                           <TableHeader>

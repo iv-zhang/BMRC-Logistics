@@ -489,8 +489,8 @@ export default function InventoryPage() {
   // ── Loading / unauth guard ────────────────────────────────────────────────
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
-        <Spinner size="lg" label="Loading inventory..." />
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Spinner size="lg" color="primary" />
       </div>
     );
   }
@@ -500,14 +500,14 @@ export default function InventoryPage() {
   // Render
   // ═══════════════════════════════════════════════════════════════════════════
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-slate-950">
+    <div className="min-h-screen bg-background">
       <div className="max-w-5xl mx-auto px-3 md:px-4 py-4 md:py-6">
 
         {/* ── Header ─────────────────────────────────────────────────────── */}
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4 md:mb-6">
           <div className="flex items-center gap-3">
-            <Boxes size={24} className="text-indigo-600" />
-            <h1 className="text-xl md:text-2xl font-bold">Inventory</h1>
+            <Boxes size={24} className="text-primary" />
+            <h1 className="text-xl md:text-2xl font-semibold">Inventory</h1>
             <Chip size="sm" variant="flat">{filteredInventory.length} items</Chip>
           </div>
           <div className="flex items-center gap-2">
@@ -535,7 +535,7 @@ export default function InventoryPage() {
         <div className="flex items-center gap-3 mb-4">
           <Input
             placeholder="Search items, locations, barcodes..."
-            startContent={<Search size={16} className="text-gray-400" />}
+            startContent={<Search size={16} className="text-foreground-400" />}
             value={searchTerm}
             onValueChange={setSearchTerm}
             className="flex-1"
@@ -593,8 +593,8 @@ export default function InventoryPage() {
           {filteredInventory.length === 0 && (
             <Card>
               <CardBody className="text-center py-12">
-                <PackageOpen size={40} className="mx-auto text-gray-300 mb-3" />
-                <p className="text-gray-500">No items found.</p>
+                <PackageOpen size={40} className="mx-auto text-foreground-300 mb-3" />
+                <p className="text-foreground-500">No items found.</p>
               </CardBody>
             </Card>
           )}
@@ -654,7 +654,7 @@ export default function InventoryPage() {
 
                         {/* Location */}
                         {location && (
-                          <div className="flex items-center gap-1 text-sm text-gray-500 mb-1">
+                          <div className="flex items-center gap-1 text-sm text-foreground-500 mb-1">
                             <MapPin size={12} />
                             <span className="truncate">{location}</span>
                           </div>
@@ -739,8 +739,8 @@ export default function InventoryPage() {
                       {/* ── Right: Stock display ──────────────────────────── */}
                       {item.isOxygen ? (
                         <div className="w-32 text-right flex-shrink-0">
-                          <p className="text-2xl font-bold text-blue-600">{item.oxygenPsi ?? 0}</p>
-                          <p className="text-xs text-gray-500 uppercase">PSI</p>
+                          <p className="text-2xl font-semibold tabular-nums text-primary">{item.oxygenPsi ?? 0}</p>
+                          <p className="text-xs text-foreground-500 uppercase">PSI</p>
                           <Progress
                             size="sm"
                             value={((item.oxygenPsi ?? 0) / (item.maxOxygenPsi ?? 1)) * 100}
@@ -748,7 +748,7 @@ export default function InventoryPage() {
                             aria-label="Oxygen Level"
                             className="mt-1"
                           />
-                          <p className="text-[10px] text-gray-400 mt-1">Max: {item.maxOxygenPsi}</p>
+                          <p className="text-xs text-foreground-400 mt-1">Max: {item.maxOxygenPsi}</p>
                         </div>
                       ) : (
                         <div className="flex flex-col items-end flex-shrink-0">
@@ -772,32 +772,32 @@ export default function InventoryPage() {
                             <div className="text-center min-w-[60px]">
                               {bag.hasBagTracking ? (
                                 <>
-                                  <p className={`text-3xl font-bold ${getStockStatusColor(bag.totalItems, item.reorderThreshold)}`}>
+                                  <p className={`text-3xl font-semibold tabular-nums ${getStockStatusColor(bag.totalItems, item.reorderThreshold)}`}>
                                     {bag.totalItems}
                                   </p>
-                                  <p className="text-xs text-gray-500 uppercase">Total Items</p>
-                                  <p className="text-[10px] text-gray-400">
+                                  <p className="text-xs text-foreground-500 uppercase">Total Items</p>
+                                  <p className="text-xs text-foreground-400">
                                     {bag.totalBags} bag{bag.totalBags !== 1 ? 's' : ''} + {bag.totalLoose} loose
                                   </p>
                                 </>
                               ) : (
                                 <>
-                                  <p className={`text-3xl font-bold ${getStockStatusColor(item.unopenedBoxes, item.reorderThreshold)}`}>
+                                  <p className={`text-3xl font-semibold tabular-nums ${getStockStatusColor(item.unopenedBoxes, item.reorderThreshold)}`}>
                                     {item.unopenedBoxes}
                                   </p>
-                                  <p className="text-xs text-gray-500 uppercase">
+                                  <p className="text-xs text-foreground-500 uppercase">
                                     {item.itemsPerBox ? 'Boxes' : 'Units'}
                                   </p>
                                   {item.itemsPerBox && (
                                     <>
-                                      <p className="text-[10px] text-gray-400">{item.itemsPerBox} per box</p>
-                                      <p className="text-sm font-semibold text-indigo-600 dark:text-indigo-400">
+                                      <p className="text-xs text-foreground-400">{item.itemsPerBox} per box</p>
+                                      <p className="text-sm font-semibold tabular-nums text-primary">
                                         {(item.unopenedBoxes * item.itemsPerBox) + (item.looseUnits ?? 0)} total
                                       </p>
                                     </>
                                   )}
                                   {!item.itemsPerBox && (item.looseUnits ?? 0) > 0 && (
-                                    <p className="text-[10px] text-gray-400">+ {item.looseUnits} loose</p>
+                                    <p className="text-xs text-foreground-400">+ {item.looseUnits} loose</p>
                                   )}
                                 </>
                               )}
@@ -837,7 +837,7 @@ export default function InventoryPage() {
                     <div className="flex justify-center mt-2">
                       <ChevronDown
                         size={16}
-                        className={`text-gray-400 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}
+                        className={`text-foreground-400 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}
                       />
                     </div>
                   </CardBody>
@@ -855,7 +855,7 @@ export default function InventoryPage() {
                       </div>
 
                       {(item.batches || []).length === 0 ? (
-                        <p className="text-sm text-gray-500">
+                        <p className="text-sm text-foreground-500">
                           No batches recorded. Stock is tracked at the item level.
                         </p>
                       ) : (
@@ -880,7 +880,7 @@ export default function InventoryPage() {
                             return (
                               <Card
                                 key={batch.id}
-                                className={`border ${expired ? 'border-red-300 bg-red-50/50 dark:bg-red-950/20' : 'bg-gray-50 dark:bg-slate-900'}`}
+                                className={`border ${expired ? 'bg-danger-50/60 dark:bg-danger-950/20' : 'bg-content2'}`}
                               >
                                 <CardBody className="p-3">
                                   <div className="flex justify-between items-start">
@@ -898,26 +898,26 @@ export default function InventoryPage() {
                                       </div>
 
                                       {batch.expirationDate && (
-                                        <p className={`text-sm ${expired ? 'text-red-500 font-medium' : 'text-gray-500'}`}>
+                                        <p className={`text-sm ${expired ? 'text-danger font-medium' : 'text-foreground-500'}`}>
                                           Exp: {batch.expirationDate.toLocaleDateString()}
                                           {expired && ' — EXPIRED'}
                                         </p>
                                       )}
 
                                       {batch.receivedAt && (
-                                        <p className="text-xs text-gray-400">
+                                        <p className="text-xs text-foreground-400">
                                           Received: {batch.receivedAt.toLocaleDateString()}
                                         </p>
                                       )}
 
                                       {batch.supplier && (
-                                        <p className="text-xs text-gray-400">
+                                        <p className="text-xs text-foreground-400">
                                           Supplier: {batch.supplier}
                                         </p>
                                       )}
 
                                       {batch.notes && (
-                                        <p className="text-xs text-gray-400 italic mt-1">
+                                        <p className="text-xs text-foreground-400 italic mt-1">
                                           {batch.notes}
                                         </p>
                                       )}
@@ -927,20 +927,20 @@ export default function InventoryPage() {
                                     <div className="text-right">
                                       {hasBags ? (
                                         <>
-                                          <p className="font-bold text-lg">{batchTotal}</p>
-                                          <p className="text-xs text-gray-500">
+                                          <p className="font-semibold text-lg tabular-nums">{batchTotal}</p>
+                                          <p className="text-xs text-foreground-500">
                                             {batchBags} bag{batchBags !== 1 ? 's' : ''} × {batchPerBag}/bag
                                           </p>
                                           {batchLoose > 0 && (
-                                            <p className="text-xs text-gray-400">
+                                            <p className="text-xs text-foreground-400">
                                               + {batchLoose} loose
                                             </p>
                                           )}
                                         </>
                                       ) : (
                                         <>
-                                          <p className="font-bold text-lg">{batch.stock}</p>
-                                          <p className="text-xs text-gray-500">units</p>
+                                          <p className="font-semibold text-lg tabular-nums">{batch.stock}</p>
+                                          <p className="text-xs text-foreground-500">units</p>
                                         </>
                                       )}
                                     </div>
@@ -962,7 +962,7 @@ export default function InventoryPage() {
                                   {/* Batch locations (legacy per-batch locations) */}
                                   {batch.locations && batch.locations.length > 0 && (
                                     <div className="mt-2 pt-2 border-t">
-                                      <p className="text-xs text-gray-400 mb-1">Locations:</p>
+                                      <p className="text-xs text-foreground-400 mb-1">Locations:</p>
                                       <div className="flex gap-2 flex-wrap">
                                         {batch.locations.map((loc) => (
                                           <Chip key={loc.id} size="sm" variant="flat">

@@ -321,10 +321,10 @@ export default function RestockPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
+    <div className="min-h-screen bg-background p-6">
       <div className="max-w-7xl mx-auto space-y-8">
         <div>
-          <h1 className="text-2xl font-bold mb-3">Restock</h1>
+          <h1 className="text-2xl font-semibold mb-3">Restock</h1>
           <Card className="p-4 mb-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <Input label="Shelf Name" value={name} onValueChange={setName} />
@@ -375,14 +375,14 @@ export default function RestockPage() {
               {loading ? (
                 <div className="flex justify-center py-6"><Spinner /></div>
               ) : shelves.length === 0 ? (
-                <div className="text-sm text-gray-600">No shelves yet</div>
+                <div className="text-sm text-foreground-500">No shelves yet</div>
                 ) : (
                 shelves.map((s: any) => (
                   <div key={s.id}>
-                    <div className="p-3 bg-white/80 dark:bg-slate-800/80 rounded-md grid grid-cols-[1fr_auto] items-center cursor-pointer" onClick={() => toggleShelfLog(s)}>
+                    <div className="p-3 bg-content1 rounded-md grid grid-cols-[1fr_auto] items-center cursor-pointer" onClick={() => toggleShelfLog(s)}>
                     <div>
                       <div className="text-lg font-semibold">{s.name}</div>
-                      <div className="text-sm text-gray-500 mt-1">
+                      <div className="text-sm text-foreground-500 mt-1">
                         {s.location}{s.locationDetail ? ' — ' + s.locationDetail : ''}
                         {(s.frontRoom || s.frontShelf || s.frontLevel) && (
                           <span className="ml-2 text-indigo-500">
@@ -391,8 +391,8 @@ export default function RestockPage() {
                         )}
                       </div>
                       <div className="flex items-center gap-2 mt-2">
-                        <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-indigo-50 text-indigo-700 dark:bg-slate-700 dark:text-white">Last: {formatDate(s.lastRestockedAt)}</span>
-                        {s.itemId ? <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-slate-100 text-gray-700 dark:bg-slate-700 dark:text-white">Item: {inventoryOptions.find((i:any)=>i.id===s.itemId)?.name || s.itemName || (inventoryLoaded ? 'Unknown Item' : '…')}</span> : null}
+                        <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-primary-50 text-primary">Last: {formatDate(s.lastRestockedAt)}</span>
+                        {s.itemId ? <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-content2 text-foreground-500">Item: {inventoryOptions.find((i:any)=>i.id===s.itemId)?.name || s.itemName || (inventoryLoaded ? 'Unknown Item' : '…')}</span> : null}
                       </div>
                     </div>
                     <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
@@ -404,18 +404,18 @@ export default function RestockPage() {
                     </div>
 
                                     {expandedShelfId === s.id ? (
-                      <div className="mt-2 p-3 bg-white/70 dark:bg-slate-800/70 rounded">
+                      <div className="mt-2 p-3 bg-content2 rounded">
                         {shelfLogs.length === 0 ? (
-                          <div className="text-sm text-gray-500">No activity recorded for this shelf.</div>
+                          <div className="text-sm text-foreground-500">No activity recorded for this shelf.</div>
                         ) : (
                           <ul className="space-y-3">
                             {shelfLogs.map((l: any) => (
-                              <li key={l.id} className="p-3 bg-white/80 dark:bg-slate-800/80 rounded">
+                              <li key={l.id} className="p-3 bg-content1 rounded">
                                 <div className="flex justify-between">
                                   <div className="font-medium text-sm">{l.type === 'event' ? 'Restock' : 'Report'}</div>
-                                  <div className="text-xs text-gray-400">{formatDate(l.createdAt)}</div>
+                                  <div className="text-xs text-foreground-400">{formatDate(l.createdAt)}</div>
                                 </div>
-                                <div className="text-sm text-gray-600 mt-1">{l.note || l.message || JSON.stringify(l)}</div>
+                                <div className="text-sm text-foreground-500 mt-1">{l.note || l.message || JSON.stringify(l)}</div>
                               </li>
                             ))}
                           </ul>

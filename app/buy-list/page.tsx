@@ -248,8 +248,8 @@ export default function BuyListPage() {
 
   if (loading) {
     return (
-      <div className="h-screen flex items-center justify-center">
-        <Spinner />
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Spinner size="lg" color="primary" />
       </div>
     );
   }
@@ -257,12 +257,12 @@ export default function BuyListPage() {
   // Restrict to admin/quartermaster
   if (userRole !== "admin" && userRole !== "quartermaster") {
     return (
-      <div className="min-h-screen p-6 bg-gradient-to-br from-amber-50 to-orange-50 dark:from-slate-900 dark:to-slate-800">
+      <div className="min-h-screen p-6 bg-background">
         <div className="max-w-3xl mx-auto">
           <Card>
             <CardBody className="text-center">
               <h2 className="text-xl font-semibold">Access Denied</h2>
-              <p className="mt-2 text-sm text-gray-600">Only admins and quartermasters can access the Buy List.</p>
+              <p className="mt-2 text-sm text-foreground-500">Only admins and quartermasters can access the Buy List.</p>
               <div className="mt-4">
                 <Button onPress={() => router.push("/dashboard")}>Back to Dashboard</Button>
               </div>
@@ -274,13 +274,13 @@ export default function BuyListPage() {
   }
 
   return (
-    <div className="min-h-screen p-4 md:p-6 bg-gradient-to-br from-amber-50 to-orange-50 dark:from-slate-900 dark:to-slate-800">
+    <div className="min-h-screen p-4 md:p-6 bg-background">
       <div className="max-w-5xl mx-auto space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-2">
             <ShoppingCart className="text-amber-600" size={24} />
-            <h1 className="text-2xl font-bold">Buy List</h1>
+            <h1 className="text-2xl font-semibold">Buy List</h1>
             {pendingCount > 0 && (
               <Chip size="sm" color="warning" variant="solid">
                 {pendingCount} to buy
@@ -296,19 +296,19 @@ export default function BuyListPage() {
         <div className="grid grid-cols-3 gap-2 md:gap-3">
           <Card className="bg-default-50">
             <CardBody className="text-center py-2 md:py-3">
-              <p className="text-xl md:text-2xl font-bold">{pendingCount}</p>
+              <p className="text-xl md:text-2xl font-semibold tabular-nums">{pendingCount}</p>
               <p className="text-xs text-default-500">Pending</p>
             </CardBody>
           </Card>
           <Card className="bg-primary-50">
             <CardBody className="text-center py-2 md:py-3">
-              <p className="text-xl md:text-2xl font-bold text-primary">{orderedCount}</p>
+              <p className="text-xl md:text-2xl font-semibold tabular-nums text-primary">{orderedCount}</p>
               <p className="text-xs text-primary-600">Ordered</p>
             </CardBody>
           </Card>
           <Card className="bg-success-50">
             <CardBody className="text-center py-2 md:py-3">
-              <p className="text-2xl font-bold text-success">{receivedCount}</p>
+              <p className="text-2xl font-semibold tabular-nums text-success">{receivedCount}</p>
               <p className="text-xs text-success-600">Received</p>
             </CardBody>
           </Card>
@@ -368,8 +368,8 @@ export default function BuyListPage() {
         {filteredItems.length === 0 ? (
           <Card>
             <CardBody className="text-center py-12">
-              <ShoppingCart size={48} className="mx-auto mb-3 text-gray-400" />
-              <p className="text-gray-600 dark:text-gray-400">
+              <ShoppingCart size={48} className="mx-auto mb-3 text-foreground-400" />
+              <p className="text-foreground-500">
                 {items.length === 0
                   ? "No items in the buy list yet. Add items as you notice things in storage!"
                   : "No items match your filters."}

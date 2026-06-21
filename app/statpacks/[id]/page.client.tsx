@@ -187,7 +187,7 @@ export default function StatpackDetailClient() {
       <div className="h-screen flex items-center justify-center">
         <Card className="w-full max-w-md">
           <CardBody className="text-center gap-4">
-            <p className="text-gray-600">Statpack not found. Redirecting...</p>
+            <p className="text-foreground-500">Statpack not found. Redirecting...</p>
             <Button onPress={() => router.push('/statpacks')}>
               Back to Statpacks
             </Button>
@@ -198,16 +198,16 @@ export default function StatpackDetailClient() {
   }
 
   if (loading || !pack) return (
-    <div className="h-screen flex items-center justify-center"><Spinner /></div>
+    <div className="min-h-screen bg-background flex items-center justify-center"><Spinner size="lg" color="primary" /></div>
   );
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
+    <div className="min-h-screen bg-background p-6">
       <div className="max-w-6xl mx-auto space-y-6">
         <div className="flex justify-between items-center">
           <div className="flex items-center gap-2">
-            <Package className="text-indigo-600" />
-            <h1 className="text-2xl font-bold">{pack.name}</h1>
+            <Package className="text-primary" />
+            <h1 className="text-2xl font-semibold">{pack.name}</h1>
           </div>
           <div className="flex gap-2">
             <Button variant="light" onPress={() => router.push('/assets')}>Back to Assets</Button>
@@ -223,23 +223,23 @@ export default function StatpackDetailClient() {
           <CardBody className="space-y-4">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div>
-                <p className="text-sm font-semibold text-gray-600">Status</p>
+                <p className="text-sm font-semibold text-foreground-500">Status</p>
                 <Chip size="sm" variant="flat">{pack.status}</Chip>
               </div>
               <div>
-                <p className="text-sm font-semibold text-gray-600">Location</p>
+                <p className="text-sm font-semibold text-foreground-500">Location</p>
                 <div className="flex items-center gap-2 text-sm">
-                  <MapPin size={14} className="text-gray-400" />
+                  <MapPin size={14} className="text-foreground-400" />
                   <span>{pack.currentLocation || '—'}</span>
                 </div>
               </div>
               <div>
-                <p className="text-sm font-semibold text-gray-600">Asset Value</p>
+                <p className="text-sm font-semibold text-foreground-500">Asset Value</p>
                 <p className="text-sm">{pack.assetValue ? `$${pack.assetValue.toFixed(2)}` : '—'}</p>
               </div>
               {userRole === 'admin' && (
                 <div>
-                  <p className="text-sm font-semibold text-gray-600">Actions</p>
+                  <p className="text-sm font-semibold text-foreground-500">Actions</p>
                   <div className="flex gap-2">
                     <Button size="sm" variant="light" onPress={beginSummaryEdit} startContent={<Pencil size={14} />}>Edit Summary</Button>
                     <Button size="sm" onPress={recomputeAssetValue}>Recompute Value</Button>
@@ -273,28 +273,28 @@ export default function StatpackDetailClient() {
               {pack.contents && pack.contents.length > 0 ? (
                 <div className="space-y-2 max-h-80 overflow-y-auto">
                   {pack.contents.map((item, idx) => (
-                    <div key={idx} className="p-2 border rounded-md bg-gray-50 dark:bg-slate-800 text-sm">
+                    <div key={idx} className="p-2 border rounded-md bg-content2 text-sm">
                       <div className="flex justify-between items-start">
                         <div className="flex-1">
                           <p className="font-medium">{item.itemDetails?.name || item.itemId}</p>
-                          <p className="text-xs text-gray-500">
+                          <p className="text-xs text-foreground-500">
                             Qty: {item.currentQuantity}/{item.requiredQuantity}
                             {item.serialNumber && ` • Serial: ${item.serialNumber}`}
                             {item.lotNumber && ` • Lot: ${item.lotNumber}`}
                           </p>
                           {item.expirationDate && (
-                            <p className="text-xs text-gray-500">Exp: {new Date(item.expirationDate).toLocaleDateString()}</p>
+                            <p className="text-xs text-foreground-500">Exp: {new Date(item.expirationDate).toLocaleDateString()}</p>
                           )}
                         </div>
                         {item.itemValue && (
-                          <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">${(item.itemValue * item.currentQuantity).toFixed(2)}</p>
+                          <p className="text-xs font-semibold tabular-nums">${(item.itemValue * item.currentQuantity).toFixed(2)}</p>
                         )}
                       </div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <p className="text-sm text-gray-500">No contents recorded</p>
+                <p className="text-sm text-foreground-500">No contents recorded</p>
               )}
             </div>
 
@@ -312,28 +312,28 @@ export default function StatpackDetailClient() {
               {pack.maintenance_logs && pack.maintenance_logs.length > 0 ? (
                 <div className="space-y-2 max-h-60 overflow-y-auto">
                   {pack.maintenance_logs.map((log, idx) => (
-                    <div key={log.id || idx} className="p-3 border rounded-md bg-gray-50 dark:bg-slate-800">
+                    <div key={log.id || idx} className="p-3 border rounded-md bg-content2">
                       <div className="flex justify-between items-start mb-2">
                         <div>
                           <p className="font-medium text-sm">{log.serviceType}</p>
-                          <p className="text-xs text-gray-600">{log.reason}</p>
+                          <p className="text-xs text-foreground-500">{log.reason}</p>
                         </div>
                         <Chip size="sm" color={log.status === 'completed' ? 'success' : 'warning'} variant="flat">
                           {log.status}
                         </Chip>
                       </div>
-                      {log.technician && <p className="text-xs text-gray-500">Technician: {log.technician}</p>}
+                      {log.technician && <p className="text-xs text-foreground-500">Technician: {log.technician}</p>}
                       {log.timestamp && (
-                        <p className="text-xs text-gray-500">
+                        <p className="text-xs text-foreground-500">
                           {log.timestamp instanceof Date ? log.timestamp.toLocaleDateString() : new Date(log.timestamp).toLocaleDateString()}
                         </p>
                       )}
-                      {log.notes && <p className="text-xs text-gray-600 mt-1 italic">{log.notes}</p>}
+                      {log.notes && <p className="text-xs text-foreground-500 mt-1 italic">{log.notes}</p>}
                     </div>
                   ))}
                 </div>
               ) : (
-                <p className="text-sm text-gray-500">No maintenance records</p>
+                <p className="text-sm text-foreground-500">No maintenance records</p>
               )}
             </div>
           </CardBody>
@@ -344,7 +344,7 @@ export default function StatpackDetailClient() {
         <ModalContent>
           <ModalHeader>Statpack Editor - {editingPack?.name}</ModalHeader>
           <ModalBody className="space-y-4">
-            {!editingPack && <p className="text-sm text-gray-500">No statpack loaded.</p>}
+            {!editingPack && <p className="text-sm text-foreground-500">No statpack loaded.</p>}
             {editingPack && (
               <div className="space-y-4">
                 <div className="flex justify-center">
@@ -364,7 +364,7 @@ export default function StatpackDetailClient() {
                   </Select>
                 </div>
                 <Divider />
-                <p className="text-sm text-gray-500">Use the visualizer to navigate compartments and edit items as needed.</p>
+                <p className="text-sm text-foreground-500">Use the visualizer to navigate compartments and edit items as needed.</p>
               </div>
             )}
           </ModalBody>

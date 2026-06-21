@@ -22,7 +22,7 @@ export default function Home() {
     return () => unsub();
   }, [router]);
 
-  if (checkingAuth) return <div className="h-screen flex items-center justify-center"><Spinner size="lg" /></div>;
+  if (checkingAuth) return <div className="min-h-screen bg-background flex items-center justify-center"><Spinner size="lg" color="primary" /></div>;
 
   
   
