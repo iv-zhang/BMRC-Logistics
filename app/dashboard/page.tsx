@@ -295,7 +295,7 @@ export default function DashboardPage() {
 
   if (authLoading || loading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center">
         <Spinner size="lg" color="primary" />
       </div>
     );
@@ -315,7 +315,7 @@ export default function DashboardPage() {
 
   // Render admin dashboard below
   return (
-    <div className="min-h-screen bg-background p-3 md:p-6">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-3 md:p-6">
       {showTutorial && user && (
         <TutorialOverlay userId={user.uid} onComplete={() => setShowTutorial(false)} />
       )}

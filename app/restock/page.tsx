@@ -321,7 +321,7 @@ export default function RestockPage() {
   }
 
   return (
-    <div className="min-h-screen bg-background p-6">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
       <div className="max-w-7xl mx-auto space-y-8">
         <div>
           <h1 className="text-2xl font-semibold mb-3">Restock</h1>

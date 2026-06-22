@@ -280,7 +280,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
 
   return (
     <>
-    <div className="min-h-screen bg-background p-3 md:p-6">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-3 md:p-6">
       <div className="max-w-4xl mx-auto space-y-4 md:space-y-8">
         {/* Header - Mobile Optimized */}
         <div className="mb-4 md:mb-6">

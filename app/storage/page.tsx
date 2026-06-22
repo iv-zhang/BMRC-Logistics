@@ -140,7 +140,7 @@ export default function StoragePage() {
       seedMissing();
     }, [user, isAuthorized, zones]);
 
-  if (loading) return <div className="min-h-screen bg-background flex items-center justify-center"><Spinner size="lg" color="primary" /></div>;
+  if (loading) return <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center"><Spinner size="lg" color="primary" /></div>;
   if (!isAuthorized) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4">
@@ -265,7 +265,7 @@ export default function StoragePage() {
   };
 
   return (
-    <div className="min-h-screen bg-background p-4 md:p-6">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-4 md:p-6">
       <div className="max-w-6xl mx-auto">
         {/* Header */}
         <div className="mb-6 flex items-center justify-between">

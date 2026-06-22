@@ -832,12 +832,12 @@ export default function AssetsPage() {
     });
   }, [assets, categoryFilter, searchTerm]);
 
-  if (loading) return <div className="min-h-screen bg-background flex items-center justify-center"><Spinner size="lg" color="primary" /></div>;
+  if (loading) return <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center"><Spinner size="lg" color="primary" /></div>;
 
   // Restrict access: general members should not access the Asset Management UI
   if (!loading && userRole === 'member') {
     return (
-      <div className="min-h-screen bg-background p-6">
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
         <div className="max-w-3xl mx-auto">
           <Card>
             <CardBody className="text-center">
@@ -854,7 +854,7 @@ export default function AssetsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-background p-3 md:p-6">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-3 md:p-6">
       <div className="max-w-7xl mx-auto space-y-4 md:space-y-6">
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">

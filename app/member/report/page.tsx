@@ -214,7 +214,7 @@ export default function MemberReportPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center">
         <Spinner size="lg" color="primary" />
       </div>
     );
@@ -222,7 +222,7 @@ export default function MemberReportPage() {
 
   if (success) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center">
         <Card className="max-w-md w-full mx-4">
           <CardBody className="text-center py-8 space-y-4">
             <div className="text-5xl">✓</div>
@@ -236,7 +236,7 @@ export default function MemberReportPage() {
   }
 
   return (
-    <div className="min-h-screen bg-background pb-20">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 pb-20">
       {/* Header */}
       <div className="bg-content1 sticky top-0 z-20 border-b border-divider shadow-sm">
         <div className="max-w-2xl mx-auto px-4 py-4 flex items-center gap-3">

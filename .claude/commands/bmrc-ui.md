@@ -85,6 +85,26 @@ or `dark:text-*` variants for surfaces covered by these tokens.** Only add a `da
 override when applying a color that has no HeroUI token (e.g. `dark:bg-danger-950/20`
 for a danger tint that doesn't map to a content token).
 
+## Page background gradient
+
+The page-level background is a blue gradient, not a flat color. This applies to every
+outermost page wrapper and every loading state. `bg-background` is reserved for cards,
+modals, navbars, and inset surfaces — **not** the page itself.
+
+```tsx
+// Standard page wrapper background
+"min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800"
+
+// Loading state
+<div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center">
+  <Spinner size="lg" color="primary" />
+</div>
+```
+
+The gradient is always `from-indigo-50 to-blue-50` in light mode and
+`from-slate-900 to-slate-800` in dark mode. Do not vary the direction (`to-br`) or
+the stops — consistency across every page is the goal.
+
 ## The five rules (the 90% fix)
 
 These resolve almost every issue raised in review. When in doubt, re-read this list.
@@ -107,8 +127,8 @@ These resolve almost every issue raised in review. When in doubt, re-read this l
 Every page uses the identical shell. The nav and the body share one container.
 
 ```tsx
-<div className="min-h-screen bg-background text-foreground">
-  <header className="border-b border-divider bg-background">
+<div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 text-foreground">
+  <header className="border-b border-divider bg-background/80 backdrop-blur-sm">
     <div className="mx-auto max-w-7xl px-6 h-14 flex items-center justify-between">
       {/* logo + nav links left, search + avatar right */}
     </div>
@@ -127,28 +147,28 @@ Every page uses the identical shell. The nav and the body share one container.
 
 ## Loading states
 
-Every loading screen must include `bg-background` so it matches the app surface. Never
-leave the background unset — HeroUI's default theme is pure black in dark mode.
+Every loading screen must use the page gradient so there's no color shift as the page
+loads. Never use `bg-background` or no background on a loading state.
 
 ```tsx
 // Correct loading state
-<div className="min-h-screen bg-background flex items-center justify-center">
+<div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center">
   <Spinner size="lg" color="primary" />
 </div>
 ```
 
 Never use a plain `<div className="flex items-center justify-center">` without a
-background class. This causes a flash of black on every page load in dark mode.
+background — it flashes black in dark mode.
 
 ## Surfaces & elevation
 
 Three surface levels, distinguished by **background**, not by stacking borders:
 
-| Level  | Token                                                   | Use                                          |
-|--------|---------------------------------------------------------|----------------------------------------------|
-| Page   | `bg-background`                                         | the page behind everything                   |
-| Card   | `bg-content1` + `border border-divider rounded-large`   | primary cards, list wrappers                 |
-| Inset  | `bg-content2 rounded-large` (no border)                 | rows, sub-panels, expanded details inside a card |
+| Level  | Class / Token                                                        | Use                                          |
+|--------|----------------------------------------------------------------------|----------------------------------------------|
+| Page   | `bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800` | outermost page wrapper and loading states |
+| Card   | `bg-content1` + `border border-divider rounded-large`                | primary cards, list wrappers                 |
+| Inset  | `bg-content2 rounded-large` (no border)                              | rows, sub-panels, expanded details inside a card |
 
 Rule: a `content1` card may contain `content2` insets, but **never** another bordered
 `content1` card. One outline per surface. Separate items inside a card with a divider
@@ -393,7 +413,7 @@ Operational tools should feel quick, not animated.
 ## Definition of done (self-check)
 
 - [ ] Nav and page content share the same `max-w-7xl px-6` container.
-- [ ] Every loading state has `bg-background` on the outer div.
+- [ ] Every page wrapper and loading state uses the gradient `from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800`, not `bg-background`.
 - [ ] No bordered card nested inside another bordered card.
 - [ ] All spacing is on the 4 px scale; icon ↔ text is `gap-2` and vertically centered.
 - [ ] One font family; every text size is from the type scale; numbers use `tabular-nums`.
@@ -414,7 +434,8 @@ Operational tools should feel quick, not animated.
 - Raw `text-gray-*` classes — replace with `text-foreground-*` tokens.
 - `text-indigo-*` or `text-blue-*` for icons — use `text-primary`.
 - `dark:bg-slate-900`, `dark:bg-gray-900` — use `bg-content2` or `bg-content1`.
-- Loading state div without `bg-background` — causes black flash in dark mode.
+- `bg-background` on the outermost page wrapper — use the gradient instead.
+- Loading state div without the gradient — causes a flat/black background before content loads.
 - HeroUI `<Table>` for entity list pages — use card-list expandable pattern instead.
 - Nested borders / double boxes.
 - Decorative or staggered load animations on dashboards/tables.

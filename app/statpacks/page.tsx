@@ -599,7 +599,7 @@ export default function StatpacksListPage() {
     setAttachingItemName('');
   };
 
-  if (loading) return <div className="min-h-screen bg-background flex items-center justify-center"><Spinner size="lg" color="primary" /></div>;
+  if (loading) return <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center"><Spinner size="lg" color="primary" /></div>;
 
   // Restrict access: general members should not access the Statpacks management UI
   if (!loading && userRole === 'member') {

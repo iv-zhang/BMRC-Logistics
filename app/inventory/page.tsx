@@ -489,7 +489,7 @@ export default function InventoryPage() {
   // ── Loading / unauth guard ────────────────────────────────────────────────
   if (loading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center">
         <Spinner size="lg" color="primary" />
       </div>
     );
@@ -500,7 +500,7 @@ export default function InventoryPage() {
   // Render
   // ═══════════════════════════════════════════════════════════════════════════
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
       <div className="max-w-5xl mx-auto px-3 md:px-4 py-4 md:py-6">
 
         {/* ── Header ─────────────────────────────────────────────────────── */}

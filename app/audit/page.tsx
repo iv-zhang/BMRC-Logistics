@@ -283,7 +283,7 @@ export default function AuditPage() {
   // ─── Loading / auth states ────────────────────────────────────────────────
   if (authLoading || loading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center">
         <Spinner size="lg" color="primary" />
       </div>
     );
@@ -317,7 +317,7 @@ export default function AuditPage() {
 
     return (
       <div
-        className="min-h-screen bg-background p-4"
+        className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-4"
         onTouchStart={onTouchStart}
         onTouchEnd={onTouchEnd}
       >
@@ -612,7 +612,7 @@ export default function AuditPage() {
   const totalVerified = verifiedDisposables + verifiedAssets;
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
       <div className="max-w-7xl mx-auto p-4 md:p-6 space-y-6">
         {/* Header */}
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">

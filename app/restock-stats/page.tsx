@@ -118,10 +118,10 @@ export default function RestockStatsPage() {
     return { totalReports, openReports, totalActions, avgResolveHours, topBoxes, topItems, trend };
   }, [reports, actions]);
 
-  if (loading) return <div className="h-screen flex items-center justify-center"><Spinner /></div>;
+  if (loading) return <div className="h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center"><Spinner /></div>;
 
   return (
-    <div className="min-h-screen p-6">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
       <div className="max-w-6xl mx-auto space-y-6">
         <div className="flex justify-between items-center">
           <div>
