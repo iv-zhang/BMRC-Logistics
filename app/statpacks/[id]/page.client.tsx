@@ -212,7 +212,7 @@ export default function StatpackDetailClient() {
           <div className="flex gap-2">
             <Button variant="light" onPress={() => router.push('/assets')}>Back to Assets</Button>
             <Button variant="light" onPress={openScanner} startContent={<MapPin size={16} />}>Scan Location</Button>
-            <Button color="primary" onPress={() => { setCheckoffAction('checkout'); checkoffDisclosure.onOpen(); }}>Check-Off</Button>
+            <Button color="primary" onPress={() => router.push(`/statpacks/check-off?id=${pack.id}&mode=audit`)}>Check-Off</Button>
             {userRole === 'admin' && (
               <Button variant="light" onPress={openEditor} startContent={<Pencil size={16} />}>Edit</Button>
             )}

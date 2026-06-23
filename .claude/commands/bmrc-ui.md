@@ -879,6 +879,340 @@ Operational tools should feel quick, not animated.
 
 Never use arbitrary z-index values outside this table.
 
+## Mobile-first full-screen flow (statpack check-off pattern)
+
+Use for linear, step-through workflows on mobile (verification, guided forms). The container is narrower and the page is divided into three locked zones.
+
+```tsx
+<div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
+  <div className="max-w-lg mx-auto min-h-screen flex flex-col">
+
+    {/* Sticky header */}
+    <header className="sticky top-0 z-30 bg-background/80 backdrop-blur-md border-b border-divider">
+      <div className="h-14 flex items-center gap-2 px-3">
+        <button
+          onClick={() => router.back()}
+          className="w-9 h-9 rounded-xl flex items-center justify-center text-foreground-500 hover:bg-content2 transition-colors duration-150"
+        >
+          <ArrowLeft size={20} />
+        </button>
+        <div className="flex-1 text-center flex flex-col leading-tight">
+          <span className="text-sm font-semibold text-foreground">{title}</span>
+          <span className="text-[11px] text-foreground-400 font-medium">{subtitle}</span>
+        </div>
+        <div className="w-9 h-9" /> {/* spacer keeps title centered */}
+      </div>
+    </header>
+
+    {/* Scrollable content */}
+    <main className="flex-1 px-3 py-4 flex flex-col gap-3 pb-28">
+      {/* cards go here */}
+    </main>
+
+    {/* Sticky footer */}
+    <footer className="sticky bottom-0 z-30 bg-background/80 backdrop-blur-md border-t border-divider px-3 py-3 flex items-center gap-3">
+      <div className="flex flex-col leading-tight">
+        <span className="text-sm font-semibold text-foreground tabular-nums">{progress}</span>
+        <span className="text-xs text-foreground-400 font-medium">{hint}</span>
+      </div>
+      <Button color="primary" className="ml-auto font-semibold" endContent={<ArrowRight size={16} />}>
+        {actionLabel}
+      </Button>
+    </footer>
+  </div>
+</div>
+```
+
+Rules:
+- Container: `max-w-lg mx-auto` — not `max-w-7xl`. Mobile-first flow, never sidebar layout.
+- Header/footer: `bg-background/80 backdrop-blur-md` (frosted glass), `z-30`.
+- Header height: `h-14`. Footer: `py-3`. Both use `px-3`.
+- Scrollable main: `flex-1 px-3 py-4 pb-28 flex flex-col gap-3`. The `pb-28` clears the sticky footer.
+- Back button: `w-9 h-9 rounded-xl`. Balancing spacer `div` keeps center title truly centered.
+- `z-30` for sticky chrome (below drawer `z-40` and drawer panel `z-50`).
+
+## Accordion group card (pocket/section groups)
+
+Use to collapse sections of items with per-group progress. Canonical: the pocket groups in the statpack check-off page.
+
+```tsx
+<div className="bg-content1 border border-divider rounded-2xl overflow-hidden">
+  {/* Header row — clickable */}
+  <button
+    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-content2 transition-colors duration-150 text-left"
+    onClick={() => setExpanded(p => !p)}
+  >
+    {/* Group code badge */}
+    <div className={`w-9 h-9 rounded-[9px] flex items-center justify-center font-mono font-semibold text-xs flex-none transition-colors ${
+      allDone ? 'bg-success-50 dark:bg-success-900/20 text-success' : 'bg-content3 text-foreground-400'
+    }`}>
+      {code}
+    </div>
+    <div className="flex-1 min-w-0">
+      <div className="font-semibold text-sm text-foreground">{name}</div>
+      <div className="text-xs text-foreground-400 font-medium">{statusLine}</div>
+    </div>
+    {/* Progress pill */}
+    <span className={`font-mono text-xs font-semibold px-2.5 py-1 rounded-full ${
+      allDone ? 'bg-success-50 dark:bg-success-900/20 text-success' : 'bg-primary-50 dark:bg-primary-900/20 text-primary'
+    }`}>
+      {verified}/{total}
+    </span>
+    <ChevronDown size={17} className={`text-foreground-400 transition-transform duration-200 flex-none ${expanded ? 'rotate-180' : ''}`} />
+  </button>
+
+  {/* Thin inline progress bar — sits between header and items */}
+  <div className="h-0.5 bg-content3">
+    <div
+      className={`h-full transition-all duration-300 ${allDone ? 'bg-success' : 'bg-primary'}`}
+      style={{ width: `${pct}%` }}
+    />
+  </div>
+
+  {expanded && (
+    <div className="p-2.5 flex flex-col gap-2">
+      {/* item rows */}
+    </div>
+  )}
+</div>
+```
+
+Rules:
+- Card: `rounded-2xl overflow-hidden` (clamps the progress bar to card edges).
+- Code badge: `w-9 h-9 rounded-[9px]` — same dimensions as the small category badge.
+- Thin bar: `h-0.5 bg-content3` wrapper; fill changes to `bg-success` when all done.
+- Chevron rotates 180° on expand: `transition-transform duration-200`.
+- Items inside: `p-2.5 flex flex-col gap-2`.
+
+## Item verification row (toggle + count stepper)
+
+Rows that users tap to verify. The entire row turns primary-colored when verified.
+
+```tsx
+const V = verified; // boolean
+const rowBase = V
+  ? 'bg-primary border-primary cursor-default'
+  : `bg-content2 border-divider ${!hasSpecialChecks ? 'cursor-pointer hover:border-primary/30' : 'cursor-default'}`;
+
+<div onClick={hasSpecialChecks ? undefined : onToggle}
+  className={`border rounded-xl px-3 py-3 transition-all duration-150 ${rowBase}`}>
+
+  <div className="flex items-center gap-3">
+    {/* Checkbox indicator */}
+    <div className={`w-6 h-6 rounded-lg flex-none flex items-center justify-center border-2 transition-all ${
+      V ? 'bg-white border-white' : 'bg-transparent border-foreground-400'
+    }`}>
+      <Check size={13} strokeWidth={3.5} className={V ? 'text-primary' : 'text-transparent'} />
+    </div>
+
+    {/* Name + inline tags */}
+    <div className="flex-1 min-w-0 flex flex-col gap-1">
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className={`text-sm font-semibold ${V ? 'text-white' : 'text-foreground'}`}>{name}</span>
+        {/* inline status tags — see "Inline status tags" section */}
+      </div>
+      <span className={`text-xs font-medium ${V ? 'text-white/70' : 'text-foreground-500'}`}>{subtitle}</span>
+    </div>
+
+    {/* Count stepper — compact variant */}
+    <div className="flex items-center gap-1.5 flex-none" onClick={e => e.stopPropagation()}>
+      <button onClick={onMinus}
+        className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors duration-150 ${
+          V ? 'bg-white/15 hover:bg-white/25 text-white' : 'bg-content3 hover:bg-content3/80 text-foreground-500'
+        }`}><Minus size={13} strokeWidth={2.7} /></button>
+      <div className="min-w-[38px] text-center">
+        <div className={`font-mono text-lg font-semibold leading-none tabular-nums ${
+          V ? 'text-white' : isShort ? 'text-warning' : 'text-foreground'
+        }`}>{count}</div>
+        <div className={`text-[9px] font-semibold mt-0.5 uppercase tracking-wide ${
+          V ? 'text-white/60' : 'text-foreground-400'
+        }`}>/ {required}</div>
+      </div>
+      <button onClick={onPlus}
+        className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors duration-150 ${
+          V ? 'bg-white/20 hover:bg-white/30 text-white'
+            : 'bg-primary-50 hover:bg-primary-100 dark:bg-primary-900/20 dark:hover:bg-primary-800/30 text-primary'
+        }`}><Plus size={13} strokeWidth={2.7} /></button>
+    </div>
+  </div>
+</div>
+```
+
+Rules:
+- Verified state: `bg-primary border-primary`. All text/icons adapt to white — use conditional classes on every element.
+- Checkbox: `w-6 h-6 rounded-lg border-2`. Check icon: `size={13} strokeWidth={3.5}`.
+- Stepper compact variant: `w-7 h-7 rounded-lg` buttons (vs `w-8 h-8 rounded-medium` standard).
+- Count display: `font-mono text-lg font-semibold tabular-nums`. Sub-label `/ required`: `text-[9px]`.
+- Always `e.stopPropagation()` on the stepper wrapper click.
+- When `hasSpecialChecks` (expiration/PSI/AED), row is not tappable itself — nested panel handles verification.
+
+## Inline status tags (dense item name badges)
+
+For item names in dense rows where HeroUI `<Chip>` would be too large, use a raw `<span>`:
+
+```tsx
+// Pattern: always adapt to white text when parent row is verified (V)
+<span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+  V ? 'bg-white/20 text-white' : 'bg-danger-50 dark:bg-danger-900/30 text-danger'
+}`}>Expired</span>
+
+<span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+  V ? 'bg-white/20 text-white' : 'bg-warning-50 dark:bg-warning-900/20 text-warning'
+}`}>Expiring</span>
+
+<span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+  V ? 'bg-white/20 text-white' : 'bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-300'
+}`}>O₂</span>
+
+<span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+  V ? 'bg-white/20 text-white' : 'bg-pink-100 dark:bg-pink-900/30 text-pink-700 dark:text-pink-300'
+}`}>Rx</span>
+
+<span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+  V ? 'bg-white/20 text-white' : 'bg-primary-50 dark:bg-primary-900/20 text-primary'
+}`}>Asset</span>
+```
+
+Rules:
+- Size: `text-[10px]` only (this is the one permitted deviation from the type scale — used exclusively for inline name badges in dense rows, never elsewhere).
+- Padding: `px-1.5 py-0.5 rounded` (smaller than Chip `rounded-full`).
+- When row has a verified/primary background, all tags become `bg-white/20 text-white` — don't leave semantic colors against a blue background.
+- Do not use these as status chips outside of dense item-row contexts. Use `<Chip size="sm" variant="flat">` everywhere else.
+
+## Required checks panel (nested inset in item row)
+
+For items that need expiration dates, O₂ PSI readings, or AED checks before they can be verified.
+
+```tsx
+<div className={`mt-3 rounded-xl p-3 border ${
+  V ? 'bg-white/10 border-white/20' : 'bg-warning-50/60 dark:bg-warning-950/20 border-warning/20'
+}`}>
+  {/* Section header */}
+  <div className="flex items-center gap-1.5 mb-2.5">
+    <Shield size={11} className={V ? 'text-white' : 'text-warning'} />
+    <span className={`text-[10px] font-semibold uppercase tracking-widest ${V ? 'text-white' : 'text-warning'}`}>
+      Required checks
+    </span>
+    <span className={`ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+      checksComplete
+        ? V ? 'bg-white/20 text-white' : 'bg-success-50 dark:bg-success-900/20 text-success'
+        : V ? 'bg-white/15 text-white/70' : 'bg-warning-50 dark:bg-warning-900/20 text-warning'
+    }`}>
+      {checksComplete ? 'Complete' : 'Action needed'}
+    </span>
+  </div>
+
+  <div className="flex flex-col gap-2">
+    {/* Expiration / month input */}
+    <div className="flex items-center gap-2">
+      <span className={`flex-1 text-xs font-semibold ${V ? 'text-white/90' : 'text-foreground-600'}`}>
+        Confirm expiration
+      </span>
+      <input type="month" value={exp ?? ''}
+        className={`w-36 text-xs font-semibold px-2 py-1.5 rounded-lg border outline-none bg-content1 text-foreground ${V ? 'border-white/40' : 'border-divider'}`}
+      />
+      <span className={`w-2 h-2 rounded-full flex-none ${exp ? 'bg-success' : 'bg-warning'}`} />
+    </div>
+
+    {/* PSI numeric input */}
+    <div className="flex items-center gap-2">
+      <span className={`flex-1 text-xs font-semibold ${V ? 'text-white/90' : 'text-foreground-600'}`}>
+        Cylinder pressure
+      </span>
+      <input type="text" inputMode="numeric" placeholder="PSI"
+        className={`w-20 font-mono text-xs font-semibold px-2 py-1.5 rounded-lg border outline-none bg-content1 text-foreground ${V ? 'border-white/40' : 'border-divider'}`}
+      />
+      <span className={`text-xs font-semibold min-w-[60px] ${psiColor}`}>{psiHint}</span>
+    </div>
+
+    {/* AED checkbox */}
+    <button onClick={() => toggle('padsSealed')} className="flex items-center gap-2 text-left">
+      <div className={`w-5 h-5 rounded-md flex-none flex items-center justify-center border-2 transition-all ${
+        checked ? V ? 'bg-white border-white' : 'bg-primary border-primary' : V ? 'bg-transparent border-white/60' : 'bg-transparent border-foreground-400'
+      }`}>
+        <Check size={11} strokeWidth={3.5} className={checked ? (V ? 'text-primary' : 'text-white') : 'text-transparent'} />
+      </div>
+      <span className={`text-xs font-semibold ${V ? 'text-white/90' : 'text-foreground-600'}`}>Pads sealed &amp; unexpired</span>
+    </button>
+  </div>
+</div>
+```
+
+Rules:
+- Panel background: `bg-warning-50/60 dark:bg-warning-950/20 border-warning/20` (unverified), `bg-white/10 border-white/20` (verified/on primary bg).
+- Section label: `text-[10px] font-semibold uppercase tracking-widest`. The only permitted non-11px section label.
+- Status dot: `w-2 h-2 rounded-full` — `bg-success` when filled, `bg-warning` when empty.
+- Inline inputs: `bg-content1 text-foreground border-divider rounded-lg px-2 py-1.5 outline-none` — month picker `w-36`, PSI `w-20 font-mono`.
+- AED checkbox: `w-5 h-5 rounded-md border-2` (slightly smaller than the item-row checkbox `w-6 h-6 rounded-lg`).
+- All elements flip to white-tinted variants when the parent item row is verified.
+
+## Restock inline prompt
+
+Shown inside a verified-but-short item row to offer immediate remediation.
+
+```tsx
+<div className={`mt-3 flex items-center gap-2 flex-wrap rounded-xl px-3 py-2 ${
+  V ? 'bg-white/10' : 'bg-warning-50 dark:bg-warning-950/20'
+}`}>
+  <span className={`text-xs font-semibold ${V ? 'text-white' : 'text-warning'}`}>
+    Short {shortBy} — restocked?
+  </span>
+  <div className="ml-auto flex gap-1.5">
+    <button onClick={onRestock}
+      className="text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-white text-primary hover:bg-white/90 transition-colors">
+      I restocked it
+    </button>
+    <button onClick={onReport}
+      className={`text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border transition-colors ${
+        V ? 'border-white/40 text-white hover:bg-white/10' : 'border-divider text-foreground-500 hover:bg-content3'
+      }`}>
+      Report
+    </button>
+  </div>
+</div>
+```
+
+Rules:
+- `rounded-xl px-3 py-2` — tighter than a card, looser than a chip.
+- Action button typography: `text-[11px] font-semibold px-2.5 py-1.5 rounded-lg` — inline micro-button, not a full HeroUI Button.
+- "I restocked it" always uses `bg-white text-primary` regardless of verified state — it reads as a clear call-to-action against any background.
+
+## Result toast (action feedback)
+
+Use for success/failure notifications after a completed action. Different from the saving toast — this is the outcome, not progress.
+
+```tsx
+{toast && (
+  <div className={`fixed z-[60] bottom-20 left-1/2 -translate-x-1/2 flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-lg text-sm font-semibold text-white max-w-[92vw] ${
+    toast.ok ? 'bg-success' : 'bg-danger'
+  }`}>
+    <div className="w-5 h-5 rounded-full bg-white/25 flex items-center justify-center flex-none">
+      {toast.ok ? <Check size={12} strokeWidth={3.5} /> : <span className="text-xs leading-none">✕</span>}
+    </div>
+    <span>{toast.msg}</span>
+  </div>
+)}
+```
+
+Rules:
+- Background: `bg-success` (ok) or `bg-danger` (error) — this is the one permitted colored toast. Text is always `text-white`.
+- Position: `bottom-20` (above a sticky footer) or `bottom-6` (no footer). `left-1/2 -translate-x-1/2`.
+- Shape: `rounded-xl px-4 py-3`. Icon circle: `w-5 h-5 rounded-full bg-white/25`.
+- `z-[60]`, `shadow-lg`, `max-w-[92vw]` to fit narrow mobile screens.
+- Auto-dismiss after ~2.5s. No manual close button.
+- **Contrast rule:** Neutral saving-state toast (`bg-content1 border border-divider text-foreground`) is for in-progress writes. Colored toast (`bg-success` / `bg-danger`) is for completed outcomes. Never mix the two.
+
+## Updated z-index table
+
+| Layer                  | z-index      | Used for                                    |
+|------------------------|--------------|---------------------------------------------|
+| Page content           | (default)    | cards, tables, sidebars                     |
+| Sticky header/footer   | `z-30`       | frosted chrome in mobile-first flows        |
+| Drawer backdrop        | `z-40`       | `bg-black/40` overlay                       |
+| Detail drawer          | `z-50`       | right-side panel                            |
+| Saving toast / result  | `z-[60]`     | bottom-center feedback (both toast variants)|
+| Modals (HeroUI)        | (HeroUI own) | `Modal` component handles itself            |
+
 ## Before you code
 
 1. Read `tailwind.config.ts` and `app/inventory/page.tsx`. Match exactly.
@@ -890,29 +1224,34 @@ Never use arbitrary z-index values outside this table.
 ## Definition of done (self-check)
 
 - [ ] Page wrapper uses the gradient; loading state uses the gradient.
-- [ ] `max-w-7xl mx-auto px-6 py-8` on the content container.
+- [ ] Desktop pages: `max-w-7xl mx-auto px-6 py-8`. Mobile-first flows: `max-w-lg mx-auto`, sticky header/footer.
 - [ ] Page header: `text-2xl font-semibold` title + stats row + action buttons, `mb-6`.
 - [ ] No bordered card nested inside another bordered card.
 - [ ] All spacing is on the 4 px scale; icon ↔ text is `gap-2` and vertically centered.
-- [ ] Font sizes match the type scale; `text-[11px]` only for sidebar/table section labels; `text-[9px]` only for unit micro-labels.
+- [ ] Font sizes match the type scale; `text-[11px]` only for sidebar/table section labels; `text-[9px]` only for unit micro-labels; `text-[10px]` only for inline item-name status tags.
 - [ ] No `font-bold` — use `font-semibold`. No `tabular-nums` missing on any number.
 - [ ] `font-mono` on lot numbers, barcodes, PSI, and quantity displays.
 - [ ] Every color maps to its single meaning; category-type colors only on identity badges.
 - [ ] No `text-gray-*`, no `text-indigo-*`, no `text-blue-*` for status or icons.
-- [ ] Status chips: `<Chip size="sm" variant="flat">`. No hand-rolled badges.
+- [ ] Status chips: `<Chip size="sm" variant="flat">`. Inline item-name tags: `text-[10px] px-1.5 py-0.5 rounded`. No other hand-rolled badges.
+- [ ] Verified item rows: entire row bg-primary, all child text/icons adapted to white variants.
+- [ ] Inline tags on a verified (primary bg) row: `bg-white/20 text-white` regardless of tag type.
 - [ ] Sidebar layout: `w-64 flex-none sticky top-20`; section labels `text-[11px] uppercase tracking-widest`.
 - [ ] Detail drawer: backdrop `z-40`, panel `z-50`, `w-[480px] max-w-[94vw] bg-content1`.
-- [ ] Saving toast uses `z-[60]` and `bg-content1 border border-divider`.
+- [ ] Saving toast (in-progress): `z-[60]`, `bg-content1 border border-divider`. Result toast (outcome): `bg-success`/`bg-danger`, white text, `bottom-20` above footer or `bottom-6`.
 - [ ] Quick-adjust buttons call `e.stopPropagation()` to prevent row/drawer triggers.
 - [ ] Grid table uses CSS grid (`gridTemplateColumns`), NOT HeroUI `<Table>`.
 - [ ] View toggle: active segment `bg-primary text-white`; inactive `text-foreground-500 hover:bg-content2`.
+- [ ] Mobile-first sticky header/footer: `z-30 bg-background/80 backdrop-blur-md`.
+- [ ] Accordion group: `rounded-2xl overflow-hidden`; thin bar `h-0.5` between header and items.
 - [ ] Motion: `duration-150` hover, `duration-200` default; no `hover:scale-*`.
 - [ ] Looks correct in both light and dark mode. Looks correct at mobile width.
 
 ## Anti-patterns
 
 - A new color "for variety," a second font, or a different card style on one screen.
-- Arbitrary spacing (`p-[18px]`, `gap-[7px]`). `text-[10px]` or any size not in the type scale.
+- Arbitrary spacing (`p-[18px]`, `gap-[7px]`). Font sizes not in the type scale.
+- `text-[10px]` anywhere except inline item-name status tags in dense rows.
 - `font-bold` — use `font-semibold`.
 - Raw `text-gray-*` — replace with `text-foreground-*`.
 - `text-indigo-*` or `text-blue-*` for icons or status — use `text-primary` or `text-danger`.
@@ -923,11 +1262,18 @@ Never use arbitrary z-index values outside this table.
 - Nested borders / double boxes.
 - Decorative or staggered load animations on dashboards/tables.
 - `hover:scale-105` or any scale-on-hover — no transform animations on cards.
-- Hand-rolled badges (`<span className="bg-green-100 text-green-700 rounded px-1">`).
+- Hand-rolled status badges outside of inline item-name tag contexts.
+- Keeping semantic tag colors (danger, warning, sky, pink) on a verified/primary-bg row — all tags must become `bg-white/20 text-white`.
+- Using a colored result toast (`bg-success`/`bg-danger`) for in-progress saves — use the neutral `bg-content1` saving toast instead.
 - Missing `e.stopPropagation()` on stepper buttons inside a clickable card/row.
 - `z-index` values outside the documented layer table.
 - Omitting `font-mono` on quantities, lot numbers, or PSI values.
 - Sidebar width other than `w-64` or sticky offset other than `top-20`.
+- `max-w-7xl` on mobile-first flows — use `max-w-lg` for narrow guided flows.
+- Mobile flow sticky header/footer without `bg-background/80 backdrop-blur-md` — causes content bleed-through while scrolling.
+- Forgetting `pb-28` on the scrollable main in mobile-first flows — content disappears behind sticky footer.
+- `useSearchParams` in a page that receives dynamic IDs via URL — use `window.location.search` to avoid the Suspense requirement with `output: export`.
+- Dynamic `[id]` route segments for Firestore document IDs — IDs aren't known at build time so `generateStaticParams` can't enumerate them. Use a static route + `?id=` query param instead.
 - Inline text stats for status counts (e.g. `3 low stock` plain text) — use colored stat boxes instead.
 - Tooltip wrappers on nav links — they compete with the pill hover state.
 - `color` prop on HeroUI `Link` inside nav — use `className` only so pill styles apply.

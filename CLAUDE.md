@@ -51,8 +51,9 @@ For local testing, set `localStorage.bmrc_role_override` to any role string; the
 |---|---|
 | `/dashboard` | Splits into `member-dashboard.tsx` vs. admin view based on role |
 | `/statpacks` | Admin statpack list |
-| `/statpacks/checkout` | Member pocket-by-pocket checkout flow |
-| `/statpacks/checkin` | Member check-in flow |
+| `/statpacks/checkout` | Member pack selection for checkout (then navigates to check-off) |
+| `/statpacks/checkin` | Member pack selection for check-in (then navigates to check-off) |
+| `/statpacks/check-off` | Unified pocket-by-pocket verification page (checkout / checkin / audit); receives `?id=<packId>&mode=<mode>` query params |
 | `/statpacks/[id]` | Admin statpack detail/edit |
 | `/assets` | Admin asset management |
 | `/inventory` | Admin inventory management |
@@ -68,8 +69,12 @@ Key reusable components in `app/components/`:
 - `statpack-checkoff-modal.tsx` — shared between admin full-pack audits and member pocket verification; `skipLogging={true}` + `pocketName` props put it in pocket mode
 - `tutorial-overlay.tsx` — first-login onboarding overlay (6 steps); marks `tutorialCompleted` on the user doc when finished
 
-### Statpack Checkout Flow (member)
-`app/statpacks/checkout/page.tsx` implements pocket-by-pocket verification. Each pocket opens `StatpackCheckOffModal` with `skipLogging={true}`; per-pocket results are accumulated locally and written to Firestore in a single log entry only at the end. The `POCKET_NAMES` map in that file provides human-readable pocket labels passed as `pocketName` to the modal.
+### Statpack Checkout / Check-in / Audit Flow
+All three modes share one page: `app/statpacks/check-off/page.tsx` (static route). The checkout and check-in list pages (`/statpacks/checkout`, `/statpacks/checkin`) let the member pick a pack, then navigate to `/statpacks/check-off?id=<packId>&mode=<checkout|checkin>`. The admin detail page (`/statpacks/[id]`) links to `?mode=audit`.
+
+The check-off page reads `id` and `mode` from `window.location.search` (not `useSearchParams` — avoids Suspense) and manages the full pocket-by-pocket flow locally before calling `logStatpackCheckOff` once at the end.
+
+**`output: export` routing constraint:** All pack IDs are Firestore runtime IDs not known at build time, so dynamic `[id]/checkoff` routes cannot work. The pattern is: static route + query params. Always use `/statpacks/check-off?id=${packId}&mode=${mode}` — never a nested `[id]` segment — when navigating to the verification flow.
 
 ### Firestore Collections (notable)
 `inventory`, `statpacks`, `statpack_logs`, `assets`, `restock_shelves`, `restock_logs`, `audit_events`, `issue_reports`, `buy_list`, `tasks`, `users`, `storage_zones`, `shelves`, `containers`, `box_logs`, `medication_logs`
