@@ -1,13 +1,13 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Hanken_Grotesk, Geist_Mono } from "next/font/google";
 import { Providers } from "@/app/providers";
 import "./globals.css";
-// 1. Ensure this import remains here
 import AppNavbar from './components/appnavbar';
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const hankenGrotesk = Hanken_Grotesk({
+  variable: "--font-hanken-grotesk",
   subsets: ["latin"],
+  weight: ["400", "500", "600", "700", "800"],
 });
 
 const geistMono = Geist_Mono({
@@ -31,13 +31,10 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 text-foreground`}
+        className={`${hankenGrotesk.variable} ${geistMono.variable} antialiased bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 text-foreground`}
       >
         <Providers>
-          {/* 2. ADD THE NAVBAR HERE */}
-          <AppNavbar /> 
-          
-          {/* The rest of your app pages render here */}
+          <AppNavbar />
           {children}
         </Providers>
       </body>

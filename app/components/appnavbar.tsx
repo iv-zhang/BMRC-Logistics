@@ -26,7 +26,7 @@ import { auth, db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
 
 // Use lucide-react icons consistently throughout the app
-import { 
+import {
   Home,
   Box,
   Users,
@@ -43,7 +43,11 @@ import {
   RefreshCw,
   CheckSquare,
   GraduationCap,
+  Sun,
+  Moon,
 } from 'lucide-react';
+
+import { useTheme } from 'next-themes';
 
 import IssueReportForm from './IssueReportForm';
 import TutorialOverlay from './tutorial-overlay';
@@ -54,6 +58,9 @@ export default function AppNavbar() {
   const { user, role } = useUserRole();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isReportOpen, setIsReportOpen] = useState(false);
+  const { theme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
 
   const isAdmin = role === 'admin' || role === 'quartermaster';
   const [showTutorial, setShowTutorial] = useState(false);
@@ -148,7 +155,13 @@ export default function AppNavbar() {
         <NavbarBrand>
           <Link href="/dashboard" className="block">
             <div className="relative w-[60px] h-[60px]">
-              <Image src="/images/NoBackground_NewLogoWhite.PNG" alt="BMRC logo" fill className="object-contain" priority />
+              <Image
+                src={mounted && theme === 'light' ? '/images/NoBackground_NewLogoBlack.PNG' : '/images/NoBackground_NewLogoWhite.PNG'}
+                alt="BMRC logo"
+                fill
+                className="object-contain"
+                priority
+              />
             </div>
           </Link>
         </NavbarBrand>
@@ -158,24 +171,32 @@ export default function AppNavbar() {
       <NavbarBrand className="gap-4 ml-[10px] hidden sm:flex">
         <Link href="/dashboard" className="block">
           <div className="relative w-[79px] h-[79px]">
-            <Image src="/images/NoBackground_NewLogoWhite.PNG" alt="BMRC logo" fill className="object-contain" priority />
+            <Image
+              src={mounted && theme === 'light' ? '/images/NoBackground_NewLogoBlack.PNG' : '/images/NoBackground_NewLogoWhite.PNG'}
+              alt="BMRC logo"
+              fill
+              className="object-contain"
+              priority
+            />
           </div>
         </Link>
+        <div className="flex flex-col leading-none">
+          <span className="font-bold text-[15px] tracking-tight text-foreground" style={{ letterSpacing: '-0.02em' }}>BMRC Logistics</span>
+          <span className="text-[10.5px] font-medium text-foreground-300" style={{ letterSpacing: '0.02em' }}>Berkeley Medical Reserve Corps</span>
+        </div>
         <div className="flex gap-4 ml-0">
           <NavbarItem isActive={isActive('/dashboard')}>
-            <Tooltip content="View main dashboard">
-              <Link href="/dashboard" color={isActive('/dashboard') ? "primary" : "foreground"} className={isActive('/dashboard') ? "font-semibold" : "text-foreground-500"}>
-                <Home className="w-4 h-4 mr-1" /> Dashboard
-              </Link>
-            </Tooltip>
+            <Link href="/dashboard" className={isActive('/dashboard') ? 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] bg-primary-50 dark:bg-primary-900/20 text-primary font-semibold text-[15px] transition-colors duration-150' : 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] text-foreground-400 font-medium text-[15px] hover:bg-content2 transition-colors duration-150'}>
+              <Home className="w-4 h-4" /> Dashboard
+            </Link>
           </NavbarItem>
 
           {isAdmin && (
             <Dropdown>
               <NavbarItem>
                 <DropdownTrigger>
-                  <button className={`flex items-center ${isActive('/assets') || isActivePrefix('/statpacks') ? 'font-semibold text-primary' : 'text-foreground-500'}`}>
-                    <Box className="w-4 h-4 mr-1" /> Assets
+                  <button className={isActive('/assets') || isActivePrefix('/statpacks') ? 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] bg-primary-50 dark:bg-primary-900/20 text-primary font-semibold text-[15px] transition-colors duration-150' : 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] text-foreground-400 font-medium text-[15px] hover:bg-content2 transition-colors duration-150'}>
+                    <Box className="w-4 h-4" /> Assets
                   </button>
                 </DropdownTrigger>
               </NavbarItem>
@@ -190,8 +211,8 @@ export default function AppNavbar() {
             <Dropdown>
               <NavbarItem>
                 <DropdownTrigger>
-                  <button className={`flex items-center ${isActive('/inventory') || isActive('/restock') || isActive('/restock-stats') || isActive('/storage') || isActive('/audit') ? 'font-semibold text-primary' : 'text-foreground-500'}`}>
-                    <Warehouse className="w-4 h-4 mr-1" /> Inventory
+                  <button className={isActive('/inventory') || isActive('/restock') || isActive('/restock-stats') || isActive('/storage') || isActive('/audit') ? 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] bg-primary-50 dark:bg-primary-900/20 text-primary font-semibold text-[15px] transition-colors duration-150' : 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] text-foreground-400 font-medium text-[15px] hover:bg-content2 transition-colors duration-150'}>
+                    <Warehouse className="w-4 h-4" /> Inventory
                   </button>
                 </DropdownTrigger>
               </NavbarItem>
@@ -208,21 +229,17 @@ export default function AppNavbar() {
 
           {isAdmin && (
             <NavbarItem isActive={isActive('/roster')}>
-              <Tooltip content="View team roster">
-                <Link href="/roster" color={isActive('/roster') ? "primary" : "foreground"} className={isActive('/roster') ? "font-semibold" : "text-foreground-500"}>
-                  <Users className="w-4 h-4 mr-1" /> Roster
-                </Link>
-              </Tooltip>
+              <Link href="/roster" className={isActive('/roster') ? 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] bg-primary-50 dark:bg-primary-900/20 text-primary font-semibold text-[15px] transition-colors duration-150' : 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] text-foreground-400 font-medium text-[15px] hover:bg-content2 transition-colors duration-150'}>
+                <Users className="w-4 h-4" /> Roster
+              </Link>
             </NavbarItem>
           )}
 
           {isAdmin && (
             <NavbarItem isActive={isActive('/issue-reports') || isActive('/reports')}>
-              <Tooltip content="View reports">
-                <Link href="/issue-reports" color={isActive('/issue-reports') || isActive('/reports') ? "primary" : "foreground"} className={isActive('/issue-reports') || isActive('/reports') ? "font-semibold" : "text-foreground-500"}>
-                  <AlertTriangle className="w-4 h-4 mr-1" /> Reports
-                </Link>
-              </Tooltip>
+              <Link href="/issue-reports" className={isActive('/issue-reports') || isActive('/reports') ? 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] bg-primary-50 dark:bg-primary-900/20 text-primary font-semibold text-[15px] transition-colors duration-150' : 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] text-foreground-400 font-medium text-[15px] hover:bg-content2 transition-colors duration-150'}>
+                <AlertTriangle className="w-4 h-4" /> Reports
+              </Link>
             </NavbarItem>
           )}
         </div>
@@ -237,6 +254,20 @@ export default function AppNavbar() {
             </Button>
           </Tooltip>
         </NavbarItem>
+        {mounted && (
+          <NavbarItem>
+            <Button
+              isIconOnly
+              variant="light"
+              size="sm"
+              aria-label="Toggle theme"
+              onPress={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+              className="text-foreground-400"
+            >
+              {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+            </Button>
+          </NavbarItem>
+        )}
         <NavbarItem>
           <Dropdown placement="bottom-end" offset={10} className="dark:bg-slate-800">
             <DropdownTrigger>

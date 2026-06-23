@@ -3,16 +3,18 @@ import { heroui } from "@heroui/react";
 
 const config: Config = {
   content: [
-    // 1. Scan your app files
     "./app/**/*.{js,ts,jsx,tsx,mdx}",
     "./pages/**/*.{js,ts,jsx,tsx,mdx}",
     "./components/**/*.{js,ts,jsx,tsx,mdx}",
-    
-    // 2. Scan the HeroUI package (CRITICAL FOR MODALS)
     "./node_modules/@heroui/theme/dist/**/*.{js,ts,jsx,tsx}",
   ],
   theme: {
-    extend: {},
+    extend: {
+      fontFamily: {
+        sans: ["var(--font-hanken-grotesk)", "system-ui", "sans-serif"],
+        mono: ["var(--font-geist-mono)", "monospace"],
+      },
+    },
   },
   darkMode: "class",
   plugins: [
@@ -20,11 +22,17 @@ const config: Config = {
       themes: {
         light: {
           colors: {
-            background: "#F4F5FA",
+            background: "#EEF0F4",
             content1:   "#FFFFFF",
-            content2:   "#EEF0F8",
-            content3:   "#E4E6F2",
-            divider:    "#DDE0EE",
+            content2:   "#F9FAFB",
+            content3:   "#F2F4F7",
+            divider:    "#E4E7EC",
+            foreground: {
+              DEFAULT: "#101828",
+              500: "#475569",
+              400: "#667085",
+              300: "#98A2B3",
+            },
           },
         },
         dark: {
@@ -34,11 +42,16 @@ const config: Config = {
             content2:   "#1C2030",
             content3:   "#242840",
             divider:    "#2A2F45",
+            foreground: {
+              DEFAULT: "#EEF2F8",
+              500: "#C2CCDA",
+              400: "#9AA7BD",
+              300: "#6F7E96",
+            },
           },
         },
       },
     }),
   ],
 };
-
 export default config;

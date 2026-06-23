@@ -15,7 +15,7 @@ import StorageLocationPicker from '@/app/components/storage-location-picker';
 import { useStorageLocations } from '@/app/hooks/useStorageLocations';
 
 // Constants
-const CATEGORIES: ItemCategory[] = ['Airway', 'Trauma', 'Vitals', 'Meds', 'PPE', 'Splinting', 'Hygiene', 'Other'];
+const CATEGORIES: ItemCategory[] = ['Airway', 'Trauma', 'Vitals', 'Meds', 'PPE', 'Splinting', 'Hygiene', 'First Aid', 'Other'];
 const BATCH_STATUSES: { key: BatchStatus; label: string; color: 'default' | 'success' | 'primary' | 'warning' | 'danger' }[] = [
   { key: 'sealed', label: 'Sealed', color: 'success' },
   { key: 'open', label: 'Open', color: 'primary' },
@@ -53,6 +53,7 @@ type InventoryFormState = {
   // Reagent tracking
   isReagent?: boolean;
   daysValidAfterOpening?: number;
+  maxUnits?: number;
   // Legacy fields kept for save compatibility
   unopenedBoxes?: number;
   itemsPerBox?: number;
@@ -70,6 +71,7 @@ const DEFAULT_STATE: InventoryFormState = {
   category: 'Other',
   unit: 'box',
   reorderThreshold: 5,
+  maxUnits: 0,
   description: '',
   batches: [],
   requiresExpirationCheck: false,
@@ -120,6 +122,7 @@ export default function InventoryModal({
       oxygenModel: (dataRecord.oxygenModel as string) ?? '',
       isReagent: (dataRecord.isReagent as boolean) ?? false,
       daysValidAfterOpening: (dataRecord.daysValidAfterOpening as number) ?? 90,
+      maxUnits: (dataRecord.maxUnits as number) ?? 0,
       unopenedBoxes: data.unopenedBoxes ?? 0,
       itemsPerBox: data.itemsPerBox,
       looseUnits: (dataRecord.looseUnits as number) ?? 0,
@@ -290,6 +293,7 @@ export default function InventoryModal({
       category: formData.category,
       unit: formData.unit || 'box',
       reorderThreshold: Number(formData.reorderThreshold ?? 0),
+      maxUnits: formData.maxUnits ?? 0,
       description: formData.description || undefined,
       storageLocation: formData.storageLocation || undefined,
       requiresExpirationCheck: !!formData.requiresExpirationCheck,
@@ -403,18 +407,18 @@ export default function InventoryModal({
       size="3xl"
       scrollBehavior="inside"
       classNames={{
-        base: 'dark:bg-slate-800 max-w-[95vw] md:max-w-3xl',
-        header: 'border-b border-gray-200 dark:border-slate-700',
-        footer: 'border-t border-gray-200 dark:border-slate-700',
+        base: 'bg-content1 max-w-[95vw] md:max-w-3xl',
+        header: 'border-b border-divider px-6 py-5',
+        footer: 'border-t border-divider',
       }}
     >
       <ModalContent>
         <>
             <ModalHeader className="flex flex-col gap-1">
-              <h2 className="text-xl font-bold">
+              <h2 className="font-bold text-[17px] text-foreground" style={{ letterSpacing: '-0.02em' }}>
                 {isEditMode ? 'Edit Inventory Item' : 'Add New Inventory Item'}
               </h2>
-              <p className="text-sm text-gray-500 font-normal">
+              <p className="text-sm text-foreground-400 font-normal">
                 Disposable supply tracking with batch &amp; bag management.
               </p>
             </ModalHeader>
@@ -422,12 +426,12 @@ export default function InventoryModal({
             <ModalBody className="py-5 space-y-5">
               {/* Error display */}
               {error && (
-                <div className="p-3 bg-red-50 dark:bg-red-900/10 rounded-md border border-red-200 text-sm">
+                <div className="p-3 bg-danger-50 dark:bg-danger-950/20 rounded-large border border-danger/30 text-sm">
                   <div className="flex items-start gap-2">
-                    <AlertTriangle size={16} className="mt-0.5 flex-shrink-0 text-red-600" />
+                    <AlertTriangle size={16} className="mt-0.5 flex-shrink-0 text-danger" />
                     <div>
                       <strong>Error Creating Item</strong>
-                      <p className="text-xs mt-1 text-red-700 dark:text-red-300">{error}</p>
+                      <p className="text-xs mt-1 text-danger">{error}</p>
                     </div>
                   </div>
                 </div>
@@ -435,14 +439,14 @@ export default function InventoryModal({
 
               {/* Asset guard */}
               {initialData && (initialData as any).isAsset && (
-                <div className="p-3 bg-red-50 dark:bg-red-900/10 rounded-md border border-red-200 text-sm">
+                <div className="p-3 bg-danger-50 dark:bg-danger-950/20 rounded-large border border-danger/30 text-sm">
                   <strong>Asset Detected</strong> — This item is tracked as an asset. Please use the Assets page to edit it.
                 </div>
               )}
 
               {/* ─── SECTION 1: BASIC INFO ─── */}
               <section>
-                <h3 className="text-xs font-bold text-default-500 uppercase tracking-wide mb-3">Item Details</h3>
+                <h3 className="text-[11px] font-bold text-foreground-400 uppercase tracking-widest mb-3">Item Details</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <Input
                     label="Item Name"
@@ -528,6 +532,17 @@ export default function InventoryModal({
                     value={String(formData.reorderThreshold)}
                     onValueChange={(v) => setFormData(prev => ({ ...prev, reorderThreshold: Number(v) || 0 }))}
                     description="Alert when total bags fall below this"
+                  />
+
+                  <Input
+                    label="Max Stock (par max)"
+                    placeholder="e.g., 20"
+                    type="number"
+                    variant="bordered"
+                    size="sm"
+                    value={String(formData.maxUnits ?? 0)}
+                    onValueChange={(v) => setFormData(prev => ({ ...prev, maxUnits: parseInt(v) || 0 }))}
+                    description="Used for the stock progress bar. Overstocking is allowed."
                   />
 
                   {canToggleExpiration && (

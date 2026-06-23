@@ -46,14 +46,15 @@ export interface AuthResponse {
 }
 
 // --- MASTER INVENTORY ---
-export type ItemCategory = 
-  | 'Airway'       
-  | 'Trauma'       
-  | 'Vitals'       
-  | 'Meds'         
-  | 'PPE'          
-  | 'Splinting'    
-  | 'Hygiene'      
+export type ItemCategory =
+  | 'Airway'
+  | 'Trauma'
+  | 'Vitals'
+  | 'Meds'
+  | 'PPE'
+  | 'Splinting'
+  | 'Hygiene'
+  | 'First Aid'
   | 'Other';
 
 export type LocationType = 'HQ' | 'CPR Closet' | 'Shed' | 'Other';
@@ -148,7 +149,9 @@ export interface InventoryItem {
   itemsPerBox?: number;  // Optional: how many items in one box
   /** Loose individual units not in a complete box (e.g., partial box after subdivision) */
   looseUnits?: number;
-  reorderThreshold: number;   
+  reorderThreshold: number;
+  /** Maximum desired stock level. Progress bar shows current/maxUnits. Overstocking is allowed. */
+  maxUnits?: number;
   // Par levels per location (optional): { locationId: minimumQuantity }
   parByLocation?: Record<string, number>;
   

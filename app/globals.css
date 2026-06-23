@@ -5,21 +5,29 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Default Next.js theme variables */
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   color: var(--foreground);
   background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-hanken-grotesk), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+@keyframes bmrcSlide {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+
+@keyframes bmrcSlideLeft {
+  from { transform: translateX(36px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+@keyframes bmrcPop {
+  from { transform: translate(-50%, -50%) scale(0.97); opacity: 0; }
+  to   { transform: translate(-50%, -50%) scale(1);    opacity: 1; }
+}
+
+@keyframes bmrcFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
