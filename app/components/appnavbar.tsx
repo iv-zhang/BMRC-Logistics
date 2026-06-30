@@ -55,7 +55,7 @@ import TutorialOverlay from './tutorial-overlay';
 export default function AppNavbar() {
   const pathname = usePathname();
   const router = useRouter();
-  const { user, role } = useUserRole();
+  const { user, role, loading: roleLoading } = useUserRole();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isReportOpen, setIsReportOpen] = useState(false);
   const { theme, setTheme } = useTheme();
@@ -137,6 +137,9 @@ export default function AppNavbar() {
     setIsMenuOpen(false);
     router.push(path);
   };
+
+  // Admin dashboard has its own sidebar nav — hide the top navbar there
+  if (!roleLoading && isAdmin && pathname === '/dashboard') return null;
 
   return (
     <Navbar 

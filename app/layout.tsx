@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Hanken_Grotesk, Geist_Mono } from "next/font/google";
 import { Providers } from "@/app/providers";
 import "./globals.css";
-import AppNavbar from './components/appnavbar';
+import SidebarLayout from './components/sidebar-layout';
 
 const hankenGrotesk = Hanken_Grotesk({
   variable: "--font-hanken-grotesk",
@@ -34,8 +34,9 @@ export default function RootLayout({
         className={`${hankenGrotesk.variable} ${geistMono.variable} antialiased bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 text-foreground`}
       >
         <Providers>
-          <AppNavbar />
-          {children}
+          <SidebarLayout>
+            {children}
+          </SidebarLayout>
         </Providers>
       </body>
     </html>

@@ -1,0 +1,369 @@
+'use client';
+import React, { useEffect, useState } from 'react';
+import Image from 'next/image';
+import { usePathname, useRouter } from 'next/navigation';
+import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { auth, db } from '@/firebase';
+import { useUserRole } from '@/app/hooks/useUserRole';
+import { useTheme } from 'next-themes';
+import {
+  Home, Package, ClipboardList, CheckSquare, RefreshCw,
+  BarChart2, Warehouse, Users, AlertTriangle, User,
+  LogOut, ShieldCheck, GraduationCap, Sun, Moon,
+  ChevronsLeft, ChevronsRight, ScanBarcode,
+} from 'lucide-react';
+import TutorialOverlay from './tutorial-overlay';
+import IssueReportForm from './IssueReportForm';
+
+export interface AppSidebarProps {
+  navHidden: boolean;
+  onHide: () => void;
+  onShow: () => void;
+}
+
+type LucideIcon = React.ComponentType<{ size?: number; className?: string }>;
+interface NavItem { key: string; label: string; Icon: LucideIcon; path: string; }
+interface NavSection { label?: string; items: NavItem[]; }
+
+const ADMIN_NAV: NavSection[] = [
+  {
+    items: [
+      { key: 'dashboard', label: 'Dashboard', Icon: Home, path: '/dashboard' },
+    ],
+  },
+  {
+    label: 'Assets',
+    items: [
+      { key: 'assets',    label: 'Assets',    Icon: Package,       path: '/assets' },
+      { key: 'statpacks', label: 'Statpacks', Icon: ClipboardList, path: '/statpacks' },
+    ],
+  },
+  {
+    label: 'Inventory',
+    items: [
+      { key: 'inventory',     label: 'Inventory',        Icon: Package,     path: '/inventory' },
+      { key: 'audit',         label: 'Supply Audit',     Icon: ScanBarcode, path: '/audit' },
+      { key: 'restock',       label: 'Restock',          Icon: RefreshCw,   path: '/restock' },
+      { key: 'restock-stats', label: 'Restock Stats',    Icon: BarChart2,   path: '/restock-stats' },
+      { key: 'storage',       label: 'Storage',          Icon: Warehouse,   path: '/storage' },
+      { key: 'tasks',         label: 'Tasks & Buy List', Icon: CheckSquare, path: '/tasks' },
+    ],
+  },
+  {
+    label: 'Admin',
+    items: [
+      { key: 'roster',  label: 'Roster',   Icon: Users,         path: '/roster' },
+      { key: 'reports', label: 'Reports',  Icon: AlertTriangle, path: '/issue-reports' },
+    ],
+  },
+];
+
+const MEMBER_NAV: NavSection[] = [
+  {
+    items: [
+      { key: 'dashboard', label: 'Dashboard', Icon: Home, path: '/dashboard' },
+    ],
+  },
+];
+
+export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProps) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const { user, userData, role } = useUserRole();
+  const { theme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+  const [navHover, setNavHover] = useState(false);
+  const [showTutorial, setShowTutorial] = useState(false);
+  const [isReportOpen, setIsReportOpen] = useState(false);
+  const [roleOverrideActive, setRoleOverrideActive] = useState<string | null>(null);
+
+  useEffect(() => setMounted(true), []);
+
+  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isDark = mounted && theme === 'dark';
+  const expanded = navHover && !navHidden;
+
+  // Firestore user sync
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (currentUser) => {
+      if (!currentUser) return;
+      const userRef = doc(db, 'users', currentUser.uid);
+      const snap = await getDoc(userRef);
+      if (!snap.exists()) {
+        await setDoc(userRef, {
+          id: currentUser.uid,
+          email: currentUser.email,
+          fullName: currentUser.displayName || 'Unknown Member',
+          role: 'member',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  // Role override state sync
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    setRoleOverrideActive(localStorage.getItem('bmrc_role_override'));
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'bmrc_role_override') setRoleOverrideActive(e.newValue);
+    };
+    const onCustom = () => setRoleOverrideActive(localStorage.getItem('bmrc_role_override'));
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('bmrc-role-changed', onCustom as EventListener);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('bmrc-role-changed', onCustom as EventListener);
+    };
+  }, []);
+
+  // Show tutorial when admin activates test role
+  useEffect(() => {
+    if (role === 'admin' && roleOverrideActive) {
+      try { sessionStorage.removeItem('bmrc_tutorial_shown'); } catch {}
+      setShowTutorial(true);
+    }
+  }, [roleOverrideActive, role]);
+
+  // First-login tutorial check
+  useEffect(() => {
+    try {
+      const shown = typeof window !== 'undefined' ? sessionStorage.getItem('bmrc_tutorial_shown') : null;
+      if (userData && !userData.tutorialCompleted && !shown) {
+        setShowTutorial(true);
+        if (typeof window !== 'undefined') sessionStorage.setItem('bmrc_tutorial_shown', '1');
+      }
+    } catch {
+      if (userData && !userData.tutorialCompleted) setShowTutorial(true);
+    }
+  }, [userData]);
+
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+      router.push('/');
+    } catch (e) {
+      console.error('Sign out error:', e);
+    }
+  };
+
+  const handleRoleOverride = () => {
+    try {
+      const current = localStorage.getItem('bmrc_role_override');
+      if (current) {
+        localStorage.removeItem('bmrc_role_override');
+      } else {
+        localStorage.setItem('bmrc_role_override', isAdmin ? 'member' : 'admin');
+      }
+      window.dispatchEvent(new Event('bmrc-role-changed'));
+    } catch (e) {
+      console.error('role override failed', e);
+    }
+  };
+
+  const isItemActive = (path: string) =>
+    pathname === path || pathname.startsWith(path + '/');
+
+  const navSections = isAdmin ? ADMIN_NAV : MEMBER_NAV;
+  const userInitial = (userData?.fullName?.[0] ?? user?.email?.[0] ?? 'U').toUpperCase();
+  const userName = userData?.fullName || user?.email?.split('@')[0] || 'User';
+
+  const navItemCls = (active: boolean) =>
+    `flex items-center gap-[13px] h-10 px-[11px] rounded-[10px] whitespace-nowrap text-[13.5px] w-full text-left transition-colors duration-150 ${
+      active
+        ? 'bg-primary-50 dark:bg-primary-900/20 text-primary font-semibold'
+        : 'text-foreground-500 font-medium hover:bg-content2'
+    }`;
+
+  const labelCls = `transition-opacity duration-150 ${expanded ? 'opacity-100' : 'opacity-0'}`;
+
+  const tutorialNode = showTutorial && user ? (
+    <TutorialOverlay userId={user.uid} onComplete={() => setShowTutorial(false)} />
+  ) : null;
+  const reportNode = (
+    <IssueReportForm isOpen={isReportOpen} onOpenChange={setIsReportOpen} pagePath={pathname ?? ''} />
+  );
+
+  if (navHidden) {
+    return (
+      <>
+        <button
+          onClick={onShow}
+          title="Show sidebar"
+          className="fixed bottom-[18px] left-0 z-40 bg-content1 border border-l-0 border-divider text-foreground-400 hover:text-primary w-[30px] h-11 rounded-r-[12px] flex items-center justify-center transition-colors duration-150"
+          style={{ boxShadow: '2px 2px 10px rgba(0,0,0,.08)' }}
+        >
+          <ChevronsRight size={18} />
+        </button>
+        {tutorialNode}
+        {reportNode}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <aside
+        onMouseEnter={() => setNavHover(true)}
+        onMouseLeave={() => setNavHover(false)}
+        className="fixed top-0 left-0 bottom-0 z-40 bg-content1 border-r border-divider overflow-hidden"
+        style={{
+          width: expanded ? 248 : 72,
+          transition: 'width 0.22s cubic-bezier(.16,1,.3,1), box-shadow 0.22s',
+          boxShadow: expanded ? '6px 0 30px rgba(0,0,0,.1)' : 'none',
+        }}
+      >
+        {/* Inner panel is always 248px wide; outer clips it */}
+        <div className="w-[248px] h-full flex flex-col">
+
+          {/* Brand */}
+          <div className="px-[17px] pt-3.5 pb-2 flex items-center gap-[11px] h-[62px]">
+            <button
+              onClick={() => router.push('/dashboard')}
+              className="flex-none focus:outline-none"
+            >
+              <div className="relative w-[34px] h-[34px]">
+                <Image
+                  src={isDark
+                    ? '/images/NoBackground_NewLogoWhite.PNG'
+                    : '/images/NoBackground_NewLogoBlack.PNG'}
+                  alt="BMRC logo"
+                  fill
+                  className="object-contain"
+                  priority
+                />
+              </div>
+            </button>
+            <div className={`flex flex-col leading-none whitespace-nowrap ${labelCls}`}>
+              <span className="font-bold text-sm text-foreground tracking-tight">BMRC Logistics</span>
+              <span className="text-[10px] text-foreground-400 font-medium tracking-wide">
+                Berkeley Medical Reserve Corps
+              </span>
+            </div>
+          </div>
+
+          {/* Nav sections */}
+          <nav className="flex-1 px-3 py-1 flex flex-col gap-[3px] overflow-y-auto">
+            {navSections.map((section, si) => (
+              <React.Fragment key={si}>
+                {section.label && (
+                  <div className={`text-[10px] font-semibold uppercase tracking-widest text-foreground-400 px-2.5 py-2 whitespace-nowrap ${labelCls} ${si > 0 ? 'mt-2' : ''}`}>
+                    {section.label}
+                  </div>
+                )}
+                {section.items.map(({ key, label, Icon, path }) => (
+                  <button
+                    key={key}
+                    onClick={() => router.push(path)}
+                    className={navItemCls(isItemActive(path))}
+                  >
+                    <Icon size={19} className="flex-none" />
+                    <span className={labelCls}>{label}</span>
+                  </button>
+                ))}
+              </React.Fragment>
+            ))}
+
+            {/* Member: Report Issue button */}
+            {!isAdmin && (
+              <button
+                onClick={() => setIsReportOpen(true)}
+                className={navItemCls(false) + ' mt-1'}
+              >
+                <AlertTriangle size={19} className="flex-none" />
+                <span className={labelCls}>Report Issue</span>
+              </button>
+            )}
+          </nav>
+
+          {/* Bottom controls */}
+          <div className="px-3 pb-3.5 pt-2 border-t border-divider flex flex-col gap-[2px]">
+
+            {/* Theme toggle */}
+            <button
+              onClick={() => setTheme(isDark ? 'light' : 'dark')}
+              className="flex items-center gap-[13px] h-9 px-[11px] rounded-[10px] whitespace-nowrap text-[13px] w-full text-left text-foreground-500 font-medium hover:bg-content2 transition-colors duration-150"
+            >
+              <span className="flex-none w-[19px] flex justify-center">
+                {mounted && (isDark ? <Sun size={17} /> : <Moon size={17} />)}
+              </span>
+              <span className={labelCls}>{isDark ? 'Light mode' : 'Dark mode'}</span>
+            </button>
+
+            {/* Tutorial */}
+            <button
+              onClick={() => setShowTutorial(true)}
+              className="flex items-center gap-[13px] h-9 px-[11px] rounded-[10px] whitespace-nowrap text-[13px] w-full text-left text-foreground-500 font-medium hover:bg-content2 transition-colors duration-150"
+            >
+              <GraduationCap size={19} className="flex-none" />
+              <span className={labelCls}>Tutorial</span>
+            </button>
+
+            {/* Profile */}
+            <button
+              onClick={() => router.push('/profile')}
+              className={navItemCls(isItemActive('/profile'))}
+            >
+              <User size={19} className="flex-none" />
+              <span className={labelCls}>Profile</span>
+            </button>
+
+            {/* Role override — admin only */}
+            {isAdmin && (
+              <button
+                onClick={handleRoleOverride}
+                className="flex items-center gap-[13px] h-9 px-[11px] rounded-[10px] whitespace-nowrap text-[12px] w-full text-left text-foreground-400 font-medium hover:bg-content2 transition-colors duration-150"
+              >
+                <ShieldCheck size={17} className="flex-none" />
+                <span className={`truncate ${labelCls}`}>
+                  {roleOverrideActive
+                    ? `Clear test role (${roleOverrideActive})`
+                    : 'Toggle test role'}
+                </span>
+              </button>
+            )}
+
+            {/* Sign out */}
+            <button
+              onClick={handleSignOut}
+              className="flex items-center gap-[13px] h-9 px-[11px] rounded-[10px] whitespace-nowrap text-[13px] w-full text-left text-danger/70 font-medium hover:bg-danger-50 dark:hover:bg-danger-900/20 hover:text-danger transition-colors duration-150"
+            >
+              <LogOut size={19} className="flex-none" />
+              <span className={labelCls}>Sign out</span>
+            </button>
+
+            <div className="border-t border-divider my-1" />
+
+            {/* User row */}
+            <div className="flex items-center gap-[11px] h-10 px-[11px] whitespace-nowrap">
+              <div className="w-7 h-7 rounded-full bg-primary text-white font-semibold text-xs flex items-center justify-center flex-none">
+                {userInitial}
+              </div>
+              <div className={`flex flex-col leading-tight min-w-0 ${labelCls}`}>
+                <span className="text-[12.5px] font-semibold text-foreground truncate">{userName}</span>
+                <span className="text-[10.5px] text-foreground-400 font-medium capitalize">
+                  {userData?.role ?? role ?? 'member'}
+                </span>
+              </div>
+            </div>
+
+            {/* Collapse */}
+            <button
+              onClick={onHide}
+              className="flex items-center gap-[13px] h-[38px] px-[11px] rounded-[10px] whitespace-nowrap text-foreground-400 hover:bg-content2 hover:text-foreground transition-colors duration-150 w-full text-left"
+            >
+              <ChevronsLeft size={19} className="flex-none" />
+              <span className={`text-[12.5px] font-semibold ${labelCls}`}>Collapse sidebar</span>
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      {tutorialNode}
+      {reportNode}
+    </>
+  );
+}
