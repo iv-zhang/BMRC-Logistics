@@ -3,30 +3,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { collection, getDocs, query, where, Timestamp } from 'firebase/firestore';
 import { db } from '@/firebase';
-import {
-  Card,
-  CardHeader,
-  CardBody,
-  CardFooter,
-  Spinner,
-  Divider,
-  Table,
-  TableHeader,
-  TableBody,
-  TableRow,
-  TableCell,
-  TableColumn,
-  Button
-} from '@heroui/react';
+import { Button, Spinner } from '@heroui/react';
+import { RefreshCw, BarChart3 } from 'lucide-react';
 
 type RestockReport = {
   id?: string;
   restockBoxId?: string;
   restockBoxName?: string;
   items?: { itemId?: string; name?: string; observedQuantity?: number; requiredQuantity?: number }[];
-  createdAt?: any;
+  createdAt?: Timestamp | Date;
   resolved?: boolean;
-  resolvedAt?: any;
+  resolvedAt?: Timestamp | Date;
 };
 
 type RestockAction = {
@@ -34,11 +21,19 @@ type RestockAction = {
   restockBoxId?: string;
   restockBoxName?: string;
   items?: { name?: string; quantity?: number }[];
-  createdAt?: any;
+  createdAt?: Timestamp | Date;
 };
+
+function toDate(v?: Timestamp | Date): Date | null {
+  if (!v) return null;
+  if (v instanceof Date) return v;
+  if (typeof (v as Timestamp).toDate === 'function') return (v as Timestamp).toDate();
+  return null;
+}
 
 export default function RestockStatsPage() {
   const [loading, setLoading] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [reports, setReports] = useState<RestockReport[]>([]);
   const [actions, setActions] = useState<RestockAction[]>([]);
 
@@ -54,11 +49,8 @@ export default function RestockStatsPage() {
 
         const [rSnap, aSnap] = await Promise.all([getDocs(rptQ), getDocs(actQ)]);
 
-        const r: RestockReport[] = rSnap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
-        const a: RestockAction[] = aSnap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
-
-        setReports(r);
-        setActions(a);
+        setReports(rSnap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<RestockReport, 'id'>) })));
+        setActions(aSnap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<RestockAction, 'id'>) })));
       } catch (e) {
         console.error('Failed to load stats', e);
       } finally {
@@ -66,7 +58,7 @@ export default function RestockStatsPage() {
       }
     };
     load();
-  }, []);
+  }, [refreshKey]);
 
   const stats = useMemo(() => {
     const totalReports = reports.length;
@@ -75,8 +67,8 @@ export default function RestockStatsPage() {
 
     const resolveTimes: number[] = [];
     reports.forEach(r => {
-      const c = r.createdAt && typeof r.createdAt.toDate === 'function' ? r.createdAt.toDate() : r.createdAt instanceof Date ? r.createdAt : null;
-      const res = r.resolvedAt && typeof r.resolvedAt.toDate === 'function' ? r.resolvedAt.toDate() : r.resolvedAt instanceof Date ? r.resolvedAt : null;
+      const c = toDate(r.createdAt);
+      const res = toDate(r.resolvedAt);
       if (c && res) resolveTimes.push((res.getTime() - c.getTime()) / (1000 * 60 * 60));
     });
     const avgResolveHours = resolveTimes.length ? (resolveTimes.reduce((a, b) => a + b, 0) / resolveTimes.length) : null;
@@ -108,91 +100,143 @@ export default function RestockStatsPage() {
       dayCounts[key] = 0;
     }
     reports.forEach(r => {
-      const c = r.createdAt && typeof r.createdAt.toDate === 'function' ? r.createdAt.toDate() : r.createdAt instanceof Date ? r.createdAt : null;
+      const c = toDate(r.createdAt);
       if (!c) return;
       const key = c.toISOString().slice(0, 10);
       if (key in dayCounts) dayCounts[key]++;
     });
     Object.entries(dayCounts).forEach(([day, count]) => trend.push({ day, count }));
+    const maxTrend = Math.max(1, ...trend.map(t => t.count));
 
-    return { totalReports, openReports, totalActions, avgResolveHours, topBoxes, topItems, trend };
+    return { totalReports, openReports, totalActions, avgResolveHours, topBoxes, topItems, trend, maxTrend };
   }, [reports, actions]);
 
-  if (loading) return <div className="h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center"><Spinner /></div>;
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center">
+        <Spinner size="lg" color="primary" />
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
-      <div className="max-w-6xl mx-auto space-y-6">
-        <div className="flex justify-between items-center">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
+      <div className="max-w-7xl mx-auto px-6 py-8">
+
+        {/* ── Page header ────────────────────────────────────────────────── */}
+        <div className="flex items-end justify-between gap-4 mb-6 flex-wrap">
           <div>
-            <h1 className="text-3xl font-bold">Restock Statistics</h1>
-            <p className="text-sm text-gray-500">Operational metrics for restocking decisions.</p>
+            <h1 className="text-2xl font-semibold text-foreground mb-1.5">Restock Statistics</h1>
+            <div className="flex items-center gap-3 text-sm text-foreground-500 flex-wrap">
+              <span>Operational metrics for restocking decisions</span>
+              <span className="w-1 h-1 rounded-full bg-divider" />
+              <span>Last 90 days</span>
+            </div>
           </div>
-          <div>
-            <Button color="primary" onPress={() => window.location.reload()}>Refresh</Button>
+          <Button
+            size="sm"
+            variant="flat"
+            startContent={<RefreshCw size={14} />}
+            onPress={() => setRefreshKey(k => k + 1)}
+          >
+            Refresh
+          </Button>
+        </div>
+
+        {/* ── Stat counters ──────────────────────────────────────────────── */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+          <div className="bg-content1 border border-divider rounded-large p-4">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1.5">Total Reports</div>
+            <div className="font-mono text-[28px] font-semibold tabular-nums leading-tight text-foreground">
+              {stats.totalReports}
+            </div>
+            <div className="text-xs text-foreground-400 mt-1">Last 90 days</div>
+          </div>
+          <div className="bg-content1 border border-divider rounded-large p-4">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1.5">Open Reports</div>
+            <div className={`font-mono text-[28px] font-semibold tabular-nums leading-tight ${stats.openReports > 0 ? 'text-warning' : 'text-success'}`}>
+              {stats.openReports}
+            </div>
+            <div className="text-xs text-foreground-400 mt-1">Unresolved</div>
+          </div>
+          <div className="bg-content1 border border-divider rounded-large p-4">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1.5">Restock Actions</div>
+            <div className="font-mono text-[28px] font-semibold tabular-nums leading-tight text-primary">
+              {stats.totalActions}
+            </div>
+            <div className="text-xs text-foreground-400 mt-1">Manual restocks</div>
+          </div>
+          <div className="bg-content1 border border-divider rounded-large p-4">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1.5">Avg Resolve Time</div>
+            <div className="font-mono text-[28px] font-semibold tabular-nums leading-tight text-foreground">
+              {stats.avgResolveHours !== null ? stats.avgResolveHours.toFixed(1) : '—'}
+              {stats.avgResolveHours !== null && <span className="text-sm text-foreground-400 font-normal ml-1">h</span>}
+            </div>
+            <div className="text-xs text-foreground-400 mt-1">Resolved reports</div>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <Card>
-            <CardHeader>Total Reports</CardHeader>
-            <CardBody><div className="text-2xl font-bold">{stats.totalReports}</div><div className="text-xs">Last 90 days</div></CardBody>
-          </Card>
-          <Card>
-            <CardHeader>Open Reports</CardHeader>
-            <CardBody><div className="text-2xl font-bold">{stats.openReports}</div><div className="text-xs">Unresolved</div></CardBody>
-          </Card>
-          <Card>
-            <CardHeader>Restock Actions</CardHeader>
-            <CardBody><div className="text-2xl font-bold">{stats.totalActions}</div><div className="text-xs">Manual restocks</div></CardBody>
-          </Card>
-          <Card>
-            <CardHeader>Avg Resolve Time</CardHeader>
-            <CardBody><div className="text-2xl font-bold">{stats.avgResolveHours ? `${stats.avgResolveHours.toFixed(1)} h` : '—'}</div><div className="text-xs">Resolved reports</div></CardBody>
-          </Card>
-        </div>
-
-        <Divider />
-
+        {/* ── Breakdown tables ───────────────────────────────────────────── */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <Card>
-            <CardHeader>Top Restock Boxes</CardHeader>
-            <CardBody>
-              <Table removeWrapper>
-                <TableHeader><TableColumn>Box</TableColumn><TableColumn>Reports</TableColumn></TableHeader>
-                <TableBody>
-                  {stats.topBoxes.map(b => (
-                    <TableRow key={b.id}><TableCell>{b.name}</TableCell><TableCell>{b.count}</TableCell></TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardBody>
-          </Card>
+          <div className="bg-content1 border border-divider rounded-large overflow-hidden">
+            <div className="px-4 py-3 bg-content2 border-b border-divider text-[11px] font-semibold uppercase tracking-wide text-foreground-400">
+              Top Restock Boxes
+            </div>
+            <div className="divide-y divide-divider">
+              {stats.topBoxes.length === 0 ? (
+                <div className="px-4 py-6 text-xs text-foreground-400 text-center">No reports in range</div>
+              ) : (
+                stats.topBoxes.map(b => (
+                  <div key={b.id} className="flex items-center justify-between px-4 py-2.5">
+                    <span className="text-sm text-foreground truncate">{b.name}</span>
+                    <span className="font-mono text-sm font-semibold tabular-nums text-foreground-500">{b.count}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
 
-          <Card>
-            <CardHeader>Top Reported Items</CardHeader>
-            <CardBody>
-              <Table removeWrapper>
-                <TableHeader><TableColumn>Item</TableColumn><TableColumn>Reports</TableColumn></TableHeader>
-                <TableBody>
-                  {stats.topItems.map(i => (
-                    <TableRow key={i.id}><TableCell>{i.name}</TableCell><TableCell>{i.reported}</TableCell></TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardBody>
-          </Card>
+          <div className="bg-content1 border border-divider rounded-large overflow-hidden">
+            <div className="px-4 py-3 bg-content2 border-b border-divider text-[11px] font-semibold uppercase tracking-wide text-foreground-400">
+              Top Reported Items
+            </div>
+            <div className="divide-y divide-divider">
+              {stats.topItems.length === 0 ? (
+                <div className="px-4 py-6 text-xs text-foreground-400 text-center">No reports in range</div>
+              ) : (
+                stats.topItems.map(i => (
+                  <div key={i.id} className="flex items-center justify-between px-4 py-2.5">
+                    <span className="text-sm text-foreground truncate">{i.name}</span>
+                    <span className="font-mono text-sm font-semibold tabular-nums text-foreground-500">{i.reported}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
 
-          <Card>
-            <CardHeader>14-day Trend</CardHeader>
-            <CardBody>
-              <div className="space-y-2">
-                {stats.trend.map(t => (
-                  <div key={t.day} className="flex justify-between text-sm"><div className="text-gray-600">{t.day}</div><div className="font-semibold">{t.count}</div></div>
-                ))}
-              </div>
-            </CardBody>
-          </Card>
+          <div className="bg-content1 border border-divider rounded-large overflow-hidden">
+            <div className="px-4 py-3 bg-content2 border-b border-divider text-[11px] font-semibold uppercase tracking-wide text-foreground-400 flex items-center gap-2">
+              <BarChart3 size={12} /> 14-Day Trend
+            </div>
+            <div className="p-4 space-y-1.5">
+              {stats.trend.map(t => (
+                <div key={t.day} className="flex items-center gap-3">
+                  <span className="text-xs text-foreground-400 tabular-nums w-20 flex-none">
+                    {new Date(`${t.day}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  </span>
+                  <div className="flex-1 h-1.5 rounded-full bg-content3 overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-primary transition-all duration-300"
+                      style={{ width: `${(t.count / stats.maxTrend) * 100}%` }}
+                    />
+                  </div>
+                  <span className="font-mono text-xs font-semibold tabular-nums text-foreground-500 w-6 text-right flex-none">
+                    {t.count}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     </div>

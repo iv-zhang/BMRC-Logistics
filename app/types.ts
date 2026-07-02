@@ -385,7 +385,10 @@ export interface Statpack {
   checkedOutAt?: Date;
   lastCheckedBy?: string;
   lastCheckedAt?: Date;
-  currentEvent?: string; 
+  /** Last full audit (biweekly cadence) — set only by mode=audit check-offs */
+  lastAuditAt?: Date;
+  lastAuditBy?: string;
+  currentEvent?: string;
   
   createdAt: Date;
   updatedAt: Date;
@@ -426,7 +429,7 @@ export interface StatpackLog {
   id?: string;
   statpackId: string;
   statpackName: string;
-  action: 'checkout' | 'checkin' | 'restock' | 'created' | 'maintenance';
+  action: 'checkout' | 'checkin' | 'restock' | 'created' | 'maintenance' | 'audit';
   pairId?: string; // Explicit pairing between checkout + checkin
   quickCheckin?: boolean; // True when member used quick check-in (no items used)
   userId: string;

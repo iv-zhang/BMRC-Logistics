@@ -593,7 +593,7 @@ export default function StatpackCheckOffPage() {
       await logStatpackCheckOff({
         statpackId: pack.id,
         statpackName: pack.name,
-        action: mode === 'audit' ? 'checkout' : mode,
+        action: mode,
         userId: user.uid,
         userName: user.displayName || user.email || 'Unknown',
         checkEntries,

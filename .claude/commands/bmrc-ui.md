@@ -321,11 +321,17 @@ sticks as the user scrolls the list.
 
 Sidebar rules:
 - Width: `w-64 flex-none`. Never vary.
-- Sticky: `sticky top-20`. (Accounts for the app navbar height.)
+- **Do NOT use `sticky` on filter sidebars.** If the sidebar content is taller than the viewport (Stock Status + Category + Location easily exceeds 600px), `sticky` permanently clips the bottom cards — there is no way to reach them because `sticky` doesn't scroll its own content. Use plain flow instead: the sidebar scrolls with the page as one unified scroll, and the user scrolls back to the top to change filters.
+- **Never add `overflow-y-auto` or `max-h` to the sidebar** — that creates a second scrollable area, which breaks the single-page-scroll contract.
 - Each filter group: its own `bg-content1 border border-divider rounded-large p-4`.
 - Section labels: `text-[11px] font-semibold uppercase tracking-widest text-foreground-400 mb-3`.
 - Active filter button: `bg-primary-50 border-primary/30 text-primary dark:bg-primary-900/20`.
 - Reset link at the bottom of the last filter group: `text-xs font-semibold text-primary`.
+
+Full sidebar element:
+```tsx
+<aside className="w-64 flex-none flex flex-col gap-4">
+```
 
 ### 3. Grid table (dense data, secondary view)
 
@@ -879,6 +885,159 @@ Operational tools should feel quick, not animated.
 
 Never use arbitrary z-index values outside this table.
 
+## Dashboard / dense-app layout
+
+The admin dashboard (`app/dashboard/page.tsx`) is a distinct layout type — it does **not** use the blue gradient or the standard page header block. It is a full-viewport app shell with its own compact sticky header, flat background, and flexible content area.
+
+```tsx
+<div className="min-h-screen bg-background flex flex-col">
+
+  {/* Compact sticky header — h-[54px], z-20 */}
+  <header className="sticky top-0 z-20 bg-content1/80 backdrop-blur-md border-b border-divider h-[54px] flex items-center gap-3.5 px-6">
+    <h1 className="text-lg font-bold tracking-tight text-foreground flex-none">Dashboard</h1>
+    {/* optional search bar / actions */}
+  </header>
+
+  {/* Scrollable content — flex-1 so it fills remaining viewport */}
+  <div className="flex-1 px-6 py-[22px] pb-16 w-full flex flex-col gap-[22px]">
+    {/* sections */}
+  </div>
+</div>
+```
+
+Rules:
+- Page background: `bg-background` — **not** the gradient. The dashboard is an app shell, not a document page.
+- Header: `h-[54px] bg-content1/80 backdrop-blur-md border-b border-divider` at `z-20`. No page title block beneath it.
+- Content: `flex-1 px-6 py-[22px] pb-16`. The `pb-16` ensures the last card isn't flush with the viewport bottom.
+- No `max-w-7xl` — dashboard is full-width.
+- `framer-motion` (`AnimatePresence` + `motion.div`) is permitted for inline expand/collapse panels in the dashboard. Use `duration: 0.28, ease: [0.16, 1, 0.3, 1]` for the spring-feel. Do not use framer-motion outside of dashboard-style contexts — standard pages use CSS transitions only.
+
+### Section card with header stripe
+
+The canonical dashboard card: a card with a `bg-content2` header strip, a bold title, a count pill, and an optional navigation arrow.
+
+```tsx
+<div
+  className="bg-content1 border border-divider rounded-[18px] overflow-hidden"
+  style={{ boxShadow: '0 1px 3px rgba(0,0,0,.05)' }}
+>
+  {/* Header stripe */}
+  <div className="flex items-center gap-[11px] px-4 py-[13px] border-b border-divider bg-content2">
+    {/* Optional icon */}
+    <div className="w-[34px] h-[34px] rounded-[10px] bg-danger-50 dark:bg-danger-900/20 text-danger flex items-center justify-center flex-none">
+      <AlertTriangle size={17} />
+    </div>
+    <h2 className="text-[14.5px] font-bold tracking-tight text-foreground flex-1 min-w-0">Section Title</h2>
+    {/* Count pill */}
+    <span className="font-mono text-sm font-semibold px-3 py-1 rounded-full bg-danger-50 dark:bg-danger-900/20 text-danger whitespace-nowrap flex-none tabular-nums">
+      {count}
+    </span>
+    {/* Navigation arrow */}
+    <button className="w-[30px] h-[30px] rounded-[9px] border border-divider bg-content1 text-foreground-400 flex items-center justify-center hover:bg-content2 hover:text-foreground transition-colors duration-150 flex-none">
+      <ArrowUpRight size={15} />
+    </button>
+  </div>
+
+  {/* Scrollable body with height cap */}
+  <div className="overflow-y-auto" style={{ maxHeight: 256 }}>
+    {items.map(item => (
+      <div key={item.id} className="flex items-center justify-between gap-3 px-[17px] py-3 border-b border-divider last:border-0 hover:bg-content2 transition-colors duration-150">
+        {/* row content */}
+      </div>
+    ))}
+  </div>
+</div>
+```
+
+Rules:
+- Card: `rounded-[18px] overflow-hidden border border-divider` with a subtle `box-shadow`.
+- Header stripe: `bg-content2 border-b border-divider`, padding `px-4 py-[13px]`.
+- Title: `text-[14.5px] font-bold tracking-tight` — part of the dashboard dense sub-scale (see below).
+- Count pill: `rounded-full px-3 py-1 font-mono font-semibold tabular-nums` in the semantic color.
+- Nav button: `w-[30px] h-[30px] rounded-[9px]` — smaller than standard icon buttons.
+- Body: always add `overflow-y-auto` with an inline `maxHeight` (256 px for compact cards) so the card doesn't grow unbounded when there are many items.
+- Row dividers: `border-b border-divider last:border-0`. Hover: `hover:bg-content2`.
+
+### Horizontal scroll card row
+
+Used when a set of cards must scroll horizontally (e.g. statpack tiles in the dashboard).
+
+```tsx
+<div className="flex gap-3 overflow-x-auto pb-2" style={{ scrollbarWidth: 'thin' }}>
+  {items.map(item => (
+    <div
+      key={item.id}
+      className={`flex-none w-[244px] rounded-[14px] p-3 border-2 cursor-pointer transition-all duration-[220ms] ease-out ${
+        selected
+          ? `${softBg} ${tierBorder}`
+          : 'bg-content1 border-divider hover:border-primary/40'
+      }`}
+      style={{ boxShadow: selected ? '0 6px 22px rgba(0,0,0,.12)' : '0 1px 2px rgba(0,0,0,.04)' }}
+    >
+      {/* card content */}
+    </div>
+  ))}
+</div>
+```
+
+Rules:
+- Wrapper: `flex gap-3 overflow-x-auto pb-2`. The `pb-2` keeps the scrollbar from clipping card shadows.
+- `scrollbarWidth: 'thin'` (inline style) — native thin scrollbar on the scroll container.
+- Card: `flex-none w-[244px]` — fixed width so cards don't shrink.
+- Card border: `border-2` (not `border`) — thicker border makes selected state more visible.
+- Selected: soft tinted `bg-*-50/50` + colored border (`border-success`, `border-primary`, etc.) + elevated shadow.
+- Unselected hover: `hover:border-primary/40` only — no background change.
+- Do **not** use `hover:shadow` or `hover:-translate-y-px` on horizontally scrolling cards — it conflicts with the scroll container.
+
+### Dashboard dense type sub-scale
+
+The dashboard uses intermediate font sizes for information-dense surfaces. These are only valid inside the dashboard shell — use the standard type scale everywhere else.
+
+| Role | Size | Tailwind |
+|---|---|---|
+| Section/card title | 14.5 px / 700 | `text-[14.5px] font-bold tracking-tight` |
+| Row item name | 13–13.5 px / 600 | `text-[13px] font-semibold` |
+| Secondary row detail | 11–11.5 px / 500 | `text-[11px] font-medium` |
+| Tiny badge / tag | 9.5–10.5 px / 600 | `text-[10px] font-semibold` |
+| Monospace count in pill | 14–15 px / 600 | `font-mono text-sm font-semibold tabular-nums` |
+
+- `font-bold` is allowed inside the dashboard shell for section/card titles only (`tracking-tight` always accompanies it). Everywhere else: `font-semibold`.
+- Do not bleed these sizes into non-dashboard pages.
+
+### Expand-to-fullscreen modal (dashboard)
+
+When a dashboard alert card needs a full list, open a fullscreen modal — not a HeroUI Modal.
+
+```tsx
+{open && (
+  <div
+    className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-center justify-center"
+    onClick={() => setOpen(false)}
+  >
+    <div
+      className="bg-content1 border border-divider rounded-[18px] flex flex-col overflow-hidden"
+      style={{ width: '80vw', height: '80vh', maxWidth: 1000, boxShadow: '0 24px 70px rgba(0,0,0,.3)' }}
+      onClick={e => e.stopPropagation()}
+    >
+      {/* Header */}
+      <div className="flex items-center gap-3 px-[22px] py-[18px] bg-content2 border-b border-divider flex-none">
+        {/* icon + title + close button */}
+      </div>
+      {/* Scrollable body */}
+      <div className="flex-1 overflow-y-auto">
+        {/* rows */}
+      </div>
+    </div>
+  </div>
+)}
+```
+
+Rules:
+- Backdrop: `z-[60] bg-black/50 backdrop-blur-sm`. Click outside closes.
+- Inner container: `80vw / 80vh / maxWidth:1000` via inline style. `rounded-[18px]`.
+- Three zones: header (`flex-none`), scrollable body (`flex-1 overflow-y-auto`).
+- This is the **only** case where `z-[60]` is used for a modal — normally `z-[60]` is for toasts. If both appear together, elevate the modal to `z-[70]` and keep toasts at `z-[60]`.
+
 ## Mobile-first full-screen flow (statpack check-off pattern)
 
 Use for linear, step-through workflows on mobile (verification, guided forms). The container is narrower and the page is divided into three locked zones.
@@ -1204,14 +1363,16 @@ Rules:
 
 ## Updated z-index table
 
-| Layer                  | z-index      | Used for                                    |
-|------------------------|--------------|---------------------------------------------|
-| Page content           | (default)    | cards, tables, sidebars                     |
-| Sticky header/footer   | `z-30`       | frosted chrome in mobile-first flows        |
-| Drawer backdrop        | `z-40`       | `bg-black/40` overlay                       |
-| Detail drawer          | `z-50`       | right-side panel                            |
-| Saving toast / result  | `z-[60]`     | bottom-center feedback (both toast variants)|
-| Modals (HeroUI)        | (HeroUI own) | `Modal` component handles itself            |
+| Layer                       | z-index      | Used for                                                    |
+|-----------------------------|--------------|-------------------------------------------------------------|
+| Page content                | (default)    | cards, tables, sidebars                                     |
+| Dashboard sticky header     | `z-20`       | compact `h-[54px]` header in the dashboard shell            |
+| Sticky header/footer        | `z-30`       | frosted chrome in mobile-first flows                        |
+| Drawer backdrop             | `z-40`       | `bg-black/40` overlay                                       |
+| Detail drawer               | `z-50`       | right-side panel                                            |
+| Saving toast / result toast | `z-[60]`     | bottom-center feedback (both toast variants)                |
+| Dashboard fullscreen modal  | `z-[60]`     | expand-to-fullscreen overlay (use `z-[70]` if toast co-exists) |
+| Modals (HeroUI)             | (HeroUI own) | `Modal` component handles itself                            |
 
 ## Before you code
 
@@ -1244,6 +1405,10 @@ Rules:
 - [ ] View toggle: active segment `bg-primary text-white`; inactive `text-foreground-500 hover:bg-content2`.
 - [ ] Mobile-first sticky header/footer: `z-30 bg-background/80 backdrop-blur-md`.
 - [ ] Accordion group: `rounded-2xl overflow-hidden`; thin bar `h-0.5` between header and items.
+- [ ] Dashboard pages: `bg-background flex flex-col`, compact `h-[54px]` header at `z-20`, no gradient.
+- [ ] Sidebar layout: no `sticky`, no `overflow-y-auto`, no `max-h` — single-page-scroll, sidebar flows with the page.
+- [ ] Section cards with scrollable body: `overflow-y-auto` with `maxHeight` cap; header stripe uses `bg-content2 border-b border-divider`.
+- [ ] `font-bold` only permitted in dashboard section/card titles (with `tracking-tight`); `font-semibold` everywhere else.
 - [ ] Motion: `duration-150` hover, `duration-200` default; no `hover:scale-*`.
 - [ ] Looks correct in both light and dark mode. Looks correct at mobile width.
 
@@ -1272,6 +1437,14 @@ Rules:
 - `max-w-7xl` on mobile-first flows — use `max-w-lg` for narrow guided flows.
 - Mobile flow sticky header/footer without `bg-background/80 backdrop-blur-md` — causes content bleed-through while scrolling.
 - Forgetting `pb-28` on the scrollable main in mobile-first flows — content disappears behind sticky footer.
+- `sticky` on a filter sidebar whose content can exceed the viewport height — bottom filter groups become permanently unreachable and can't be scrolled to.
+- `overflow-y-auto` or `max-h` on a sidebar — creates a second independent scroll area, breaking the single-page-scroll contract.
+- Scrollable body cards without a `maxHeight` cap (`overflow-y-auto` without a max height) — card grows to fill the entire page.
+- `border-2` on non-selectable list cards — reserved for horizontally scrolling selection cards (e.g. statpack tiles). Use `border` everywhere else.
+- Using `framer-motion` outside the dashboard shell — standard pages use CSS `transition-*` only.
+- `font-bold` outside dashboard section/card titles — `font-semibold` everywhere else.
+- Dashboard dense type sizes (`text-[13.5px]`, `text-[11.5px]`, etc.) on non-dashboard pages.
+- Using the blue page gradient (`from-indigo-50 to-blue-50`) on the dashboard — it uses `bg-background`.
 - `useSearchParams` in a page that receives dynamic IDs via URL — use `window.location.search` to avoid the Suspense requirement with `output: export`.
 - Dynamic `[id]` route segments for Firestore document IDs — IDs aren't known at build time so `generateStaticParams` can't enumerate them. Use a static route + `?id=` query param instead.
 - Inline text stats for status counts (e.g. `3 low stock` plain text) — use colored stat boxes instead.

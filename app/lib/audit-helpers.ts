@@ -28,6 +28,7 @@ import { db } from '@/firebase';
 import type { InventoryItem, User } from '@/app/types';
 import { addAuditEventToBatch } from '@/app/lib/audit';
 import { determineIsAsset } from '@/app/lib/inventory';
+import { computeBagStock, isAuditedThisMonth } from '@/app/lib/item-status';
 
 // ─── Permission helpers ───────────────────────────────────────────────────────
 
@@ -95,21 +96,24 @@ export interface DisposableSnapshot {
   category: string;
   location: string;
   room?: string;
-  /** Source of truth for disposables — how many sealed boxes/bags in the back */
+  /** Sealed boxes/bags in the back (item-level or summed from bag-tracked batches) */
   unopenedBoxes: number;
   itemsPerBox: number;
+  /** Total on-hand units — same math as the inventory page (bag-tracking aware) */
+  totalUnits: number;
   /** Total individual units across all open batches (front area — informational only) */
   openBatchUnits: number;
   reorderThreshold: number;
   isLowStock: boolean;
+  isOut: boolean;
   /** Earliest expiration across all batches */
   earliestExpiration?: Date;
   isExpired: boolean;
-  /** Whether this item has been verified in the current audit session */
+  /** Verified for the CURRENT monthly audit cycle (lastAuditDate this month) */
   auditVerified: boolean;
   lastAuditDate?: Date;
   auditCondition?: 'Good' | 'Damaged' | 'Expired';
-  /** Legacy field for backward compat — prefer unopenedBoxes */
+  /** Legacy field for backward compat — prefer totalUnits */
   totalStockQuantity?: number;
 }
 
@@ -122,6 +126,7 @@ export interface AssetSnapshot {
   currentLocation?: string;
   lastChecked?: Date;
   isAsset: true;
+  /** Verified for the CURRENT monthly audit cycle (lastAuditDate this month) */
   auditVerified: boolean;
   lastAuditDate?: Date;
   /** For multi-instance assets, count of instances */
@@ -147,16 +152,28 @@ export async function generateAuditSnapshot(
   let expiredCount = 0;
 
   snap.docs.forEach((docSnap) => {
-    const data = docSnap.data() as any;
+    const data = docSnap.data() as Omit<InventoryItem, 'id'>;
     const item: InventoryItem = { id: docSnap.id, ...data };
 
-    // Apply zone filter
+    // Apply zone filter — match legacy room/location fields and the
+    // structured storageLocation zone name
     if (zoneFilter) {
-      const itemZone = item.room || item.location || 'HQ';
-      if (itemZone !== zoneFilter && item.location !== zoneFilter) return;
+      const zf = zoneFilter.toLowerCase();
+      const candidates = [
+        item.room,
+        item.location,
+        item.storageLocation?.zoneName,
+      ].filter(Boolean).map(s => String(s).toLowerCase());
+      if (!candidates.some(c => c === zf || c.includes(zf))) return;
     }
 
     const isAsset = determineIsAsset(item);
+
+    const lastAuditDate = item.lastAuditDate ? toDate(item.lastAuditDate) : undefined;
+    // Monthly audit cycle: an item only counts as verified if it was audited
+    // during the current calendar month. The sticky `auditVerified` boolean
+    // never resets, so it must not be trusted on its own.
+    const verifiedThisCycle = isAuditedThisMonth(lastAuditDate, now);
 
     if (isAsset) {
       const instances = Array.isArray(item.assets) ? item.assets : [];
@@ -175,23 +192,22 @@ export async function generateAuditSnapshot(
           ? toDate(item.assetLastChecked)
           : undefined,
         isAsset: true,
-        auditVerified: item.auditVerified ?? false,
-        lastAuditDate: item.lastAuditDate
-          ? toDate(item.lastAuditDate)
-          : undefined,
+        auditVerified: verifiedThisCycle,
+        lastAuditDate,
         instanceCount: instances.length || 1,
         issueCount,
       });
     } else {
-      // Disposable — box-based tracking
-      const unopenedBoxes = item.unopenedBoxes ?? 0;
+      // Disposable — same stock math as the inventory page (bag-tracking aware)
+      const bag = computeBagStock(item);
+      const unopenedBoxes = bag.hasBagTracking ? bag.totalBags : (item.unopenedBoxes ?? 0);
       const itemsPerBox = item.itemsPerBox ?? 1;
-      const openBatchUnits = (item.batches || []).reduce(
-        (sum, b) => sum + (b.stock || 0),
-        0
-      );
+      const openBatchUnits = bag.hasBagTracking
+        ? bag.totalLoose
+        : (item.batches || []).reduce((sum, b) => sum + (b.stock || 0), 0);
       const reorderThreshold = item.reorderThreshold ?? 0;
-      const isLowStock = unopenedBoxes <= reorderThreshold;
+      const isOut = bag.totalItems === 0;
+      const isLowStock = !isOut && reorderThreshold > 0 && bag.totalItems <= reorderThreshold;
 
       // Find earliest expiration
       let earliestExp: Date | undefined;
@@ -209,7 +225,7 @@ export async function generateAuditSnapshot(
 
       const isExpired = earliestExp ? earliestExp < now : false;
 
-      if (isLowStock) lowStockCount++;
+      if (isLowStock || isOut) lowStockCount++;
       if (isExpired) expiredCount++;
 
       disposables.push({
@@ -220,15 +236,15 @@ export async function generateAuditSnapshot(
         room: item.room,
         unopenedBoxes,
         itemsPerBox,
+        totalUnits: bag.totalItems,
         openBatchUnits,
         reorderThreshold,
         isLowStock,
+        isOut,
         earliestExpiration: earliestExp,
         isExpired,
-        auditVerified: item.auditVerified ?? false,
-        lastAuditDate: item.lastAuditDate
-          ? toDate(item.lastAuditDate)
-          : undefined,
+        auditVerified: verifiedThisCycle,
+        lastAuditDate,
         auditCondition: item.auditCondition,
         totalStockQuantity: item.totalStockQuantity,
       });
@@ -273,7 +289,7 @@ export async function acquireZoneLock(
   const snap = await getDoc(lockRef);
 
   if (snap.exists()) {
-    const data = snap.data() as any;
+    const data = snap.data() as { lockedBy?: string; lockedByName?: string };
     if (data.lockedBy && data.lockedBy !== user.uid) {
       return {
         acquired: false,
@@ -303,7 +319,7 @@ export async function releaseZoneLock(
   try {
     const snap = await getDoc(lockRef);
     if (snap.exists()) {
-      const data = snap.data() as any;
+      const data = snap.data() as { lockedBy?: string };
       if (data.lockedBy === userId) {
         await deleteDoc(lockRef);
       }
@@ -346,7 +362,7 @@ export async function submitAuditEntries(
   zone: string
 ): Promise<{ success: boolean; itemsUpdated: number; variances: number }> {
   const batch = writeBatch(db);
-  const logsToWrite: any[] = [];
+  const logsToWrite: Record<string, unknown>[] = [];
   let variances = 0;
 
   for (const entry of entries) {
@@ -365,24 +381,39 @@ export async function submitAuditEntries(
         updatedAt: serverTimestamp(),
       });
     } else {
-      // Disposable audit: update unopenedBoxes (source of truth)
+      // Disposable audit
       const countedBoxes = entry.countedBoxes ?? 0;
-      const systemBoxes = item.unopenedBoxes ?? 0;
+      const bag = computeBagStock(item);
+      const systemBoxes = bag.hasBagTracking ? bag.totalBags : (item.unopenedBoxes ?? 0);
 
       if (countedBoxes !== systemBoxes) variances++;
 
-      batch.update(doc(db, 'inventory', entry.itemId), {
-        unopenedBoxes: countedBoxes,
-        // Also sync totalStockQuantity for legacy compat
-        totalStockQuantity: countedBoxes * (entry.itemsPerBox ?? item.itemsPerBox ?? 1),
-        // Allow auditors to correct or record observed items-per-box
-        itemsPerBox: entry.itemsPerBox ?? item.itemsPerBox ?? 1,
-        auditVerified: true,
-        auditCondition: entry.condition,
-        auditNotes: entry.notes ?? null,
-        lastAuditDate: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      if (bag.hasBagTracking) {
+        // Bag-tracked items: batches are the source of truth. Overwriting the
+        // item-level box count would silently desync from the batches, so only
+        // mark the item verified; variances stay in the audit log for manual
+        // batch reconciliation.
+        batch.update(doc(db, 'inventory', entry.itemId), {
+          auditVerified: true,
+          auditCondition: entry.condition,
+          auditNotes: entry.notes ?? null,
+          lastAuditDate: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        batch.update(doc(db, 'inventory', entry.itemId), {
+          unopenedBoxes: countedBoxes,
+          // Also sync totalStockQuantity for legacy compat
+          totalStockQuantity: countedBoxes * (entry.itemsPerBox ?? item.itemsPerBox ?? 1),
+          // Allow auditors to correct or record observed items-per-box
+          itemsPerBox: entry.itemsPerBox ?? item.itemsPerBox ?? 1,
+          auditVerified: true,
+          auditCondition: entry.condition,
+          auditNotes: entry.notes ?? null,
+          lastAuditDate: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
     }
 
     addAuditEventToBatch(batch, {
@@ -462,6 +493,7 @@ export interface RestockDecision {
   itemName: string;
   unopenedBoxes: number;
   itemsPerBox: number;
+  totalUnits: number;
   reorderThreshold: number;
   deficit: number;
   urgency: 'critical' | 'low' | 'ok';
@@ -470,23 +502,26 @@ export interface RestockDecision {
 
 /**
  * Analyze inventory and produce restock recommendations.
- * Based on unopenedBoxes vs reorderThreshold.
+ * Uses total on-hand UNITS vs reorderThreshold — the same comparison the
+ * inventory page makes — so both surfaces flag the same items.
  */
 export function analyzeRestockNeeds(
   items: DisposableSnapshot[]
 ): RestockDecision[] {
   return items
     .map((item) => {
-      const deficit = item.reorderThreshold - item.unopenedBoxes;
+      const deficit = item.reorderThreshold - item.totalUnits;
       let urgency: RestockDecision['urgency'] = 'ok';
       let recommendation = 'Stock is adequate';
 
-      if (item.unopenedBoxes === 0) {
+      if (item.isOut) {
         urgency = 'critical';
-        recommendation = `OUT OF STOCK — Need ${item.reorderThreshold} boxes immediately`;
-      } else if (deficit > 0) {
+        recommendation = item.reorderThreshold > 0
+          ? `OUT OF STOCK — Need ${item.reorderThreshold} units immediately`
+          : 'OUT OF STOCK';
+      } else if (item.isLowStock) {
         urgency = 'low';
-        recommendation = `Low stock — Order ${deficit} more boxes to reach par level`;
+        recommendation = `Low stock — Order ${Math.max(1, deficit)} more units to reach par level`;
       }
 
       if (item.isExpired) {
@@ -499,6 +534,7 @@ export function analyzeRestockNeeds(
         itemName: item.name,
         unopenedBoxes: item.unopenedBoxes,
         itemsPerBox: item.itemsPerBox,
+        totalUnits: item.totalUnits,
         reorderThreshold: item.reorderThreshold,
         deficit: Math.max(0, deficit),
         urgency,
@@ -514,12 +550,12 @@ export function analyzeRestockNeeds(
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
-function toDate(val: any): Date | undefined {
+function toDate(val: unknown): Date | undefined {
   if (!val) return undefined;
   if (val instanceof Date) return val;
   if (val instanceof Timestamp) return val.toDate();
-  if (typeof val === 'object' && typeof val.toDate === 'function')
-    return val.toDate();
+  if (typeof val === 'object' && typeof (val as { toDate?: () => Date }).toDate === 'function')
+    return (val as { toDate: () => Date }).toDate();
   if (typeof val === 'string') {
     const d = new Date(val);
     return isNaN(d.getTime()) ? undefined : d;
@@ -533,17 +569,17 @@ function toDate(val: any): Date | undefined {
 
 /** Audit-specific logging for debugging */
 export const auditLog = {
-  info: (msg: string, data?: any) => {
+  info: (msg: string, data?: unknown) => {
     console.log(`[AUDIT] ${msg}`, data ?? '');
   },
-  warn: (msg: string, data?: any) => {
+  warn: (msg: string, data?: unknown) => {
     console.warn(`[AUDIT] ${msg}`, data ?? '');
   },
-  error: (msg: string, data?: any) => {
+  error: (msg: string, data?: unknown) => {
     console.error(`[AUDIT] ❌ ${msg}`, data ?? '');
   },
-  debug: (msg: string, data?: any) => {
-    if (typeof window !== 'undefined' && (window as any).__BMRC_DEBUG) {
+  debug: (msg: string, data?: unknown) => {
+    if (typeof window !== 'undefined' && (window as { __BMRC_DEBUG?: boolean }).__BMRC_DEBUG) {
       console.debug(`[AUDIT] 🔍 ${msg}`, data ?? '');
     }
   },

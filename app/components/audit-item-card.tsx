@@ -1,184 +1,102 @@
 'use client';
 
 import React from 'react';
-import { Card, CardBody, Chip, Button, Progress } from '@heroui/react';
-import {
-  Package,
-  AlertTriangle,
-  CheckCircle2,
-  XCircle,
-  Clock,
-  Box,
-  Store,
-  MapPin,
-} from 'lucide-react';
+import { Chip, Button } from '@heroui/react';
+import { MapPin, ArrowRightLeft, PackagePlus, AlertTriangle } from 'lucide-react';
 import type { DisposableSnapshot, AssetSnapshot } from '@/app/lib/audit-helpers';
+import type { DrawerAction } from '@/app/components/audit-action-drawer';
+import { CategoryBadge } from '@/app/components/category-badge';
+import { formatExp, expTextColor } from '@/app/lib/item-status';
+
+function lastAuditLabel(d?: Date): string {
+  if (!d) return 'Never audited';
+  return `Audited ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
+}
 
 // ─── Disposable Card ──────────────────────────────────────────────────────────
 
 interface DisposableCardProps {
   item: DisposableSnapshot;
-  onAudit?: (item: DisposableSnapshot) => void;
-  onConsume?: (item: DisposableSnapshot) => void;
-  compact?: boolean;
+  /** Open the action drawer on this item at the given section */
+  onAction: (item: DisposableSnapshot, action: DrawerAction) => void;
 }
 
-export function DisposableAuditCard({
-  item,
-  onAudit,
-  onConsume,
-  compact = false,
-}: DisposableCardProps) {
-  const stockRatio =
-    item.reorderThreshold > 0
-      ? Math.min(100, (item.unopenedBoxes / item.reorderThreshold) * 100)
-      : item.unopenedBoxes > 0
-        ? 100
-        : 0;
-
-  const stockColor =
-    item.unopenedBoxes === 0
-      ? 'danger'
-      : item.isLowStock
-        ? 'warning'
-        : 'success';
-
-  const expiryText = item.earliestExpiration
-    ? item.earliestExpiration.toLocaleDateString()
-    : 'No expiry tracked';
+export function DisposableAuditCard({ item, onAction }: DisposableCardProps) {
+  const pct = item.reorderThreshold > 0
+    ? Math.min(100, (item.totalUnits / (item.reorderThreshold * 2)) * 100)
+    : item.totalUnits > 0 ? 100 : 0;
+  const barColor = item.isOut || item.isExpired ? 'bg-danger' : item.isLowStock ? 'bg-warning' : 'bg-success';
+  const qtyColor = item.isOut ? 'text-danger' : item.isLowStock ? 'text-warning' : 'text-success';
+  const loc = [item.location, item.room].filter(Boolean).join(' › ');
 
   return (
-    <Card
-      className={`w-full ${item.isLowStock || item.isExpired ? 'border-2 border-warning' : ''} ${item.unopenedBoxes === 0 ? 'border-2 border-danger' : ''}`}
+    <div
+      onClick={() => onAction(item, 'count')}
+      className="flex gap-4 items-center flex-wrap bg-content1 border border-divider rounded-large px-4 py-4 cursor-pointer hover:border-primary/30 hover:shadow-sm transition-all duration-150"
     >
-      <CardBody className={compact ? 'p-3' : 'p-4'}>
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <Box size={16} className="text-default-500 flex-shrink-0" />
-              <span className={`font-semibold ${compact ? 'text-sm' : 'text-base'} truncate`}>
-                {item.name}
-              </span>
-              <Chip size="sm" variant="flat" color="default">
-                {item.category}
-              </Chip>
-            </div>
+      <CategoryBadge category={item.category} />
 
-            {!compact && (
-              <div className="text-xs text-default-500 mt-1">
-                {item.location}
-                {item.room ? ` — ${item.room}` : ''}
-              </div>
-            )}
-
-            {/* Box count — THE key metric */}
-            <div className="mt-2">
-              <div className="flex items-center justify-between text-sm mb-1">
-                <span className="font-medium flex items-center gap-1">
-                  <Box size={14} /> {item.unopenedBoxes} box{item.unopenedBoxes !== 1 ? 'es' : ''} in back
-                </span>
-                {item.itemsPerBox > 1 && (
-                  <span className="text-xs text-default-400">
-                    ({item.itemsPerBox} per box = {item.unopenedBoxes * item.itemsPerBox} units)
-                  </span>
-                )}
-              </div>
-              <Progress
-                size="sm"
-                value={stockRatio}
-                color={stockColor}
-                className="max-w-full"
-              />
-              {item.reorderThreshold > 0 && (
-                <div className="text-xs text-default-400 mt-0.5">
-                  Par level: {item.reorderThreshold} boxes
-                </div>
-              )}
-            </div>
-
-            {/* Open batch info (front area — informational) */}
-            {item.openBatchUnits > 0 && (
-              <div className="mt-1 text-xs text-default-500 flex items-center gap-1">
-                <Store size={12} /> {item.openBatchUnits} loose units in front (not tracked for audit)
-              </div>
-            )}
-
-            {/* Status chips */}
-            <div className="flex gap-1 mt-2 flex-wrap">
-              {item.isExpired && (
-                <Chip size="sm" color="danger" variant="flat" startContent={<XCircle size={12} />}>
-                  Expired
-                </Chip>
-              )}
-              {item.isLowStock && !item.isExpired && (
-                <Chip
-                  size="sm"
-                  color="warning"
-                  variant="flat"
-                  startContent={<AlertTriangle size={12} />}
-                >
-                  Low Stock
-                </Chip>
-              )}
-              {item.auditVerified && (
-                <Chip
-                  size="sm"
-                  color="success"
-                  variant="flat"
-                  startContent={<CheckCircle2 size={12} />}
-                >
-                  Verified
-                </Chip>
-              )}
-              {!item.auditVerified && (
-                <Chip
-                  size="sm"
-                  color="default"
-                  variant="flat"
-                  startContent={<Clock size={12} />}
-                >
-                  Not Verified
-                </Chip>
-              )}
-            </div>
-
-            {/* Expiration */}
-            {!compact && item.earliestExpiration && (
-              <div
-                className={`text-xs mt-1 ${item.isExpired ? 'text-danger font-semibold' : 'text-default-500'}`}
-              >
-                {item.isExpired ? 'Expired: ' : 'Expires: '}
-                {expiryText}
-              </div>
-            )}
+      {/* Info */}
+      <div className="flex-1 min-w-0 basis-40">
+        <div className="flex items-center gap-2 flex-wrap mb-1">
+          <span className="font-semibold text-foreground">{item.name}</span>
+          <span className="text-xs text-foreground-400">{item.category}</span>
+        </div>
+        {loc && (
+          <div className="flex items-center gap-1 text-xs text-foreground-500 mb-2">
+            <MapPin size={11} className="flex-none" /> {loc}
           </div>
+        )}
+        <div className="flex gap-1.5 flex-wrap items-center">
+          {item.isExpired && <Chip size="sm" variant="flat" color="danger">Expired</Chip>}
+          {item.isOut && <Chip size="sm" variant="flat" color="danger">Out of Stock</Chip>}
+          {item.isLowStock && <Chip size="sm" variant="flat" color="warning">Low Stock</Chip>}
+          {item.auditVerified
+            ? <Chip size="sm" variant="flat" color="success">Verified</Chip>
+            : <Chip size="sm" variant="flat" color="default">Due</Chip>}
+          <span className="text-xs text-foreground-400">{lastAuditLabel(item.lastAuditDate)}</span>
+        </div>
+        {item.earliestExpiration && (
+          <div className={`text-xs font-semibold mt-1.5 ${expTextColor(item.earliestExpiration)}`}>
+            Expires {formatExp(item.earliestExpiration)}
+          </div>
+        )}
+      </div>
 
-          {/* Action buttons */}
-          <div className="flex flex-col gap-1 flex-shrink-0">
-            {onAudit && (
-              <Button
-                size="sm"
-                color="primary"
-                variant="flat"
-                onPress={() => onAudit(item)}
-              >
-                Audit
-              </Button>
-            )}
-            {onConsume && item.unopenedBoxes > 0 && (
-              <Button
-                size="sm"
-                color="secondary"
-                variant="flat"
-                onPress={() => onConsume(item)}
-              >
-                Open Box
-              </Button>
-            )}
+      {/* Quantity */}
+      <div className="w-40 flex-none flex flex-col items-end gap-1.5">
+        <div className="text-center min-w-[54px]">
+          <div className={`font-mono text-3xl font-semibold tabular-nums leading-none ${qtyColor}`}>
+            {item.unopenedBoxes}
+          </div>
+          <div className="text-[9px] uppercase tracking-wider text-foreground-400 mt-1 font-semibold">
+            Boxes
           </div>
         </div>
-      </CardBody>
-    </Card>
+        <div className="w-full h-1.5 rounded-full bg-content3 overflow-hidden">
+          <div className={`h-full rounded-full transition-all duration-300 ${barColor}`} style={{ width: `${pct}%` }} />
+        </div>
+        <span className="text-[11px] text-foreground-400 tabular-nums">
+          {item.totalUnits} units · reorder@{item.reorderThreshold}
+        </span>
+      </div>
+
+      {/* Quick actions */}
+      <div
+        className="flex flex-row sm:flex-col gap-1.5 flex-none w-full sm:w-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Button size="sm" color="primary" variant="flat" className="flex-1 sm:flex-none" onPress={() => onAction(item, 'count')}>
+          Count
+        </Button>
+        <Button size="sm" variant="bordered" className="flex-1 sm:flex-none" startContent={<ArrowRightLeft size={13} />} onPress={() => onAction(item, 'move')}>
+          Move
+        </Button>
+        <Button size="sm" variant="bordered" className="flex-1 sm:flex-none" startContent={<PackagePlus size={13} />} onPress={() => onAction(item, 'shipment')}>
+          Shipment
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -186,11 +104,10 @@ export function DisposableAuditCard({
 
 interface AssetCardProps {
   item: AssetSnapshot;
-  onAudit?: (item: AssetSnapshot) => void;
-  compact?: boolean;
+  onAction: (item: AssetSnapshot, action: DrawerAction) => void;
 }
 
-export function AssetAuditCard({ item, onAudit, compact = false }: AssetCardProps) {
+export function AssetAuditCard({ item, onAction }: AssetCardProps) {
   const statusColor =
     item.assetStatus === 'Ready'
       ? 'success'
@@ -201,88 +118,56 @@ export function AssetAuditCard({ item, onAudit, compact = false }: AssetCardProp
           : 'default';
 
   return (
-    <Card
-      className={`w-full ${item.issueCount > 0 ? 'border-2 border-warning' : ''}`}
+    <div
+      onClick={() => onAction(item, 'count')}
+      className="flex gap-4 items-center flex-wrap bg-content1 border border-divider rounded-large px-4 py-4 cursor-pointer hover:border-primary/30 hover:shadow-sm transition-all duration-150"
     >
-      <CardBody className={compact ? 'p-3' : 'p-4'}>
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <Package size={16} className="text-primary flex-shrink-0" />
-              <span className={`font-semibold ${compact ? 'text-sm' : 'text-base'} truncate`}>
-                {item.name}
-              </span>
-              {item.assetSerial && (
-                <Chip size="sm" variant="flat" color="default">
-                  #{item.assetSerial}
-                </Chip>
-              )}
-            </div>
+      <CategoryBadge category={item.category} />
 
-            <div className="flex gap-1 mt-2 flex-wrap">
-              <Chip size="sm" color={statusColor} variant="flat">
-                {item.assetStatus || 'Unknown'}
-              </Chip>
-              {item.currentLocation && (
-                <Chip size="sm" variant="flat" color="default" startContent={<MapPin size={12} />}>
-                  {item.currentLocation}
-                </Chip>
-              )}
-              {item.instanceCount > 1 && (
-                <Chip size="sm" variant="flat" color="default">
-                  {item.instanceCount} units
-                </Chip>
-              )}
-              {item.issueCount > 0 && (
-                <Chip
-                  size="sm"
-                  color="warning"
-                  variant="flat"
-                  startContent={<AlertTriangle size={12} />}
-                >
-                  {item.issueCount} issue{item.issueCount !== 1 ? 's' : ''}
-                </Chip>
-              )}
-              {item.auditVerified ? (
-                <Chip
-                  size="sm"
-                  color="success"
-                  variant="flat"
-                  startContent={<CheckCircle2 size={12} />}
-                >
-                  Verified
-                </Chip>
-              ) : (
-                <Chip
-                  size="sm"
-                  color="default"
-                  variant="flat"
-                  startContent={<Clock size={12} />}
-                >
-                  Not Verified
-                </Chip>
-              )}
-            </div>
-
-            {!compact && item.lastChecked && (
-              <div className="text-xs text-default-500 mt-1">
-                Last checked: {item.lastChecked.toLocaleDateString()}
-              </div>
-            )}
-          </div>
-
-          {onAudit && (
-            <Button
-              size="sm"
-              color="primary"
-              variant="flat"
-              onPress={() => onAudit(item)}
-            >
-              Audit
-            </Button>
+      <div className="flex-1 min-w-0 basis-40">
+        <div className="flex items-center gap-2 flex-wrap mb-1">
+          <span className="font-semibold text-foreground">{item.name}</span>
+          {item.assetSerial && (
+            <span className="font-mono text-xs text-foreground-500">#{item.assetSerial}</span>
           )}
         </div>
-      </CardBody>
-    </Card>
+        {item.currentLocation && (
+          <div className="flex items-center gap-1 text-xs text-foreground-500 mb-2">
+            <MapPin size={11} className="flex-none" /> {item.currentLocation}
+          </div>
+        )}
+        <div className="flex gap-1.5 flex-wrap items-center">
+          <Chip size="sm" variant="flat" color={statusColor}>{item.assetStatus || 'Unknown'}</Chip>
+          {item.instanceCount > 1 && (
+            <Chip size="sm" variant="flat" color="default">{item.instanceCount} units</Chip>
+          )}
+          {item.issueCount > 0 && (
+            <Chip size="sm" variant="flat" color="warning">
+              {item.issueCount} issue{item.issueCount !== 1 ? 's' : ''}
+            </Chip>
+          )}
+          {item.auditVerified
+            ? <Chip size="sm" variant="flat" color="success">Verified</Chip>
+            : <Chip size="sm" variant="flat" color="default">Due</Chip>}
+          <span className="text-xs text-foreground-400">{lastAuditLabel(item.lastAuditDate)}</span>
+        </div>
+      </div>
+
+      {/* Quick actions */}
+      <div
+        className="flex flex-row sm:flex-col gap-1.5 flex-none w-full sm:w-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Button size="sm" color="primary" variant="flat" className="flex-1 sm:flex-none" onPress={() => onAction(item, 'count')}>
+          Verify
+        </Button>
+        <Button size="sm" variant="bordered" className="flex-1 sm:flex-none" startContent={<ArrowRightLeft size={13} />} onPress={() => onAction(item, 'move')}>
+          Move
+        </Button>
+        <Button size="sm" variant="bordered" className="flex-1 sm:flex-none" startContent={<AlertTriangle size={13} />} onPress={() => onAction(item, 'report')}>
+          Report
+        </Button>
+      </div>
+    </div>
   );
 }

@@ -270,7 +270,7 @@ export default function StoragePage() {
         {/* Header */}
         <div className="mb-6 flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-semibold flex items-center gap-2">
+            <h1 className="text-2xl font-semibold text-foreground flex items-center gap-2">
               Storage Management
             </h1>
             <p className="text-foreground-500">Manage shelves, containers, and storage zones.</p>

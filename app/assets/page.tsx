@@ -859,7 +859,7 @@ export default function AssetsPage() {
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
           <div>
-            <h1 className="text-xl md:text-3xl font-semibold flex items-center gap-2">
+            <h1 className="text-2xl font-semibold text-foreground flex items-center gap-2">
               <Package className="text-primary" size={24} />
               Asset Management
             </h1>

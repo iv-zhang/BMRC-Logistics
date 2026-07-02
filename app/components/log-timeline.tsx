@@ -46,6 +46,7 @@ const getActionMeta = (action: string) => {
   if (action === 'checkin') return { color: 'success' as const, icon: ArrowDownLeft, badgeClass: 'bg-emerald-100 text-emerald-700' };
   if (action === 'maintenance') return { color: 'secondary' as const, icon: Clock, badgeClass: 'bg-purple-100 text-purple-700' };
   if (action === 'restock') return { color: 'primary' as const, icon: CheckCircle2, badgeClass: 'bg-sky-100 text-sky-700' };
+  if (action === 'audit') return { color: 'primary' as const, icon: CheckCircle2, badgeClass: 'bg-sky-100 text-sky-700' };
   return { color: 'default' as const, icon: ShieldAlert, badgeClass: 'bg-slate-100 text-slate-600' };
 };
 

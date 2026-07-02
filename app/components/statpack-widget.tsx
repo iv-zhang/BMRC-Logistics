@@ -2,12 +2,8 @@
 
 import React, { useMemo, useState } from 'react';
 import {
-  Card,
-  CardHeader,
-  CardBody,
   Button,
   Chip,
-  Divider,
   Tooltip,
   useDisclosure,
   Modal,
@@ -19,11 +15,10 @@ import {
   ClipboardCheck,
   ClipboardList,
   Copy,
-  Eye,
   MapPin,
+  Pencil,
   QrCode,
   Wrench,
-  Boxes,
   Activity,
   Search,
 } from 'lucide-react';
@@ -56,11 +51,21 @@ const pocketOrder: { key: StatpackPocket; label: string }[] = [
 const statusColor = (status?: string) => {
   if (!status) return 'default' as const;
   const lower = status.toLowerCase();
-  if (lower.includes('ready')) return 'success' as const;
+  if (lower.includes('ready') && !lower.includes('not')) return 'success' as const;
   if (lower.includes('use')) return 'warning' as const;
   if (lower.includes('maintenance') || lower.includes('not ready')) return 'danger' as const;
   return 'default' as const;
 };
+
+/** Two-letter monogram for the pack identity badge (e.g. "Alpha 1" → "A1"). */
+function packCode(name?: string): string {
+  if (!name) return 'SP';
+  const parts = name.trim().split(/\s+/);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  }
+  return name.slice(0, 2).toUpperCase();
+}
 
 export default function StatpackWidget({
   statpack,
@@ -99,168 +104,186 @@ export default function StatpackWidget({
   const totalItems = statpack.contents?.length || 0;
 
   return (
-    <Card className="border border-default-200 shadow-lg hover:shadow-xl transition-shadow">
-      <CardHeader className="flex flex-col gap-2 items-start">
-        <div className="flex w-full items-center justify-between gap-3">
-          <div className="min-w-0">
-            <h3 className="text-base font-semibold truncate">{statpack.name}</h3>
-            <div className="flex flex-wrap items-center gap-2 mt-1">
-              <Chip size="sm" variant="flat" color={statusColor(statusLabel)}>{statusLabel}</Chip>
-              {statpack.currentLocation && (
-                <Chip size="sm" variant="flat" color="default">
-                  <span className="flex items-center gap-1">
-                    <MapPin size={12} />
-                    {statpack.currentLocation}
-                  </span>
-                </Chip>
-              )}
-            </div>
+    <div className="bg-content1 border border-divider rounded-large p-4 hover:border-primary/30 hover:shadow-sm transition-all duration-150 flex flex-col gap-4">
+
+      {/* Header: identity badge + name + status */}
+      <div className="flex items-start gap-3">
+        <div className="w-[50px] h-[50px] rounded-[13px] flex items-center justify-center font-mono font-semibold text-[15px] flex-none bg-primary-50 dark:bg-primary-900/20 text-primary">
+          {packCode(statpack.name)}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="font-semibold text-foreground truncate">{statpack.name}</div>
+          <div className="flex items-center gap-2 text-xs text-foreground-500 mt-0.5 flex-wrap">
+            {statpack.currentLocation && (
+              <span className="flex items-center gap-1">
+                <MapPin size={11} className="flex-none" /> {statpack.currentLocation}
+              </span>
+            )}
+            <span>
+              <span className="font-semibold tabular-nums text-foreground-600">{totalItems}</span> items
+            </span>
+            {statpack.assetValue ? (
+              <span className="font-mono tabular-nums">${statpack.assetValue.toFixed(2)}</span>
+            ) : null}
           </div>
-          <Button size="sm" variant="flat" onPress={() => onOpenEditor(statpack)}>
-            <Eye size={14} className="mr-1" />
-            Edit
+          <div className="flex gap-1.5 flex-wrap mt-1.5">
+            <Chip size="sm" variant="flat" color={statusColor(statusLabel)}>{statusLabel}</Chip>
+            {statpack.isCheckedOut && statpack.assignedToUserName && (
+              <Chip size="sm" variant="flat" color="default">{statpack.assignedToUserName}</Chip>
+            )}
+          </div>
+        </div>
+        <button
+          onClick={() => onOpenEditor(statpack)}
+          className="w-8 h-8 rounded-medium bg-content2 hover:bg-content3 text-foreground-400 flex items-center justify-center transition-colors duration-150 flex-none"
+          aria-label="Edit statpack"
+        >
+          <Pencil size={14} />
+        </button>
+      </div>
+
+      {/* Pocket pills */}
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400 mb-2">
+          Pockets
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          <button
+            onClick={() => setSelectedPocket('all')}
+            className={`px-2.5 py-1 rounded-medium text-xs font-semibold transition-colors duration-150 ${
+              selectedPocket === 'all'
+                ? 'bg-primary text-white'
+                : 'bg-content2 text-foreground-500 hover:bg-content3'
+            }`}
+          >
+            All
+          </button>
+          {pocketOrder.map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => setSelectedPocket(key)}
+              className={`px-2.5 py-1 rounded-medium text-xs font-semibold transition-colors duration-150 ${
+                selectedPocket === key
+                  ? 'bg-primary text-white'
+                  : 'bg-content2 text-foreground-500 hover:bg-content3'
+              }`}
+            >
+              {label} <span className="tabular-nums">({pocketCounts[key] || 0})</span>
+            </button>
+          ))}
+        </div>
+
+        {selectedPocket !== 'all' && (
+          <div className="bg-content2 rounded-large p-3 mt-2">
+            {itemsByPocket.length === 0 ? (
+              <p className="text-xs text-foreground-400">No items in this pocket.</p>
+            ) : (
+              <div className="space-y-1.5">
+                {itemsByPocket.slice(0, 6).map((item, idx) => (
+                  <div key={`${item.itemId}-${idx}`} className="flex items-center justify-between gap-2">
+                    {item.assetInstanceId ? (
+                      <button
+                        type="button"
+                        className="truncate text-left text-xs text-foreground hover:text-primary transition-colors duration-150"
+                        onClick={() => onEditAsset?.(item.assetInstanceId as string)}
+                      >
+                        {item.itemDetails?.name || item.itemId}
+                      </button>
+                    ) : (
+                      <span className="truncate text-xs text-foreground">{item.itemDetails?.name || item.itemId}</span>
+                    )}
+                    <span className="font-mono text-xs font-semibold tabular-nums text-foreground-500 flex-none">
+                      {item.currentQuantity ?? 0}/{item.requiredQuantity ?? 0}
+                    </span>
+                  </div>
+                ))}
+                {itemsByPocket.length > 6 && (
+                  <button
+                    onClick={() => onOpenEditor(statpack)}
+                    className="text-xs font-semibold text-primary"
+                  >
+                    View all {itemsByPocket.length} items
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Primary actions */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" color="primary" startContent={<ClipboardCheck size={14} />} onPress={() => onCheckin(statpack)}>
+          Check in
+        </Button>
+        {onCheckout && (
+          <Button size="sm" variant="bordered" startContent={<ClipboardList size={14} />} onPress={() => onCheckout(statpack)}>
+            Check out
           </Button>
-        </div>
-        <div className="flex flex-wrap items-center gap-3 text-xs text-default-600">
-          <span className="flex items-center gap-1">
-            <Boxes size={12} />
-            {totalItems} items
-          </span>
-          <span>Value: {statpack.assetValue ? `$${statpack.assetValue.toFixed(2)}` : '—'}</span>
-        </div>
-      </CardHeader>
-      <Divider />
-      <CardBody className="space-y-3">
-        <div className="space-y-2">
-          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-            <span className="text-xs text-default-500 w-full sm:w-auto">Pockets</span>
+        )}
+        <Button size="sm" variant="flat" startContent={<Wrench size={14} />} onPress={() => onMaintenance(statpack)}>
+          Maintenance
+        </Button>
+        <Button size="sm" variant="light" startContent={<Activity size={14} />} onPress={() => setShowActivity((prev) => !prev)}>
+          {showActivity ? 'Hide' : 'Activity'}
+        </Button>
+      </div>
+
+      {showActivity && (
+        <LogTimeline
+          statpackId={statpack.id || ''}
+          maxRows={4}
+          onViewAll={() => historyDisclosure.onOpen()}
+        />
+      )}
+
+      {/* Utility icon row */}
+      <div className="flex items-center gap-1.5 border-t border-divider pt-3 mt-auto">
+        <Tooltip content="Scan location">
+          <button
+            onClick={() => onScan?.(statpack)}
+            className="w-8 h-8 rounded-medium bg-content2 hover:bg-content3 text-foreground-400 flex items-center justify-center transition-colors duration-150"
+            aria-label="Scan location"
+          >
+            <MapPin size={14} />
+          </button>
+        </Tooltip>
+        <Tooltip content="Generate checkout QR">
+          <button
+            onClick={() => onGenerateQr?.(statpack)}
+            className="w-8 h-8 rounded-medium bg-content2 hover:bg-content3 text-foreground-400 flex items-center justify-center transition-colors duration-150"
+            aria-label="Generate checkout QR"
+          >
+            <QrCode size={14} />
+          </button>
+        </Tooltip>
+        {userRole === 'admin' && onAudit && (
+          <Tooltip content="Run audit">
+            <button
+              onClick={() => onAudit(statpack)}
+              className="w-8 h-8 rounded-medium bg-content2 hover:bg-content3 text-foreground-400 flex items-center justify-center transition-colors duration-150"
+              aria-label="Run audit"
+            >
+              <Search size={14} />
+            </button>
+          </Tooltip>
+        )}
+        {userRole === 'admin' && onDuplicate && (
+          <Tooltip content="Duplicate statpack">
             <Button
               size="sm"
-              className="min-h-[32px] px-3"
-              variant={selectedPocket === 'all' ? 'solid' : 'flat'}
-              color={selectedPocket === 'all' ? 'primary' : 'default'}
-              onPress={() => setSelectedPocket('all')}
+              variant="light"
+              isIconOnly
+              onPress={() => onDuplicate(statpack)}
+              isLoading={isDuplicating}
+              aria-label="Duplicate statpack"
+              className="w-8 h-8 min-w-8 rounded-medium bg-content2 hover:bg-content3 text-foreground-400"
             >
-              All
+              {!isDuplicating && <Copy size={14} />}
             </Button>
-            {pocketOrder.map(({ key, label }) => (
-              <Button
-                key={key}
-                size="sm"
-                className="min-h-[32px] px-3"
-                variant={selectedPocket === key ? 'solid' : 'flat'}
-                color={selectedPocket === key ? 'primary' : 'default'}
-                onPress={() => setSelectedPocket(key)}
-              >
-                {label} ({pocketCounts[key] || 0})
-              </Button>
-            ))}
-          </div>
-          {selectedPocket !== 'all' && (
-            <div className="rounded-md border border-default-200 bg-default-50 p-2">
-              {itemsByPocket.length === 0 ? (
-                <p className="text-xs text-default-500">No items in this pocket.</p>
-              ) : (
-                <div className="space-y-2">
-                  {itemsByPocket.slice(0, 6).map((item, idx) => (
-                    <div key={`${item.itemId}-${idx}`} className="flex items-center justify-between gap-2 text-xs">
-                      {item.assetInstanceId ? (
-                        <button
-                          type="button"
-                          className="truncate text-left text-sm text-default-700 hover:underline"
-                          onClick={() => onEditAsset?.(item.assetInstanceId as string)}
-                        >
-                          {item.itemDetails?.name || item.itemId}
-                        </button>
-                      ) : (
-                        <span className="truncate">{item.itemDetails?.name || item.itemId}</span>
-                      )}
-                      <Chip size="sm" variant="flat" color="default">
-                        {item.currentQuantity ?? 0}/{item.requiredQuantity ?? 0}
-                      </Chip>
-                    </div>
-                  ))}
-                  {itemsByPocket.length > 6 && (
-                    <Button size="sm" variant="light" onPress={() => onOpenEditor(statpack)}>
-                      View all items
-                    </Button>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <Button size="md" className="min-w-[100px] sm:min-w-0 sm:size-sm" color="primary" onPress={() => onCheckin(statpack)}>
-            <ClipboardCheck size={16} className="mr-1 sm:size-[14px]" />
-            Check-In
-          </Button>
-          {onCheckout && (
-            <Button size="md" className="min-w-[100px] sm:min-w-0 sm:size-sm" variant="flat" onPress={() => onCheckout(statpack)}>
-              <ClipboardList size={16} className="mr-1 sm:size-[14px]" />
-              Check-Out
-            </Button>
-          )}
-          <Button size="md" className="min-w-[100px] sm:min-w-0 sm:size-sm" variant="flat" onPress={() => onMaintenance(statpack)}>
-            <Wrench size={16} className="mr-1 sm:size-[14px]" />
-            Maintenance
-          </Button>
-          {onAudit && userRole === 'admin' && (
-            <Button size="md" className="min-w-[100px] sm:min-w-0 sm:size-sm" variant="flat" color="secondary" onPress={() => onAudit(statpack)}>
-              <Search size={16} className="mr-1 sm:size-[14px]" />
-              Audit
-            </Button>
-          )}
-          <Button size="md" className="sm:size-sm" variant="light" onPress={() => setShowActivity((prev) => !prev)}>
-            <Activity size={16} className="mr-1 sm:size-[14px]" />
-            {showActivity ? 'Hide' : 'Activity'}
-          </Button>
-        </div>
-
-        {showActivity && (
-          <LogTimeline
-            statpackId={statpack.id || ''}
-            maxRows={4}
-            onViewAll={() => historyDisclosure.onOpen()}
-          />
+          </Tooltip>
         )}
-
-        <Divider />
-
-        <div className="flex flex-wrap items-center gap-2">
-          <Tooltip content="Scan location">
-            <Button size="sm" className="min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0" variant="light" isIconOnly onPress={() => onScan?.(statpack)}>
-              <MapPin size={16} className="sm:size-[14px]" />
-            </Button>
-          </Tooltip>
-          <Tooltip content="Generate checkout QR">
-            <Button size="sm" className="min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0" variant="light" isIconOnly onPress={() => onGenerateQr?.(statpack)}>
-              <QrCode size={16} className="sm:size-[14px]" />
-            </Button>
-          </Tooltip>
-          {userRole === 'admin' && (
-            <>
-              <Tooltip content="Manual audit">
-                <Button size="sm" variant="light" isIconOnly onPress={() => onAudit?.(statpack)}>
-                  <Search size={14} />
-                </Button>
-              </Tooltip>
-              <Tooltip content="Duplicate statpack">
-                <Button
-                  size="sm"
-                  variant="light"
-                  isIconOnly
-                  onPress={() => onDuplicate?.(statpack)}
-                  isLoading={isDuplicating}
-                >
-                  <Copy size={14} />
-                </Button>
-              </Tooltip>
-            </>
-          )}
-        </div>
-      </CardBody>
+      </div>
 
       <Modal isOpen={historyDisclosure.isOpen} onOpenChange={historyDisclosure.onOpenChange} size="2xl" scrollBehavior="inside">
         <ModalContent className="max-h-[85vh]">
@@ -272,6 +295,6 @@ export default function StatpackWidget({
           </ModalBody>
         </ModalContent>
       </Modal>
-    </Card>
+    </div>
   );
 }

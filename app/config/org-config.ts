@@ -140,6 +140,7 @@ export const LOCATIONS: LocationDef[] = [
       { id: 'front', name: 'Front' },
       { id: 'forward_staging', name: 'Forward Staging' },
       { id: 'back_room', name: 'Back Room' },
+      { id: 'med_cabinet', name: 'Med Cabinet' },
       { id: 'office', name: 'Office' },
     ],
   },
@@ -294,6 +295,8 @@ export interface ThresholdConfig {
   o2PsiMin: number;
   /** O₂ PSI below which a warning (not critical) is shown */
   o2PsiWarning: number;
+  /** Days between required statpack audits (biweekly cadence) */
+  statpackAuditIntervalDays: number;
 }
 
 export const THRESHOLDS: ThresholdConfig = {
@@ -303,6 +306,7 @@ export const THRESHOLDS: ThresholdConfig = {
   expirationCriticalDays: 30,
   o2PsiMin: 1800,
   o2PsiWarning: 500,
+  statpackAuditIntervalDays: 14,
 };
 
 // ---------------------------------------------------------------------------
@@ -354,8 +358,28 @@ export const ROLES: RoleDef[] = [
 // ---------------------------------------------------------------------------
 
 export const ITEM_CATEGORIES = [
-  'Airway', 'Trauma', 'Vitals', 'Meds', 'PPE', 'Splinting', 'Hygiene', 'Other',
+  'Airway', 'Trauma', 'Vitals', 'Meds', 'PPE', 'Splinting', 'Hygiene', 'First Aid', 'Other',
 ] as const;
+
+/**
+ * Flat list of filterable inventory locations/areas, derived from LOCATIONS.
+ * Rooms of multi-room sites are listed as "Site · Room"; single-room sites by
+ * name. Use this for every location filter dropdown so pages stay in sync.
+ */
+export function getInventoryAreaOptions(): { value: string; label: string }[] {
+  const out: { value: string; label: string }[] = [];
+  for (const loc of LOCATIONS) {
+    if (loc.id === 'other') continue;
+    if (loc.rooms.length > 0) {
+      for (const room of loc.rooms) {
+        out.push({ value: room.name, label: `${loc.name} · ${room.name}` });
+      }
+    } else {
+      out.push({ value: loc.name, label: loc.name });
+    }
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // Organization Info

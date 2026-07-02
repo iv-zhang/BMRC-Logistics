@@ -2,8 +2,6 @@
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  Card,
-  CardBody,
   Button,
   Chip,
   Spinner,
@@ -16,9 +14,8 @@ import {
   Input,
   Select,
   SelectItem,
-  Tooltip,
 } from '@heroui/react';
-import { Package, Clipboard, AlertTriangle, ClipboardList, FileSpreadsheet } from 'lucide-react';
+import { Package, Clipboard, AlertTriangle, ClipboardList, FileSpreadsheet, Search, X, Plus, ArrowLeft, ShieldAlert } from 'lucide-react';
 import QRCode from 'qrcode';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { collection, onSnapshot, query, orderBy, updateDoc, doc, serverTimestamp, getDoc, getDocs, where, documentId, deleteDoc } from 'firebase/firestore';
@@ -37,6 +34,7 @@ import StatpackLogHistory from '@/app/components/statpack-log-history';
 import StatpackImportModal from '@/app/components/statpack-import-modal';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { duplicateStatpack } from '@/app/lib/statpacks';
+import { THRESHOLDS } from '@/app/config/org-config';
 import { fetchAndEnrichItemDetails } from '@/app/lib/inventory';
 import { formatDuration } from '@/app/lib/logs';
 import { StatpackAssetSummary } from '@/app/components/asset-statpack-badge';
@@ -49,6 +47,7 @@ export default function StatpacksListPage() {
   const { role: userRole } = useUserRole();
 
   const [selectedPack, setSelectedPack] = useState<Statpack | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
   const editorDisclosure = useDisclosure();
   // Deletion state for statpacks
   const [deletingPack, setDeletingPack] = useState<Statpack | null>(null);
@@ -604,17 +603,12 @@ export default function StatpacksListPage() {
   // Restrict access: general members should not access the Statpacks management UI
   if (!loading && userRole === 'member') {
     return (
-      <div className="min-h-screen p-6 bg-background">
-        <div className="max-w-3xl mx-auto">
-          <Card>
-            <CardBody className="text-center">
-              <h2 className="text-xl font-semibold">Access Denied</h2>
-              <p className="mt-2 text-sm text-foreground-500">You do not have permission to view Statpack management.</p>
-              <div className="mt-4">
-                <Button onPress={() => router.push('/dashboard')}>Back to Dashboard</Button>
-              </div>
-            </CardBody>
-          </Card>
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center p-4">
+        <div className="bg-content1 border border-divider rounded-large max-w-md w-full text-center py-10 px-6">
+          <ShieldAlert size={40} className="mx-auto text-foreground-300 mb-4" />
+          <h2 className="text-base font-semibold text-foreground mb-2">Access Denied</h2>
+          <p className="text-sm text-foreground-500 mb-4">You do not have permission to view Statpack management.</p>
+          <Button color="primary" onPress={() => router.push('/dashboard')}>Back to dashboard</Button>
         </div>
       </div>
     );
@@ -623,7 +617,7 @@ export default function StatpacksListPage() {
   // ── Expiration warnings for items inside statpacks ─────────────────────
   const expirationWarnings = (() => {
     const now = new Date();
-    const in30Days = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+    const in30Days = new Date(now.getTime() + THRESHOLDS.expirationCriticalDays * 24 * 60 * 60 * 1000);
     const warnings: { packName: string; packId: string; itemName: string; expirationDate: Date; isExpired: boolean }[] = [];
 
     for (const pack of statpacks) {
@@ -661,145 +655,207 @@ export default function StatpacksListPage() {
     return warnings.sort((a, b) => a.expirationDate.getTime() - b.expirationDate.getTime());
   })();
 
+  const checkedOutPacks = statpacks.filter(p => p.isCheckedOut);
+  const readyCount = statpacks.filter(p => !p.isCheckedOut && (p.status || 'Ready').toLowerCase().includes('ready') && !(p.status || '').toLowerCase().includes('not')).length;
+  const notReadyCount = statpacks.filter(p => (p.status || '').toLowerCase().includes('not ready') || (p.status || '').toLowerCase().includes('maintenance')).length;
+
+  const visiblePacks = searchTerm
+    ? statpacks.filter(p => {
+        const t = searchTerm.toLowerCase();
+        return (
+          (p.name || '').toLowerCase().includes(t) ||
+          (p.currentLocation || '').toLowerCase().includes(t) ||
+          (p.assignedToUserName || '').toLowerCase().includes(t) ||
+          (p.contents || []).some(it => (it.itemDetails?.name || '').toLowerCase().includes(t))
+        );
+      })
+    : statpacks;
+
   return (
-    <div className="min-h-screen p-3 md:p-6 bg-background">
-      <div className="max-w-6xl mx-auto space-y-4 md:space-y-6">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-          <div className="flex items-center gap-2">
-            <Package className="text-primary" size={24} />
-            <h1 className="text-xl md:text-2xl font-semibold">Statpacks</h1>
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
+      <div className="max-w-7xl mx-auto px-6 py-8">
+
+        {/* ── Page header ────────────────────────────────────────────────── */}
+        <div className="flex items-end justify-between gap-4 mb-6 flex-wrap">
+          <div>
+            <h1 className="text-2xl font-semibold text-foreground mb-1.5">Statpacks</h1>
+            <div className="flex items-center gap-2 flex-wrap mt-1">
+              <div className="flex items-center gap-2 bg-content1 border border-divider rounded-large px-3 py-1.5">
+                <span className="font-mono font-semibold tabular-nums text-foreground">{statpacks.length}</span>
+                <span className="text-xs text-foreground-400">total</span>
+              </div>
+              <div className="flex items-center gap-2 bg-success-50 dark:bg-success-900/20 border border-success/30 rounded-large px-3 py-1.5">
+                <span className="w-2 h-2 rounded-sm bg-success flex-none" />
+                <span className="font-mono font-semibold tabular-nums text-success">{readyCount}</span>
+                <span className="text-xs text-success/80 font-medium">ready</span>
+              </div>
+              <div className="flex items-center gap-2 bg-warning-50 dark:bg-warning-900/20 border border-warning/30 rounded-large px-3 py-1.5">
+                <span className="w-2 h-2 rounded-sm bg-warning flex-none" />
+                <span className="font-mono font-semibold tabular-nums text-warning">{checkedOutPacks.length}</span>
+                <span className="text-xs text-warning/80 font-medium">checked out</span>
+              </div>
+              <div className="flex items-center gap-2 bg-danger-50 dark:bg-danger-900/20 border border-danger/30 rounded-large px-3 py-1.5">
+                <span className="w-2 h-2 rounded-sm bg-danger flex-none" />
+                <span className="font-mono font-semibold tabular-nums text-danger">{notReadyCount + expirationWarnings.length}</span>
+                <span className="text-xs text-danger/80 font-medium">needs attention</span>
+              </div>
+            </div>
           </div>
-          <div className="flex gap-2">
-            <Button variant="light" size="sm" onPress={() => router.push('/assets')}>Back to Assets</Button>
-            <Button color="primary" size="sm" onPress={() => router.push('/statpacks/new')}>Add Statpack</Button>
+          <div className="flex items-center gap-3">
+            <Button size="sm" variant="flat" startContent={<ArrowLeft size={14} />} onPress={() => router.push('/assets')}>
+              Assets
+            </Button>
+            <Button color="primary" size="sm" startContent={<Plus size={15} />} onPress={() => router.push('/statpacks/new')}>
+              Add statpack
+            </Button>
           </div>
         </div>
 
+        {/* ── Search ─────────────────────────────────────────────────────── */}
+        <div className="flex items-center gap-3 bg-content1 border border-divider rounded-large px-4 py-1 mb-4">
+          <Search size={16} className="text-foreground-400 flex-none" />
+          <input
+            value={searchTerm}
+            onChange={e => setSearchTerm(e.target.value)}
+            placeholder="Search packs, locations, holders, contents…"
+            className="flex-1 text-sm bg-transparent outline-none py-2.5 text-foreground placeholder:text-foreground-400"
+          />
+          {searchTerm && (
+            <button onClick={() => setSearchTerm('')} className="text-foreground-400 hover:text-foreground-600 transition-colors">
+              <X size={15} />
+            </button>
+          )}
+        </div>
+
         {statpacks.length === 0 ? (
-          <p className="text-sm text-default-500 text-center py-6">No statpacks</p>
+          <div className="bg-content1 border border-dashed border-divider rounded-large text-center py-16">
+            <Package size={32} className="mx-auto text-foreground-300 mb-2" />
+            <p className="text-sm font-semibold text-foreground-500">No statpacks yet</p>
+            <p className="text-xs text-foreground-400 mt-1">Add a statpack to get started.</p>
+          </div>
         ) : (
-          <>
+          <div className="space-y-6">
             {/* Expiration warnings for items inside statpacks */}
             {expirationWarnings.length > 0 && (
-              <Card className="border border-danger-200 bg-danger-50 dark:bg-danger-50/10">
-                <CardBody className="space-y-2">
-                  <div className="flex items-center gap-2">
-                    <AlertTriangle size={18} className="text-danger-600" />
-                    <h2 className="text-sm font-semibold text-danger-700 dark:text-danger-400">
-                      Expiring Items in Statpacks ({expirationWarnings.length})
-                    </h2>
-                  </div>
-                  <div className="space-y-1 max-h-48 overflow-y-auto">
-                    {expirationWarnings.map((w, i) => (
-                      <div
-                        key={`exp-${i}`}
-                        className="flex items-center justify-between rounded-lg border border-danger-100 bg-content1 px-3 py-2"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <Chip
-                            size="sm"
-                            variant="flat"
-                            color={w.isExpired ? 'danger' : 'warning'}
-                          >
-                            {w.isExpired ? 'Expired' : 'Expiring Soon'}
-                          </Chip>
-                          <span className="text-sm font-medium truncate">{w.itemName}</span>
-                          <span className="text-xs text-default-500">in {w.packName}</span>
-                        </div>
-                        <span className={`text-xs font-medium ${w.isExpired ? 'text-danger' : 'text-warning-600'}`}>
-                          {w.expirationDate.toLocaleDateString()}
-                        </span>
+              <div className="bg-danger-50/60 dark:bg-danger-950/20 border border-danger/30 rounded-large p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <AlertTriangle size={16} className="text-danger flex-none" />
+                  <h2 className="text-base font-semibold text-foreground">Expiring items in statpacks</h2>
+                  <span className="font-mono text-xs font-semibold px-2.5 py-1 rounded-full bg-danger-50 dark:bg-danger-900/20 text-danger tabular-nums">
+                    {expirationWarnings.length}
+                  </span>
+                </div>
+                <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 192 }}>
+                  {expirationWarnings.map((w, i) => (
+                    <div
+                      key={`exp-${i}`}
+                      className="flex items-center justify-between gap-3 bg-content1 border border-divider rounded-medium px-3 py-2"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Chip size="sm" variant="flat" color={w.isExpired ? 'danger' : 'warning'}>
+                          {w.isExpired ? 'Expired' : 'Exp. Soon'}
+                        </Chip>
+                        <span className="text-sm font-semibold text-foreground truncate">{w.itemName}</span>
+                        <span className="text-xs text-foreground-400 truncate">in {w.packName}</span>
                       </div>
-                    ))}
-                  </div>
-                </CardBody>
-              </Card>
+                      <span className={`text-xs font-semibold flex-none tabular-nums ${w.isExpired ? 'text-danger' : 'text-warning'}`}>
+                        {w.expirationDate.toLocaleDateString()}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             )}
 
-            {/* Currently Checked Out dashboard */}
-            {(() => {
-              const checkedOut = statpacks.filter(p => p.isCheckedOut);
-              if (checkedOut.length === 0) return null;
-              return (
-                <Card className="border border-warning-200 bg-warning-50 dark:bg-warning-50/10">
-                  <CardBody className="space-y-3">
-                    <div className="flex items-center gap-2">
-                      <ClipboardList size={18} className="text-warning-600" />
-                      <h2 className="text-sm font-semibold text-warning-700 dark:text-warning-400">
-                        Currently Checked Out ({checkedOut.length})
-                      </h2>
-                    </div>
-                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                      {checkedOut.map(p => {
-                        const checkedOutAt = p.checkedOutAt
-                          ? (typeof (p.checkedOutAt as any).toDate === 'function'
-                              ? (p.checkedOutAt as any).toDate()
-                              : p.checkedOutAt instanceof Date
-                              ? p.checkedOutAt
-                              : new Date(p.checkedOutAt as any))
-                          : null;
-                        const elapsed = checkedOutAt ? Date.now() - checkedOutAt.getTime() : null;
-                        return (
-                          <div
-                            key={`co-${p.id}`}
-                            className="rounded-lg border border-warning-200 bg-content1 p-3 flex flex-col gap-1.5"
+            {/* Currently checked out */}
+            {checkedOutPacks.length > 0 && (
+              <div className="bg-warning-50/60 dark:bg-warning-950/20 border border-warning/30 rounded-large p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <ClipboardList size={16} className="text-warning flex-none" />
+                  <h2 className="text-base font-semibold text-foreground">Currently checked out</h2>
+                  <span className="font-mono text-xs font-semibold px-2.5 py-1 rounded-full bg-warning-50 dark:bg-warning-900/20 text-warning tabular-nums">
+                    {checkedOutPacks.length}
+                  </span>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {checkedOutPacks.map(p => {
+                    const rawCheckedOutAt = p.checkedOutAt as unknown;
+                    const checkedOutAt = rawCheckedOutAt
+                      ? (typeof (rawCheckedOutAt as { toDate?: () => Date }).toDate === 'function'
+                          ? (rawCheckedOutAt as { toDate: () => Date }).toDate()
+                          : rawCheckedOutAt instanceof Date
+                          ? rawCheckedOutAt
+                          : new Date(rawCheckedOutAt as string))
+                      : null;
+                    const elapsed = checkedOutAt && !isNaN(checkedOutAt.getTime()) ? Date.now() - checkedOutAt.getTime() : null;
+                    return (
+                      <div
+                        key={`co-${p.id}`}
+                        className="bg-content1 border border-divider rounded-medium p-3 flex flex-col gap-1.5"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold text-sm text-foreground truncate">{p.name}</span>
+                          {elapsed !== null && (
+                            <span className={`font-mono text-xs font-semibold tabular-nums flex-none ${elapsed > 8 * 60 * 60 * 1000 ? 'text-danger' : 'text-warning'}`}>
+                              {formatDuration(elapsed)}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-foreground-500">
+                          {p.assignedToUserName || 'Unknown'} · {p.currentLocation || 'No location'}
+                        </div>
+                        <div className="flex gap-2 mt-1">
+                          <Button size="sm" color="primary" variant="flat" onPress={() => openCheckin(p)}>
+                            Check in
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="light"
+                            onPress={() => {
+                              setLogHistoryPackId(p.id || null);
+                              setLogHistoryPackName(p.name || '');
+                              logHistoryDisclosure.onOpen();
+                            }}
                           >
-                            <div className="flex items-center justify-between">
-                              <span className="font-semibold text-sm truncate">{p.name}</span>
-                              {elapsed !== null && (
-                                <span className={`text-xs font-medium ${elapsed > 8 * 60 * 60 * 1000 ? 'text-danger' : 'text-warning-600'}`}>
-                                  {formatDuration(elapsed)}
-                                </span>
-                              )}
-                            </div>
-                            <div className="text-xs text-default-500">
-                              {p.assignedToUserName || 'Unknown'} • {p.currentLocation || 'No location'}
-                            </div>
-                            <div className="flex gap-1 mt-1">
-                              <Button size="sm" color="success" variant="flat" onPress={() => openCheckin(p)}>
-                                Check In
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="light"
-                                onPress={() => {
-                                  setLogHistoryPackId(p.id || null);
-                                  setLogHistoryPackName(p.name || '');
-                                  logHistoryDisclosure.onOpen();
-                                }}
-                              >
-                                Logs
-                              </Button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </CardBody>
-                </Card>
-              );
-            })()}
+                            Logs
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
-            <div className="grid gap-3 md:gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-3 items-start">
-            {statpacks.map((p) => (
-              <StatpackWidget
-                key={p.id}
-                statpack={p}
-                userRole={userRole}
-                isDuplicating={duplicating === p.id}
-                onOpenEditor={handleOpenEditor}
-                onCheckin={openCheckin}
-                onCheckout={openCheckout}
-                onMaintenance={openMaintenance}
-                onAudit={(pack) => { setAuditTarget(pack); auditModalDisclosure.onOpen(); }}
-                onDuplicate={handleDuplicate}
-                onScan={openScanner}
-                onGenerateQr={handleGenerateQr}
-                onEditAsset={handleEditAssetPolicy}
-              />
-            ))}
+            {/* Pack grid */}
+            {visiblePacks.length === 0 ? (
+              <div className="bg-content1 border border-dashed border-divider rounded-large text-center py-16">
+                <Package size={32} className="mx-auto text-foreground-300 mb-2" />
+                <p className="text-sm font-semibold text-foreground-500">No packs match this search</p>
+                <p className="text-xs text-foreground-400 mt-1">Try a different pack name, location, or item.</p>
+              </div>
+            ) : (
+              <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-3 items-start">
+                {visiblePacks.map((p) => (
+                  <StatpackWidget
+                    key={p.id}
+                    statpack={p}
+                    userRole={userRole}
+                    isDuplicating={duplicating === p.id}
+                    onOpenEditor={handleOpenEditor}
+                    onCheckin={openCheckin}
+                    onCheckout={openCheckout}
+                    onMaintenance={openMaintenance}
+                    onAudit={(pack) => { setAuditTarget(pack); auditModalDisclosure.onOpen(); }}
+                    onDuplicate={handleDuplicate}
+                    onScan={openScanner}
+                    onGenerateQr={handleGenerateQr}
+                    onEditAsset={handleEditAssetPolicy}
+                  />
+                ))}
+              </div>
+            )}
           </div>
-          </>
         )}
       </div>
 

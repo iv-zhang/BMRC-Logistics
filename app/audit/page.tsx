@@ -2,83 +2,63 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import {
-  Button,
-  Card,
-  CardBody,
-  CardHeader,
-  Chip,
-  Divider,
-  Input,
-  Modal,
-  ModalContent,
-  ModalHeader,
-  ModalBody,
-  ModalFooter,
-  Progress,
-  Select,
-  SelectItem,
-  Spinner,
-  Tab,
-  Tabs,
-  Textarea,
-} from '@heroui/react';
+import { Button, Chip, Spinner } from '@heroui/react';
 import {
   Search,
   ClipboardCheck,
   Package,
   Box,
+  Backpack,
   AlertTriangle,
-  AlertOctagon,
   CheckCircle2,
+  Check,
   Shield,
-  BarChart3,
   ScanLine,
   RefreshCw,
-  Store,
-  FastForward,
-  Stethoscope,
-  Warehouse,
-  Building2,
-  MapPin,
+  ScrollText,
+  PackagePlus,
+  X,
 } from 'lucide-react';
-import { collection, onSnapshot, orderBy, query } from 'firebase/firestore';
+import { collection, onSnapshot, orderBy, query, Timestamp } from 'firebase/firestore';
 import { db } from '@/firebase';
-import type { InventoryItem } from '@/app/types';
+import type { InventoryItem, Statpack } from '@/app/types';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import {
   canUserAudit,
   generateAuditSnapshot,
-  submitAuditEntries,
   analyzeRestockNeeds,
   auditLog,
   type AuditSnapshot,
-  type AuditEntry,
-  type DisposableSnapshot,
-  type AssetSnapshot,
   type RestockDecision,
 } from '@/app/lib/audit-helpers';
-import { determineIsAsset } from '@/app/lib/inventory';
+import {
+  currentAuditCycleLabel,
+  isStatpackAuditCurrent,
+  statpackAuditDueInDays,
+} from '@/app/lib/item-status';
+import { getInventoryAreaOptions, THRESHOLDS } from '@/app/config/org-config';
 import {
   DisposableAuditCard,
   AssetAuditCard,
 } from '@/app/components/audit-item-card';
-import CountControl from '@/app/components/count-control';
-import ConditionToggle, { type ConditionValue } from '@/app/components/condition-toggle';
+import AuditActionDrawer, { type DrawerAction } from '@/app/components/audit-action-drawer';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import AuditPermissionModal from '@/app/components/audit-permission-modal';
 import AuditDebugPanel from '@/app/components/audit-debug-panel';
 
-// ─── Zones for quick filtering ────────────────────────────────────────────────
-const AUDIT_ZONES = [
-  { key: 'all', label: 'All Locations' },
-  { key: 'Back Room', label: 'Back Room (Inventory)' },
-  { key: 'Front', label: 'Front' },
-  { key: 'Forward Staging', label: 'Forward Staging' },
-  { key: 'CPR Closet', label: 'CPR Closet' },
-  { key: 'Shed', label: 'Shed' },
-  { key: 'Office', label: 'Office' },
-];
+// ─── Zones for quick filtering (from org-config — single source of truth) ────
+const AREA_OPTIONS = getInventoryAreaOptions();
+
+type AuditTab = 'disposables' | 'assets' | 'statpacks' | 'restock';
+
+function toDate(val: unknown): Date | undefined {
+  if (!val) return undefined;
+  if (val instanceof Date) return val;
+  if (val instanceof Timestamp) return val.toDate();
+  if (typeof val === 'object' && typeof (val as { toDate?: () => Date }).toDate === 'function')
+    return (val as { toDate: () => Date }).toDate();
+  return undefined;
+}
 
 export default function AuditPage() {
   const router = useRouter();
@@ -86,6 +66,7 @@ export default function AuditPage() {
 
   // Core state
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [statpacks, setStatpacks] = useState<Statpack[]>([]);
   const [snapshot, setSnapshot] = useState<AuditSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -93,15 +74,15 @@ export default function AuditPage() {
   // Filter state
   const [selectedZone, setSelectedZone] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<string>('overview');
-  const [showVerifiedOnly, setShowVerifiedOnly] = useState(false);
+  const [activeTab, setActiveTab] = useState<AuditTab>('disposables');
+  const [dueOnly, setDueOnly] = useState(false);
 
-  // Audit mode state
-  const [auditMode, setAuditMode] = useState(false);
-  const [auditIndex, setAuditIndex] = useState(0);
-  const [stagedEntries, setStagedEntries] = useState<Record<string, AuditEntry>>({});
-  const [showReview, setShowReview] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  // Action drawer — the heart of the "act on what's in front of you" flow
+  const [drawerItem, setDrawerItem] = useState<InventoryItem | null>(null);
+  const [drawerAction, setDrawerAction] = useState<DrawerAction>('count');
+
+  // Result toast
+  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
 
   // Barcode scanner
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -113,10 +94,7 @@ export default function AuditPage() {
   const [restockDecisions, setRestockDecisions] = useState<RestockDecision[]>([]);
 
   // ─── Auth & permission check ──────────────────────────────────────────────
-  const hasAuditAccess = useMemo(
-    () => canUserAudit(userData),
-    [userData]
-  );
+  const hasAuditAccess = useMemo(() => canUserAudit(userData), [userData]);
   const isAdmin = role === 'admin' || role === 'quartermaster';
 
   useEffect(() => {
@@ -134,10 +112,22 @@ export default function AuditPage() {
     const unsub = onSnapshot(q, (snap) => {
       const items = snap.docs.map((d) => ({
         id: d.id,
-        ...(d.data() as any),
+        ...(d.data() as Omit<InventoryItem, 'id'>),
       })) as InventoryItem[];
       setInventory(items);
       setLoading(false);
+    });
+    return () => unsub();
+  }, [user]);
+
+  // ─── Load statpacks (real-time) for the biweekly audit tab ───────────────
+  useEffect(() => {
+    if (!user) return;
+    const q = query(collection(db, 'statpacks'), orderBy('name'));
+    const unsub = onSnapshot(q, (snap) => {
+      setStatpacks(
+        snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Statpack, 'id'>) })) as Statpack[]
+      );
     });
     return () => unsub();
   }, [user]);
@@ -167,7 +157,7 @@ export default function AuditPage() {
     setRefreshing(false);
   }, [selectedZone]);
 
-  // ─── Filtered items ───────────────────────────────────────────────────────
+  // ─── Filtered items — search covers name, category, and location ──────────
   const filteredDisposables = useMemo(() => {
     if (!snapshot) return [];
     let items = snapshot.disposables;
@@ -176,14 +166,16 @@ export default function AuditPage() {
       items = items.filter(
         (i) =>
           (i.name || '').toLowerCase().includes(q) ||
-          (i.category || '').toLowerCase().includes(q)
+          (i.category || '').toLowerCase().includes(q) ||
+          (i.location || '').toLowerCase().includes(q) ||
+          (i.room || '').toLowerCase().includes(q)
       );
     }
-    if (showVerifiedOnly) {
+    if (dueOnly) {
       items = items.filter((i) => !i.auditVerified);
     }
     return items;
-  }, [snapshot, searchQuery, showVerifiedOnly]);
+  }, [snapshot, searchQuery, dueOnly]);
 
   const filteredAssets = useMemo(() => {
     if (!snapshot) return [];
@@ -194,91 +186,73 @@ export default function AuditPage() {
         (i) =>
           (i.name || '').toLowerCase().includes(q) ||
           (i.category || '').toLowerCase().includes(q) ||
-          (i.assetSerial || '').toLowerCase().includes(q)
+          (i.assetSerial || '').toLowerCase().includes(q) ||
+          (i.currentLocation || '').toLowerCase().includes(q)
       );
     }
-    if (showVerifiedOnly) {
+    if (dueOnly) {
       items = items.filter((i) => !i.auditVerified);
     }
     return items;
-  }, [snapshot, searchQuery, showVerifiedOnly]);
+  }, [snapshot, searchQuery, dueOnly]);
 
-  // ─── Audit mode items (disposables only for box counting) ─────────────────
-  const auditItems = useMemo(() => {
-    return filteredDisposables;
-  }, [filteredDisposables]);
-
-  const currentAuditItem = auditItems[auditIndex];
-
-  // ─── Audit mode handlers ──────────────────────────────────────────────────
-  const startAudit = () => {
-    setStagedEntries({});
-    setAuditIndex(0);
-    setAuditMode(true);
-    auditLog.info('Audit mode started', { zone: selectedZone, itemCount: auditItems.length });
-  };
-
-  const updateEntry = (itemId: string, patch: Partial<AuditEntry>) => {
-    setStagedEntries((prev) => ({
-      ...prev,
-      [itemId]: {
-        ...(prev[itemId] || { itemId, condition: 'Good' as const }),
-        ...patch,
-      },
-    }));
-  };
-
-  const nextItem = () => {
-    if (auditIndex < auditItems.length - 1) setAuditIndex((i) => i + 1);
-  };
-
-  const prevItem = () => {
-    if (auditIndex > 0) setAuditIndex((i) => i - 1);
-  };
-
-  const handleSubmitAudit = async () => {
-    if (!user) return;
-    setSubmitting(true);
-    try {
-      const entries = Object.values(stagedEntries);
-      const result = await submitAuditEntries(
-        entries,
-        inventory,
-        {
-          uid: user.uid,
-          email: user.email,
-          displayName: userData?.fullName || user.displayName,
-        },
-        selectedZone === 'all' ? 'All' : selectedZone
+  // ─── Statpacks with biweekly audit status ─────────────────────────────────
+  const statpackRows = useMemo(() => {
+    let packs = statpacks.map((p) => {
+      const lastAuditAt = toDate(p.lastAuditAt);
+      return {
+        pack: p,
+        lastAuditAt,
+        auditCurrent: isStatpackAuditCurrent(lastAuditAt),
+        dueInDays: statpackAuditDueInDays(lastAuditAt),
+      };
+    });
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      packs = packs.filter(
+        ({ pack }) =>
+          pack.name.toLowerCase().includes(q) ||
+          (pack.type || '').toLowerCase().includes(q)
       );
-      auditLog.info('Audit submitted', result);
-      alert(
-        `Audit submitted!\n${result.itemsUpdated} items updated, ${result.variances} variance(s) found.`
-      );
-      setAuditMode(false);
-      setShowReview(false);
-      setStagedEntries({});
-      await refreshSnapshot();
-    } catch (e: any) {
-      auditLog.error('Audit submission failed', e);
-      alert('Failed to submit audit: ' + (e?.message || 'Unknown error'));
     }
-    setSubmitting(false);
-  };
+    if (dueOnly) {
+      packs = packs.filter((p) => !p.auditCurrent);
+    }
+    // Due packs first, then oldest audit first
+    return packs.sort((a, b) => {
+      if (a.auditCurrent !== b.auditCurrent) return a.auditCurrent ? 1 : -1;
+      return (a.lastAuditAt?.getTime() ?? 0) - (b.lastAuditAt?.getTime() ?? 0);
+    });
+  }, [statpacks, searchQuery, dueOnly]);
 
-  // ─── Touch handling for swipe in audit mode ───────────────────────────────
-  const touchStartX = React.useRef<number | null>(null);
-  const onTouchStart = (e: React.TouchEvent) => {
-    touchStartX.current = e.touches[0]?.clientX ?? null;
-  };
-  const onTouchEnd = (e: React.TouchEvent) => {
-    if (touchStartX.current == null) return;
-    const endX = e.changedTouches[0]?.clientX ?? 0;
-    const delta = endX - touchStartX.current;
-    if (delta > 60) prevItem();
-    else if (delta < -60) nextItem();
-    touchStartX.current = null;
-  };
+  const statpacksDue = useMemo(
+    () => statpacks.filter((p) => !isStatpackAuditCurrent(toDate(p.lastAuditAt))).length,
+    [statpacks]
+  );
+
+  // ─── Action drawer plumbing ───────────────────────────────────────────────
+  const openDrawer = useCallback(
+    (itemId: string, action: DrawerAction) => {
+      const inv = inventory.find((i) => i.id === itemId);
+      if (!inv) return;
+      setDrawerItem(inv);
+      setDrawerAction(action);
+    },
+    [inventory]
+  );
+
+  const showToast = useCallback((msg: string, ok: boolean) => {
+    setToast({ msg, ok });
+    setTimeout(() => setToast(null), 2500);
+  }, []);
+
+  const handleDrawerResult = useCallback(
+    (msg: string, ok: boolean) => {
+      showToast(msg, ok);
+      if (ok) refreshSnapshot();
+    },
+    [showToast, refreshSnapshot]
+  );
 
   // ─── Loading / auth states ────────────────────────────────────────────────
   if (authLoading || loading) {
@@ -291,316 +265,20 @@ export default function AuditPage() {
 
   if (!hasAuditAccess) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-4">
-        <Card className="max-w-md w-full">
-          <CardBody className="text-center py-8">
-            <Shield size={48} className="mx-auto text-default-400 mb-4" />
-            <h2 className="text-xl font-semibold mb-2">Audit Access Required</h2>
-            <p className="text-default-500 text-sm">
-              You don&apos;t have permission to perform inventory audits. Ask an admin to
-              grant you audit access.
-            </p>
-          </CardBody>
-        </Card>
-      </div>
-    );
-  }
-
-  // ─── Audit Mode UI ───────────────────────────────────────────────────────
-  if (auditMode && currentAuditItem) {
-    const entry = stagedEntries[currentAuditItem.id] || {
-      itemId: currentAuditItem.id,
-      condition: 'Good' as const,
-    };
-    const stagedCount = Object.keys(stagedEntries).length;
-    const progress = auditItems.length > 0 ? (stagedCount / auditItems.length) * 100 : 0;
-
-    return (
-      <div
-        className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-4"
-        onTouchStart={onTouchStart}
-        onTouchEnd={onTouchEnd}
-      >
-        <div className="max-w-lg mx-auto space-y-4">
-          {/* Header */}
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-semibold flex items-center gap-2"><ClipboardCheck size={20} /> Box Count Audit</h2>
-              <div className="text-sm text-default-500">
-                Item {auditIndex + 1} of {auditItems.length} · {stagedCount} verified
-              </div>
-            </div>
-            <Button size="sm" variant="flat" color="danger" onPress={() => setAuditMode(false)}>
-              Exit
-            </Button>
-          </div>
-
-          <Progress value={progress} size="sm" color="primary" />
-
-          {/* Current item card */}
-          <Card>
-            <CardBody className="p-4 space-y-4">
-              <div>
-                <div className="text-xl font-semibold">{currentAuditItem.name}</div>
-                <div className="text-sm text-default-500">
-                  {currentAuditItem.category} · {currentAuditItem.location}
-                  {currentAuditItem.room ? ` — ${currentAuditItem.room}` : ''}
-                </div>
-              </div>
-
-              <Divider />
-
-              {/* System info */}
-              <div className="bg-default-100 rounded-lg p-3">
-                <div className="text-sm font-medium mb-1">System Record:</div>
-                <div className="text-sm flex items-center gap-1">
-                  <Box size={14} className="text-default-500" /> <strong>{currentAuditItem.unopenedBoxes}</strong> unopened box{currentAuditItem.unopenedBoxes !== 1 ? 'es' : ''} in back
-                </div>
-                {currentAuditItem.itemsPerBox > 1 && (
-                  <div className="text-xs text-default-400">
-                    ({currentAuditItem.itemsPerBox} items per box)
-                  </div>
-                )}
-                {currentAuditItem.openBatchUnits > 0 && (
-                  <div className="text-xs text-default-500 mt-1 flex items-center gap-1">
-                    <Store size={12} /> {currentAuditItem.openBatchUnits} loose units in front (not counted)
-                  </div>
-                )}
-              </div>
-
-              {/* Box count input */}
-              <div>
-                <label className="text-sm font-medium block mb-2">
-                  Count unopened boxes/bags in the back:
-                </label>
-                <CountControl
-                  value={entry.countedBoxes ?? currentAuditItem.unopenedBoxes}
-                  onChange={(v) => updateEntry(currentAuditItem.id, { countedBoxes: v })}
-                  label="Boxes"
-                  presets={[1, 5, 10]}
-                />
-                {entry.countedBoxes !== undefined &&
-                  entry.countedBoxes !== currentAuditItem.unopenedBoxes && (
-                    <div className="mt-1 text-xs text-warning font-medium flex items-center gap-1">
-                      <AlertTriangle size={12} /> Variance:{' '}
-                      {entry.countedBoxes - currentAuditItem.unopenedBoxes > 0 ? '+' : ''}
-                      {entry.countedBoxes - currentAuditItem.unopenedBoxes} boxes
-                    </div>
-                  )}
-              </div>
-
-              {/* New: units-per-box and batch/lot inputs */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="text-sm font-medium block mb-1">Units per sealed box/bag</label>
-                  <Input
-                    type="number"
-                    size="sm"
-                    className="w-full"
-                    value={entry.itemsPerBox !== undefined ? String(entry.itemsPerBox) : ''}
-                    onValueChange={(v) => {
-                      const n = v === '' ? undefined : (v == null ? undefined : Number(v));
-                      updateEntry(currentAuditItem.id, { itemsPerBox: n });
-                    }}
-                    placeholder="e.g., 10"
-                  />
-                </div>
-
-                <div>
-                  <label className="text-sm font-medium block mb-1">Lot / Batch #</label>
-                  <Input
-                    size="sm"
-                    value={entry.lotNumber || ''}
-                    onValueChange={(v) => updateEntry(currentAuditItem.id, { lotNumber: v })}
-                    placeholder="Batch or lot ID"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
-                <div>
-                  <label className="text-sm font-medium block mb-1">Batch / Mfg Date</label>
-                  <Input
-                    type="date"
-                    size="sm"
-                    value={entry.batchDate || ''}
-                    onValueChange={(v) => updateEntry(currentAuditItem.id, { batchDate: v })}
-                  />
-                </div>
-
-                <div>
-                  <label className="text-sm font-medium block mb-1">Expiration Date</label>
-                  <Input
-                    type="date"
-                    size="sm"
-                    value={entry.expirationDate || ''}
-                    onValueChange={(v) => updateEntry(currentAuditItem.id, { expirationDate: v })}
-                  />
-                </div>
-              </div>
-
-              {/* Condition */}
-              <ConditionToggle
-                value={(entry.condition as ConditionValue) || 'Good'}
-                onChange={(v) => updateEntry(currentAuditItem.id, { condition: v })}
-                label="Condition"
-              />
-
-              {/* Notes */}
-              <Textarea
-                label="Notes (optional)"
-                placeholder="Any observations..."
-                value={entry.notes || ''}
-                onValueChange={(v) => updateEntry(currentAuditItem.id, { notes: v })}
-                size="sm"
-                minRows={2}
-              />
-
-              {/* Scan barcode */}
-              <Button
-                size="sm"
-                variant="flat"
-                startContent={<ScanLine size={16} />}
-                onPress={() => setScannerOpen(true)}
-              >
-                Scan QR/Barcode
-              </Button>
-            </CardBody>
-          </Card>
-
-          {/* Navigation */}
-          <div className="flex items-center gap-2">
-            <Button
-              className="flex-1"
-              onPress={prevItem}
-              isDisabled={auditIndex === 0}
-            >
-              ← Previous
-            </Button>
-            <Button
-              className="flex-1"
-              color="primary"
-              onPress={() => {
-                // Auto-save current if not staged
-                if (!stagedEntries[currentAuditItem.id]) {
-                  updateEntry(currentAuditItem.id, {
-                    countedBoxes:
-                      entry.countedBoxes ?? currentAuditItem.unopenedBoxes,
-                    condition: entry.condition || 'Good',
-                    itemsPerBox: entry.itemsPerBox,
-                    lotNumber: entry.lotNumber,
-                    batchDate: entry.batchDate,
-                    expirationDate: entry.expirationDate,
-                  });
-                }
-                if (auditIndex < auditItems.length - 1) {
-                  nextItem();
-                } else {
-                  setShowReview(true);
-                }
-              }}
-            >
-              {auditIndex >= auditItems.length - 1 ? 'Review & Submit' : 'Next →'}
-            </Button>
-          </div>
-
-          {/* Skip to review */}
-          {stagedCount > 0 && (
-            <Button
-              variant="flat"
-              color="secondary"
-              fullWidth
-              onPress={() => setShowReview(true)}
-            >
-              Review {stagedCount} Entries
-            </Button>
-          )}
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center p-4">
+        <div className="bg-content1 border border-divider rounded-large max-w-md w-full text-center py-10 px-6">
+          <Shield size={40} className="mx-auto text-foreground-300 mb-4" />
+          <h2 className="text-base font-semibold text-foreground mb-2">Audit Access Required</h2>
+          <p className="text-sm text-foreground-500">
+            You don&apos;t have permission to perform inventory audits. Ask an admin to
+            grant you audit access.
+          </p>
         </div>
-
-        {/* Review Modal */}
-        <Modal isOpen={showReview} onOpenChange={setShowReview} size="full" scrollBehavior="inside">
-          <ModalContent>
-            <ModalHeader>Review Audit Entries</ModalHeader>
-            <ModalBody>
-              <div className="space-y-3">
-                {Object.entries(stagedEntries).map(([id, entry]) => {
-                  const item = auditItems.find((x) => x.id === id);
-                  if (!item) return null;
-                  const variance = (entry.countedBoxes ?? 0) - item.unopenedBoxes;
-                  return (
-                    <Card
-                      key={id}
-                      className={
-                        variance !== 0 ? 'border-2 border-warning' : ''
-                      }
-                    >
-                      <CardBody className="p-3">
-                        <div className="font-semibold text-sm">{item.name}</div>
-                        <div className="text-xs text-default-500 mt-1">
-                          System: {item.unopenedBoxes} boxes → You counted:{' '}
-                          {entry.countedBoxes ?? item.unopenedBoxes} boxes
-                          {variance !== 0 && (
-                            <span className="text-warning font-medium ml-1">
-                              (Δ {variance > 0 ? '+' : ''}
-                              {variance})
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-xs mt-1">
-                          Condition: {entry.condition || 'Good'}
-                          {entry.notes && ` · ${entry.notes}`}
-                        </div>
-                        {(entry.itemsPerBox || entry.lotNumber || entry.batchDate || entry.expirationDate) && (
-                          <div className="text-xs mt-2 text-default-500">
-                            {entry.itemsPerBox !== undefined && <div>Units/box: {entry.itemsPerBox}</div>}
-                            {entry.lotNumber && <div>Lot: {entry.lotNumber}</div>}
-                            {entry.batchDate && <div>Batch date: {entry.batchDate}</div>}
-                            {entry.expirationDate && <div>Expiration: {entry.expirationDate}</div>}
-                          </div>
-                        )}
-                      </CardBody>
-                    </Card>
-                  );
-                })}
-                {Object.keys(stagedEntries).length === 0 && (
-                  <div className="text-center text-default-500 py-4">
-                    No entries to review. Go back and count some items.
-                  </div>
-                )}
-              </div>
-            </ModalBody>
-            <ModalFooter>
-              <Button variant="light" onPress={() => setShowReview(false)}>
-                Back to Audit
-              </Button>
-              <Button
-                color="primary"
-                onPress={handleSubmitAudit}
-                isLoading={submitting}
-                isDisabled={Object.keys(stagedEntries).length === 0}
-              >
-                Submit Audit ({Object.keys(stagedEntries).length} items)
-              </Button>
-            </ModalFooter>
-          </ModalContent>
-        </Modal>
-
-        {/* Barcode Scanner */}
-        <BarcodeScanner
-          isOpen={scannerOpen}
-          onClose={() => setScannerOpen(false)}
-          onDetected={(val) => {
-            if (currentAuditItem) {
-              updateEntry(currentAuditItem.id, { scannedBarcode: val });
-            }
-            setScannerOpen(false);
-          }}
-        />
       </div>
     );
   }
 
-  // ─── Main Dashboard UI ───────────────────────────────────────────────────
+  // ─── Main audit workbench ─────────────────────────────────────────────────
   const verifiedDisposables = snapshot
     ? snapshot.disposables.filter((d) => d.auditVerified).length
     : 0;
@@ -610,21 +288,66 @@ export default function AuditPage() {
   const totalItems =
     (snapshot?.totalDisposableTypes ?? 0) + (snapshot?.totalAssetTypes ?? 0);
   const totalVerified = verifiedDisposables + verifiedAssets;
+  const cyclePct = totalItems > 0 ? (totalVerified / totalItems) * 100 : 0;
+  const packsAudited = statpacks.length - statpacksDue;
+  const packCyclePct = statpacks.length > 0 ? (packsAudited / statpacks.length) * 100 : 0;
+
+  const tabs: { key: AuditTab; icon: React.ReactNode; label: string; count: number }[] = [
+    { key: 'disposables', icon: <Box size={14} />, label: 'Disposables', count: filteredDisposables.length },
+    { key: 'assets', icon: <Package size={14} />, label: 'Assets', count: filteredAssets.length },
+    { key: 'statpacks', icon: <Backpack size={14} />, label: 'Statpacks', count: statpacksDue },
+    { key: 'restock', icon: <AlertTriangle size={14} />, label: 'Restock', count: restockDecisions.length },
+  ];
+
+  const actorZone = selectedZone === 'all' ? 'All' : selectedZone;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
-      <div className="max-w-7xl mx-auto p-4 md:p-6 space-y-6">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+      <div className="max-w-7xl mx-auto px-6 py-8">
+
+        {/* ── Page header ────────────────────────────────────────────────── */}
+        <div className="flex items-end justify-between gap-4 mb-6 flex-wrap">
           <div>
-            <h1 className="text-2xl font-semibold flex items-center gap-2">
-              <ClipboardCheck size={28} /> Supply Audit
-            </h1>
-            <p className="text-sm text-default-500 mt-1">
-              Box-based inventory audit · Disposables are counted as unopened boxes in the back
-            </p>
+            <h1 className="text-2xl font-semibold text-foreground mb-1.5">Supply Audit</h1>
+            <div className="flex items-center gap-2 flex-wrap mt-1">
+              <div className="flex items-center gap-2 bg-content1 border border-divider rounded-large px-3 py-1.5">
+                <span className="font-mono font-semibold tabular-nums text-foreground">{totalItems}</span>
+                <span className="text-xs text-foreground-400">items</span>
+              </div>
+              <div className="flex items-center gap-2 bg-success-50 dark:bg-success-900/20 border border-success/30 rounded-large px-3 py-1.5">
+                <span className="w-2 h-2 rounded-sm bg-success flex-none" />
+                <span className="font-mono font-semibold tabular-nums text-success">{totalVerified}</span>
+                <span className="text-xs text-success/80 font-medium">audited this month</span>
+              </div>
+              <div className="flex items-center gap-2 bg-warning-50 dark:bg-warning-900/20 border border-warning/30 rounded-large px-3 py-1.5">
+                <span className="w-2 h-2 rounded-sm bg-warning flex-none" />
+                <span className="font-mono font-semibold tabular-nums text-warning">{snapshot?.lowStockCount ?? 0}</span>
+                <span className="text-xs text-warning/80 font-medium">low / out</span>
+              </div>
+              <div className="flex items-center gap-2 bg-danger-50 dark:bg-danger-900/20 border border-danger/30 rounded-large px-3 py-1.5">
+                <span className="w-2 h-2 rounded-sm bg-danger flex-none" />
+                <span className="font-mono font-semibold tabular-nums text-danger">{snapshot?.expiredCount ?? 0}</span>
+                <span className="text-xs text-danger/80 font-medium">expired</span>
+              </div>
+              {statpacksDue > 0 && (
+                <div className="flex items-center gap-2 bg-warning-50 dark:bg-warning-900/20 border border-warning/30 rounded-large px-3 py-1.5">
+                  <span className="w-2 h-2 rounded-sm bg-warning flex-none" />
+                  <span className="font-mono font-semibold tabular-nums text-warning">{statpacksDue}</span>
+                  <span className="text-xs text-warning/80 font-medium">packs due</span>
+                </div>
+              )}
+            </div>
           </div>
-          <div className="flex items-center gap-2 flex-wrap">
+
+          <div className="flex items-center gap-3">
+            <Button
+              size="sm"
+              variant="flat"
+              startContent={<ScrollText size={14} />}
+              onPress={() => router.push('/audit/events')}
+            >
+              Ledger
+            </Button>
             <Button
               size="sm"
               variant="flat"
@@ -646,199 +369,309 @@ export default function AuditPage() {
             )}
             <Button
               color="primary"
-              startContent={<ClipboardCheck size={16} />}
-              onPress={startAudit}
-              isDisabled={auditItems.length === 0}
+              size="sm"
+              startContent={<ScanLine size={15} />}
+              onPress={() => setScannerOpen(true)}
             >
-              Start Box Audit
+              Scan item
             </Button>
           </div>
         </div>
 
-        {/* Summary cards */}
-        {snapshot && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Card>
-              <CardBody className="p-3 text-center">
-                <div className="text-2xl font-semibold tabular-nums text-primary">
-                  {snapshot.totalDisposableTypes}
-                </div>
-                <div className="text-xs text-default-500">Disposable Types</div>
-              </CardBody>
-            </Card>
-            <Card>
-              <CardBody className="p-3 text-center">
-                <div className="text-2xl font-semibold tabular-nums text-secondary">
-                  {snapshot.totalAssetTypes}
-                </div>
-                <div className="text-xs text-default-500">Asset Types</div>
-              </CardBody>
-            </Card>
-            <Card>
-              <CardBody className="p-3 text-center">
-                <div className="text-2xl font-semibold tabular-nums text-warning">
-                  {snapshot.lowStockCount}
-                </div>
-                <div className="text-xs text-default-500">Low Stock</div>
-              </CardBody>
-            </Card>
-            <Card>
-              <CardBody className="p-3 text-center">
-                <div className="text-2xl font-semibold tabular-nums text-success">
-                  {totalVerified}/{totalItems}
-                </div>
-                <div className="text-xs text-default-500">Verified</div>
-              </CardBody>
-            </Card>
+        {/* ── Cycle progress ─────────────────────────────────────────────── */}
+        <div className="bg-content1 border border-divider rounded-large p-4 mb-4 space-y-3">
+          <div>
+            <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
+              <span className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400">
+                {currentAuditCycleLabel()} audit cycle
+              </span>
+              <span className="text-xs text-foreground-500">
+                <span className="font-mono font-semibold tabular-nums text-foreground">{totalVerified}</span>
+                {' '}of{' '}
+                <span className="font-mono font-semibold tabular-nums text-foreground">{totalItems}</span>
+                {' '}items verified — resets on the 1st
+              </span>
+            </div>
+            <div className="w-full h-1.5 rounded-full bg-content3 overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-300 ${cyclePct >= 100 ? 'bg-success' : 'bg-primary'}`}
+                style={{ width: `${cyclePct}%` }}
+              />
+            </div>
+          </div>
+          {statpacks.length > 0 && (
+            <div>
+              <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
+                <span className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400">
+                  Statpack cycle — every {THRESHOLDS.statpackAuditIntervalDays} days
+                </span>
+                <span className="text-xs text-foreground-500">
+                  <span className="font-mono font-semibold tabular-nums text-foreground">{packsAudited}</span>
+                  {' '}of{' '}
+                  <span className="font-mono font-semibold tabular-nums text-foreground">{statpacks.length}</span>
+                  {' '}packs current
+                </span>
+              </div>
+              <div className="w-full h-1.5 rounded-full bg-content3 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-300 ${packCyclePct >= 100 ? 'bg-success' : 'bg-primary'}`}
+                  style={{ width: `${packCyclePct}%` }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Filter bar ─────────────────────────────────────────────────── */}
+        <div className="bg-content1 border border-divider rounded-large p-3 mb-4 flex items-center gap-3 flex-wrap">
+          {/* Tab toggle */}
+          <div className="flex bg-content2 rounded-large p-1 gap-1 flex-wrap">
+            {tabs.map(({ key, icon, label, count }) => (
+              <button
+                key={key}
+                onClick={() => setActiveTab(key)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-medium text-sm font-semibold transition-colors duration-150 ${
+                  activeTab === key
+                    ? 'bg-primary text-white'
+                    : 'text-foreground-500 hover:bg-content3'
+                }`}
+              >
+                {icon} {label}
+                <span className={`tabular-nums text-xs ${activeTab === key ? 'text-white/80' : 'text-foreground-400'}`}>
+                  {count}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          {activeTab !== 'statpacks' && (
+            <select
+              value={selectedZone}
+              onChange={(e) => setSelectedZone(e.target.value || 'all')}
+              className="text-sm font-medium text-foreground-600 dark:text-foreground-300 bg-content1 border border-divider rounded-medium px-3 py-2 cursor-pointer outline-none"
+            >
+              <option value="all">All locations</option>
+              {AREA_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          )}
+
+          <div className="flex-1 min-w-[220px] flex items-center gap-2 bg-content2 border border-divider rounded-medium px-3 py-0.5">
+            <Search size={15} className="text-foreground-400 flex-none" />
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search items, categories, locations…"
+              className="flex-1 text-sm bg-transparent outline-none py-2 text-foreground placeholder:text-foreground-400"
+            />
+            {searchQuery && (
+              <button onClick={() => setSearchQuery('')} className="text-foreground-400 hover:text-foreground-600 transition-colors">
+                <X size={15} />
+              </button>
+            )}
+          </div>
+
+          <button
+            onClick={() => setDueOnly(!dueOnly)}
+            className={`px-3 py-1.5 rounded-medium text-xs font-semibold border transition-colors duration-150 ${
+              dueOnly
+                ? 'bg-primary-50 border-primary/30 text-primary dark:bg-primary-900/20'
+                : 'border-divider hover:bg-content2 text-foreground-500'
+            }`}
+          >
+            Due only
+          </button>
+        </div>
+
+        {/* ── Lists ──────────────────────────────────────────────────────── */}
+        {activeTab === 'disposables' && (
+          <div className="space-y-3">
+            {filteredDisposables.length === 0 ? (
+              <div className="bg-content1 border border-dashed border-divider rounded-large text-center py-16">
+                <Box size={32} className="mx-auto text-foreground-300 mb-2" />
+                <p className="text-sm font-semibold text-foreground-500">No disposable items match</p>
+                <p className="text-xs text-foreground-400 mt-1">Try clearing the search or location filter.</p>
+              </div>
+            ) : (
+              filteredDisposables.map((item) => (
+                <DisposableAuditCard
+                  key={item.id}
+                  item={item}
+                  onAction={(d, action) => openDrawer(d.id, action)}
+                />
+              ))
+            )}
           </div>
         )}
 
-        {/* Filters */}
-        <div className="flex flex-col sm:flex-row gap-3">
-          <Select
-            label="Zone"
-            selectedKeys={[selectedZone]}
-            onSelectionChange={(keys) => {
-              const v = Array.from(keys)[0] as string;
-              setSelectedZone(v || 'all');
-            }}
-            size="sm"
-            className="sm:max-w-[240px]"
-          >
-            {AUDIT_ZONES.map((z) => (
-              <SelectItem key={z.key}>{z.label}</SelectItem>
-            ))}
-          </Select>
-          <Input
-            placeholder="Search items..."
-            value={searchQuery}
-            onValueChange={setSearchQuery}
-            startContent={<Search size={16} />}
-            size="sm"
-            className="flex-1"
-            isClearable
-            onClear={() => setSearchQuery('')}
-          />
-          <Button
-            size="sm"
-            variant={showVerifiedOnly ? 'solid' : 'flat'}
-            color={showVerifiedOnly ? 'warning' : 'default'}
-            onPress={() => setShowVerifiedOnly(!showVerifiedOnly)}
-          >
-            {showVerifiedOnly ? 'Showing Unverified' : 'Show Unverified Only'}
-          </Button>
-        </div>
+        {activeTab === 'assets' && (
+          <div className="space-y-3">
+            {filteredAssets.length === 0 ? (
+              <div className="bg-content1 border border-dashed border-divider rounded-large text-center py-16">
+                <Package size={32} className="mx-auto text-foreground-300 mb-2" />
+                <p className="text-sm font-semibold text-foreground-500">No assets match</p>
+                <p className="text-xs text-foreground-400 mt-1">Try clearing the search or location filter.</p>
+              </div>
+            ) : (
+              filteredAssets.map((item) => (
+                <AssetAuditCard
+                  key={item.id}
+                  item={item}
+                  onAction={(a, action) => openDrawer(a.id, action)}
+                />
+              ))
+            )}
+          </div>
+        )}
 
-        {/* Tabs */}
-        <Tabs
-          selectedKey={activeTab}
-          onSelectionChange={(key) => setActiveTab(key as string)}
-          variant="underlined"
-        >
-          <Tab key="overview" title={<span className="flex items-center gap-1"><Box size={14} /> Disposables ({filteredDisposables.length})</span>}>
-            <div className="space-y-3 mt-4">
-              {filteredDisposables.length === 0 ? (
-                <div className="text-center text-default-500 py-8">
-                  No disposable items found
-                  {searchQuery && ' matching your search'}
-                  {selectedZone !== 'all' && ` in ${selectedZone}`}
-                </div>
-              ) : (
-                filteredDisposables.map((item) => (
-                  <DisposableAuditCard
-                    key={item.id}
-                    item={item}
-                    onAudit={(d) => {
-                      const idx = auditItems.findIndex((x) => x.id === d.id);
-                      if (idx >= 0) {
-                        setAuditIndex(idx);
-                        setAuditMode(true);
-                      }
-                    }}
-                  />
-                ))
-              )}
-            </div>
-          </Tab>
+        {activeTab === 'statpacks' && (
+          <div className="space-y-3">
+            {statpackRows.length === 0 ? (
+              <div className="bg-content1 border border-dashed border-divider rounded-large text-center py-16">
+                <Backpack size={32} className="mx-auto text-foreground-300 mb-2" />
+                <p className="text-sm font-semibold text-foreground-500">No statpacks match</p>
+                <p className="text-xs text-foreground-400 mt-1">Try clearing the search.</p>
+              </div>
+            ) : (
+              statpackRows.map(({ pack, lastAuditAt, auditCurrent, dueInDays }) => (
+                <div
+                  key={pack.id}
+                  className="flex gap-4 items-center flex-wrap bg-content1 border border-divider rounded-large px-4 py-4 hover:border-primary/30 hover:shadow-sm transition-all duration-150"
+                >
+                  <div className="w-[50px] h-[50px] rounded-[13px] bg-primary-50 dark:bg-primary-900/20 text-primary flex items-center justify-center flex-none">
+                    <Backpack size={22} />
+                  </div>
 
-          <Tab key="assets" title={<span className="flex items-center gap-1"><Package size={14} /> Assets ({filteredAssets.length})</span>}>
-            <div className="space-y-3 mt-4">
-              {filteredAssets.length === 0 ? (
-                <div className="text-center text-default-500 py-8">
-                  No assets found
-                  {searchQuery && ' matching your search'}
-                </div>
-              ) : (
-                filteredAssets.map((item) => (
-                  <AssetAuditCard key={item.id} item={item} />
-                ))
-              )}
-            </div>
-          </Tab>
+                  <div className="flex-1 min-w-0 basis-40">
+                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                      <span className="font-semibold text-foreground">{pack.name}</span>
+                      <span className="text-xs text-foreground-400">{pack.type}</span>
+                    </div>
+                    <div className="flex gap-1.5 flex-wrap items-center">
+                      <Chip
+                        size="sm"
+                        variant="flat"
+                        color={pack.isCheckedOut ? 'primary' : pack.status === 'Ready' ? 'success' : 'warning'}
+                      >
+                        {pack.isCheckedOut ? 'Checked Out' : pack.status}
+                      </Chip>
+                      {auditCurrent ? (
+                        <Chip size="sm" variant="flat" color="success">Audit current</Chip>
+                      ) : (
+                        <Chip size="sm" variant="flat" color="warning">Audit due</Chip>
+                      )}
+                      <span className="text-xs text-foreground-400">
+                        {lastAuditAt
+                          ? `Audited ${lastAuditAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}${
+                              auditCurrent && dueInDays !== undefined ? ` · due in ${dueInDays}d` : ''
+                            }`
+                          : 'Never audited'}
+                      </span>
+                    </div>
+                  </div>
 
-          <Tab key="restock" title={<span className="flex items-center gap-1"><AlertTriangle size={14} /> Restock Needed ({restockDecisions.length})</span>}>
-            <div className="space-y-3 mt-4">
-              {restockDecisions.length === 0 ? (
-                <div className="text-center py-8">
-                  <CheckCircle2 size={48} className="mx-auto text-success mb-3" />
-                  <div className="text-default-500">All stock levels are adequate!</div>
-                </div>
-              ) : (
-                restockDecisions.map((d) => (
-                  <Card
-                    key={d.itemId}
-                    className={
-                      d.urgency === 'critical'
-                        ? 'border-2 border-danger'
-                        : 'border border-warning'
-                    }
-                  >
-                    <CardBody className="p-3">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="font-semibold">{d.itemName}</div>
-                          <div className="text-sm text-default-500 flex items-center gap-1">
-                            <Box size={14} /> {d.unopenedBoxes} boxes · Par: {d.reorderThreshold} · Deficit: {d.deficit}
-                          </div>
-                        </div>
-                        <Chip
-                          size="sm"
-                          color={d.urgency === 'critical' ? 'danger' : 'warning'}
-                          startContent={d.urgency === 'critical' ? <AlertOctagon size={12} /> : <AlertTriangle size={12} />}
-                        >
-                          {d.urgency === 'critical' ? 'Critical' : 'Low'}
-                        </Chip>
-                      </div>
-                      <div className="text-xs text-default-400 mt-1">
-                        {d.recommendation}
-                      </div>
-                    </CardBody>
-                  </Card>
-                ))
-              )}
-            </div>
-          </Tab>
-
-          <Tab key="history" title={<span className="flex items-center gap-1"><BarChart3 size={14} /> History</span>}>
-            <div className="mt-4">
-              <Card>
-                <CardBody className="text-center py-8">
-                  <p className="text-default-500">
-                    View the full audit ledger at{' '}
+                  <div className="flex-none">
                     <Button
                       size="sm"
+                      color="primary"
                       variant="flat"
-                      onPress={() => router.push('/audit/events')}
+                      startContent={<ClipboardCheck size={14} />}
+                      onPress={() => router.push(`/statpacks/check-off?id=${pack.id}&mode=audit`)}
                     >
-                      Audit Events →
+                      Audit pack
                     </Button>
-                  </p>
-                </CardBody>
-              </Card>
-            </div>
-          </Tab>
-        </Tabs>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
+        {activeTab === 'restock' && (
+          <div className="space-y-3">
+            {restockDecisions.length === 0 ? (
+              <div className="bg-content1 border border-dashed border-divider rounded-large text-center py-16">
+                <CheckCircle2 size={32} className="mx-auto text-success mb-2" />
+                <p className="text-sm font-semibold text-foreground-500">All stock levels are adequate</p>
+              </div>
+            ) : (
+              restockDecisions.map((d) => (
+                <div
+                  key={d.itemId}
+                  className={`flex items-center gap-4 flex-wrap border rounded-large px-4 py-4 ${
+                    d.urgency === 'critical'
+                      ? 'bg-danger-50/60 dark:bg-danger-950/20 border-danger/30'
+                      : 'bg-warning-50/60 dark:bg-warning-950/20 border-warning/30'
+                  }`}
+                >
+                  <div className="flex-1 min-w-0 basis-40">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-semibold text-foreground">{d.itemName}</span>
+                      <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
+                        d.urgency === 'critical'
+                          ? 'bg-danger-50 dark:bg-danger-900/20 text-danger'
+                          : 'bg-warning-50 dark:bg-warning-900/20 text-warning'
+                      }`}>
+                        {d.urgency === 'critical' ? 'Critical' : 'Low'}
+                      </span>
+                    </div>
+                    <div className="text-xs text-foreground-500 mt-1">{d.recommendation}</div>
+                  </div>
+                  <div className="text-right flex-none">
+                    <div className={`font-mono text-xl font-semibold tabular-nums leading-none ${
+                      d.urgency === 'critical' ? 'text-danger' : 'text-warning'
+                    }`}>
+                      {d.totalUnits}
+                    </div>
+                    <div className="text-[9px] uppercase tracking-wider text-foreground-400 mt-1 font-semibold">
+                      / {d.reorderThreshold} par
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    color="primary"
+                    variant="flat"
+                    className="flex-none"
+                    startContent={<PackagePlus size={14} />}
+                    onPress={() => openDrawer(d.itemId, 'shipment')}
+                  >
+                    Add shipment
+                  </Button>
+                </div>
+              ))
+            )}
+          </div>
+        )}
       </div>
+
+      {/* Action drawer */}
+      {drawerItem && user && (
+        <AuditActionDrawer
+          item={drawerItem}
+          initialAction={drawerAction}
+          actor={{
+            uid: user.uid,
+            name: userData?.fullName || user.displayName || user.email || 'Unknown',
+            email: user.email,
+          }}
+          zoneLabel={actorZone}
+          onClose={() => setDrawerItem(null)}
+          onResult={handleDrawerResult}
+        />
+      )}
+
+      {/* Result toast */}
+      {toast && (
+        <div className={`fixed z-[60] bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-lg text-sm font-semibold text-white max-w-[92vw] ${
+          toast.ok ? 'bg-success' : 'bg-danger'
+        }`}>
+          <div className="w-5 h-5 rounded-full bg-white/25 flex items-center justify-center flex-none">
+            {toast.ok ? <Check size={12} strokeWidth={3.5} /> : <span className="text-xs leading-none">✕</span>}
+          </div>
+          <span>{toast.msg}</span>
+        </div>
+      )}
 
       {/* Permission modal */}
       {isAdmin && userData && (
@@ -849,13 +682,21 @@ export default function AuditPage() {
         />
       )}
 
-      {/* Barcode Scanner */}
+      {/* Barcode Scanner — scan a code to jump straight to the item */}
       <BarcodeScanner
         isOpen={scannerOpen}
         onClose={() => setScannerOpen(false)}
         onDetected={(val) => {
           setScannerOpen(false);
-          setSearchQuery(val);
+          const match = inventory.find(
+            (i) => i.barcode === val || i.qr === val || i.assignedBarcode === val || i.assetSerial === val
+          );
+          if (match) {
+            setDrawerItem(match);
+            setDrawerAction('count');
+          } else {
+            setSearchQuery(val);
+          }
         }}
       />
 

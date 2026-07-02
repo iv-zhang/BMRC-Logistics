@@ -250,13 +250,13 @@ const generateStatpackPairId = () => {
 
 const resolveStatpackPairId = async (params: {
   statpackId: string;
-  action: 'checkout' | 'checkin' | 'maintenance';
+  action: 'checkout' | 'checkin' | 'maintenance' | 'audit';
   pairId?: string;
 }) => {
   const { statpackId, action, pairId } = params;
 
   if (pairId) return pairId;
-  if (action === 'maintenance') return undefined;
+  if (action === 'maintenance' || action === 'audit') return undefined;
   if (action === 'checkout') return generateStatpackPairId();
 
   try {
@@ -280,7 +280,7 @@ const resolveStatpackPairId = async (params: {
 export async function logStatpackCheckOff(params: {
   statpackId: string;
   statpackName: string;
-  action: 'checkout' | 'checkin' | 'maintenance';
+  action: 'checkout' | 'checkin' | 'maintenance' | 'audit';
   userId: string;
   userName: string;
   userRole?: string;
@@ -479,6 +479,10 @@ export async function logStatpackCheckOff(params: {
         statpackUpdate.checkedOutAt = null;
         statpackUpdate.assignedToUserId = null;
         statpackUpdate.assignedToUserName = null;
+      } else if (action === 'audit') {
+        // Audits verify the pack in place — never take ownership of it.
+        statpackUpdate.lastAuditAt = serverTimestamp();
+        statpackUpdate.lastAuditBy = userName;
       }
 
       // Use transaction to write the new log and update the statpack document.

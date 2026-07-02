@@ -1,18 +1,12 @@
 'use client';
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import {
-  Card,
-  CardBody,
-  CardHeader,
-  Button,
-  Chip,
-  Divider,
-  Spinner
-} from '@heroui/react';
+import { Button, Chip, Spinner } from '@heroui/react';
+import { ArrowLeft, Mail, UserRound } from 'lucide-react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
+import { ROLES } from '@/app/config/org-config';
 import type { User } from '@/app/types';
 
 export default function ProfilePage() {
@@ -27,7 +21,6 @@ export default function ProfilePage() {
         return;
       }
 
-      // Fetch user data from Firestore
       try {
         const userRef = doc(db, 'users', currentUser.uid);
         const userSnap = await getDoc(userRef);
@@ -63,19 +56,14 @@ export default function ProfilePage() {
 
   if (!user) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Card className="max-w-md">
-          <CardBody>
-            <p className="text-center">Unable to load profile information.</p>
-            <Button
-              color="primary"
-              onClick={() => router.push('/dashboard')}
-              className="mt-4"
-            >
-              Return to Dashboard
-            </Button>
-          </CardBody>
-        </Card>
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center p-4">
+        <div className="bg-content1 border border-divider rounded-large max-w-md w-full text-center py-10 px-6">
+          <UserRound size={40} className="mx-auto text-foreground-300 mb-4" />
+          <p className="text-sm font-semibold text-foreground-500 mb-4">Unable to load profile information.</p>
+          <Button color="primary" onPress={() => router.push('/dashboard')}>
+            Return to dashboard
+          </Button>
+        </div>
       </div>
     );
   }
@@ -93,87 +81,67 @@ export default function ProfilePage() {
     }
   };
 
-  const getRoleLabel = (role: string) => {
-    switch (role) {
-      case 'FTO':
-        return 'Field Training Officer';
-      case 'quartermaster':
-        return 'Quartermaster';
-      default:
-        return role.charAt(0).toUpperCase() + role.slice(1);
-    }
-  };
+  const roleDef = ROLES.find((r) => r.id === user.role);
+  const roleLabel = roleDef?.label ?? (user.role.charAt(0).toUpperCase() + user.role.slice(1));
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-slate-900 py-8 px-4">
-      <div className="max-w-2xl mx-auto">
-        <Card className="shadow-lg">
-          <CardHeader className="pb-0">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
+      <div className="max-w-7xl mx-auto px-6 py-8">
+
+        {/* ── Page header ────────────────────────────────────────────────── */}
+        <div className="flex items-end justify-between gap-4 mb-6 flex-wrap">
+          <div>
+            <h1 className="text-2xl font-semibold text-foreground mb-1.5">Profile</h1>
+            <p className="text-sm text-foreground-500">Your account information</p>
+          </div>
+          <Button
+            size="sm"
+            variant="flat"
+            startContent={<ArrowLeft size={14} />}
+            onPress={() => router.push('/dashboard')}
+          >
+            Back to dashboard
+          </Button>
+        </div>
+
+        <div className="max-w-2xl">
+          <div className="bg-content1 border border-divider rounded-large p-5">
+            {/* Identity row */}
             <div className="flex items-center gap-4">
-              <div className="w-16 h-16 bg-indigo-600 rounded-full flex items-center justify-center text-white text-2xl font-bold">
+              <div className="w-14 h-14 rounded-[14px] bg-secondary/15 text-secondary flex items-center justify-center text-xl font-semibold flex-none">
                 {user.fullName.charAt(0).toUpperCase()}
               </div>
-              <div>
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-                  Profile
-                </h1>
-                <p className="text-gray-600 dark:text-gray-400">
-                  Your account information
-                </p>
+              <div className="min-w-0">
+                <div className="font-semibold text-lg text-foreground leading-tight truncate">{user.fullName}</div>
+                <div className="flex items-center gap-1 text-xs text-foreground-500 mt-0.5">
+                  <Mail size={11} className="flex-none" /> {user.email}
+                </div>
               </div>
-            </div>
-          </CardHeader>
-
-          <CardBody className="space-y-6">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                Full Name
-              </label>
-              <div className="p-3 bg-gray-50 dark:bg-slate-800 rounded-lg border">
-                <p className="text-gray-900 dark:text-white font-medium">
-                  {user.fullName}
-                </p>
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                Email Address
-              </label>
-              <div className="p-3 bg-gray-50 dark:bg-slate-800 rounded-lg border">
-                <p className="text-gray-900 dark:text-white font-medium">
-                  {user.email}
-                </p>
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                Role
-              </label>
-              <div className="flex items-center gap-3">
-                <Chip
-                  color={getRoleColor(user.role)}
-                  variant="flat"
-                  size="lg"
-                >
-                  {getRoleLabel(user.role)}
+              <div className="ml-auto flex-none">
+                <Chip color={getRoleColor(user.role)} variant="flat" size="sm">
+                  {roleLabel}
                 </Chip>
               </div>
             </div>
 
-            <Divider />
-
-            <div className="flex gap-3">
-              <Button
-                color="primary"
-                onClick={() => router.push('/dashboard')}
-              >
-                Back to Dashboard
-              </Button>
+            {/* Details */}
+            <div className="flex gap-3 mt-5">
+              <div className="flex-1 bg-content2 rounded-large p-4">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1.5">Role</div>
+                <div className="text-sm font-semibold text-foreground">{roleLabel}</div>
+                {roleDef?.description && (
+                  <div className="text-xs text-foreground-400 mt-1">{roleDef.description}</div>
+                )}
+              </div>
+              <div className="flex-1 bg-content2 rounded-large p-4">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1.5">Member Since</div>
+                <div className="text-sm font-semibold text-foreground tabular-nums">
+                  {user.createdAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                </div>
+              </div>
             </div>
-          </CardBody>
-        </Card>
+          </div>
+        </div>
       </div>
     </div>
   );

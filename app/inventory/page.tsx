@@ -20,107 +20,26 @@ import MedicationCabinetModal from '@/app/components/medication-cabinet-modal';
 import IntakeWizard from '@/app/components/intake-wizard';
 import { getOldestValidBatch, isBatchExpired } from '@/app/utils/batchHelpers';
 import { preparePayload, safeParseDate } from '@/app/utils/inventoryNormalization';
-import { formatStorageLocation } from '@/app/utils/storage-location';
+import { ITEM_CATEGORIES, getInventoryAreaOptions } from '@/app/config/org-config';
+import { CAT_CFG } from '@/app/components/category-badge';
+import {
+  computeBagStock, displayLocation, getItemStatus, formatExp, expTextColor,
+  statusQtyColor, statusBarColor, type ItemStatus,
+} from '@/app/lib/item-status';
 import type {
   InventoryItem, InventoryBatch, ItemCategory, User, BatchStatus, MedicationInfo,
 } from '@/app/types';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const CATEGORIES: ItemCategory[] = [
-  'Airway', 'Trauma', 'Vitals', 'Meds', 'PPE', 'Splinting', 'Hygiene', 'First Aid', 'Other',
-];
-
-const CAT_CFG: Record<ItemCategory, { code: string; bg: string; text: string }> = {
-  Airway:    { code: 'AW', bg: 'bg-sky-100 dark:bg-sky-900/30',        text: 'text-sky-700 dark:text-sky-300' },
-  Trauma:    { code: 'TR', bg: 'bg-red-100 dark:bg-red-900/30',        text: 'text-red-700 dark:text-red-300' },
-  Vitals:    { code: 'VT', bg: 'bg-violet-100 dark:bg-violet-900/30',  text: 'text-violet-700 dark:text-violet-300' },
-  Meds:      { code: 'MD', bg: 'bg-pink-100 dark:bg-pink-900/30',      text: 'text-pink-700 dark:text-pink-300' },
-  PPE:       { code: 'PP', bg: 'bg-amber-100 dark:bg-amber-900/30',    text: 'text-amber-700 dark:text-amber-300' },
-  Splinting: { code: 'SP', bg: 'bg-orange-100 dark:bg-orange-900/30',  text: 'text-orange-700 dark:text-orange-300' },
-  Hygiene:   { code: 'HY', bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-700 dark:text-emerald-300' },
-  'First Aid': { code: 'FA', bg: 'bg-green-100 dark:bg-green-900/30', text: 'text-green-700 dark:text-green-300' },
-  Other:     { code: 'OT', bg: 'bg-content3',                           text: 'text-foreground-500' },
-};
+const CATEGORIES = ITEM_CATEGORIES as readonly ItemCategory[];
+const LOCATION_OPTIONS = getInventoryAreaOptions();
 
 const BATCH_STATUS_COLORS: Record<string, 'default' | 'success' | 'warning' | 'danger' | 'primary'> = {
   sealed: 'primary', open: 'success', depleted: 'default', expired: 'danger', quarantined: 'warning',
 };
 
-type ItemStatus = 'ok' | 'low' | 'out' | 'expired' | 'expiring';
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function computeBagStock(item: InventoryItem) {
-  const batches = item.batches || [];
-  const hasBagTracking = batches.some(
-    b => (b.bagCount !== undefined && b.bagCount > 0) ||
-         (b.itemsPerBag !== undefined && (b.itemsPerBag ?? 0) > 0),
-  );
-  if (hasBagTracking) {
-    let totalBags = 0, totalLoose = 0, totalItems = 0;
-    for (const b of batches) {
-      const bags = b.bagCount ?? 0, perBag = b.itemsPerBag ?? 0, loose = b.looseItems ?? 0;
-      totalBags += bags; totalLoose += loose; totalItems += bags * perBag + loose;
-    }
-    return { totalBags, totalLoose, totalItems, hasBagTracking: true };
-  }
-  const boxes = item.unopenedBoxes ?? 0, perBox = item.itemsPerBox ?? 0, loose = item.looseUnits ?? 0;
-  return {
-    totalBags: boxes, totalLoose: loose,
-    totalItems: perBox > 0 ? boxes * perBox + loose : boxes,
-    hasBagTracking: false,
-  };
-}
-
-function displayLocation(item: InventoryItem): string {
-  if (item.storageLocation) return formatStorageLocation(item.storageLocation);
-  const parts = [item.location || '', item.room || ''];
-  if (item.shelf) parts.push(`Shelf ${item.shelf}`);
-  if (item.backLevel) parts.push(`L${item.backLevel}`);
-  return parts.filter(Boolean).join(' › ');
-}
-
-function getItemStatus(item: InventoryItem): ItemStatus {
-  const bag = computeBagStock(item);
-  const now = new Date();
-  const in60 = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000);
-  const batches = item.batches || [];
-  if (batches.some(b => b.expirationDate && b.expirationDate < now)) return 'expired';
-  if (item.isOxygen) return 'ok';
-  if (bag.totalItems === 0) return 'out';
-  if (item.reorderThreshold > 0 && bag.totalItems <= item.reorderThreshold) return 'low';
-  if (batches.some(b => b.expirationDate && b.expirationDate >= now && b.expirationDate <= in60))
-    return 'expiring';
-  return 'ok';
-}
-
-function formatExp(date?: Date): string {
-  if (!date) return '—';
-  const now = new Date();
-  const label = date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
-  return date < now ? `Expired ${label}` : label;
-}
-
-function expTextColor(date?: Date): string {
-  if (!date) return 'text-foreground-400';
-  const now = new Date();
-  if (date < now) return 'text-danger';
-  if (date <= new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000)) return 'text-warning';
-  return 'text-success';
-}
-
-function statusQtyColor(s: ItemStatus): string {
-  if (s === 'ok' || s === 'expiring') return 'text-success';
-  if (s === 'low') return 'text-warning';
-  return 'text-danger';
-}
-
-function statusBarColor(s: ItemStatus): string {
-  if (s === 'ok' || s === 'expiring') return 'bg-success';
-  if (s === 'low') return 'bg-warning';
-  return 'bg-danger';
-}
 
 function getCardTint(s: ItemStatus): string {
   if (s === 'expired') return 'bg-danger-50/70 dark:bg-danger-950/40 border-danger/40 dark:border-danger/25';
@@ -579,7 +498,7 @@ export default function InventoryPage() {
           <div className="flex gap-6 items-start">
 
             {/* Sidebar ────────────────────────────────────────────────────── */}
-            <aside className="w-64 flex-none sticky top-20 flex flex-col gap-4">
+            <aside className="w-64 flex-none flex flex-col gap-4">
 
               {/* Stock Status */}
               <div className="bg-content1 border border-divider rounded-large p-4">
@@ -648,10 +567,9 @@ export default function InventoryPage() {
                   className="w-full text-sm font-medium text-foreground-600 dark:text-foreground-300 bg-content1 border border-divider rounded-medium px-3 py-2 cursor-pointer outline-none"
                 >
                   <option value="">All locations</option>
-                  <option value="Back Room">HQ · Back Room</option>
-                  <option value="Forward Staging">HQ · Forward Staging</option>
-                  <option value="Med Cabinet">HQ · Med Cabinet</option>
-                  <option value="Shed">Shed</option>
+                  {LOCATION_OPTIONS.map(o => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
                 </select>
                 <button
                   onClick={resetFilters}
@@ -826,10 +744,9 @@ export default function InventoryPage() {
                 className="text-sm font-medium text-foreground-600 dark:text-foreground-300 bg-content1 border border-divider rounded-medium px-3 py-2 cursor-pointer outline-none"
               >
                 <option value="">All locations</option>
-                <option value="Back Room">HQ · Back Room</option>
-                <option value="Forward Staging">HQ · Forward Staging</option>
-                <option value="Med Cabinet">HQ · Med Cabinet</option>
-                <option value="Shed">Shed</option>
+                {LOCATION_OPTIONS.map(o => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
               </select>
               <div className="flex gap-1.5 ml-auto flex-wrap">
                 {statusPills.slice(1).map(({ key, label }) => (

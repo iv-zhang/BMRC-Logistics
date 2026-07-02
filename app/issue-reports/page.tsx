@@ -1,27 +1,8 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import {
-  Card,
-  CardBody,
-  CardHeader,
-  Button,
-  Input,
-  Select,
-  SelectItem,
-  Badge,
-  Chip,
-  Divider,
-  Skeleton,
-  Checkbox,
-} from '@heroui/react';
-import {
-  Search,
-  AlertCircle,
-  Clock,
-  User,
-  Filter,
-} from 'lucide-react';
+import { Button, Chip, Checkbox, Spinner } from '@heroui/react';
+import { Search, AlertCircle, Clock, User, X } from 'lucide-react';
 import { collection, onSnapshot, orderBy, query, Timestamp, updateDoc, doc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
@@ -39,6 +20,9 @@ interface RestockReport {
   statpackName?: string;
   location?: string;
   locationDetail?: string;
+  frontRoom?: string;
+  frontShelf?: string;
+  frontLevel?: string | number;
   notes?: string;
   itemName?: string;
   items?: Array<{ name?: string }>;
@@ -47,14 +31,6 @@ interface RestockReport {
   resolvedByName?: string;
   resolvedAt?: Timestamp | Date;
 }
-
-const formatDate = (value: Timestamp | Date | undefined) => {
-  if (!value) return '—';
-  if (value instanceof Date) return value.toLocaleDateString();
-  if (value instanceof Timestamp) return value.toDate().toLocaleDateString();
-  if ((value as any)?.toDate) return (value as any).toDate().toLocaleDateString();
-  return '—';
-};
 
 const humanizeType = (t?: string) => {
   if (!t) return 'Report';
@@ -70,8 +46,25 @@ const humanizeType = (t?: string) => {
   }
 };
 
+const STATUS_OPTIONS = [
+  { value: 'all', label: 'All statuses' },
+  { value: 'open', label: 'Open' },
+  { value: 'triaged', label: 'Triaged' },
+  { value: 'in_progress', label: 'In Progress' },
+  { value: 'resolved', label: 'Resolved' },
+  { value: 'closed', label: 'Closed' },
+];
+
+const PRIORITY_OPTIONS = [
+  { value: 'all', label: 'All priorities' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'urgent', label: 'Urgent' },
+];
+
 export default function IssueReportsPage() {
-  const { user, role } = useUserRole();
+  const { user, role, loading: roleLoading } = useUserRole();
   const [reports, setReports] = useState<Array<IssueReport & { id: string }>>([]);
   const [filteredReports, setFilteredReports] = useState<
     Array<IssueReport & { id: string }>
@@ -94,7 +87,6 @@ export default function IssueReportsPage() {
     search: '',
   });
 
-  // Check if user is admin
   const isAdmin = role === 'admin' || role === 'quartermaster';
 
   // Subscribe to reports
@@ -106,7 +98,7 @@ export default function IssueReportsPage() {
         setLoading(false);
       },
       {
-        status: filters.status === 'all' ? 'all' : (filters.status as any),
+        status: filters.status === 'all' ? 'all' : (filters.status as IssueReport['status']),
       }
     );
 
@@ -141,12 +133,12 @@ export default function IssueReportsPage() {
     }
 
     if (filters.search.trim()) {
-      const query = filters.search.toLowerCase();
+      const q = filters.search.toLowerCase();
       result = result.filter(
         (r) =>
-          r.title.toLowerCase().includes(query) ||
-          r.description.toLowerCase().includes(query) ||
-          r.reporter?.userName?.toLowerCase().includes(query)
+          r.title.toLowerCase().includes(q) ||
+          r.description.toLowerCase().includes(q) ||
+          r.reporter?.userName?.toLowerCase().includes(q)
       );
     }
 
@@ -161,41 +153,43 @@ export default function IssueReportsPage() {
     }
 
     if (filters.search.trim()) {
-      const query = filters.search.toLowerCase();
+      const q = filters.search.toLowerCase();
       result = result.filter((r) =>
-        (r.itemName || '').toLowerCase().includes(query) ||
-        (r.statpackName || '').toLowerCase().includes(query) ||
-        (r.location || '').toLowerCase().includes(query) ||
-        (r.reporter || r.reporterId || '').toLowerCase().includes(query)
+        (r.itemName || '').toLowerCase().includes(q) ||
+        (r.statpackName || '').toLowerCase().includes(q) ||
+        (r.location || '').toLowerCase().includes(q) ||
+        (r.reporter || r.reporterId || '').toLowerCase().includes(q)
       );
     }
 
     setFilteredRestockReports(result);
   }, [restockReports, restockUnresolvedOnly, filters.search]);
 
+  if (roleLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center">
+        <Spinner size="lg" color="primary" />
+      </div>
+    );
+  }
+
   if (!isAdmin) {
     return (
-      <div className="container mx-auto p-4 md:p-6">
-        <div className="flex items-center justify-center h-96">
-          <div className="text-center">
-            <AlertCircle className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-            <p className="text-gray-600 dark:text-gray-400 font-medium">
-              Access Denied
-            </p>
-            <p className="text-sm text-gray-500">
-              Only admins can view issue reports
-            </p>
-          </div>
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center p-4">
+        <div className="bg-content1 border border-divider rounded-large max-w-md w-full text-center py-10 px-6">
+          <AlertCircle size={40} className="mx-auto text-foreground-300 mb-4" />
+          <h2 className="text-base font-semibold text-foreground mb-2">Admin Access Required</h2>
+          <p className="text-sm text-foreground-500">Only admins can view issue reports.</p>
         </div>
       </div>
     );
   }
 
-  const openReportCount = reports.filter((r) => r.status === 'open').length;
-  const inProgressCount = reports.filter(
-    (r) => r.status === 'in_progress'
-  ).length;
-  const resolvedCount = reports.filter((r) => r.status === 'resolved').length;
+  const openReportCount = reports.filter((r) => r.status === 'open').length
+    + restockReports.filter((r) => !r.resolved).length;
+  const inProgressCount = reports.filter((r) => r.status === 'in_progress').length;
+  const resolvedCount = reports.filter((r) => r.status === 'resolved').length
+    + restockReports.filter((r) => r.resolved).length;
 
   const priorityColor = {
     low: 'default',
@@ -213,8 +207,8 @@ export default function IssueReportsPage() {
   } as const;
 
   const handleResolveRestock = async (r: RestockReport) => {
-    const user = auth.currentUser;
-    if (!user) {
+    const current = auth.currentUser;
+    if (!current) {
       alert('Sign in to resolve reports.');
       return;
     }
@@ -222,8 +216,8 @@ export default function IssueReportsPage() {
     try {
       await updateDoc(doc(db, 'restock_reports', r.id), {
         resolved: true,
-        resolvedBy: user.uid,
-        resolvedByName: user.displayName || user.email || null,
+        resolvedBy: current.uid,
+        resolvedByName: current.displayName || current.email || null,
         resolvedAt: serverTimestamp(),
       });
     } catch (e) {
@@ -243,308 +237,230 @@ export default function IssueReportsPage() {
   };
 
   return (
-    <div className="container mx-auto p-4 md:p-6 space-y-6">
-      {/* Header */}
-      <div className="space-y-3">
-        <div>
-          <h1 className="text-3xl font-bold">Reports</h1>
-          <p className="text-gray-600 dark:text-gray-400">
-            Triage member issues and inventory/stock alerts in one place
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="solid">
-            Issues ({reports.length + restockReports.length})
-          </Button>
-        </div>
-      </div>
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
+      <div className="max-w-7xl mx-auto px-6 py-8">
 
-          {/* Stats Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <Card className="bg-gradient-to-br from-danger/10 to-danger/5">
-            <CardBody className="gap-2">
-              <Badge color="danger" content={openReportCount} shape="circle">
-                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Open
+        {/* ── Page header ────────────────────────────────────────────────── */}
+        <div className="flex items-end justify-between gap-4 mb-6 flex-wrap">
+          <div>
+            <h1 className="text-2xl font-semibold text-foreground mb-1.5">Reports</h1>
+            <div className="flex items-center gap-2 flex-wrap mt-1">
+              <div className="flex items-center gap-2 bg-content1 border border-divider rounded-large px-3 py-1.5">
+                <span className="font-mono font-semibold tabular-nums text-foreground">
+                  {reports.length + restockReports.length}
                 </span>
-              </Badge>
-            </CardBody>
-          </Card>
-
-          <Card className="bg-gradient-to-br from-warning/10 to-warning/5">
-            <CardBody className="gap-2">
-              <Badge color="warning" content={inProgressCount} shape="circle">
-                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                  In Progress
-                </span>
-              </Badge>
-            </CardBody>
-          </Card>
-
-          <Card className="bg-gradient-to-br from-success/10 to-success/5">
-            <CardBody className="gap-2">
-              <Badge color="success" content={resolvedCount} shape="circle">
-                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Resolved
-                </span>
-              </Badge>
-            </CardBody>
-          </Card>
-
-          <Card className="bg-gradient-to-br from-primary/10 to-primary/5">
-            <CardBody className="gap-2">
-              <Badge color="primary" content={reports.length} shape="circle">
-                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Total
-                </span>
-              </Badge>
-            </CardBody>
-          </Card>
-        </div>
-
-      {/* Filters */}
-      <Card>
-        <CardBody className="gap-4">
-          <div className="flex items-center gap-2">
-            <Filter className="w-5 h-5 text-gray-600" />
-            <span className="font-semibold">Filters</span>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <Input
-              isClearable
-              placeholder={'Search by title, description, or reporter...'}
-              size="sm"
-              variant="bordered"
-              startContent={<Search className="w-4 h-4 text-gray-500" />}
-              value={filters.search}
-              onValueChange={(v) =>
-                setFilters((prev) => ({ ...prev, search: v }))
-              }
-              onClear={() =>
-                setFilters((prev) => ({ ...prev, search: '' }))
-              }
-            />
-
-            <Select
-              label="Status"
-              placeholder="Filter by status"
-              size="sm"
-              selectedKeys={[filters.status]}
-              onSelectionChange={(keys) =>
-                setFilters((prev) => ({
-                  ...prev,
-                  status: Array.from(keys)[0] as string,
-                }))
-              }
-            >
-              <SelectItem key="all">
-                All Statuses
-              </SelectItem>
-              <SelectItem key="open">
-                Open
-              </SelectItem>
-              <SelectItem key="triaged">
-                Triaged
-              </SelectItem>
-              <SelectItem key="in_progress">
-                In Progress
-              </SelectItem>
-              <SelectItem key="resolved">
-                Resolved
-              </SelectItem>
-              <SelectItem key="closed">
-                Closed
-              </SelectItem>
-            </Select>
-
-            <Select
-              label="Priority"
-              placeholder="Filter by priority"
-              size="sm"
-              selectedKeys={[filters.priority]}
-              onSelectionChange={(keys) =>
-                setFilters((prev) => ({
-                  ...prev,
-                  priority: Array.from(keys)[0] as string,
-                }))
-              }
-            >
-              <SelectItem key="all">
-                All Priorities
-              </SelectItem>
-              <SelectItem key="low">
-                Low
-              </SelectItem>
-              <SelectItem key="medium">
-                Medium
-              </SelectItem>
-              <SelectItem key="high">
-                High
-              </SelectItem>
-              <SelectItem key="urgent">
-                Urgent
-              </SelectItem>
-            </Select>
-
-            <div className="flex items-center gap-3">
-              <Checkbox isSelected={restockUnresolvedOnly} onValueChange={setRestockUnresolvedOnly}>
-                Inventory: Unresolved only
-              </Checkbox>
+                <span className="text-xs text-foreground-400">total</span>
+              </div>
+              <div className="flex items-center gap-2 bg-danger-50 dark:bg-danger-900/20 border border-danger/30 rounded-large px-3 py-1.5">
+                <span className="w-2 h-2 rounded-sm bg-danger flex-none" />
+                <span className="font-mono font-semibold tabular-nums text-danger">{openReportCount}</span>
+                <span className="text-xs text-danger/80 font-medium">open</span>
+              </div>
+              <div className="flex items-center gap-2 bg-warning-50 dark:bg-warning-900/20 border border-warning/30 rounded-large px-3 py-1.5">
+                <span className="w-2 h-2 rounded-sm bg-warning flex-none" />
+                <span className="font-mono font-semibold tabular-nums text-warning">{inProgressCount}</span>
+                <span className="text-xs text-warning/80 font-medium">in progress</span>
+              </div>
+              <div className="flex items-center gap-2 bg-success-50 dark:bg-success-900/20 border border-success/30 rounded-large px-3 py-1.5">
+                <span className="w-2 h-2 rounded-sm bg-success flex-none" />
+                <span className="font-mono font-semibold tabular-nums text-success">{resolvedCount}</span>
+                <span className="text-xs text-success/80 font-medium">resolved</span>
+              </div>
             </div>
           </div>
-        </CardBody>
-      </Card>
+        </div>
 
-      {/* Combined Reports List (issues + inventory) */}
-      <div className="space-y-3">
-        {loading || restockLoading ? (
-          <div className="space-y-2">
-            {[...Array(3)].map((_, i) => (
-              <Skeleton key={i} className="rounded-lg h-24" />
-            ))}
-          </div>
-        ) : (
-          (() => {
-            const mappedRestock = filteredRestockReports.map((r) => ({
-              id: r.id,
-              title: `${humanizeType(r.type)}${(r.items && r.items.length > 0 && r.items[0].name) ? ` — ${r.items[0].name}` : (r.itemName ? ` — ${r.itemName}` : '')}`,
-              description: r.notes || 'No notes provided',
-              priority: (r.severity === 'critical' ? 'urgent' : r.severity === 'warning' ? 'high' : 'medium') as IssueReport['priority'],
-              status: r.resolved ? 'resolved' : 'open',
-              reporter: { isAnonymous: false, userName: r.reporter || r.reporterId || 'Unknown' },
-              createdAt: r.createdAt as any,
-              _source: 'restock' as const,
-              raw: r,
-            }));
-
-            const mappedIssues = filteredReports.map((rep) => ({ ...rep, _source: 'issue' as const }));
-
-            const combined = [...mappedIssues, ...mappedRestock].sort((a, b) => {
-              const ta = a.createdAt ? (a.createdAt as any).toDate ? (a.createdAt as any).toDate().getTime() : new Date(a.createdAt as any).getTime() : 0;
-              const tb = b.createdAt ? (b.createdAt as any).toDate ? (b.createdAt as any).toDate().getTime() : new Date(b.createdAt as any).getTime() : 0;
-              return tb - ta;
-            });
-
-            if (combined.length === 0) {
-              return (
-                <Card>
-                  <CardBody className="py-12">
-                    <div className="flex flex-col items-center justify-center gap-2">
-                      <AlertCircle className="w-10 h-10 text-gray-400" />
-                      <p className="text-gray-600 dark:text-gray-400 font-medium">
-                        No reports found
-                      </p>
-                      <p className="text-sm text-gray-500">
-                        Try adjusting your filters
-                      </p>
-                    </div>
-                  </CardBody>
-                </Card>
-              );
-            }
-
-            return combined.map((item: any) => (
-              <Card
-                key={item.id}
-                className={`cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-800/50 transition-colors ${item._source === 'issue' ? 'is-issue' : 'is-restock'}`}
-                isPressable={item._source === 'issue'}
-                onPress={() => {
-                  if (item._source === 'issue') {
-                    setSelectedReport(item);
-                    setIsTriageOpen(true);
-                  }
-                }}
+        {/* ── Filter bar ─────────────────────────────────────────────────── */}
+        <div className="bg-content1 border border-divider rounded-large p-3 mb-4 flex items-center gap-3 flex-wrap">
+          <div className="flex-1 min-w-[220px] flex items-center gap-2 bg-content2 border border-divider rounded-medium px-3 py-0.5">
+            <Search size={15} className="text-foreground-400 flex-none" />
+            <input
+              value={filters.search}
+              onChange={(e) => setFilters((prev) => ({ ...prev, search: e.target.value }))}
+              placeholder="Search by title, item, location, or reporter…"
+              className="flex-1 text-sm bg-transparent outline-none py-2 text-foreground placeholder:text-foreground-400"
+            />
+            {filters.search && (
+              <button
+                onClick={() => setFilters((prev) => ({ ...prev, search: '' }))}
+                className="text-foreground-400 hover:text-foreground-600 transition-colors"
               >
-                <CardBody className="gap-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex-1 min-w-0">
-                      <h3 className="font-semibold text-sm line-clamp-2">
-                        {item.title}
-                      </h3>
-                      <p className="text-xs text-gray-600 dark:text-gray-400 line-clamp-1 mt-1">
-                        {item.description}
-                      </p>
-                    </div>
-                    <div className="flex gap-2 flex-shrink-0">
-                      <Chip
-                        variant="flat"
-                        color={priorityColor[(item.priority || 'medium') as keyof typeof priorityColor]}
-                        size="sm"
-                        className="font-semibold"
-                      >
-                        {item.priority}
-                      </Chip>
-                      <Chip
-                        variant="flat"
-                        color={statusColor[item.status as keyof typeof statusColor] || 'default'}
-                        size="sm"
-                      >
-                        {item.status}
-                      </Chip>
-                    </div>
+                <X size={15} />
+              </button>
+            )}
+          </div>
+
+          <select
+            value={filters.status}
+            onChange={(e) => setFilters((prev) => ({ ...prev, status: e.target.value }))}
+            className="text-sm font-medium text-foreground-600 dark:text-foreground-300 bg-content1 border border-divider rounded-medium px-3 py-2 cursor-pointer outline-none"
+          >
+            {STATUS_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+
+          <select
+            value={filters.priority}
+            onChange={(e) => setFilters((prev) => ({ ...prev, priority: e.target.value }))}
+            className="text-sm font-medium text-foreground-600 dark:text-foreground-300 bg-content1 border border-divider rounded-medium px-3 py-2 cursor-pointer outline-none"
+          >
+            {PRIORITY_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+
+          <Checkbox size="sm" isSelected={restockUnresolvedOnly} onValueChange={setRestockUnresolvedOnly}>
+            <span className="text-sm text-foreground-600">Unresolved stock alerts only</span>
+          </Checkbox>
+        </div>
+
+        {/* ── Combined reports list (issues + inventory) ─────────────────── */}
+        <div className="space-y-3">
+          {loading || restockLoading ? (
+            <div className="bg-content1 border border-divider rounded-large flex items-center justify-center py-16">
+              <Spinner size="md" color="primary" />
+            </div>
+          ) : (
+            (() => {
+              const mappedRestock = filteredRestockReports.map((r) => ({
+                id: r.id,
+                title: `${humanizeType(r.type)}${(r.items && r.items.length > 0 && r.items[0].name) ? ` — ${r.items[0].name}` : (r.itemName ? ` — ${r.itemName}` : '')}`,
+                description: r.notes || 'No notes provided',
+                priority: (r.severity === 'critical' ? 'urgent' : r.severity === 'warning' ? 'high' : 'medium') as IssueReport['priority'],
+                status: (r.resolved ? 'resolved' : 'open') as IssueReport['status'],
+                reporter: { isAnonymous: false, userName: r.reporter || r.reporterId || 'Unknown' },
+                createdAt: r.createdAt,
+                _source: 'restock' as const,
+                raw: r,
+              }));
+
+              const mappedIssues = filteredReports.map((rep) => ({ ...rep, _source: 'issue' as const, raw: undefined as unknown as RestockReport }));
+
+              const toMillis = (v: unknown): number => {
+                if (!v) return 0;
+                if (v instanceof Date) return v.getTime();
+                if (typeof (v as { toDate?: () => Date }).toDate === 'function') return (v as { toDate: () => Date }).toDate().getTime();
+                const d = new Date(v as string);
+                return isNaN(d.getTime()) ? 0 : d.getTime();
+              };
+
+              const combined = [...mappedIssues, ...mappedRestock].sort(
+                (a, b) => toMillis(b.createdAt) - toMillis(a.createdAt)
+              );
+
+              if (combined.length === 0) {
+                return (
+                  <div className="bg-content1 border border-dashed border-divider rounded-large text-center py-16">
+                    <AlertCircle size={32} className="mx-auto text-foreground-300 mb-2" />
+                    <p className="text-sm font-semibold text-foreground-500">No reports found</p>
+                    <p className="text-xs text-foreground-400 mt-1">Try adjusting your filters.</p>
                   </div>
+                );
+              }
 
-                  <Divider className="my-1" />
+              return combined.map((item) => {
+                const isIssue = item._source === 'issue';
+                const createdLabel = (() => {
+                  const ms = toMillis(item.createdAt);
+                  return ms ? new Date(ms).toLocaleDateString() : '—';
+                })();
+                return (
+                  <div
+                    key={`${item._source}-${item.id}`}
+                    onClick={() => {
+                      if (isIssue) {
+                        setSelectedReport(item as IssueReport & { id: string });
+                        setIsTriageOpen(true);
+                      }
+                    }}
+                    className={`bg-content1 border border-divider rounded-large px-4 py-4 transition-all duration-150 ${
+                      isIssue ? 'cursor-pointer hover:border-primary/30 hover:shadow-sm' : ''
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <h3 className="font-semibold text-sm text-foreground line-clamp-2">
+                          {item.title}
+                        </h3>
+                        <p className="text-xs text-foreground-500 line-clamp-1 mt-1">
+                          {item.description}
+                        </p>
+                      </div>
+                      <div className="flex gap-1.5 flex-none">
+                        <Chip
+                          variant="flat"
+                          color={priorityColor[(item.priority || 'medium') as keyof typeof priorityColor]}
+                          size="sm"
+                        >
+                          {item.priority}
+                        </Chip>
+                        <Chip
+                          variant="flat"
+                          color={statusColor[item.status as keyof typeof statusColor] || 'default'}
+                          size="sm"
+                        >
+                          {String(item.status).replace(/_/g, ' ')}
+                        </Chip>
+                      </div>
+                    </div>
 
-                  <div className="flex items-center justify-between text-xs text-gray-600 dark:text-gray-400">
-                    <div className="flex items-center gap-3">
-                      <div className="flex items-center gap-1">
-                        <User className="w-3 h-3" />
-                        {item.reporter?.isAnonymous ? (
-                          <span>Anonymous</span>
-                        ) : (
-                          <span>{item.reporter?.userName || 'Unknown'}</span>
+                    <div className="flex items-center justify-between gap-3 text-xs text-foreground-400 mt-3 flex-wrap">
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <span className="flex items-center gap-1">
+                          <User size={11} />
+                          {item.reporter?.isAnonymous ? 'Anonymous' : (item.reporter?.userName || 'Unknown')}
+                        </span>
+
+                        {isIssue && 'assignedTo' in item && (item as IssueReport).assignedTo && (
+                          <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-primary-50 dark:bg-primary-900/20 text-primary">
+                            Assigned to {(item as IssueReport).assignedTo?.userName}
+                          </span>
+                        )}
+
+                        {!isIssue && item.raw && (item.raw.statpackName || item.raw.location) && (
+                          <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-primary-50 dark:bg-primary-900/20 text-primary">
+                            {item.raw.statpackName ?? item.raw.location}
+                            {item.raw.locationDetail ? ` · ${item.raw.locationDetail}` : ''}
+                            {(item.raw.frontRoom || item.raw.frontShelf || item.raw.frontLevel) &&
+                              ` — ${[item.raw.frontRoom, item.raw.frontShelf, item.raw.frontLevel ? `Level ${item.raw.frontLevel}` : ''].filter(Boolean).join(', ')}`}
+                          </span>
                         )}
                       </div>
 
-                      {item._source === 'issue' && item.assignedTo && (
-                        <div className="flex items-center gap-1 bg-blue-50 dark:bg-blue-900/20 px-2 py-0.5 rounded">
-                          <span>Assigned to {item.assignedTo.userName}</span>
-                        </div>
-                      )}
-
-                      {item._source === 'restock' && item.raw && (item.raw.statpackName || item.raw.location) && (
-                        <div className="flex items-center gap-1 bg-blue-50 dark:bg-blue-900/20 px-2 py-0.5 rounded">
-                          <span>
-                            {item.raw.statpackName ?? item.raw.location}{item.raw.locationDetail ? ` • ${item.raw.locationDetail}` : ''}
-                            {(item.raw.frontRoom || item.raw.frontShelf || item.raw.frontLevel) && (
-                              <span className="ml-1 text-indigo-600 dark:text-indigo-400">
-                                [{[item.raw.frontRoom, item.raw.frontShelf, item.raw.frontLevel ? `Level ${item.raw.frontLevel}` : ''].filter(Boolean).join(', ')}]
-                              </span>
-                            )}
-                          </span>
-                        </div>
-                      )}
+                      <span className="flex items-center gap-1">
+                        <Clock size={11} /> {createdLabel}
+                      </span>
                     </div>
 
-                    <div className="flex items-center gap-1">
-                      <Clock className="w-3 h-3" />
-                      {item.createdAt instanceof Date
-                        ? item.createdAt.toLocaleDateString()
-                        : item.createdAt && (item.createdAt as any).toDate
-                        ? (item.createdAt as any).toDate().toLocaleDateString()
-                        : new Date().toLocaleDateString()}
-                    </div>
-                  </div>
-
-                  {item._source === 'restock' && (
-                    <div className="flex items-center gap-2 pt-1">
-                      {!item.raw.resolved && (
-                        <Button size="sm" color="primary" onPress={() => handleResolveRestock(item.raw)}>
-                          Resolve
+                    {!isIssue && item.raw && (
+                      <div className="flex items-center gap-2 mt-3">
+                        {!item.raw.resolved && (
+                          <Button
+                            size="sm"
+                            color="primary"
+                            variant="flat"
+                            onPress={() => handleResolveRestock(item.raw)}
+                          >
+                            Mark resolved
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="light"
+                          color="danger"
+                          onPress={() => handleDeleteRestock(item.raw)}
+                        >
+                          Delete
                         </Button>
-                      )}
-                      <Button size="sm" variant="light" color="danger" onPress={() => handleDeleteRestock(item.raw)}>
-                        Delete
-                      </Button>
-                    </div>
-                  )}
-                </CardBody>
-              </Card>
-            ));
-          })()
-        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              });
+            })()
+          )}
+        </div>
       </div>
 
       {/* Triage Modal */}
