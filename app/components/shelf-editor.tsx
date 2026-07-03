@@ -11,7 +11,17 @@ import {
   Select,
   SelectItem,
 } from '@heroui/react';
-import { addDoc, collection, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import {
+  addDoc,
+  collection,
+  doc,
+  updateDoc,
+  serverTimestamp,
+  query,
+  where,
+  getDocs,
+  writeBatch,
+} from 'firebase/firestore';
 import { db } from '@/firebase';
 import type { Shelf, StorageZone } from '@/app/types';
 
@@ -21,6 +31,49 @@ interface Props {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   onSave: () => void;
+}
+
+/** Propagate a shelf rename to every inventory item that cached the old name. */
+async function propagateShelfRename(shelfId: string, newName: string) {
+  try {
+    const q = query(collection(db, 'inventory'), where('storageLocation.shelfId', '==', shelfId));
+    const snap = await getDocs(q);
+    if (snap.empty) return;
+    const docs = snap.docs;
+    for (let i = 0; i < docs.length; i += 450) {
+      const chunk = docs.slice(i, i + 450);
+      const batch = writeBatch(db);
+      chunk.forEach((d) => {
+        batch.update(doc(db, 'inventory', d.id), { 'storageLocation.shelfName': newName });
+      });
+      await batch.commit();
+    }
+  } catch (e) {
+    console.error('Failed to propagate shelf rename to inventory items', e);
+  }
+}
+
+/** Propagate a shelf's zone reassignment to every inventory item stored on it. */
+async function propagateShelfZoneChange(shelfId: string, newZoneId: string | null, newZoneName: string | null) {
+  try {
+    const q = query(collection(db, 'inventory'), where('storageLocation.shelfId', '==', shelfId));
+    const snap = await getDocs(q);
+    if (snap.empty) return;
+    const docs = snap.docs;
+    for (let i = 0; i < docs.length; i += 450) {
+      const chunk = docs.slice(i, i + 450);
+      const batch = writeBatch(db);
+      chunk.forEach((d) => {
+        batch.update(doc(db, 'inventory', d.id), {
+          'storageLocation.zoneId': newZoneId,
+          'storageLocation.zoneName': newZoneName,
+        });
+      });
+      await batch.commit();
+    }
+  } catch (e) {
+    console.error('Failed to propagate shelf zone reassignment to inventory items', e);
+  }
 }
 
 export default function ShelfEditor({ shelf, zones, isOpen, onOpenChange, onSave }: Props) {
@@ -55,15 +108,25 @@ export default function ShelfEditor({ shelf, zones, isOpen, onOpenChange, onSave
     setLoading(true);
     try {
       if (shelf && shelf.id) {
+        const trimmedName = name.trim();
+        const newZoneId = zoneId || null;
         const ref = doc(db, 'shelves', shelf.id);
         await updateDoc(ref, {
-          name: name.trim(),
-          zoneId: zoneId || null,
+          name: trimmedName,
+          zoneId: newZoneId,
           capacity: capacity ?? null,
           barcode: barcode || null,
           numberOfLevels: numberOfLevels ?? null,
           updatedAt: serverTimestamp(),
         } as any);
+
+        if (trimmedName !== (shelf.name || '')) {
+          await propagateShelfRename(shelf.id, trimmedName);
+        }
+        if (newZoneId !== (shelf.zoneId || null)) {
+          const newZone = newZoneId ? zones.find((z) => z.id === newZoneId) : null;
+          await propagateShelfZoneChange(shelf.id, newZoneId, newZone?.name || null);
+        }
       } else {
         await addDoc(collection(db, 'shelves'), {
           name: name.trim(),

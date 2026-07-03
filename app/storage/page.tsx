@@ -5,15 +5,9 @@ import {
   Card,
   CardBody,
   Button,
-  Input,
   Spinner,
   Tabs,
   Tab,
-  Modal,
-  ModalContent,
-  ModalHeader,
-  ModalBody,
-  ModalFooter,
   useDisclosure,
   Table,
   TableHeader,
@@ -36,11 +30,13 @@ import {
   serverTimestamp,
   getDocs,
   where,
+  writeBatch,
 } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
 import type { StorageZone, Shelf, Container, User as AppUser } from '@/app/types';
 import ShelfEditor from '@/app/components/shelf-editor';
 import ContainerEditor from '@/app/components/container-editor';
+import ZoneEditor from '@/app/components/zone-editor';
 
 export default function StoragePage() {
   const router = useRouter();
@@ -59,7 +55,6 @@ export default function StoragePage() {
   const containerDisclosure = useDisclosure();
   const zoneDisclosure = useDisclosure();
   const [editingZone, setEditingZone] = useState<StorageZone | null>(null);
-  const [zoneOpLoading, setZoneOpLoading] = useState(false);
   const [dedupeLoading, setDedupeLoading] = useState(false);
 
   // Auth & data listeners
@@ -155,8 +150,44 @@ export default function StoragePage() {
   }
 
   const handleDeleteShelf = async (shelfId: string) => {
-    if (!confirm('Delete this shelf? Any items assigned to it will not be affected.')) return;
+    if (!confirm('Delete this shelf? Items stored directly on it will be unassigned from this shelf and any container on it (they will keep their zone). Containers physically on this shelf will be unassigned from the shelf.')) return;
     try {
+      // Clear the shelf/container ref on every inventory item stored on this shelf.
+      const qItems = query(collection(db, 'inventory'), where('storageLocation.shelfId', '==', shelfId));
+      const itemSnap = await getDocs(qItems);
+      if (!itemSnap.empty) {
+        const docs = itemSnap.docs;
+        for (let i = 0; i < docs.length; i += 450) {
+          const chunk = docs.slice(i, i + 450);
+          const batch = writeBatch(db);
+          chunk.forEach((d) => {
+            batch.update(doc(db, 'inventory', d.id), {
+              'storageLocation.shelfId': null,
+              'storageLocation.shelfName': null,
+              'storageLocation.level': null,
+              'storageLocation.containerId': null,
+              'storageLocation.containerName': null,
+            });
+          });
+          await batch.commit();
+        }
+      }
+
+      // Unassign any containers physically located on this shelf.
+      const qContainers = query(collection(db, 'containers'), where('shelfId', '==', shelfId));
+      const containerSnap = await getDocs(qContainers);
+      if (!containerSnap.empty) {
+        const cDocs = containerSnap.docs;
+        for (let i = 0; i < cDocs.length; i += 450) {
+          const chunk = cDocs.slice(i, i + 450);
+          const batch = writeBatch(db);
+          chunk.forEach((d) => {
+            batch.update(doc(db, 'containers', d.id), { shelfId: null, updatedAt: serverTimestamp() });
+          });
+          await batch.commit();
+        }
+      }
+
       await deleteDoc(doc(db, 'shelves', shelfId));
     } catch (e) {
       console.error('Delete shelf failed', e);
@@ -165,8 +196,25 @@ export default function StoragePage() {
   };
 
   const handleDeleteContainer = async (containerId: string) => {
-    if (!confirm('Delete this container?')) return;
+    if (!confirm('Delete this container? Items stored in it will be unassigned from this container (they will keep their zone/shelf).')) return;
     try {
+      const qItems = query(collection(db, 'inventory'), where('storageLocation.containerId', '==', containerId));
+      const itemSnap = await getDocs(qItems);
+      if (!itemSnap.empty) {
+        const docs = itemSnap.docs;
+        for (let i = 0; i < docs.length; i += 450) {
+          const chunk = docs.slice(i, i + 450);
+          const batch = writeBatch(db);
+          chunk.forEach((d) => {
+            batch.update(doc(db, 'inventory', d.id), {
+              'storageLocation.containerId': null,
+              'storageLocation.containerName': null,
+            });
+          });
+          await batch.commit();
+        }
+      }
+
       await deleteDoc(doc(db, 'containers', containerId));
     } catch (e) {
       console.error('Delete container failed', e);
@@ -287,16 +335,45 @@ export default function StoragePage() {
           <Tab key="zones" title={`Zones (${zones.length})`}>
             <Card className="mt-4">
               <CardBody className="p-6">
-                <div className="mb-4">
-                  <h2 className="text-xl font-semibold mb-4">Storage Zones</h2>
-                  <p className="text-sm text-foreground-500 mb-4">High-level location groupings (HQ Back Room, CPR Closet, Shed, etc.)</p>
-                  {zones.length === 0 && <p className="text-foreground-500">No zones created yet. Zones are typically predefined.</p>}
-                  {zones.length > 0 && (
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h2 className="text-xl font-semibold">Storage Zones</h2>
+                    <p className="text-sm text-foreground-500">High-level location groupings (HQ Back Room, CPR Closet, Shed, etc.)</p>
+                  </div>
+                  <Button
+                    color="primary"
+                    startContent={<Plus size={16} />}
+                    onPress={() => {
+                      setEditingZone(null);
+                      zoneDisclosure.onOpen();
+                    }}
+                  >
+                    Add Zone
+                  </Button>
+                </div>
+                {zones.length === 0 && (
+                  <div className="text-center py-10">
+                    <p className="text-foreground-500 mb-4">No zones created yet.</p>
+                    <Button
+                      color="primary"
+                      startContent={<Plus size={16} />}
+                      onPress={() => {
+                        setEditingZone(null);
+                        zoneDisclosure.onOpen();
+                      }}
+                    >
+                      Add Zone
+                    </Button>
+                  </div>
+                )}
+                {zones.length > 0 && (
+                  <div className="overflow-x-auto">
                     <Table aria-label="Storage zones">
                       <TableHeader>
                         <TableColumn>Name</TableColumn>
                         <TableColumn>Type</TableColumn>
                         <TableColumn>Room</TableColumn>
+                        <TableColumn>Level</TableColumn>
                       </TableHeader>
                       <TableBody>
                         {zones.map(z => (
@@ -313,12 +390,13 @@ export default function StoragePage() {
                             </TableCell>
                             <TableCell>{z.locationType}</TableCell>
                             <TableCell>{z.room || '—'}</TableCell>
+                            <TableCell>{z.level === 'upper' ? 'Upper' : z.level === 'lower' ? 'Lower' : '—'}</TableCell>
                           </TableRow>
                         ))}
                       </TableBody>
                     </Table>
-                  )}
-                </div>
+                  </div>
+                )}
               </CardBody>
             </Card>
           </Tab>
@@ -342,6 +420,7 @@ export default function StoragePage() {
                 </div>
                 {shelves.length === 0 && <p className="text-foreground-500">No shelves created yet.</p>}
                 {shelves.length > 0 && (
+                  <div className="overflow-x-auto">
                   <Table aria-label="Shelves">
                     <TableHeader>
                       <TableColumn>Name</TableColumn>
@@ -390,6 +469,7 @@ export default function StoragePage() {
                       })}
                     </TableBody>
                   </Table>
+                  </div>
                 )}
               </CardBody>
             </Card>
@@ -414,6 +494,7 @@ export default function StoragePage() {
                 </div>
                 {containers.length === 0 && <p className="text-foreground-500">No containers created yet.</p>}
                 {containers.length > 0 && (
+                  <div className="overflow-x-auto">
                   <Table aria-label="Containers">
                     <TableHeader>
                       <TableColumn>Name</TableColumn>
@@ -458,6 +539,7 @@ export default function StoragePage() {
                       })}
                     </TableBody>
                   </Table>
+                  </div>
                 )}
               </CardBody>
             </Card>
@@ -476,128 +558,16 @@ export default function StoragePage() {
           }}
         />
 
-        {/* Zone Viewer / Editor Modal */}
-        <Modal isOpen={zoneDisclosure.isOpen} onOpenChange={zoneDisclosure.onOpenChange} size="md">
-          <ModalContent className="max-w-lg w-[95%]">
-            <ModalHeader className="flex items-center justify-between">
-              <div className="flex flex-col">
-                <div className="text-lg font-semibold">{editingZone ? editingZone.name : 'Zone'}</div>
-                <div className="text-sm text-foreground-500">View or edit zone details, and inspect shelves/containers in this zone.</div>
-              </div>
-              
-            </ModalHeader>
-            <ModalBody>
-              {editingZone ? (
-                <div className="space-y-4">
-                  <div className="grid grid-cols-1 gap-2">
-                    <label className="text-xs text-foreground-500">Name</label>
-                    <Input value={editingZone.name} onValueChange={(v) => setEditingZone({ ...editingZone, name: v } as StorageZone)} />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-xs text-foreground-500">Type</label>
-                      <Input value={editingZone.locationType} onValueChange={(v) => setEditingZone({ ...editingZone, locationType: v as any } as StorageZone)} />
-                    </div>
-                    <div>
-                      <label className="text-xs text-foreground-500">Room</label>
-                      <Input value={(editingZone.room as any) ?? ''} onValueChange={(v) => setEditingZone({ ...editingZone, room: (v || undefined) as any } as StorageZone)} />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="text-xs text-foreground-500">Description</label>
-                    <Input value={editingZone.description || ''} onValueChange={(v) => setEditingZone({ ...editingZone, description: v } as StorageZone)} />
-                  </div>
-
-                  <div>
-                    <h3 className="font-semibold">Shelves in this zone</h3>
-                    {shelves.filter(s => s.zoneId === editingZone.id).length === 0 ? (
-                      <p className="text-sm text-foreground-500">No shelves assigned to this zone.</p>
-                    ) : (
-                      <Table aria-label="Shelves in zone" className="mt-2">
-                        <TableHeader>
-                          <TableColumn>Name</TableColumn>
-                          <TableColumn>Capacity</TableColumn>
-                          <TableColumn>Actions</TableColumn>
-                        </TableHeader>
-                        <TableBody>
-                          {shelves.filter(s => s.zoneId === editingZone.id).map(s => (
-                            <TableRow key={s.id}>
-                              <TableCell>{s.name}</TableCell>
-                              <TableCell>{s.capacity || '—'}</TableCell>
-                              <TableCell>
-                                <div className="flex gap-2">
-                                  <Button size="sm" variant="light" onPress={() => { setEditingShelf(s); shelfDisclosure.onOpen(); setEditingZone(null); zoneDisclosure.onClose(); }}>Edit Shelf</Button>
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    )}
-                  </div>
-
-                  <div>
-                    <h3 className="font-semibold">Containers on these shelves</h3>
-                    {(() => {
-                      const shelfIds = shelves.filter(s => s.zoneId === editingZone.id).map(s => s.id);
-                      const containersForZone = containers.filter(c => c.shelfId && shelfIds.includes(c.shelfId));
-                      if (containersForZone.length === 0) return <p className="text-sm text-foreground-500">No containers found for this zone.</p>;
-                      return (
-                        <Table aria-label="Containers in zone" className="mt-2">
-                          <TableHeader>
-                            <TableColumn>Name</TableColumn>
-                            <TableColumn>Shelf</TableColumn>
-                            <TableColumn>Actions</TableColumn>
-                          </TableHeader>
-                          <TableBody>
-                            {containersForZone.map(c => {
-                              const shelf = shelves.find(s => s.id === c.shelfId);
-                              return (
-                                <TableRow key={c.id}>
-                                  <TableCell>{c.name}</TableCell>
-                                  <TableCell>{shelf?.name || '—'}</TableCell>
-                                  <TableCell>
-                                    <div className="flex gap-2">
-                                      <Button size="sm" variant="light" onPress={() => { setEditingContainer(c); containerDisclosure.onOpen(); zoneDisclosure.onClose(); }}>Edit</Button>
-                                    </div>
-                                  </TableCell>
-                                </TableRow>
-                              );
-                            })}
-                          </TableBody>
-                        </Table>
-                      );
-                    })()}
-                  </div>
-                </div>
-              ) : (
-                <p>No zone selected.</p>
-              )}
-            </ModalBody>
-            <ModalFooter>
-              <div className="flex items-center gap-2">
-                <Button color="primary" isLoading={zoneOpLoading} onPress={async () => {
-                  if (!editingZone) return;
-                  setZoneOpLoading(true);
-                  try {
-                    const zRef = doc(db, 'storage_zones', editingZone.id);
-                    await updateDoc(zRef, { name: editingZone.name, description: editingZone.description ?? null, locationType: editingZone.locationType, room: editingZone.room ?? null, updatedAt: serverTimestamp() });
-                    zoneDisclosure.onClose();
-                    setEditingZone(null);
-                  } catch (e) {
-                    console.error('Failed to update zone', e);
-                    alert('Failed to update zone');
-                  } finally {
-                    setZoneOpLoading(false);
-                  }
-                }}>Save</Button>
-                <Button variant="flat" onPress={() => { setEditingZone(null); zoneDisclosure.onClose(); }}>Cancel</Button>
-              </div>
-            </ModalFooter>
-          </ModalContent>
-        </Modal>
+        {/* Zone Editor Modal */}
+        <ZoneEditor
+          zone={editingZone}
+          isOpen={zoneDisclosure.isOpen}
+          onOpenChange={zoneDisclosure.onOpenChange}
+          onSave={() => {
+            setEditingZone(null);
+            zoneDisclosure.onClose();
+          }}
+        />
 
         {/* Container Editor Modal */}
         <ContainerEditor

@@ -3,11 +3,27 @@
 /**
  * Organization Configuration — Single source of truth for all customizable values.
  *
- * To customize the platform for a different org, vehicle fleet, or capability level:
- * 1. Edit this file (or override via Firestore in the future)
- * 2. All dropdowns, filters, categories, and thresholds auto-update
- * 3. Zero code changes required for new locations, vehicles, asset types, etc.
+ * These constants are the DEFAULTS / seed: they always work offline, during
+ * SSR/static export, and for a brand-new agency. A non-technical admin can
+ * override most of them at runtime via Firestore (doc `org_settings/current`);
+ * those overrides are shallow-merged on top by `app/lib/org-config-store.ts`.
+ *
+ * The exported helper FUNCTIONS below read from the RUNTIME config (live
+ * overrides when present, defaults otherwise). The raw constant exports
+ * (`LOCATIONS`, `THRESHOLDS`, …) represent the DEFAULTS only — prefer the
+ * getters / `useOrgConfig()` for live reads.
+ *
+ * To customize the platform for a different org, vehicle fleet, or capability
+ * level: edit this file (changes the defaults) or use the Settings UI (writes
+ * runtime overrides). All dropdowns, filters, categories, and thresholds
+ * auto-update. Zero code changes required for new locations, vehicles, etc.
  */
+
+import {
+  getLocationsRuntime,
+  getAssetCategoriesRuntime,
+  getStatpackTypesRuntime,
+} from '@/app/lib/org-config-store';
 
 // ---------------------------------------------------------------------------
 // Verification Field Definitions — what can be checked on an item
@@ -173,6 +189,13 @@ export const VEHICLE_TYPES: VehicleDef[] = [
 
 // ---------------------------------------------------------------------------
 // Asset Categories — each with default verification fields
+//
+// Note: some assets in a category (e.g. a "trainer" AED used only for
+// practice/demos, or a CPR manikin) are non-deployable — they must never be
+// dispatched into a statpack or vehicle. These are flagged per-instance via
+// `InventoryItem.isTrainer` / `AssetInstance.isTrainer` (see app/types.ts),
+// not via a separate category. They stay in the same category for reporting/
+// verification purposes but should be excluded from "ready to deploy" lists.
 // ---------------------------------------------------------------------------
 
 export interface AssetCategoryDef {
@@ -368,7 +391,7 @@ export const ITEM_CATEGORIES = [
  */
 export function getInventoryAreaOptions(): { value: string; label: string }[] {
   const out: { value: string; label: string }[] = [];
-  for (const loc of LOCATIONS) {
+  for (const loc of getLocationsRuntime()) {
     if (loc.id === 'other') continue;
     if (loc.rooms.length > 0) {
       for (const room of loc.rooms) {
@@ -398,11 +421,40 @@ export const ORG_INFO: OrgInfo = {
 };
 
 // ---------------------------------------------------------------------------
+// Runtime config document shape + defaults
+//
+// `OrgConfigDoc` is the admin-editable (v1) surface stored at Firestore doc
+// `org_settings/current`. `VERIFICATION_FIELDS` and `ROLES` are intentionally
+// NOT part of it — they stay code-owned. `DEFAULT_ORG_CONFIG` is the seed /
+// fallback assembled from the constants above.
+// ---------------------------------------------------------------------------
+
+export type OrgConfigDoc = {
+  org: OrgInfo;
+  locations: LocationDef[];
+  vehicles: VehicleDef[];
+  assetCategories: AssetCategoryDef[];
+  statpackTypes: StatpackTypeDef[];
+  itemCategories: string[];
+  thresholds: ThresholdConfig;
+};
+
+export const DEFAULT_ORG_CONFIG: OrgConfigDoc = {
+  org: ORG_INFO,
+  locations: LOCATIONS,
+  vehicles: VEHICLE_TYPES,
+  assetCategories: ASSET_CATEGORIES_CONFIG,
+  statpackTypes: STATPACK_TYPES,
+  itemCategories: [...ITEM_CATEGORIES],
+  thresholds: THRESHOLDS,
+};
+
+// ---------------------------------------------------------------------------
 // Convenience: Get category config by ID
 // ---------------------------------------------------------------------------
 
 export function getAssetCategoryConfig(categoryId: string): AssetCategoryDef | undefined {
-  return ASSET_CATEGORIES_CONFIG.find(c => c.id === categoryId);
+  return getAssetCategoriesRuntime().find(c => c.id === categoryId);
 }
 
 export function getVerificationFieldDef(fieldId: string): VerificationFieldDef | undefined {
@@ -418,11 +470,11 @@ export function getVerificationFieldsForCategory(categoryId: string): Verificati
 }
 
 export function getStatpackTypeConfig(typeId: string): StatpackTypeDef | undefined {
-  return STATPACK_TYPES.find(t => t.id.toLowerCase() === typeId.toLowerCase());
+  return getStatpackTypesRuntime().find(t => t.id.toLowerCase() === typeId.toLowerCase());
 }
 
 export function getLocationConfig(locationId: string): LocationDef | undefined {
-  return LOCATIONS.find(l => l.id === locationId);
+  return getLocationsRuntime().find(l => l.id === locationId);
 }
 
 /** Map legacy LocationType string to config location */
@@ -433,17 +485,17 @@ export function getLegacyLocationConfig(locationType: string): LocationDef | und
     'Shed': 'shed',
     'Other': 'other',
   };
-  return LOCATIONS.find(l => l.id === (map[locationType] ?? locationType));
+  return getLocationsRuntime().find(l => l.id === (map[locationType] ?? locationType));
 }
 
 /** Get all asset category IDs as a flat array (for backward compat with ASSET_CATEGORIES) */
 export function getAssetCategoryIds(): string[] {
-  return ASSET_CATEGORIES_CONFIG.map(c => c.id);
+  return getAssetCategoriesRuntime().map(c => c.id);
 }
 
 /** Get all location names as a flat array (for backward compat with LocationType) */
 export function getLocationNames(): string[] {
-  return LOCATIONS.map(l => l.name);
+  return getLocationsRuntime().map(l => l.name);
 }
 
 /** Get rooms for a location (for backward compat with HQRoom) */

@@ -11,7 +11,7 @@ import {
   Home, Package, ClipboardList, CheckSquare, RefreshCw,
   BarChart2, Warehouse, Users, AlertTriangle, User,
   LogOut, ShieldCheck, GraduationCap, Sun, Moon,
-  ChevronsLeft, ChevronsRight, ScanBarcode,
+  ChevronsLeft, ChevronsRight, ScanBarcode, SlidersHorizontal,
 } from 'lucide-react';
 import TutorialOverlay from './tutorial-overlay';
 import IssueReportForm from './IssueReportForm';
@@ -53,8 +53,10 @@ const ADMIN_NAV: NavSection[] = [
   {
     label: 'Admin',
     items: [
-      { key: 'roster',  label: 'Roster',   Icon: Users,         path: '/roster' },
-      { key: 'reports', label: 'Reports',  Icon: AlertTriangle, path: '/issue-reports' },
+      { key: 'roster',         label: 'Roster',         Icon: Users,             path: '/roster' },
+      { key: 'reports',        label: 'Reports',        Icon: AlertTriangle,     path: '/issue-reports' },
+      { key: 'statpack-stats', label: 'Statpack Stats', Icon: BarChart2,         path: '/statpacks/stats' },
+      { key: 'settings',       label: 'Settings',       Icon: SlidersHorizontal, path: '/settings' },
     ],
   },
 ];

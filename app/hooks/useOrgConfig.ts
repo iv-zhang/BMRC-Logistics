@@ -1,21 +1,16 @@
 'use client';
 
-import { useMemo } from 'react';
+import * as React from 'react';
 import {
-  LOCATIONS,
-  VEHICLE_TYPES,
-  ASSET_CATEGORIES_CONFIG,
-  STATPACK_TYPES,
-  THRESHOLDS,
   ROLES,
   VERIFICATION_FIELDS,
-  ITEM_CATEGORIES,
-  ORG_INFO,
+  DEFAULT_ORG_CONFIG,
   getAssetCategoryConfig,
   getVerificationFieldsForCategory,
   getStatpackTypeConfig,
   getLocationConfig,
   getLegacyLocationConfig,
+  type OrgConfigDoc,
   type LocationDef,
   type VehicleDef,
   type AssetCategoryDef,
@@ -25,6 +20,10 @@ import {
   type VerificationFieldDef,
   type OrgInfo,
 } from '@/app/config/org-config';
+import {
+  subscribeOrgConfig,
+  seedOrgConfigIfMissing,
+} from '@/app/lib/org-config-store';
 
 export interface OrgConfigResult {
   org: OrgInfo;
@@ -36,6 +35,8 @@ export interface OrgConfigResult {
   roles: RoleDef[];
   verificationFields: Record<string, VerificationFieldDef>;
   itemCategories: readonly string[];
+  /** True until the first Firestore snapshot resolves (defaults are used meanwhile). */
+  loading: boolean;
   // Convenience lookups
   getAssetCategory: (id: string) => AssetCategoryDef | undefined;
   getVerificationFieldsFor: (categoryId: string) => VerificationFieldDef[];
@@ -50,31 +51,69 @@ export interface OrgConfigResult {
   assetCategoryIds: string[];
 }
 
-/**
- * Hook providing typed access to the organization configuration.
- * All UI components should use this instead of hardcoded values.
- *
- * Future: This hook can be extended to load overrides from Firestore,
- * enabling runtime config changes without code deploys.
- */
-export function useOrgConfig(): OrgConfigResult {
-  return useMemo(() => ({
-    org: ORG_INFO,
-    locations: LOCATIONS,
-    vehicles: VEHICLE_TYPES,
-    assetCategories: ASSET_CATEGORIES_CONFIG,
-    statpackTypes: STATPACK_TYPES,
-    thresholds: THRESHOLDS,
+/** Build the public hook result from a raw config doc (defaults or live override). */
+function buildResult(cfg: OrgConfigDoc, loading: boolean): OrgConfigResult {
+  return {
+    org: cfg.org,
+    locations: cfg.locations,
+    vehicles: cfg.vehicles,
+    assetCategories: cfg.assetCategories,
+    statpackTypes: cfg.statpackTypes,
+    thresholds: cfg.thresholds,
     roles: ROLES,
     verificationFields: VERIFICATION_FIELDS,
-    itemCategories: ITEM_CATEGORIES,
+    itemCategories: cfg.itemCategories,
+    loading,
+    // Helper fns read the same runtime store the subscription updates, so they
+    // stay in sync with the live config.
     getAssetCategory: getAssetCategoryConfig,
     getVerificationFieldsFor: getVerificationFieldsForCategory,
     getStatpackType: getStatpackTypeConfig,
     getLocation: getLocationConfig,
     getLegacyLocation: getLegacyLocationConfig,
-    locationNames: LOCATIONS.map(l => l.name),
-    assetCategoryNames: ASSET_CATEGORIES_CONFIG.map(c => c.name),
-    assetCategoryIds: ASSET_CATEGORIES_CONFIG.map(c => c.id),
-  }), []);
+    locationNames: cfg.locations.map(l => l.name),
+    assetCategoryNames: cfg.assetCategories.map(c => c.name),
+    assetCategoryIds: cfg.assetCategories.map(c => c.id),
+  };
+}
+
+const OrgConfigContext = React.createContext<OrgConfigResult | null>(null);
+
+/**
+ * Provides the live organization config to the tree. On mount it seeds the
+ * Firestore doc if missing, then subscribes to it; until the first snapshot
+ * arrives the built-in DEFAULT_ORG_CONFIG is used, so the app never blocks.
+ */
+export function OrgConfigProvider({ children }: { children: React.ReactNode }) {
+  const [cfg, setCfg] = React.useState<OrgConfigDoc>(DEFAULT_ORG_CONFIG);
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    let active = true;
+    // Fire-and-forget seed (no-op / swallowed for non-admins).
+    seedOrgConfigIfMissing();
+    const unsub = subscribeOrgConfig((next) => {
+      if (!active) return;
+      setCfg(next);
+      setLoading(false);
+    });
+    return () => {
+      active = false;
+      unsub();
+    };
+  }, []);
+
+  const value = React.useMemo(() => buildResult(cfg, loading), [cfg, loading]);
+
+  return React.createElement(OrgConfigContext.Provider, { value }, children);
+}
+
+/**
+ * Typed access to the live organization configuration. Falls back to the
+ * built-in defaults when no provider is mounted, so it never throws.
+ */
+export function useOrgConfig(): OrgConfigResult {
+  const ctx = React.useContext(OrgConfigContext);
+  const fallback = React.useMemo(() => buildResult(DEFAULT_ORG_CONFIG, false), []);
+  return ctx ?? fallback;
 }

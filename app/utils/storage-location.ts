@@ -1,6 +1,18 @@
 import type { StorageLocationRef } from '@/app/types';
 
 /**
+ * Canonical separator + level label style for every location path in the app.
+ * The legacy `displayLocation` branch in item-status.ts imports this so both
+ * the structured and legacy formats render identically (UX-5).
+ */
+export const LOCATION_SEPARATOR = ' › ';
+
+/** Canonical level label, e.g. `L2`. */
+export function formatLevelLabel(level: number | string): string {
+  return `L${level}`;
+}
+
+/**
  * Format a StorageLocationRef into a human-readable string.
  * Examples:
  *   "HQ / Back" → zone only
@@ -13,9 +25,9 @@ export function formatStorageLocation(loc?: StorageLocationRef): string {
   const parts: string[] = [];
   if (loc.zoneName) parts.push(loc.zoneName);
   if (loc.shelfName) parts.push(loc.shelfName);
-  if (loc.level != null) parts.push(`L${loc.level}`);
+  if (loc.level != null) parts.push(formatLevelLabel(loc.level));
   if (loc.containerName) parts.push(loc.containerName);
-  return parts.join(' › ');
+  return parts.join(LOCATION_SEPARATOR);
 }
 
 /**

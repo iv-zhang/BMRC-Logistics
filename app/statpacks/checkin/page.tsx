@@ -22,9 +22,12 @@ import type { InventoryItem, Statpack, StatpackItem } from '@/app/types';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import { findAssetByCode } from '@/app/lib/inventory';
 import CheckoutModal from '@/app/components/checkout-modal';
+import { useUserRole } from '@/app/hooks/useUserRole';
 
 export default function CheckinPage() {
   const router = useRouter();
+  const { role } = useUserRole();
+  const isAdmin = role === 'admin' || role === 'quartermaster';
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [statpacks, setStatpacks] = useState<Statpack[]>([]);
   const [filteredPacks, setFilteredPacks] = useState<Statpack[]>([]);
@@ -142,14 +145,13 @@ export default function CheckinPage() {
 
   // Navigate to checkoff page on pack selection
   const handleSelectPack = useCallback((pack: Statpack) => {
-    if (pack.assignedToUserId && pack.assignedToUserId !== user?.uid) {
+    if (!isAdmin && pack.assignedToUserId && pack.assignedToUserId !== user?.uid) {
       const assignee = pack.assignedToUserName || 'another member';
-      if (!confirm(`This pack is assigned to ${assignee}. Only they (or an admin) can check it in. Continue anyway?`)) {
-        return;
-      }
+      alert(`This pack is assigned to ${assignee}. Only they or an admin can check it in.`);
+      return;
     }
     router.push(`/statpacks/check-off?id=${pack.id}&mode=checkin`);
-  }, [router, user]);
+  }, [router, user, isAdmin]);
 
   const handleScanDetected = (value: string) => {
     setScannerOpen(false);
@@ -191,7 +193,7 @@ export default function CheckinPage() {
 
   return (
     <>
-      <div className="min-h-screen p-4 md:p-6 bg-gradient-to-br from-green-50 to-emerald-50 dark:from-slate-900 dark:to-slate-800">
+      <div className="min-h-screen p-4 md:p-6 bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
         <div className="max-w-4xl mx-auto space-y-6">
           {/* Header */}
           <div className="flex items-center gap-3">

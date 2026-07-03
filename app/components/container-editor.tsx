@@ -11,7 +11,17 @@ import {
   Select,
   SelectItem,
 } from '@heroui/react';
-import { addDoc, collection, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import {
+  addDoc,
+  collection,
+  doc,
+  updateDoc,
+  serverTimestamp,
+  query,
+  where,
+  getDocs,
+  writeBatch,
+} from 'firebase/firestore';
 import { db } from '@/firebase';
 import type { Container, Shelf } from '@/app/types';
 
@@ -21,6 +31,26 @@ interface Props {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   onSave: () => void;
+}
+
+/** Propagate a container rename to every inventory item that cached the old name. */
+async function propagateContainerRename(containerId: string, newName: string) {
+  try {
+    const q = query(collection(db, 'inventory'), where('storageLocation.containerId', '==', containerId));
+    const snap = await getDocs(q);
+    if (snap.empty) return;
+    const docs = snap.docs;
+    for (let i = 0; i < docs.length; i += 450) {
+      const chunk = docs.slice(i, i + 450);
+      const batch = writeBatch(db);
+      chunk.forEach((d) => {
+        batch.update(doc(db, 'inventory', d.id), { 'storageLocation.containerName': newName });
+      });
+      await batch.commit();
+    }
+  } catch (e) {
+    console.error('Failed to propagate container rename to inventory items', e);
+  }
 }
 
 export default function ContainerEditor({ container, shelves, isOpen, onOpenChange, onSave }: Props) {
@@ -49,13 +79,18 @@ export default function ContainerEditor({ container, shelves, isOpen, onOpenChan
     setLoading(true);
     try {
       if (container && container.id) {
+        const trimmedName = name.trim();
         const ref = doc(db, 'containers', container.id);
         await updateDoc(ref, {
-          name: name.trim(),
+          name: trimmedName,
           shelfId: shelfId || null,
           barcode: barcode || null,
           updatedAt: serverTimestamp(),
         } as any);
+
+        if (trimmedName !== (container.name || '')) {
+          await propagateContainerRename(container.id, trimmedName);
+        }
       } else {
         await addDoc(collection(db, 'containers'), {
           name: name.trim(),

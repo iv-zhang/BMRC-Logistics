@@ -2,7 +2,19 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Button, Chip, Spinner } from '@heroui/react';
+import {
+  Button,
+  Chip,
+  Spinner,
+  Select,
+  SelectItem,
+  Modal,
+  ModalContent,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
+  Input,
+} from '@heroui/react';
 import {
   Search,
   ClipboardCheck,
@@ -17,11 +29,12 @@ import {
   RefreshCw,
   ScrollText,
   PackagePlus,
+  ArrowRightLeft,
   X,
 } from 'lucide-react';
 import { collection, onSnapshot, orderBy, query, Timestamp } from 'firebase/firestore';
 import { db } from '@/firebase';
-import type { InventoryItem, Statpack } from '@/app/types';
+import type { InventoryItem, Statpack, StorageLocationRef } from '@/app/types';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import {
   canUserAudit,
@@ -37,17 +50,21 @@ import {
   statpackAuditDueInDays,
 } from '@/app/lib/item-status';
 import { getInventoryAreaOptions, THRESHOLDS } from '@/app/config/org-config';
+import { useOrgConfig } from '@/app/hooks/useOrgConfig';
 import {
   DisposableAuditCard,
   AssetAuditCard,
 } from '@/app/components/audit-item-card';
 import AuditActionDrawer, { type DrawerAction } from '@/app/components/audit-action-drawer';
+import StorageLocationPicker from '@/app/components/storage-location-picker';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import AuditPermissionModal from '@/app/components/audit-permission-modal';
 import AuditDebugPanel from '@/app/components/audit-debug-panel';
-
-// ─── Zones for quick filtering (from org-config — single source of truth) ────
-const AREA_OPTIONS = getInventoryAreaOptions();
+import {
+  moveItemsBulk,
+  type AuditActor,
+  type MoveDestination,
+} from '@/app/lib/audit-actions';
 
 type AuditTab = 'disposables' | 'assets' | 'statpacks' | 'restock';
 
@@ -64,6 +81,14 @@ export default function AuditPage() {
   const router = useRouter();
   const { loading: authLoading, user, userData, role } = useUserRole();
 
+  // Zones for quick filtering (from org-config — live, admin-overridable).
+  const { locations } = useOrgConfig();
+  const AREA_OPTIONS = useMemo(
+    // `getInventoryAreaOptions` reads the runtime store keyed by `locations`.
+    () => { void locations; return getInventoryAreaOptions(); },
+    [locations],
+  );
+
   // Core state
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [statpacks, setStatpacks] = useState<Statpack[]>([]);
@@ -76,10 +101,18 @@ export default function AuditPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<AuditTab>('disposables');
   const [dueOnly, setDueOnly] = useState(false);
+  const [hideTrainers, setHideTrainers] = useState(false);
 
   // Action drawer — the heart of the "act on what's in front of you" flow
   const [drawerItem, setDrawerItem] = useState<InventoryItem | null>(null);
   const [drawerAction, setDrawerAction] = useState<DrawerAction>('count');
+
+  // Multi-select + bulk move
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkMoveOpen, setBulkMoveOpen] = useState(false);
+  const [bulkMoveLoc, setBulkMoveLoc] = useState<StorageLocationRef | undefined>(undefined);
+  const [bulkMoveNote, setBulkMoveNote] = useState('');
+  const [bulkMoving, setBulkMoving] = useState(false);
 
   // Result toast
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
@@ -96,6 +129,18 @@ export default function AuditPage() {
   // ─── Auth & permission check ──────────────────────────────────────────────
   const hasAuditAccess = useMemo(() => canUserAudit(userData), [userData]);
   const isAdmin = role === 'admin' || role === 'quartermaster';
+
+  // Trainer devices (AEDs, manikins) — snapshot rows don't carry isTrainer,
+  // so look it up from the live full inventory by id.
+  const trainerIds = useMemo(
+    () => new Set(inventory.filter((i) => i.isTrainer).map((i) => i.id)),
+    [inventory]
+  );
+
+  // Selection is scoped per tab — clear it whenever the tab changes.
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [activeTab]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -193,8 +238,11 @@ export default function AuditPage() {
     if (dueOnly) {
       items = items.filter((i) => !i.auditVerified);
     }
+    if (hideTrainers) {
+      items = items.filter((i) => !trainerIds.has(i.id));
+    }
     return items;
-  }, [snapshot, searchQuery, dueOnly]);
+  }, [snapshot, searchQuery, dueOnly, hideTrainers, trainerIds]);
 
   // ─── Statpacks with biweekly audit status ─────────────────────────────────
   const statpackRows = useMemo(() => {
@@ -249,10 +297,22 @@ export default function AuditPage() {
   const handleDrawerResult = useCallback(
     (msg: string, ok: boolean) => {
       showToast(msg, ok);
-      if (ok) refreshSnapshot();
+      // The write already triggers the live `onSnapshot` listener, which
+      // re-runs the [inventory, selectedZone] effect and refreshes the
+      // snapshot on its own — no need to force a second read here.
     },
-    [showToast, refreshSnapshot]
+    [showToast]
   );
+
+  // ─── Multi-select + bulk move ─────────────────────────────────────────────
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   // ─── Loading / auth states ────────────────────────────────────────────────
   if (authLoading || loading) {
@@ -277,6 +337,33 @@ export default function AuditPage() {
       </div>
     );
   }
+
+  // ─── Actor shape shared by the single-item drawer and bulk move ──────────
+  const actor: AuditActor | null = user
+    ? {
+        uid: user.uid,
+        name: userData?.fullName || user.displayName || user.email || 'Unknown',
+        email: user.email,
+      }
+    : null;
+
+  const handleBulkMove = async () => {
+    if (!bulkMoveLoc?.zoneId || !actor) return;
+    setBulkMoving(true);
+    try {
+      const items = inventory.filter((i) => selectedIds.has(i.id));
+      const dest: MoveDestination = { storageLocation: bulkMoveLoc };
+      await moveItemsBulk(items, dest, actor, bulkMoveNote || undefined);
+      showToast(`${items.length} item${items.length !== 1 ? 's' : ''} moved`, true);
+      setSelectedIds(new Set());
+      setBulkMoveOpen(false);
+      setBulkMoveLoc(undefined);
+      setBulkMoveNote('');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Bulk move failed', false);
+    }
+    setBulkMoving(false);
+  };
 
   // ─── Main audit workbench ─────────────────────────────────────────────────
   const verifiedDisposables = snapshot
@@ -445,16 +532,20 @@ export default function AuditPage() {
           </div>
 
           {activeTab !== 'statpacks' && (
-            <select
-              value={selectedZone}
-              onChange={(e) => setSelectedZone(e.target.value || 'all')}
-              className="text-sm font-medium text-foreground-600 dark:text-foreground-300 bg-content1 border border-divider rounded-medium px-3 py-2 cursor-pointer outline-none"
+            <Select
+              size="sm"
+              aria-label="Location filter"
+              selectedKeys={[selectedZone]}
+              onSelectionChange={(keys) => {
+                const selected = Array.from(keys)[0] as string | undefined;
+                setSelectedZone(selected || 'all');
+              }}
+              className="w-44 flex-none"
             >
-              <option value="all">All locations</option>
-              {AREA_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
+              {[{ value: 'all', label: 'All locations' }, ...AREA_OPTIONS].map((o) => (
+                <SelectItem key={o.value}>{o.label}</SelectItem>
               ))}
-            </select>
+            </Select>
           )}
 
           <div className="flex-1 min-w-[220px] flex items-center gap-2 bg-content2 border border-divider rounded-medium px-3 py-0.5">
@@ -482,7 +573,42 @@ export default function AuditPage() {
           >
             Due only
           </button>
+
+          {activeTab === 'assets' && (
+            <button
+              onClick={() => setHideTrainers(!hideTrainers)}
+              className={`px-3 py-1.5 rounded-medium text-xs font-semibold border transition-colors duration-150 ${
+                hideTrainers
+                  ? 'bg-primary-50 border-primary/30 text-primary dark:bg-primary-900/20'
+                  : 'border-divider hover:bg-content2 text-foreground-500'
+              }`}
+            >
+              Hide trainers
+            </button>
+          )}
         </div>
+
+        {/* ── Selection bar — appears once ≥1 item is selected for bulk move ── */}
+        {selectedIds.size > 0 && (activeTab === 'disposables' || activeTab === 'assets') && (
+          <div className="flex items-center gap-3 bg-primary-50 dark:bg-primary-900/20 border border-primary/30 rounded-large px-4 py-2.5 mb-4 flex-wrap">
+            <span className="text-sm font-semibold text-primary">
+              <span className="font-mono tabular-nums">{selectedIds.size}</span> selected
+            </span>
+            <div className="flex items-center gap-2 ml-auto">
+              <Button size="sm" variant="flat" onPress={() => setSelectedIds(new Set())}>
+                Clear
+              </Button>
+              <Button
+                size="sm"
+                color="primary"
+                startContent={<ArrowRightLeft size={14} />}
+                onPress={() => setBulkMoveOpen(true)}
+              >
+                Move selected
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* ── Lists ──────────────────────────────────────────────────────── */}
         {activeTab === 'disposables' && (
@@ -494,13 +620,31 @@ export default function AuditPage() {
                 <p className="text-xs text-foreground-400 mt-1">Try clearing the search or location filter.</p>
               </div>
             ) : (
-              filteredDisposables.map((item) => (
-                <DisposableAuditCard
-                  key={item.id}
-                  item={item}
-                  onAction={(d, action) => openDrawer(d.id, action)}
-                />
-              ))
+              filteredDisposables.map((item) => {
+                const isSelected = selectedIds.has(item.id);
+                return (
+                  <div key={item.id} className="flex items-start gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleSelect(item.id)}
+                      aria-label={isSelected ? 'Deselect item' : 'Select item'}
+                      className={`flex-none mt-4 w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-colors duration-150 ${
+                        isSelected
+                          ? 'bg-primary border-primary'
+                          : 'bg-content1 border-divider hover:border-primary/50'
+                      }`}
+                    >
+                      {isSelected && <Check size={13} strokeWidth={3.5} className="text-white" />}
+                    </button>
+                    <div className="flex-1 min-w-0">
+                      <DisposableAuditCard
+                        item={item}
+                        onAction={(d, action) => openDrawer(d.id, action)}
+                      />
+                    </div>
+                  </div>
+                );
+              })
             )}
           </div>
         )}
@@ -514,13 +658,37 @@ export default function AuditPage() {
                 <p className="text-xs text-foreground-400 mt-1">Try clearing the search or location filter.</p>
               </div>
             ) : (
-              filteredAssets.map((item) => (
-                <AssetAuditCard
-                  key={item.id}
-                  item={item}
-                  onAction={(a, action) => openDrawer(a.id, action)}
-                />
-              ))
+              filteredAssets.map((item) => {
+                const isSelected = selectedIds.has(item.id);
+                const isTrainer = trainerIds.has(item.id);
+                return (
+                  <div key={item.id} className="flex items-start gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleSelect(item.id)}
+                      aria-label={isSelected ? 'Deselect item' : 'Select item'}
+                      className={`flex-none mt-4 w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-colors duration-150 ${
+                        isSelected
+                          ? 'bg-primary border-primary'
+                          : 'bg-content1 border-divider hover:border-primary/50'
+                      }`}
+                    >
+                      {isSelected && <Check size={13} strokeWidth={3.5} className="text-white" />}
+                    </button>
+                    <div className="flex-1 min-w-0">
+                      {isTrainer && (
+                        <div className="flex justify-end mb-1">
+                          <Chip size="sm" variant="flat" color="default">Trainer</Chip>
+                        </div>
+                      )}
+                      <AssetAuditCard
+                        item={item}
+                        onAction={(a, action) => openDrawer(a.id, action)}
+                      />
+                    </div>
+                  </div>
+                );
+              })
             )}
           </div>
         )}
@@ -646,20 +814,66 @@ export default function AuditPage() {
       </div>
 
       {/* Action drawer */}
-      {drawerItem && user && (
+      {drawerItem && actor && (
         <AuditActionDrawer
           item={drawerItem}
           initialAction={drawerAction}
-          actor={{
-            uid: user.uid,
-            name: userData?.fullName || user.displayName || user.email || 'Unknown',
-            email: user.email,
-          }}
+          actor={actor}
           zoneLabel={actorZone}
           onClose={() => setDrawerItem(null)}
           onResult={handleDrawerResult}
         />
       )}
+
+      {/* Bulk move modal */}
+      <Modal
+        isOpen={bulkMoveOpen}
+        onOpenChange={(open) => {
+          setBulkMoveOpen(open);
+          if (!open) {
+            setBulkMoveLoc(undefined);
+            setBulkMoveNote('');
+          }
+        }}
+        size="md"
+      >
+        <ModalContent>
+          {(onCloseModal) => (
+            <>
+              <ModalHeader className="flex flex-col gap-1">
+                Move {selectedIds.size} item{selectedIds.size !== 1 ? 's' : ''}
+              </ModalHeader>
+              <ModalBody className="pb-2">
+                <StorageLocationPicker
+                  value={bulkMoveLoc}
+                  onChange={setBulkMoveLoc}
+                  label="New storage spot (zone › shelf › container)"
+                />
+                <Input
+                  size="sm"
+                  label="Note (optional)"
+                  placeholder="e.g. moved into blue tote during reorg"
+                  value={bulkMoveNote}
+                  onValueChange={setBulkMoveNote}
+                />
+              </ModalBody>
+              <ModalFooter>
+                <Button variant="bordered" onPress={onCloseModal}>
+                  Cancel
+                </Button>
+                <Button
+                  color="primary"
+                  isLoading={bulkMoving}
+                  isDisabled={!bulkMoveLoc?.zoneId}
+                  onPress={handleBulkMove}
+                >
+                  Move
+                </Button>
+              </ModalFooter>
+            </>
+          )}
+        </ModalContent>
+      </Modal>
 
       {/* Result toast */}
       {toast && (

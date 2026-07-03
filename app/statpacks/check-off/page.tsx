@@ -2,10 +2,10 @@
 
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { Button, Spinner } from '@heroui/react';
+import { Button, Spinner, Input } from '@heroui/react';
 import {
   ArrowLeft, ArrowRight, MapPin, ChevronDown,
-  Check, Plus, Minus, Shield,
+  Check, Plus, Minus, Shield, AlertTriangle, X,
 } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import {
@@ -21,6 +21,12 @@ import type { Statpack, StatpackItem, StatpackPocket, InventoryItem } from '@/ap
 // ─── types & constants ───────────────────────────────────────────────────────
 
 type Mode = 'checkout' | 'checkin' | 'audit';
+type SharpsStatus = 'ok' | 'full' | 'na';
+
+type Resolution =
+  | { kind: 'restocked' }
+  | { kind: 'reported'; issueType: 'missing' | 'broken' | 'expired'; quantity?: number; notes?: string }
+  | { kind: 'acknowledged'; reason: string };
 
 const POCKETS: { id: StatpackPocket; name: string; code: string }[] = [
   { id: 'main',       name: 'Main Compartment',  code: 'MN' },
@@ -32,6 +38,7 @@ const POCKETS: { id: StatpackPocket; name: string; code: string }[] = [
 interface ItemChecks {
   exp?: string;
   psi?: string;
+  regulatorOk?: boolean;
   padsSealed?: boolean;
   batteryOk?: boolean;
   padExp?: string;
@@ -44,6 +51,14 @@ interface ItemRules {
   minPsi: number;
   expLabel: string;
   hasRules: boolean;
+}
+
+interface ItemIssue {
+  short: boolean;
+  expired: boolean;
+  lowPsi: boolean;
+  shortBy: number;
+  any: boolean;
 }
 
 function deriveRules(item: StatpackItem): ItemRules {
@@ -60,18 +75,68 @@ function deriveRules(item: StatpackItem): ItemRules {
   return { needExp, needPsi, needAED, minPsi, expLabel, hasRules: needExp || needPsi || needAED };
 }
 
+// last calendar-day (inclusive) of a YYYY-MM month string, or null if unparseable
+function parseMonthEnd(month?: string): Date | null {
+  if (!month) return null;
+  const m = /^(\d{4})-(\d{2})$/.exec(month);
+  if (!m) return null;
+  const year = Number(m[1]);
+  const mon = Number(m[2]);
+  if (mon < 1 || mon > 12) return null;
+  return new Date(year, mon, 0, 23, 59, 59, 999); // day 0 of next month = last day of this month
+}
+
+function isMonthExpired(month: string | undefined, today: Date): boolean {
+  const end = parseMonthEnd(month);
+  if (!end) return false;
+  return end.getTime() < today.getTime();
+}
+
+// The date we consider authoritative for expiry: freshly entered month wins, else stored date.
+function effectiveExpDate(item: StatpackItem, rules: ItemRules, checks: ItemChecks): Date | null {
+  const entered = rules.needAED ? checks.padExp : rules.needExp ? checks.exp : undefined;
+  if (entered) return parseMonthEnd(entered);
+  return item.expirationDate ? new Date(item.expirationDate) : null;
+}
+
+// Input completeness — ignores whether the value is in the past (that's an "issue", not "incomplete").
+function checksComplete(rules: ItemRules, checks: ItemChecks): boolean {
+  if (!rules.hasRules) return true;
+  if (rules.needExp && !checks.exp) return false;
+  if (rules.needPsi && (!checks.psi || !checks.regulatorOk)) return false;
+  if (rules.needAED && (!checks.padsSealed || !checks.batteryOk || !checks.padExp)) return false;
+  return true;
+}
+
+function computeIssue(
+  item: StatpackItem, rules: ItemRules, found: number, checks: ItemChecks, today: Date,
+): ItemIssue {
+  const shortBy = Math.max(0, item.requiredQuantity - found);
+  const short = shortBy > 0;
+  const exp = effectiveExpDate(item, rules, checks);
+  const expired = exp !== null && exp.getTime() < today.getTime();
+  const lowPsi = rules.needPsi && !!checks.psi ? Number(checks.psi) < rules.minPsi : false;
+  return { short, expired, lowPsi, shortBy, any: short || expired || lowPsi };
+}
+
+// "Ready" (green) = genuinely good: complete checks AND non-expired AND (for O2) in-pressure.
 function isItemReady(
   item: StatpackItem,
   rules: ItemRules,
   verifiedSet: Set<string>,
   checks: ItemChecks,
+  today: Date,
 ): boolean {
   const { needExp, needPsi, needAED, minPsi, hasRules } = rules;
   if (!hasRules) return verifiedSet.has(item.itemId);
-  if (needExp && !checks.exp) return false;
-  if (needPsi && (!checks.psi || Number(checks.psi) < minPsi)) return false;
-  if (needAED && (!checks.padsSealed || !checks.batteryOk || !checks.padExp)) return false;
+  if (needExp && (!checks.exp || isMonthExpired(checks.exp, today))) return false;
+  if (needPsi && (!checks.psi || Number(checks.psi) < minPsi || !checks.regulatorOk)) return false;
+  if (needAED && (!checks.padsSealed || !checks.batteryOk || !checks.padExp || isMonthExpired(checks.padExp, today))) return false;
   return true;
+}
+
+function isResolved(res: Resolution | undefined): boolean {
+  return !!res && (res.kind === 'reported' || res.kind === 'acknowledged');
 }
 
 function daysUntil(d: Date, today: Date) {
@@ -91,30 +156,33 @@ interface ItemRowProps {
   verifiedSet: Set<string>;
   today: Date;
   mode: Mode;
-  restockStatus: 'restocked' | 'shelf_empty' | null;
+  issue: ItemIssue;
+  resolution: Resolution | undefined;
   onToggle: () => void;
   onMinus: (e: React.MouseEvent) => void;
   onPlus: (e: React.MouseEvent) => void;
   onCheck: (key: keyof ItemChecks, val: string | boolean) => void;
   onRestock: () => void;
-  onReport: () => void;
+  onReport: (issueType: 'missing' | 'broken' | 'expired', quantity: number | undefined, notes: string) => void;
+  onAcknowledge: (reason: string) => void;
 }
 
 function ItemRow({
-  item, found, checks, verifiedSet, today, mode, restockStatus,
-  onToggle, onMinus, onPlus, onCheck, onRestock, onReport,
+  item, found, checks, verifiedSet, today, mode, issue, resolution,
+  onToggle, onMinus, onPlus, onCheck, onRestock, onReport, onAcknowledge,
 }: ItemRowProps) {
   const rules = useMemo(() => deriveRules(item), [item]);
   const { needExp, needPsi, needAED, minPsi, expLabel, hasRules } = rules;
 
-  const verified = isItemReady(item, rules, verifiedSet, checks);
-  const isShort = found < item.requiredQuantity;
-  const showRestock = verified && isShort && (mode === 'checkout' || mode === 'checkin');
+  const [draft, setDraft] = useState<'report' | 'acknowledge' | null>(null);
+  const [reason, setReason] = useState('');
 
-  const expDate = item.expirationDate ? new Date(item.expirationDate) : null;
-  const expDays = expDate ? daysUntil(expDate, today) : null;
+  const verified = isItemReady(item, rules, verifiedSet, checks, today);
+
+  const effExp = effectiveExpDate(item, rules, checks);
+  const expDays = effExp ? daysUntil(effExp, today) : null;
   const isExpired = expDays !== null && expDays < 0;
-  const isSoon = expDays !== null && expDays >= 0 && expDays <= 120;
+  const isSoon = expDays !== null && expDays >= 0 && expDays <= THRESHOLDS.expirationWarningDays;
 
   const d = item.itemDetails as any;
   const isOxygen = d?.isOxygen === true;
@@ -124,8 +192,8 @@ function ItemRow({
     ? `Serial ${serial} · max ${d?.maxPsi ?? 2000} PSI`
     : serial
     ? `Asset · ${serial}`
-    : expDate
-    ? `${d?.category || 'Item'} · exp ${fmtMonthYear(expDate)}`
+    : effExp
+    ? `${d?.category || 'Item'} · exp ${fmtMonthYear(effExp)}`
     : d?.category || 'Item';
 
   const psiNum = Number(checks.psi || 0);
@@ -133,11 +201,42 @@ function ItemRow({
   const psiHint = !checks.psi ? `min ${minPsi}` : psiOk ? 'OK' : `Low · min ${minPsi}`;
   const psiHintColor = !checks.psi ? 'text-warning' : psiOk ? 'text-success' : 'text-danger';
 
-  const checksReady = isItemReady(item, rules, verifiedSet, checks);
+  const checksReady = checksComplete(rules, checks) && (!needExp || !isMonthExpired(checks.exp, today)) && (!needAED || !isMonthExpired(checks.padExp, today)) && (!needPsi || psiOk);
+  const resolved = isResolved(resolution);
   const V = verified;
   const rowBase = V
     ? 'bg-primary border-primary cursor-default'
     : `bg-content2 border-divider ${!hasRules ? 'cursor-pointer hover:border-primary/30' : 'cursor-default'}`;
+
+  // month input status dot: empty→warning, expired→danger, otherwise→success
+  const monthDot = (val: string | undefined) =>
+    !val ? 'bg-warning' : isMonthExpired(val, today) ? 'bg-danger' : 'bg-success';
+
+  const issueLabel = [
+    issue.short ? `Short ${issue.shortBy}` : null,
+    issue.expired ? 'Expired' : null,
+    issue.lowPsi ? 'Low PSI' : null,
+  ].filter(Boolean).join(' · ');
+
+  const submitReport = () => {
+    const type: 'missing' | 'broken' | 'expired' =
+      issue.expired ? 'expired' : issue.short ? 'missing' : 'broken';
+    onReport(type, issue.short ? issue.shortBy : undefined, reason.trim());
+    setDraft(null);
+    setReason('');
+  };
+  const submitAck = () => {
+    if (!reason.trim()) return;
+    onAcknowledge(reason.trim());
+    setDraft(null);
+    setReason('');
+  };
+
+  const monthInputCls = {
+    base: 'w-40 flex-none',
+    inputWrapper: 'h-9 min-h-9 bg-content1 border border-divider data-[hover=true]:bg-content1',
+    input: 'text-xs font-semibold',
+  } as const;
 
   return (
     <div
@@ -181,9 +280,9 @@ function ItemRow({
                 Asset
               </span>
             )}
-            {isShort && (
+            {issue.short && (
               <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${V ? 'bg-white/20 text-white' : 'bg-warning-50 dark:bg-warning-900/20 text-warning'}`}>
-                Short {item.requiredQuantity - found}
+                Short {issue.shortBy}
               </span>
             )}
           </div>
@@ -203,7 +302,7 @@ function ItemRow({
           </button>
           <div className="min-w-[38px] text-center">
             <div className={`font-mono text-lg font-semibold leading-none tabular-nums ${
-              V ? 'text-white' : isShort ? 'text-warning' : 'text-foreground'
+              V ? 'text-white' : issue.short ? 'text-warning' : 'text-foreground'
             }`}>
               {found}
             </div>
@@ -253,31 +352,52 @@ function ItemRow({
                 <span className={`flex-1 text-xs font-semibold ${V ? 'text-white/90' : 'text-foreground-600'}`}>
                   {expLabel}
                 </span>
-                <input
+                <Input
                   type="month"
+                  size="sm"
+                  aria-label={expLabel}
                   value={checks.exp ?? ''}
-                  onChange={e => onCheck('exp', e.target.value)}
-                  className={`w-36 text-xs font-semibold px-2 py-1.5 rounded-lg border outline-none bg-content1 text-foreground ${V ? 'border-white/40' : 'border-divider'}`}
+                  onValueChange={v => onCheck('exp', v)}
+                  classNames={monthInputCls}
                 />
-                <span className={`w-2 h-2 rounded-full flex-none ${checks.exp ? 'bg-success' : 'bg-warning'}`} />
+                <span className={`w-2 h-2 rounded-full flex-none ${monthDot(checks.exp)}`} />
               </div>
             )}
 
             {needPsi && (
-              <div className="flex items-center gap-2">
-                <span className={`flex-1 text-xs font-semibold ${V ? 'text-white/90' : 'text-foreground-600'}`}>
-                  Cylinder pressure
-                </span>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  placeholder="PSI"
-                  value={checks.psi ?? ''}
-                  onChange={e => onCheck('psi', e.target.value.replace(/[^0-9]/g, ''))}
-                  className={`w-20 font-mono text-xs font-semibold px-2 py-1.5 rounded-lg border outline-none bg-content1 text-foreground ${V ? 'border-white/40' : 'border-divider'}`}
-                />
-                <span className={`text-xs font-semibold min-w-[60px] ${psiHintColor}`}>{psiHint}</span>
-              </div>
+              <>
+                <div className="flex items-center gap-2">
+                  <span className={`flex-1 text-xs font-semibold ${V ? 'text-white/90' : 'text-foreground-600'}`}>
+                    Cylinder pressure
+                  </span>
+                  <Input
+                    type="text"
+                    size="sm"
+                    inputMode="numeric"
+                    placeholder="PSI"
+                    aria-label="Cylinder pressure PSI"
+                    value={checks.psi ?? ''}
+                    onValueChange={v => onCheck('psi', v.replace(/[^0-9]/g, ''))}
+                    classNames={{
+                      base: 'w-24 flex-none',
+                      inputWrapper: 'h-9 min-h-9 bg-content1 border border-divider data-[hover=true]:bg-content1',
+                      input: 'text-xs font-semibold font-mono',
+                    }}
+                  />
+                  <span className={`text-xs font-semibold min-w-[60px] ${psiHintColor}`}>{psiHint}</span>
+                </div>
+
+                <button onClick={() => onCheck('regulatorOk', !checks.regulatorOk)} className="flex items-center gap-2 text-left">
+                  <div className={`w-5 h-5 rounded-md flex-none flex items-center justify-center border-2 transition-all ${
+                    checks.regulatorOk
+                      ? V ? 'bg-white border-white' : 'bg-primary border-primary'
+                      : V ? 'bg-transparent border-white/60' : 'bg-transparent border-foreground-400'
+                  }`}>
+                    <Check size={11} strokeWidth={3.5} className={checks.regulatorOk ? (V ? 'text-primary' : 'text-white') : 'text-transparent'} />
+                  </div>
+                  <span className={`text-xs font-semibold ${V ? 'text-white/90' : 'text-foreground-600'}`}>Regulator attached &amp; functioning</span>
+                </button>
+              </>
             )}
 
             {needAED && (
@@ -306,13 +426,15 @@ function ItemRow({
 
                 <div className="flex items-center gap-2">
                   <span className={`flex-1 text-xs font-semibold ${V ? 'text-white/90' : 'text-foreground-600'}`}>Pad / battery expiration</span>
-                  <input
+                  <Input
                     type="month"
+                    size="sm"
+                    aria-label="Pad / battery expiration"
                     value={checks.padExp ?? ''}
-                    onChange={e => onCheck('padExp', e.target.value)}
-                    className={`w-36 text-xs font-semibold px-2 py-1.5 rounded-lg border outline-none bg-content1 text-foreground ${V ? 'border-white/40' : 'border-divider'}`}
+                    onValueChange={v => onCheck('padExp', v)}
+                    classNames={monthInputCls}
                   />
-                  <span className={`w-2 h-2 rounded-full flex-none ${checks.padExp ? 'bg-success' : 'bg-warning'}`} />
+                  <span className={`w-2 h-2 rounded-full flex-none ${monthDot(checks.padExp)}`} />
                 </div>
               </div>
             )}
@@ -320,31 +442,87 @@ function ItemRow({
         </div>
       )}
 
-      {showRestock && (
+      {/* Fix-or-acknowledge — shown whenever the item has an unresolved short / expired / low-PSI issue */}
+      {(issue.any || resolved) && (
         <div
           onClick={e => e.stopPropagation()}
-          className={`mt-3 flex items-center gap-2 flex-wrap rounded-xl px-3 py-2 ${V ? 'bg-white/10' : 'bg-warning-50 dark:bg-warning-950/20'}`}
+          className={`mt-3 rounded-xl px-3 py-2.5 flex flex-col gap-2 ${
+            resolved
+              ? V ? 'bg-white/10' : 'bg-content3'
+              : V ? 'bg-white/10' : 'bg-danger-50 dark:bg-danger-950/20'
+          }`}
         >
-          <span className={`text-xs font-semibold ${V ? 'text-white' : 'text-warning'}`}>
-            Short {item.requiredQuantity - found}
-            {mode === 'checkin' ? ' — restocked?' : ' — fix before checkout'}
-          </span>
-          <div className="ml-auto flex gap-1.5">
-            <button
-              onClick={e => { e.stopPropagation(); onRestock(); }}
-              className="text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-white text-primary hover:bg-white/90 transition-colors"
-            >
-              I restocked it
-            </button>
-            <button
-              onClick={e => { e.stopPropagation(); onReport(); }}
-              className={`text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border transition-colors ${
-                V ? 'border-white/40 text-white hover:bg-white/10' : 'border-divider text-foreground-500 hover:bg-content3'
-              }`}
-            >
-              {mode === 'checkin' ? 'Shelf empty' : 'Report'}
-            </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <AlertTriangle size={13} className={V ? 'text-white' : resolved ? 'text-foreground-500' : 'text-danger'} />
+            <span className={`text-xs font-semibold ${V ? 'text-white' : resolved ? 'text-foreground-600' : 'text-danger'}`}>
+              {resolved
+                ? resolution!.kind === 'reported'
+                  ? `Reported${resolution!.notes ? ` — ${resolution!.notes}` : ''}`
+                  : `Acknowledged — ${(resolution as any).reason}`
+                : `${issueLabel} — resolve to continue`}
+            </span>
+            {!draft && (
+              <div className="ml-auto flex gap-1.5">
+                {issue.short && (
+                  <button
+                    onClick={() => onRestock()}
+                    className="text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-white text-primary hover:bg-white/90 transition-colors"
+                  >
+                    Set to par
+                  </button>
+                )}
+                <button
+                  onClick={() => { setDraft('report'); setReason(''); }}
+                  className={`text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border transition-colors ${
+                    V ? 'border-white/40 text-white hover:bg-white/10' : 'border-divider text-foreground-600 hover:bg-content3'
+                  }`}
+                >
+                  Report
+                </button>
+                <button
+                  onClick={() => { setDraft('acknowledge'); setReason(''); }}
+                  className={`text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border transition-colors ${
+                    V ? 'border-white/40 text-white hover:bg-white/10' : 'border-divider text-foreground-600 hover:bg-content3'
+                  }`}
+                >
+                  Acknowledge
+                </button>
+              </div>
+            )}
           </div>
+
+          {draft && (
+            <div className="flex items-center gap-2">
+              <Input
+                size="sm"
+                autoFocus
+                placeholder={draft === 'report' ? 'What is wrong? (optional)' : 'Reason for proceeding'}
+                aria-label={draft === 'report' ? 'Report notes' : 'Acknowledge reason'}
+                value={reason}
+                onValueChange={setReason}
+                classNames={{
+                  base: 'flex-1',
+                  inputWrapper: 'h-9 min-h-9 bg-content1 border border-divider data-[hover=true]:bg-content1',
+                  input: 'text-xs',
+                }}
+              />
+              <Button
+                size="sm"
+                color={draft === 'report' ? 'danger' : 'primary'}
+                className="font-semibold"
+                isDisabled={draft === 'acknowledge' && !reason.trim()}
+                onPress={draft === 'report' ? submitReport : submitAck}
+              >
+                {draft === 'report' ? 'File' : 'Confirm'}
+              </Button>
+              <button
+                onClick={() => { setDraft(null); setReason(''); }}
+                className={`w-8 h-8 rounded-lg flex items-center justify-center flex-none ${V ? 'text-white/80 hover:bg-white/10' : 'text-foreground-400 hover:bg-content3'}`}
+              >
+                <X size={15} />
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -373,11 +551,18 @@ export default function StatpackCheckOffPage() {
   const [itemCounts, setItemCounts] = useState<Record<string, number>>({});
   const [verifiedSet, setVerifiedSet] = useState<Set<string>>(new Set());
   const [itemChecks, setItemChecks] = useState<Record<string, ItemChecks>>({});
-  const [restockState, setRestockState] = useState<Record<string, 'restocked' | 'shelf_empty' | null>>({});
+  const [resolution, setResolution] = useState<Record<string, Resolution>>({});
   const [pocketExpanded, setPocketExpanded] = useState<Record<string, boolean>>({
     main: true, front_aux: true, side_left: false, side_right: false,
   });
   const [sealState, setSealState] = useState<Record<string, boolean>>({});
+
+  // Pack-level sharps container check
+  const [sharps, setSharps] = useState<SharpsStatus | null>(null);
+  const [sharpsAck, setSharpsAck] = useState('');
+
+  // Check-in review step
+  const [showReview, setShowReview] = useState(false);
 
   // Read id and mode from URL query params (avoids useSearchParams Suspense requirement)
   useEffect(() => {
@@ -454,8 +639,11 @@ export default function StatpackCheckOffPage() {
 
         setPack(spPack);
 
+        // Start from ACTUAL counts — currentQuantity — so depletion is visible. Fall back to par only when missing.
         const counts: Record<string, number> = {};
-        contents.forEach(it => { counts[it.itemId] = it.requiredQuantity; });
+        contents.forEach(it => {
+          counts[it.itemId] = typeof it.currentQuantity === 'number' ? it.currentQuantity : it.requiredQuantity;
+        });
         setItemCounts(counts);
 
         const seals: Record<string, boolean> = {};
@@ -475,10 +663,14 @@ export default function StatpackCheckOffPage() {
   const showToast = useCallback((msg: string, ok: boolean) => {
     setToast({ msg, ok });
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 2600);
+    toastTimer.current = setTimeout(() => setToast(null), 3200);
   }, []);
 
   const allItems = useMemo(() => pack?.contents ?? [], [pack]);
+
+  const countOf = useCallback((it: StatpackItem) =>
+    itemCounts[it.itemId] ?? (typeof it.currentQuantity === 'number' ? it.currentQuantity : it.requiredQuantity),
+    [itemCounts]);
 
   const pocketGroups = useMemo(() => {
     if (!pack) return [];
@@ -489,24 +681,46 @@ export default function StatpackCheckOffPage() {
   }, [pack]);
 
   const verifiedCount = useMemo(() =>
-    allItems.filter(it => isItemReady(it, deriveRules(it), verifiedSet, itemChecks[it.itemId] ?? {})).length,
-    [allItems, verifiedSet, itemChecks]
+    allItems.filter(it => isItemReady(it, deriveRules(it), verifiedSet, itemChecks[it.itemId] ?? {}, today)).length,
+    [allItems, verifiedSet, itemChecks, today]
   );
   const totalItems = allItems.length;
   const pct = totalItems > 0 ? Math.round(verifiedCount / totalItems * 100) : 0;
 
   const shortCount = useMemo(() =>
-    allItems.filter(it => (itemCounts[it.itemId] ?? it.requiredQuantity) < it.requiredQuantity).length,
-    [allItems, itemCounts]
+    allItems.filter(it => countOf(it) < it.requiredQuantity).length,
+    [allItems, countOf]
   );
   const expCount = useMemo(() =>
     allItems.filter(it => {
-      if (!it.expirationDate) return false;
-      const d = daysUntil(new Date(it.expirationDate), today);
-      return d >= 0 && d <= 120;
+      const rules = deriveRules(it);
+      const exp = effectiveExpDate(it, rules, itemChecks[it.itemId] ?? {});
+      if (!exp) return false;
+      const dd = daysUntil(exp, today);
+      return dd >= 0 && dd <= THRESHOLDS.expirationWarningDays;
     }).length,
-    [allItems, today]
+    [allItems, itemChecks, today]
   );
+
+  // Blocking list: incomplete checks + unresolved short/expired/lowPsi + full sharps not acknowledged.
+  const blockers = useMemo(() => {
+    const list: string[] = [];
+    allItems.forEach(it => {
+      const rules = deriveRules(it);
+      const chk = itemChecks[it.itemId] ?? {};
+      const name = (it.itemDetails as any)?.name || 'item';
+      if (rules.hasRules && !checksComplete(rules, chk)) {
+        list.push(`${name}: finish required checks`);
+        return;
+      }
+      const iss = computeIssue(it, rules, countOf(it), chk, today);
+      if (iss.any && !isResolved(resolution[it.itemId])) {
+        list.push(`${name}: resolve (${[iss.short && 'short', iss.expired && 'expired', iss.lowPsi && 'low PSI'].filter(Boolean).join(', ')})`);
+      }
+    });
+    if (sharps === 'full' && !sharpsAck.trim()) list.push('Sharps container full: acknowledge or empty');
+    return list;
+  }, [allItems, itemChecks, countOf, resolution, sharps, sharpsAck, today]);
 
   const statusInfo = useMemo(() => {
     const s = pack?.status ?? 'Ready';
@@ -520,7 +734,7 @@ export default function StatpackCheckOffPage() {
   const modeSub = mode === 'checkout' ? 'Verify each item before deploying'
     : mode === 'checkin' ? 'Confirm contents on return' : 'Full count · accountable check';
   const btnLabel = mode === 'checkout' ? 'Complete Checkout'
-    : mode === 'checkin' ? 'Confirm Check-In' : 'Submit Audit';
+    : mode === 'checkin' ? 'Review Check-In' : 'Submit Audit';
 
   const toggleVerify = useCallback((itemId: string) => {
     setVerifiedSet(prev => {
@@ -539,58 +753,89 @@ export default function StatpackCheckOffPage() {
     setItemChecks(prev => ({ ...prev, [itemId]: { ...(prev[itemId] ?? {}), [key]: val } }));
   }, []);
 
-  const verifyAll = useCallback(() => {
-    setVerifiedSet(new Set(allItems.map(it => it.itemId)));
+  // Only satisfies no-rule items — never implies an item with unmet required checks is ready.
+  const markSimpleVerified = useCallback(() => {
+    setVerifiedSet(new Set(allItems.filter(it => !deriveRules(it).hasRules).map(it => it.itemId)));
   }, [allItems]);
 
-  const handleComplete = useCallback(async () => {
-    if (!pack || !user) return;
+  // Build the check-off payload + a plain-language summary for the check-in review.
+  const buildPayload = useCallback(() => {
+    if (!pack || !user) return null;
 
-    const notReady = allItems.filter(it => {
+    const oxygenReadings: Record<string, string> = {};
+    const summary = {
+      used: [] as { name: string; qty: number }[],
+      restocked: [] as string[],
+      reported: [] as string[],
+      acknowledged: [] as string[],
+      psi: [] as { name: string; psi: number }[],
+    };
+
+    const checkEntries = allItems.map(it => {
       const rules = deriveRules(it);
-      return rules.hasRules && !isItemReady(it, rules, verifiedSet, itemChecks[it.itemId] ?? {});
-    });
-    if (notReady.length > 0) {
-      const names = notReady.map(i => (i.itemDetails as any)?.name || 'item').join(', ');
-      showToast(`Finish required checks: ${names}`, false);
-      return;
-    }
+      const chk = itemChecks[it.itemId] ?? {};
+      const found = countOf(it);
+      const res = resolution[it.itemId];
+      const iss = computeIssue(it, rules, found, chk, today);
+      const name = (it.itemDetails as any)?.name || 'Unknown';
 
-    setSubmitting(true);
-    try {
-      const oxygenReadings: Record<string, string> = {};
-      const checkEntries = allItems.map(it => {
-        const found = itemCounts[it.itemId] ?? it.requiredQuantity;
-        const rules = deriveRules(it);
-        const chk = itemChecks[it.itemId] ?? {};
-        if (rules.needPsi && chk.psi) oxygenReadings[it.itemId] = chk.psi;
-        const rs = restockState[it.itemId];
-        return {
-          itemId: it.itemId,
-          itemName: (it.itemDetails as any)?.name || 'Unknown',
-          batchId: it.batchId,
-          compartmentId: it.compartmentId,
-          pocket: it.pocket,
-          requiredQuantity: it.requiredQuantity,
-          countedQuantity: found,
-          ok: found >= it.requiredQuantity,
-          serialNumber: it.serialNumber,
-          expirationDate: it.expirationDate,
-          assetCheckResult: (rules.needAED || rules.needPsi) ? {
-            padsSealed: chk.padsSealed,
-            batteryStatus: chk.batteryOk ? 'Good' as const : undefined,
-            oxygenPsi: rules.needPsi && chk.psi ? Number(chk.psi) : undefined,
-          } : undefined,
-          restockStatus: rs ?? (found < it.requiredQuantity ? undefined : 'not_needed' as const),
-        };
-      });
-
-      const sealChecks: Record<string, { sealed: boolean }> = {};
-      if (isAdmin && mode === 'audit') {
-        POCKETS.forEach(pk => { sealChecks[pk.id] = { sealed: !!sealState[pk.id] }; });
+      if (rules.needPsi && chk.psi) {
+        oxygenReadings[it.itemId] = chk.psi;
+        summary.psi.push({ name, psi: Number(chk.psi) });
       }
 
-      await logStatpackCheckOff({
+      const usedQty = it.requiredQuantity - found;
+      if (usedQty > 0) summary.used.push({ name, qty: usedQty });
+
+      let restockStatus: 'restocked' | 'shelf_empty' | 'not_needed' | undefined;
+      if (res?.kind === 'restocked') { restockStatus = 'restocked'; summary.restocked.push(name); }
+      else if (res?.kind === 'reported') { restockStatus = 'shelf_empty'; summary.reported.push(name); }
+      else restockStatus = found < it.requiredQuantity ? undefined : 'not_needed';
+
+      if (res?.kind === 'acknowledged') summary.acknowledged.push(name);
+
+      const enteredMonth = rules.needAED ? chk.padExp : rules.needExp ? chk.exp : undefined;
+      const newExpirationDate = enteredMonth ? parseMonthEnd(enteredMonth) ?? undefined : undefined;
+
+      return {
+        itemId: it.itemId,
+        itemName: name,
+        batchId: it.batchId,
+        compartmentId: it.compartmentId,
+        pocket: it.pocket,
+        requiredQuantity: it.requiredQuantity,
+        countedQuantity: found,
+        ok: found >= it.requiredQuantity && !iss.expired && !iss.lowPsi,
+        serialNumber: it.serialNumber,
+        expirationDate: it.expirationDate,
+        newExpirationDate,
+        oxygenPsi: rules.needPsi && chk.psi ? Number(chk.psi) : undefined,
+        regulatorOk: rules.needPsi ? !!chk.regulatorOk : undefined,
+        acknowledged: res?.kind === 'acknowledged' ? true : undefined,
+        acknowledgeReason: res?.kind === 'acknowledged' ? res.reason : undefined,
+        issue: res?.kind === 'reported'
+          ? { type: res.issueType, quantity: res.quantity, notes: res.notes || undefined }
+          : undefined,
+        assetCheckResult: (rules.needAED || rules.needPsi) ? {
+          padsSealed: chk.padsSealed,
+          batteryStatus: chk.batteryOk ? 'Good' as const : undefined,
+          oxygenPsi: rules.needPsi && chk.psi ? Number(chk.psi) : undefined,
+        } : undefined,
+        restockStatus,
+      };
+    });
+
+    const sealChecks: Record<string, { sealed: boolean }> = {};
+    if (isAdmin && mode === 'audit') {
+      POCKETS.forEach(pk => { sealChecks[pk.id] = { sealed: !!sealState[pk.id] }; });
+    }
+
+    const sharpsCheck = sharps
+      ? { status: sharps, notes: sharps === 'full' && sharpsAck.trim() ? sharpsAck.trim() : undefined }
+      : undefined;
+
+    return {
+      payload: {
         statpackId: pack.id,
         statpackName: pack.name,
         action: mode,
@@ -599,13 +844,24 @@ export default function StatpackCheckOffPage() {
         checkEntries,
         sealChecks: Object.keys(sealChecks).length > 0 ? sealChecks : undefined,
         oxygenReadings: Object.keys(oxygenReadings).length > 0 ? oxygenReadings : undefined,
-      });
+        sharpsCheck,
+      },
+      summary,
+    };
+  }, [pack, user, allItems, itemChecks, countOf, resolution, sealState, sharps, sharpsAck, isAdmin, mode, today]);
 
+  const doSubmit = useCallback(async () => {
+    const built = buildPayload();
+    if (!built) return;
+    setShowReview(false);
+    setSubmitting(true);
+    try {
+      await logStatpackCheckOff(built.payload as any);
       const msg = mode === 'checkout'
         ? 'Checkout complete — you are accountable for this bag'
         : mode === 'checkin'
         ? 'Check-in confirmed. Thank you.'
-        : `Audit submitted for ${pack.name}`;
+        : `Audit submitted for ${pack?.name ?? ''}`;
       showToast(msg, true);
       setTimeout(() => router.push('/dashboard'), 1500);
     } catch (e) {
@@ -613,7 +869,23 @@ export default function StatpackCheckOffPage() {
     } finally {
       setSubmitting(false);
     }
-  }, [pack, user, allItems, itemCounts, verifiedSet, itemChecks, restockState, sealState, isAdmin, mode, showToast, router]);
+  }, [buildPayload, mode, pack, showToast, router]);
+
+  const handleComplete = useCallback(() => {
+    if (!pack || !user) return;
+    if (blockers.length > 0) {
+      const preview = blockers.slice(0, 3).join(' · ');
+      showToast(`${blockers.length} to resolve: ${preview}${blockers.length > 3 ? '…' : ''}`, false);
+      return;
+    }
+    if (mode === 'checkin') { setShowReview(true); return; }
+    doSubmit();
+  }, [pack, user, blockers, mode, doSubmit, showToast]);
+
+  const reviewSummary = useMemo(() => {
+    if (!showReview) return null;
+    return buildPayload()?.summary ?? null;
+  }, [showReview, buildPayload]);
 
   if (loading || !user) {
     return (
@@ -624,6 +896,12 @@ export default function StatpackCheckOffPage() {
   }
 
   if (!pack) return null;
+
+  const sharpsOpts: { id: SharpsStatus; label: string }[] = [
+    { id: 'ok', label: 'OK' },
+    { id: 'full', label: 'Full' },
+    { id: 'na', label: 'N/A' },
+  ];
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
@@ -699,10 +977,10 @@ export default function StatpackCheckOffPage() {
                 </span>
                 {isAdmin && (
                   <button
-                    onClick={verifyAll}
+                    onClick={markSimpleVerified}
                     className="ml-auto text-xs font-semibold text-primary hover:text-primary/70 transition-colors"
                   >
-                    Verify all
+                    Mark simple items verified
                   </button>
                 )}
               </div>
@@ -712,7 +990,7 @@ export default function StatpackCheckOffPage() {
           {/* Pocket accordion groups */}
           {pocketGroups.map(pk => {
             const pVer = pk.items.filter(it =>
-              isItemReady(it, deriveRules(it), verifiedSet, itemChecks[it.itemId] ?? {})
+              isItemReady(it, deriveRules(it), verifiedSet, itemChecks[it.itemId] ?? {}, today)
             ).length;
             const pTot = pk.items.length;
             const pkPct = pTot > 0 ? Math.round(pVer / pTot * 100) : 0;
@@ -756,36 +1034,95 @@ export default function StatpackCheckOffPage() {
 
                 {expanded && (
                   <div className="p-2.5 flex flex-col gap-2">
-                    {pk.items.map(it => (
-                      <ItemRow
-                        key={it.itemId}
-                        item={it}
-                        found={itemCounts[it.itemId] ?? it.requiredQuantity}
-                        checks={itemChecks[it.itemId] ?? {}}
-                        verifiedSet={verifiedSet}
-                        today={today}
-                        mode={mode}
-                        restockStatus={restockState[it.itemId] ?? null}
-                        onToggle={() => toggleVerify(it.itemId)}
-                        onMinus={e => adjustCount(it.itemId, -1, e)}
-                        onPlus={e => adjustCount(it.itemId, 1, e)}
-                        onCheck={(key, val) => updateCheck(it.itemId, key, val)}
-                        onRestock={() => {
-                          setItemCounts(prev => ({ ...prev, [it.itemId]: it.requiredQuantity }));
-                          setRestockState(prev => ({ ...prev, [it.itemId]: 'restocked' }));
-                          showToast(`Restocked to par: ${(it.itemDetails as any)?.name ?? 'item'}`, true);
-                        }}
-                        onReport={() => {
-                          setRestockState(prev => ({ ...prev, [it.itemId]: 'shelf_empty' }));
-                          showToast(mode === 'checkin' ? 'Restock shelf flagged to admin' : 'Issue reported', false);
-                        }}
-                      />
-                    ))}
+                    {pk.items.map(it => {
+                      const rules = deriveRules(it);
+                      const chk = itemChecks[it.itemId] ?? {};
+                      const found = countOf(it);
+                      const iss = computeIssue(it, rules, found, chk, today);
+                      return (
+                        <ItemRow
+                          key={it.itemId}
+                          item={it}
+                          found={found}
+                          checks={chk}
+                          verifiedSet={verifiedSet}
+                          today={today}
+                          mode={mode}
+                          issue={iss}
+                          resolution={resolution[it.itemId]}
+                          onToggle={() => toggleVerify(it.itemId)}
+                          onMinus={e => adjustCount(it.itemId, -1, e)}
+                          onPlus={e => adjustCount(it.itemId, 1, e)}
+                          onCheck={(key, val) => updateCheck(it.itemId, key, val)}
+                          onRestock={() => {
+                            setItemCounts(prev => ({ ...prev, [it.itemId]: it.requiredQuantity }));
+                            setResolution(prev => ({ ...prev, [it.itemId]: { kind: 'restocked' } }));
+                            showToast(`Set to par: ${(it.itemDetails as any)?.name ?? 'item'}`, true);
+                          }}
+                          onReport={(issueType, quantity, notes) => {
+                            setResolution(prev => ({ ...prev, [it.itemId]: { kind: 'reported', issueType, quantity, notes } }));
+                            showToast('Issue reported to admin', false);
+                          }}
+                          onAcknowledge={(rsn) => {
+                            setResolution(prev => ({ ...prev, [it.itemId]: { kind: 'acknowledged', reason: rsn } }));
+                            showToast('Acknowledged — recorded on the log', true);
+                          }}
+                        />
+                      );
+                    })}
                   </div>
                 )}
               </div>
             );
           })}
+
+          {/* Sharps container check — pack-level. Shown on check-in & audit; optional on checkout. */}
+          <div className="bg-content1 border border-divider rounded-2xl p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400">
+                Sharps Container
+              </span>
+              <span className="text-xs text-foreground-400 font-medium">
+                {mode === 'checkout' ? 'optional' : 'confirm status'}
+              </span>
+            </div>
+            <div className="flex bg-content2 border border-divider rounded-large p-1 gap-1">
+              {sharpsOpts.map(opt => {
+                const active = sharps === opt.id;
+                const isFull = opt.id === 'full';
+                return (
+                  <button
+                    key={opt.id}
+                    onClick={() => setSharps(active ? null : opt.id)}
+                    className={`flex-1 px-3 py-2 rounded-medium text-sm font-semibold transition-colors duration-150 ${
+                      active
+                        ? isFull ? 'bg-danger text-white' : 'bg-primary text-white'
+                        : 'text-foreground-500 hover:bg-content2'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+            {sharps === 'full' && (
+              <div className="mt-3 flex items-center gap-2">
+                <Input
+                  size="sm"
+                  placeholder="Acknowledge — how was it handled?"
+                  aria-label="Sharps full acknowledgement"
+                  value={sharpsAck}
+                  onValueChange={setSharpsAck}
+                  classNames={{
+                    base: 'flex-1',
+                    inputWrapper: 'h-9 min-h-9 bg-content1 border border-danger/40 data-[hover=true]:bg-content1',
+                    input: 'text-xs',
+                  }}
+                />
+                <span className={`w-2 h-2 rounded-full flex-none ${sharpsAck.trim() ? 'bg-success' : 'bg-danger'}`} />
+              </div>
+            )}
+          </div>
 
           {/* Compartment seals — admin + audit only */}
           {isAdmin && mode === 'audit' && (
@@ -822,15 +1159,29 @@ export default function StatpackCheckOffPage() {
         {/* Sticky footer */}
         <footer className="sticky bottom-0 z-30 bg-background/80 backdrop-blur-md border-t border-divider px-3 py-3 flex items-center gap-3">
           <div className="flex flex-col leading-tight">
-            <span className="text-sm font-semibold text-foreground tabular-nums">
-              {verifiedCount} / {totalItems} verified
-            </span>
-            <span className="text-xs text-foreground-400 font-medium">
-              {pct === 100 ? 'All items verified' : `${totalItems - verifiedCount} remaining`}
-            </span>
+            {blockers.length > 0 ? (
+              <>
+                <span className="text-sm font-semibold text-danger tabular-nums">
+                  {blockers.length} to resolve
+                </span>
+                <span className="text-xs text-foreground-400 font-medium">
+                  {verifiedCount}/{totalItems} verified
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="text-sm font-semibold text-foreground tabular-nums">
+                  {verifiedCount} / {totalItems} verified
+                </span>
+                <span className="text-xs text-foreground-400 font-medium">
+                  {pct === 100 ? 'All items verified' : `${totalItems - verifiedCount} remaining`}
+                </span>
+              </>
+            )}
           </div>
           <Button
-            color="primary"
+            color={blockers.length > 0 ? 'danger' : 'primary'}
+            variant={blockers.length > 0 ? 'flat' : 'solid'}
             className="ml-auto font-semibold"
             isLoading={submitting}
             onPress={handleComplete}
@@ -840,6 +1191,85 @@ export default function StatpackCheckOffPage() {
           </Button>
         </footer>
       </div>
+
+      {/* Check-in usage review */}
+      {showReview && reviewSummary && (
+        <>
+          <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={() => setShowReview(false)} />
+          <div className="fixed inset-x-0 bottom-0 z-50 max-w-lg mx-auto bg-content1 border-t border-divider rounded-t-2xl flex flex-col max-h-[85vh]">
+            <div className="px-5 py-4 border-b border-divider flex items-center gap-3">
+              <div className="w-9 h-9 rounded-[10px] bg-primary-50 dark:bg-primary-900/20 text-primary flex items-center justify-center flex-none">
+                <Check size={17} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-semibold text-foreground">Confirm check-in</div>
+                <div className="text-xs text-foreground-400 font-medium">You are attesting to the following</div>
+              </div>
+              <button
+                onClick={() => setShowReview(false)}
+                className="w-8 h-8 rounded-medium bg-content2 hover:bg-content3 text-foreground-400 flex items-center justify-center transition-colors flex-none"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-4">
+              <ReviewSection title="Items used" empty="No items used">
+                {reviewSummary.used.map(u => (
+                  <ReviewRow key={u.name} label={u.name} value={`−${u.qty}`} tone="warning" />
+                ))}
+              </ReviewSection>
+
+              <ReviewSection title="Restocked to par" empty="Nothing restocked">
+                {reviewSummary.restocked.map(n => (
+                  <ReviewRow key={n} label={n} value="par" tone="success" />
+                ))}
+              </ReviewSection>
+
+              <ReviewSection title="Reported to admin" empty="No issues reported">
+                {reviewSummary.reported.map(n => (
+                  <ReviewRow key={n} label={n} value="reported" tone="danger" />
+                ))}
+              </ReviewSection>
+
+              {reviewSummary.acknowledged.length > 0 && (
+                <ReviewSection title="Acknowledged" empty="">
+                  {reviewSummary.acknowledged.map(n => (
+                    <ReviewRow key={n} label={n} value="ack" tone="warning" />
+                  ))}
+                </ReviewSection>
+              )}
+
+              {reviewSummary.psi.length > 0 && (
+                <ReviewSection title="O₂ pressure" empty="">
+                  {reviewSummary.psi.map(p => (
+                    <ReviewRow key={p.name} label={p.name} value={`${p.psi} PSI`} tone="foreground" mono />
+                  ))}
+                </ReviewSection>
+              )}
+
+              <div className="flex items-center justify-between bg-content2 rounded-large px-4 py-3">
+                <span className="text-xs font-semibold uppercase tracking-wide text-foreground-400">Sharps container</span>
+                <span className={`text-sm font-semibold ${
+                  sharps === 'full' ? 'text-danger' : sharps === 'ok' ? 'text-success' : 'text-foreground-500'
+                }`}>
+                  {sharps ? sharps.toUpperCase() : 'Not checked'}
+                </span>
+              </div>
+            </div>
+
+            <div className="px-5 py-4 border-t border-divider flex gap-3">
+              <Button variant="bordered" className="flex-1 font-semibold" onPress={() => setShowReview(false)}>
+                Back
+              </Button>
+              <Button color="primary" className="flex-1 font-semibold" isLoading={submitting} onPress={doSubmit}
+                endContent={!submitting ? <ArrowRight size={15} /> : undefined}>
+                Confirm Check-In
+              </Button>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Toast */}
       {toast && (
@@ -854,6 +1284,34 @@ export default function StatpackCheckOffPage() {
           <span>{toast.msg}</span>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Review helpers ───────────────────────────────────────────────────────────
+
+function ReviewSection({ title, empty, children }: { title: string; empty: string; children: React.ReactNode }) {
+  const arr = React.Children.toArray(children);
+  return (
+    <div>
+      <div className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400 mb-2">{title}</div>
+      {arr.length > 0 ? (
+        <div className="flex flex-col gap-1.5">{children}</div>
+      ) : empty ? (
+        <div className="text-xs text-foreground-400 font-medium">{empty}</div>
+      ) : null}
+    </div>
+  );
+}
+
+function ReviewRow({ label, value, tone, mono }: {
+  label: string; value: string; tone: 'success' | 'warning' | 'danger' | 'foreground'; mono?: boolean;
+}) {
+  const toneCls = tone === 'success' ? 'text-success' : tone === 'warning' ? 'text-warning' : tone === 'danger' ? 'text-danger' : 'text-foreground-600';
+  return (
+    <div className="flex items-center justify-between bg-content2 rounded-large px-3 py-2">
+      <span className="text-sm font-medium text-foreground truncate mr-3">{label}</span>
+      <span className={`text-xs font-semibold flex-none ${toneCls} ${mono ? 'font-mono tabular-nums' : ''}`}>{value}</span>
     </div>
   );
 }

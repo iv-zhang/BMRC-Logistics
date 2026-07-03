@@ -19,6 +19,10 @@ npm run migrate:normalize-inventory   # --dry-run by default
 
 Firebase environment variables are required in `.env.local` (`NEXT_PUBLIC_FIREBASE_*`). The file already exists; do not commit it.
 
+## Workflow
+
+**Never commit or push unless the user explicitly asks.** Make and verify changes in the working tree and report what changed; leave `git commit`/`git push` for an explicit instruction. This overrides any default "commit when done" behavior.
+
 ## Architecture
 
 ### Framework & Stack
@@ -39,8 +43,14 @@ const isAdmin = role === 'admin' || role === 'quartermaster';
 
 For local testing, set `localStorage.bmrc_role_override` to any role string; the hook listens for the `bmrc-role-changed` custom event and `storage` events to pick it up immediately.
 
-### Configuration (single source of truth)
-`app/config/org-config.ts` owns all business constants: locations, vehicle types, asset categories, statpack types/pocket layouts, verification field definitions, role definitions, inventory categories, and numeric thresholds. **Change values here, not scattered across pages.** Helper functions (`getAssetCategoryConfig`, `getStatpackTypeConfig`, etc.) are exported for lookups.
+### Configuration (runtime-overridable, admin-editable)
+Org configuration is **data, not code**. It loads from a single Firestore doc `org_settings/current` and falls back to the defaults in `app/config/org-config.ts` (which is now the DEFAULTS/seed + type source, not the live source of truth).
+
+- **`app/config/org-config.ts`** — `DEFAULT_ORG_CONFIG` + the type interfaces. The exported helper functions (`getInventoryAreaOptions`, `getAssetCategoryConfig`, `getStatpackTypeConfig`, `getLocationConfig`, `getRoomNames`, etc.) read the **runtime** config, so overrides flow through everywhere they're already called. The raw constant exports (`THRESHOLDS`, `LOCATIONS`, …) are defaults only.
+- **`app/lib/org-config-store.ts`** — the runtime singleton + Firestore I/O. Pure lib code (e.g. `item-status.ts`, `inventory.ts`) reads live values via getters like `getThresholds()` / `getAssetCategoriesRuntime()` — **never** the frozen constants. Write API: `saveOrgConfig(patch, actor)` (merge-write), `resetOrgConfigToDefaults(actor)`, plus `subscribeOrgConfig` / `seedOrgConfigIfMissing`.
+- **`OrgConfigProvider`** (wired in `app/providers.tsx`) subscribes to the doc and seeds it from defaults if missing. **`useOrgConfig()`** (`app/hooks/useOrgConfig.ts`) exposes the live merged config to components (adds `loading`); it falls back to defaults if no provider, so it never throws. Prefer the hook in components and the getters in lib — do **not** import the frozen constants for live reads. Anything read at module scope (e.g. `const X = getInventoryAreaOptions()`) must move into render to stay reactive.
+- **What's editable:** `org`, `locations` (+rooms), `vehicles`, `assetCategories` (+their checks), `statpackTypes` (+pockets), `itemCategories`, `thresholds`. **Code-owned (not in the doc):** `VERIFICATION_FIELDS` (the check-field palette) and `ROLES`. Physical **zones/shelves/containers/floors** are edited in Storage Management (`/storage`), not here.
+- **`/settings`** — the admin/quartermaster-only, form-based editor for all of the above (`app/settings/page.tsx` + `app/components/settings/*`). Non-technical: no JSON. This is how you move HQ (rooms/floors), retune thresholds, or rebrand for another agency without a deploy. Renaming a category/site here does **not** relabel already-saved records (v1 soft-warning).
 
 ### Type System
 `app/types.ts` defines all domain types: `User`, `InventoryItem`, `Statpack`, `StatpackItem`, `StatpackLog`, `AssetInstance`, `InventoryBatch`, `StorageZone`, `Shelf`, `Container`, `IssueReport`, `BuyListItem`, `TaskItem`, `MedicationLog`, etc.
@@ -90,8 +100,27 @@ The check-off page reads `id` and `mode` from `window.location.search` (not `use
 
 Audit mode logs `action: 'audit'` (never `'checkout'`) via `logStatpackCheckOff` — it stamps `lastAuditAt`/`lastAuditBy` on the pack without taking ownership. Statpack audits run on a biweekly cadence (`THRESHOLDS.statpackAuditIntervalDays`, checked by `isStatpackAuditCurrent` in `app/lib/item-status.ts`) and are surfaced on the `/audit` Statpacks tab.
 
+**Check-off persists state (not logging-only).** `logStatpackCheckOff` (in `app/lib/inventory.ts`) writes the pack, not just a `statpack_logs` row, inside its transaction:
+- `StatpackItem.currentQuantity` is the source of truth for on-hand consumables and is written from each entry's `countedQuantity`. The check-off page **initializes counts from `currentQuantity`** (fallback `requiredQuantity`), so a depleted pack the last crew didn't restock shows depleted to the next crew. **Assets are excluded** (entries with `serialNumber`/`assetInstanceId` are status-tracked, never counted).
+- Restock model: consumables have **no linked shelf/inventory count** — "restock" sets that item's `currentQuantity` back to par and updates status; nothing is decremented (back-room→shelf replenishment is a human process; errors are caught by the next crew or the admin audit).
+- Pack `status` is **derived** on check-in/audit (not hardcoded `Ready`): expired/reported → `Expired Items`; short-not-restocked or sharps full → `Restock Needed`; else `Ready`. Checkout → `In Use`.
+- Entered expirations (`newExpirationDate`) persist onto contents; expiration is validated against today (a past month is not "satisfied"); O₂ PSI + regulator and AED checks are captured. Checkout enforces **fix-or-acknowledge** on expired/short items. Sharps container is a pack-level check (`Statpack.sharpsContainer`). A "Report" creates a tracked `issue_reports` doc (target `statpacks/<id>`).
+- Usage/turnover analytics derive from `statpack_logs` on `/statpacks/stats` (`app/lib/statpack-stats.ts`).
+
+The shared check-off **page** is the single verification flow for members and admins. `app/components/statpack-checkoff-modal.tsx` is retired except two flows that still need a `maintenance` mode the page lacks (`statpacks/page.tsx` `openMaintenance`, and the pocket-by-pocket asset audit in `assets/page.tsx`); `seal-check-modal.tsx`/`asset-verify-step.tsx` were deleted as dead code.
+
 ### Audit Workbench (`/audit`)
 The audit page is deliberately **orderless** — members act on whatever is physically in front of them, in any order. There is no linear item-by-item wizard. Tapping any item card (or scanning a barcode) opens `app/components/audit-action-drawer.tsx` with five actions: **Count** (boxes/units + condition, submits via `submitAuditEntries`), **Move** (structured zone→shelf→level→container or quick area), **Shipment** (new sealed batch / box increment), **Report** (missing/broken/expired → issue report + `auditCondition` stamp), and **Fixed** (refill/change-out/repair record, clears the condition flag). The write helpers live in `app/lib/audit-actions.ts`; every action writes the inventory change + an `inventory_logs` row + an `auditEvents` ledger entry so usage metrics stay derivable. Shipment semantics: bag-tracked items get a sealed batch (batches are their stock source of truth); box-tracked items get an atomic `unopenedBoxes` increment plus a zero-stock metadata batch when lot/expiry was recorded.
+
+### Location Model (single source of truth)
+`storageLocation: StorageLocationRef` (structured zone → shelf → level → container) is the source of truth for where an item lives. Legacy `location`/`room` and asset `currentLocation` are **denormalized mirrors** kept in sync FROM the structured location — never the reverse. Invariants enforced in code (do not regress):
+- `moveItemLocation` / `moveItemsBulk` (`app/lib/audit-actions.ts`) resolve the destination zone doc and write `location`/`room` (and asset `currentLocation`) to match, so legacy room/location filters still find a moved item. `moveItemsBulk(items, dest, actor, note?)` is the bulk path.
+- Renaming/reassigning a zone, shelf, or container (Storage Management editors) **propagates** the new denormalized name to every referencing inventory item via a batched query on `storageLocation.{zoneId|shelfId|containerId}`.
+- Deleting a shelf/container **clears the dangling refs** on affected items first (never orphans them).
+- `StorageZone.level?: 'upper' | 'lower'` models the building floor. Zones are created/edited in Storage Management (`/storage`, Add Zone → `zone-editor.tsx`).
+- `InventoryItem.isTrainer` marks non-deployable training gear (trainer AEDs, manikins); it is still an asset but filtered out of deployable views.
+- `determineIsAsset` (`app/lib/inventory.ts`) treats an item as an asset on any asset signal (serial, status, category, `assets[]`, `maintenance_logs`, `isOxygen`), not only `assetValue ≥ threshold`.
+- Expiry checks in `getItemStatus` / `generateAuditSnapshot` ignore zero-stock (tombstone) batches, so a depleted lot's date can't mark an item permanently expired.
 
 ### Firestore Collections (notable)
 `inventory`, `inventory_logs`, `statpacks`, `statpack_logs`, `assets`, `restock_shelves`, `restock_logs`, `restock_reports`, `auditEvents` (audit ledger — camelCase, written by `app/lib/audit.ts`), `issue_reports`, `buy_list`, `tasks`, `users`, `storage_zones`, `shelves`, `containers`, `box_logs`, `medication_logs`

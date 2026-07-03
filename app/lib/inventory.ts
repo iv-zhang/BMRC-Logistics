@@ -1,8 +1,9 @@
-import { collection, doc, getDoc, getDocs, writeBatch, serverTimestamp, addDoc, updateDoc, runTransaction, query, where, orderBy, limit } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, writeBatch, serverTimestamp, addDoc, updateDoc, runTransaction, query, where, orderBy, limit, documentId } from 'firebase/firestore';
 import { db } from '@/firebase';
 import type { InventoryItem, Statpack, StatpackItem, StatpackPocket, Container, BoxLog, StatpackLog, PurchaseInfo, ValidationWarning, AssetInstance, AssetCheckResult, StatpackAuditResult, AssetVerificationRules } from '@/app/types';
 import { recordAuditEvent, removeUndefined, deepRemoveUndefined } from '@/app/lib/audit';
-import { ASSET_CATEGORIES_CONFIG, THRESHOLDS } from '@/app/config/org-config';
+import { createReport } from '@/app/lib/reports';
+import { getAssetCategoriesRuntime, getThresholds } from '@/app/lib/org-config-store';
 
 /**
  * Fetch an inventory item by ID and return enriched itemDetails + suggested verification rules.
@@ -46,7 +47,7 @@ export async function fetchAndEnrichItemDetails(itemId: string): Promise<{
     
     // Oxygen tanks require PSI check
     if (data.isOxygen || data.assetCategory === 'Oxygen Tank') {
-      suggestedVerificationRules.requireO2PsiMin = data.maxOxygenPsi ? Math.floor(data.maxOxygenPsi * 0.9) : THRESHOLDS.o2PsiMin; // 90% of max or org default
+      suggestedVerificationRules.requireO2PsiMin = data.maxOxygenPsi ? Math.floor(data.maxOxygenPsi * 0.9) : getThresholds().o2PsiMin; // 90% of max or org default
     }
     
     // AEDs and serialized assets require serial verification
@@ -310,9 +311,22 @@ export async function logStatpackCheckOff(params: {
     // Restock tracking during check-in
     restockStatus?: 'restocked' | 'shelf_empty' | 'not_needed';
     restockNotes?: string;
+    // A freshly confirmed/entered expiration to persist onto the pack content
+    // (clears expired state for that item).
+    newExpirationDate?: Date;
+    // Oxygen tank readings (also mirrored on assetCheckResult.oxygenPsi)
+    oxygenPsi?: number;
+    regulatorOk?: boolean;
+    // Member acknowledged an expired/short item and chose to proceed
+    acknowledged?: boolean;
+    acknowledgeReason?: string;
+    // Member reported a problem with this item -> spawns a tracked issue report
+    issue?: { type: 'missing' | 'broken' | 'expired'; quantity?: number; notes?: string };
   }[];
   sealChecks?: Record<string, { sealed: boolean; sealNumber?: string }>;
   oxygenReadings?: Record<string, string>;
+  // Pack-level sharps container safety check
+  sharpsCheck?: { status: 'ok' | 'full' | 'na'; notes?: string };
   notes?: string;
 }) {
   const {
@@ -327,6 +341,7 @@ export async function logStatpackCheckOff(params: {
     checkEntries,
     sealChecks,
     oxygenReadings,
+    sharpsCheck,
     notes,
   } = params;
 
@@ -376,10 +391,25 @@ export async function logStatpackCheckOff(params: {
       // Restock tracking
       restockStatus: ce.restockStatus,
       restockNotes: ce.restockNotes,
+      // Newly persisted verification details (source-of-truth paper trail)
+      newExpirationDate: ce.newExpirationDate,
+      oxygenPsi: ce.oxygenPsi,
+      regulatorOk: ce.regulatorOk,
+      acknowledged: ce.acknowledged,
+      acknowledgeReason: ce.acknowledgeReason,
+      issue: ce.issue,
     };
     Object.keys(entry).forEach(k => { if (entry[k] === undefined) delete entry[k]; });
     return entry as any;
   });
+
+  // Attach pack-level sharps container check to the log
+  if (sharpsCheck && sharpsCheck.status) {
+    (logData as any).sharpsCheck = removeUndefined({
+      status: sharpsCheck.status,
+      notes: sharpsCheck.notes,
+    });
+  }
 
   // Attach notes only if provided
   if (notes !== undefined && notes !== null) {
@@ -418,10 +448,13 @@ export async function logStatpackCheckOff(params: {
   const verifiedCount = (checkEntries || []).filter(e => e.ok).length;
   const mismatchCount = (checkEntries || []).filter(e => !e.ok).length;
   const expiredCount = (checkEntries || []).filter(e => {
-    if (!e.expirationDate) return false;
-    return new Date(e.expirationDate).getTime() < Date.now();
+    const exp = e.newExpirationDate ?? e.expirationDate;
+    if (!exp) return false;
+    return new Date(exp).getTime() < Date.now();
   }).length;
-  logData.summary = { totalItems, verifiedCount, mismatchCount, expiredCount };
+  const restockedCount = (checkEntries || []).filter(e => e.restockStatus === 'restocked').length;
+  const reportedCount = (checkEntries || []).filter(e => e.issue && e.issue.type).length;
+  logData.summary = { totalItems, verifiedCount, mismatchCount, expiredCount, restockedCount, reportedCount };
 
   const sanitizedLog = deepRemoveUndefined(logData as any);
   // Use both serverTimestamp (canonical) and a client-side Date for immediate reads.
@@ -467,6 +500,86 @@ export async function logStatpackCheckOff(params: {
         updatedAt: serverTimestamp(),
       };
 
+      // ── Persist pack contents (currentQuantity is source of truth) ──────────
+      // Clone existing contents (keep raw Firestore Timestamps intact — do NOT
+      // deep-clean, that would corrupt Timestamp objects into plain maps).
+      const contents: any[] = Array.isArray(spData?.contents)
+        ? spData.contents.map((c: any) => ({ ...c }))
+        : [];
+      const usedIdx = new Set<number>();
+      // Match a check entry to a pack content, disambiguating repeated itemIds
+      // across pockets: compartmentId first, then pocket, then itemId alone.
+      const matchIndex = (e: any): number => {
+        if (e.compartmentId) {
+          const i = contents.findIndex((c, idx) => !usedIdx.has(idx) && c.itemId === e.itemId && c.compartmentId && c.compartmentId === e.compartmentId);
+          if (i >= 0) return i;
+        }
+        if (e.pocket) {
+          const i = contents.findIndex((c, idx) => !usedIdx.has(idx) && c.itemId === e.itemId && c.pocket && c.pocket === e.pocket);
+          if (i >= 0) return i;
+        }
+        return contents.findIndex((c, idx) => !usedIdx.has(idx) && c.itemId === e.itemId);
+      };
+
+      // Accumulate status signals while we walk the entries.
+      let anyExpired = false;
+      let anyShortConsumable = false;
+      const nowMs = Date.now();
+
+      for (const e of (checkEntries || [])) {
+        const idx = matchIndex(e);
+        const content = idx >= 0 ? contents[idx] : undefined;
+        if (idx >= 0) usedIdx.add(idx);
+
+        // Assets are status-tracked, not counted. Identify them by serial on the
+        // entry OR by asset linkage on the matched content.
+        const isAssetEntry = Boolean(e.serialNumber) || Boolean(content?.assetInstanceId) || Boolean(content?.serialNumber);
+
+        if (content && !isAssetEntry && typeof e.countedQuantity === 'number') {
+          content.currentQuantity = e.countedQuantity;
+        }
+        // Persist a freshly entered expiration onto the content (clears expired).
+        if (content && e.newExpirationDate) {
+          content.expirationDate = e.newExpirationDate;
+          if (content.effectiveExpiration !== undefined) content.effectiveExpiration = e.newExpirationDate;
+        }
+
+        // Status signals
+        const effExp = e.newExpirationDate ?? e.expirationDate;
+        const expiredByDate = effExp ? new Date(effExp).getTime() < nowMs : false;
+        const expiredByIssue = Boolean(e.issue && (e.issue.type === 'broken' || e.issue.type === 'expired'));
+        if (expiredByDate || expiredByIssue) anyExpired = true;
+
+        if (!isAssetEntry
+          && typeof e.countedQuantity === 'number'
+          && typeof e.requiredQuantity === 'number'
+          && e.countedQuantity < e.requiredQuantity
+          && e.restockStatus !== 'restocked') {
+          anyShortConsumable = true;
+        }
+      }
+
+      // Write updated contents back whenever the pack has contents to persist.
+      if (Array.isArray(spData?.contents)) {
+        statpackUpdate.contents = contents;
+      }
+
+      // Persist the pack-level sharps container check.
+      if (sharpsCheck && sharpsCheck.status) {
+        statpackUpdate.sharpsContainer = removeUndefined({
+          status: sharpsCheck.status,
+          lastCheckedAt: now,
+          lastCheckedBy: userName,
+        });
+      }
+
+      // Derive the resulting pack status for check-in / audit.
+      const deriveStatus = (): Statpack['status'] => {
+        if (anyExpired) return 'Expired Items';
+        if (anyShortConsumable || sharpsCheck?.status === 'full') return 'Restock Needed';
+        return 'Ready';
+      };
+
       if (action === 'checkout') {
         statpackUpdate.isCheckedOut = true;
         statpackUpdate.status = 'In Use';
@@ -475,12 +588,13 @@ export async function logStatpackCheckOff(params: {
         statpackUpdate.assignedToUserName = userName;
       } else if (action === 'checkin') {
         statpackUpdate.isCheckedOut = false;
-        statpackUpdate.status = 'Ready';
+        statpackUpdate.status = deriveStatus();
         statpackUpdate.checkedOutAt = null;
         statpackUpdate.assignedToUserId = null;
         statpackUpdate.assignedToUserName = null;
       } else if (action === 'audit') {
         // Audits verify the pack in place — never take ownership of it.
+        statpackUpdate.status = deriveStatus();
         statpackUpdate.lastAuditAt = serverTimestamp();
         statpackUpdate.lastAuditBy = userName;
       }
@@ -506,6 +620,37 @@ export async function logStatpackCheckOff(params: {
     userId,
     userName,
   });
+
+  // Create tracked issue reports for any item the member flagged during the
+  // check-off. Done AFTER the transaction commits so a report write can never
+  // roll back the check-off; failures are logged, not thrown.
+  const ISSUE_LABEL: Record<'missing' | 'broken' | 'expired', string> = {
+    missing: 'Missing',
+    broken: 'Broken',
+    expired: 'Expired',
+  };
+  for (const ce of (checkEntries || [])) {
+    if (!ce.issue || !ce.issue.type) continue;
+    const label = ISSUE_LABEL[ce.issue.type] ?? 'Issue';
+    const itemLabel = ce.itemName || ce.itemId;
+    const qtyPart = ce.issue.quantity ? ` (${ce.issue.quantity} affected)` : '';
+    try {
+      await createReport({
+        reporter: { userId, userName },
+        type: 'bug',
+        priority: (ce.issue.type === 'missing' || ce.issue.type === 'broken') ? 'high' : 'medium',
+        title: `${label}: ${itemLabel} (in ${statpackName})`,
+        description:
+          `${label} reported during statpack ${action} of "${statpackName}"${qtyPart}.` +
+          (ce.issue.notes ? `\n\n${ce.issue.notes}` : ''),
+        pagePath: '/statpacks/check-off',
+        component: 'statpack_checkoff',
+        target: { collection: 'statpacks', docId: statpackId },
+      });
+    } catch (err) {
+      console.warn('logStatpackCheckOff: failed to create issue report for', ce.itemId, err);
+    }
+  }
 
   return { logRef: newLogRef, validationWarnings };
 }
@@ -605,13 +750,16 @@ export async function validateStatpackAssignments(params: {
   const uniqueItemIds = Array.from(new Set((checkEntries || []).map(e => e.itemId).filter(Boolean)));
   const itemMap = new Map<string, InventoryItem>();
 
-  for (const itemId of uniqueItemIds) {
+  // Batch the primary lookups with chunked `documentId() in` queries (≤10 per
+  // chunk) instead of one getDoc per id (N+1). Behavior is identical: ids that
+  // don't resolve to an inventory doc simply fall through to the fallback path.
+  for (let i = 0; i < uniqueItemIds.length; i += 10) {
+    const chunk = uniqueItemIds.slice(i, i + 10);
     try {
-      const ref = doc(db, 'inventory', itemId);
-      const snap = await getDoc(ref);
-      if (snap.exists()) itemMap.set(itemId, snap.data() as InventoryItem);
+      const snap = await getDocs(query(collection(db, 'inventory'), where(documentId(), 'in', chunk)));
+      snap.forEach(d => itemMap.set(d.id, d.data() as InventoryItem));
     } catch (e) {
-      console.warn('validateStatpackAssignments: failed to load inventory item', itemId, e);
+      console.warn('validateStatpackAssignments: failed to batch-load inventory items', chunk, e);
     }
   }
 
@@ -1256,19 +1404,31 @@ export async function logAssetCheckIn(params: {
  * Centralizes asset classification logic.
  */
 export function determineIsAsset(item: Partial<InventoryItem> | { category?: string; assetValue?: number; isAsset?: boolean }): boolean {
-  // Explicit flag takes precedence
+  // Explicit flag takes precedence (an explicit `false` keeps disposables out).
   if (item.isAsset !== undefined) return item.isAsset;
-  
+
+  const it = item as Partial<InventoryItem>;
+
   // Check category-based rules from org-config
   const category = (item as any).category;
-  if (category && ASSET_CATEGORIES_CONFIG.some(c => c.id.toLowerCase() === category.toLowerCase())) {
+  if (category && getAssetCategoriesRuntime().some(c => c.id.toLowerCase() === category.toLowerCase())) {
     return true;
   }
-  
+
   // Check value threshold from org-config
   const value = (item as any).assetValue ?? 0;
-  if (value >= THRESHOLDS.assetValueThreshold) return true;
-  
+  if (value >= getThresholds().assetValueThreshold) return true;
+
+  // MODEL-2: durable gear (cot, backboard) often has no assetValue but shows
+  // clear asset signals. Treat any of these as an asset even without a value.
+  // Trainers are still assets for tracking, so no isTrainer exclusion here.
+  if (it.assetSerial) return true;
+  if (it.assetStatus) return true;
+  if (it.assetCategory) return true;
+  if (Array.isArray(it.assets) && it.assets.length > 0) return true;
+  if (Array.isArray(it.maintenance_logs) && it.maintenance_logs.length > 0) return true;
+  if (it.isOxygen) return true;
+
   return false;
 }
 

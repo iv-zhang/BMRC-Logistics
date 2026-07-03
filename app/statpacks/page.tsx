@@ -459,14 +459,12 @@ export default function StatpacksListPage() {
   }, []);
 
   const openCheckin = (pack: Statpack) => {
-    setSelectedPack(pack);
-    setCheckoffAction('checkin');
-    checkoffDisclosure.onOpen();
+    if (!pack.id) return;
+    router.push(`/statpacks/check-off?id=${pack.id}&mode=checkin`);
   };
   const openCheckout = (pack: Statpack) => {
-    setSelectedPack(pack);
-    setCheckoffAction('checkout');
-    checkoffDisclosure.onOpen();
+    if (!pack.id) return;
+    router.push(`/statpacks/check-off?id=${pack.id}&mode=checkout`);
   };
   const openMaintenance = (pack: Statpack) => {
     setSelectedPack(pack);

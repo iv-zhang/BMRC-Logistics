@@ -10,9 +10,13 @@
  * counts in pages.
  */
 
-import { THRESHOLDS } from '@/app/config/org-config';
-import { formatStorageLocation } from '@/app/utils/storage-location';
-import type { InventoryItem } from '@/app/types';
+import { getThresholds } from '@/app/lib/org-config-store';
+import {
+  formatStorageLocation,
+  formatLevelLabel,
+  LOCATION_SEPARATOR,
+} from '@/app/utils/storage-location';
+import type { InventoryBatch, InventoryItem } from '@/app/types';
 
 export type ItemStatus = 'ok' | 'low' | 'out' | 'expired' | 'expiring';
 
@@ -27,7 +31,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Date after which a batch counts as "expiring soon" (org-config driven). */
 export function expiringCutoff(now = new Date()): Date {
-  return new Date(now.getTime() + THRESHOLDS.expirationWarningDays * DAY_MS);
+  return new Date(now.getTime() + getThresholds().expirationWarningDays * DAY_MS);
 }
 
 /**
@@ -57,13 +61,29 @@ export function computeBagStock(item: InventoryItem): BagStock {
   };
 }
 
-/** Human-readable location path for an item (structured ref preferred). */
+/**
+ * A batch only counts toward expiry/expiring status if it actually has stock on
+ * hand. Zero-stock traceability "tombstone" batches (written by `addShipment`
+ * for box-tracked items to keep a lot/expiry paper trail) carry an
+ * `expirationDate` but no units, so they must never flag the item expired.
+ */
+export function batchHasStock(b: InventoryBatch): boolean {
+  return ((b.stock ?? 0) > 0) ||
+         ((b.bagCount ?? 0) > 0) ||
+         ((b.looseItems ?? 0) > 0);
+}
+
+/**
+ * Human-readable location path for an item (structured ref preferred).
+ * Both the structured and legacy branches use the same canonical separator and
+ * `L#` level style (UX-5) so an item reads identically however it's stored.
+ */
 export function displayLocation(item: InventoryItem): string {
   if (item.storageLocation) return formatStorageLocation(item.storageLocation);
   const parts = [item.location || '', item.room || ''];
   if (item.shelf) parts.push(`Shelf ${item.shelf}`);
-  if (item.backLevel) parts.push(`L${item.backLevel}`);
-  return parts.filter(Boolean).join(' › ');
+  if (item.backLevel) parts.push(formatLevelLabel(item.backLevel));
+  return parts.filter(Boolean).join(LOCATION_SEPARATOR);
 }
 
 /** Overall status for an item: expired > out > low > expiring > ok. */
@@ -72,7 +92,10 @@ export function getItemStatus(item: InventoryItem): ItemStatus {
   const now = new Date();
   const cutoff = expiringCutoff(now);
   const batches = item.batches || [];
-  if (batches.some(b => b.expirationDate && b.expirationDate < now)) return 'expired';
+  // DATA-7: only batches that still have stock on hand can flag expiry — a
+  // zero-stock tombstone batch must not mark the item expired forever.
+  if (batches.some(b => batchHasStock(b) && b.expirationDate && b.expirationDate < now))
+    return 'expired';
   if (item.isOxygen) return 'ok';
   if (bag.totalItems === 0) return 'out';
   if (item.reorderThreshold > 0 && bag.totalItems <= item.reorderThreshold) return 'low';
@@ -136,12 +159,12 @@ export function currentAuditCycleLabel(now = new Date()): string {
 export function isStatpackAuditCurrent(lastAuditDate?: Date, now = new Date()): boolean {
   if (!lastAuditDate) return false;
   const ageDays = (now.getTime() - lastAuditDate.getTime()) / DAY_MS;
-  return ageDays <= THRESHOLDS.statpackAuditIntervalDays;
+  return ageDays <= getThresholds().statpackAuditIntervalDays;
 }
 
 /** Days until a statpack audit is due (negative = overdue by that many days). */
 export function statpackAuditDueInDays(lastAuditDate?: Date, now = new Date()): number | undefined {
   if (!lastAuditDate) return undefined;
   const ageDays = (now.getTime() - lastAuditDate.getTime()) / DAY_MS;
-  return Math.round(THRESHOLDS.statpackAuditIntervalDays - ageDays);
+  return Math.round(getThresholds().statpackAuditIntervalDays - ageDays);
 }

@@ -21,6 +21,7 @@ import IntakeWizard from '@/app/components/intake-wizard';
 import { getOldestValidBatch, isBatchExpired } from '@/app/utils/batchHelpers';
 import { preparePayload, safeParseDate } from '@/app/utils/inventoryNormalization';
 import { ITEM_CATEGORIES, getInventoryAreaOptions } from '@/app/config/org-config';
+import { useOrgConfig } from '@/app/hooks/useOrgConfig';
 import { CAT_CFG } from '@/app/components/category-badge';
 import {
   computeBagStock, displayLocation, getItemStatus, formatExp, expTextColor,
@@ -33,7 +34,6 @@ import type {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const CATEGORIES = ITEM_CATEGORIES as readonly ItemCategory[];
-const LOCATION_OPTIONS = getInventoryAreaOptions();
 
 const BATCH_STATUS_COLORS: Record<string, 'default' | 'success' | 'warning' | 'danger' | 'primary'> = {
   sealed: 'primary', open: 'success', depleted: 'default', expired: 'danger', quarantined: 'warning',
@@ -53,6 +53,14 @@ function getCardTint(s: ItemStatus): string {
 
 export default function InventoryPage() {
   const router = useRouter();
+  // Location filter options (from org-config — live, admin-overridable).
+  const { locations } = useOrgConfig();
+  const LOCATION_OPTIONS = useMemo(
+    // `getInventoryAreaOptions` reads the runtime store keyed by `locations`;
+    // recompute when the live locations change.
+    () => { void locations; return getInventoryAreaOptions(); },
+    [locations],
+  );
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [opLoading, setOpLoading] = useState(false);

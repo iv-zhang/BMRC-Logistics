@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Button, Chip, Input, Textarea } from '@heroui/react';
+import { Button, Chip, Input, Select, SelectItem, Textarea } from '@heroui/react';
 import {
   AlertTriangle,
   ArrowRightLeft,
@@ -28,15 +28,10 @@ import {
   type ItemFixType,
   type ItemIssueType,
 } from '@/app/lib/audit-actions';
-import { getInventoryAreaOptions, LOCATIONS } from '@/app/config/org-config';
+import { getInventoryAreaOptions } from '@/app/config/org-config';
+import { useOrgConfig } from '@/app/hooks/useOrgConfig';
 
 export type DrawerAction = 'count' | 'move' | 'shipment' | 'report' | 'fix';
-
-const AREA_OPTIONS = getInventoryAreaOptions();
-/** Top-level location names (no rooms) — e.g. "CPR Closet", "Shed" */
-const TOP_LEVEL_AREAS = new Set(
-  LOCATIONS.filter((l) => l.rooms.length === 0).map((l) => l.name)
-);
 
 interface AuditActionDrawerProps {
   item: InventoryItem | null;
@@ -92,6 +87,19 @@ export default function AuditActionDrawer({
 }: AuditActionDrawerProps) {
   const [action, setAction] = useState<DrawerAction>(initialAction);
   const [saving, setSaving] = useState(false);
+
+  // Live location options (reflect admin org-config overrides).
+  const { locations } = useOrgConfig();
+  const AREA_OPTIONS = useMemo(
+    // `getInventoryAreaOptions` reads the runtime store keyed by `locations`.
+    () => { void locations; return getInventoryAreaOptions(); },
+    [locations],
+  );
+  /** Top-level location names (no rooms) — e.g. "CPR Closet", "Shed" */
+  const TOP_LEVEL_AREAS = useMemo(
+    () => new Set(locations.filter((l) => l.rooms.length === 0).map((l) => l.name)),
+    [locations],
+  );
 
   // Count state
   const [countedBoxes, setCountedBoxes] = useState(0);
@@ -330,18 +338,18 @@ export default function AuditActionDrawer({
             {isAsset && <Chip size="sm" variant="flat" color="primary">Asset</Chip>}
           </div>
 
-          {/* Action switcher */}
+          {/* Action switcher — icon over label so it stays legible one-handed on mobile */}
           <div className="flex bg-content2 rounded-large p-1 gap-1 mt-4">
             {ACTIONS.map(({ key, icon, label }) => (
               <button
                 key={key}
                 onClick={() => setAction(key)}
-                className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-medium text-xs font-semibold transition-colors duration-150 ${
+                className={`flex-1 flex flex-col items-center justify-center gap-1 px-1 py-1.5 rounded-medium text-xs font-semibold transition-colors duration-150 ${
                   action === key ? 'bg-primary text-white' : 'text-foreground-500 hover:bg-content3'
                 }`}
               >
                 {icon}
-                <span className="hidden sm:inline">{label}</span>
+                <span className="leading-none whitespace-nowrap">{label}</span>
               </button>
             ))}
           </div>
@@ -446,16 +454,20 @@ export default function AuditActionDrawer({
                 <p className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400 mb-2">
                   Or quick area
                 </p>
-                <select
-                  value={moveArea}
-                  onChange={(e) => setMoveArea(e.target.value)}
-                  className="w-full text-sm font-medium text-foreground bg-content1 border border-divider rounded-medium px-3 py-2 cursor-pointer outline-none"
+                <Select
+                  size="sm"
+                  aria-label="Quick area"
+                  selectedKeys={[moveArea || '__keep__']}
+                  onSelectionChange={(keys) => {
+                    const selected = Array.from(keys)[0] as string | undefined;
+                    setMoveArea(!selected || selected === '__keep__' ? '' : selected);
+                  }}
+                  className="w-full"
                 >
-                  <option value="">Keep current area</option>
-                  {AREA_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
+                  {[{ value: '__keep__', label: 'Keep current area' }, ...AREA_OPTIONS].map((o) => (
+                    <SelectItem key={o.value}>{o.label}</SelectItem>
                   ))}
-                </select>
+                </Select>
               </div>
 
               <Input

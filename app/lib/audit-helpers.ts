@@ -28,7 +28,7 @@ import { db } from '@/firebase';
 import type { InventoryItem, User } from '@/app/types';
 import { addAuditEventToBatch } from '@/app/lib/audit';
 import { determineIsAsset } from '@/app/lib/inventory';
-import { computeBagStock, isAuditedThisMonth } from '@/app/lib/item-status';
+import { batchHasStock, computeBagStock, isAuditedThisMonth } from '@/app/lib/item-status';
 
 // ─── Permission helpers ───────────────────────────────────────────────────────
 
@@ -215,7 +215,9 @@ export async function generateAuditSnapshot(
         earliestExp = toDate(item.expirationDate);
       }
       (item.batches || []).forEach((b) => {
-        if (b.expirationDate) {
+        // DATA-7: skip zero-stock tombstone batches so a depleted lot's expiry
+        // can't mark the item expired forever (matches getItemStatus).
+        if (b.expirationDate && batchHasStock(b)) {
           const bExp = toDate(b.expirationDate);
           if (bExp && (!earliestExp || bExp < earliestExp)) {
             earliestExp = bExp;

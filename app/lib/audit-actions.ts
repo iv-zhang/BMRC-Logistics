@@ -13,6 +13,7 @@ import {
   arrayUnion,
   collection,
   doc,
+  getDoc,
   increment,
   serverTimestamp,
   updateDoc,
@@ -26,7 +27,10 @@ import type {
   InventoryItem,
   LocationType,
   StorageLocationRef,
+  StorageZone,
 } from '@/app/types';
+
+const LOCATION_TYPES: LocationType[] = ['HQ', 'CPR Closet', 'Shed', 'Other'];
 
 export interface AuditActor {
   uid: string;
@@ -57,15 +61,43 @@ export async function moveItemLocation(
   const fromLabel = displayLocation(item) || 'Unknown';
 
   const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
+  // Track the legacy fields we resolve so the merged item used for the
+  // display label stays consistent with what we persist.
+  let resolvedLocation: LocationType | undefined =
+    dest.location !== undefined ? dest.location : undefined;
+  let resolvedRoom: HQRoom | null | undefined =
+    dest.room !== undefined ? dest.room : undefined;
+
   if (dest.storageLocation !== undefined) {
     payload.storageLocation = dest.storageLocation
       ? removeUndefined({ ...dest.storageLocation })
       : null;
-  }
-  if (dest.location !== undefined) payload.location = dest.location;
-  if (dest.room !== undefined) payload.room = dest.room;
 
-  await updateDoc(doc(db, 'inventory', item.id), payload);
+    // DATA-2 / DATA-3: when a STRUCTURED zone is chosen, keep the legacy
+    // room/location denormalized fields in sync so the room/location-based
+    // audit & inventory filters find the item at its new spot (instead of
+    // leaving it under the OLD location, or showing under both).
+    const zoneId = dest.storageLocation?.zoneId;
+    if (zoneId) {
+      try {
+        const zoneSnap = await getDoc(doc(db, 'storage_zones', zoneId));
+        if (zoneSnap.exists()) {
+          const zone = zoneSnap.data() as Partial<StorageZone>;
+          const zoneLoc = zone.locationType;
+          resolvedLocation =
+            zoneLoc && LOCATION_TYPES.includes(zoneLoc as LocationType)
+              ? (zoneLoc as LocationType)
+              : 'Other';
+          resolvedRoom = zone.room ?? null;
+        }
+      } catch (e) {
+        console.warn('moveItemLocation: failed to read zone doc', e);
+      }
+    }
+  }
+
+  if (resolvedLocation !== undefined) payload.location = resolvedLocation;
+  if (resolvedRoom !== undefined) payload.room = resolvedRoom;
 
   const toLabel =
     displayLocation({
@@ -73,9 +105,15 @@ export async function moveItemLocation(
       ...(dest.storageLocation !== undefined
         ? { storageLocation: dest.storageLocation ?? undefined }
         : {}),
-      ...(dest.location !== undefined ? { location: dest.location } : {}),
-      ...(dest.room !== undefined ? { room: dest.room ?? undefined } : {}),
+      ...(resolvedLocation !== undefined ? { location: resolvedLocation } : {}),
+      ...(resolvedRoom !== undefined ? { room: resolvedRoom ?? undefined } : {}),
     }) || 'Unknown';
+
+  // DATA-6: asset surfaces read the flat `currentLocation` string; keep it in
+  // sync so the Assets page / asset snapshot reflect the move.
+  payload.currentLocation = toLabel;
+
+  await updateDoc(doc(db, 'inventory', item.id), payload);
 
   await addDoc(collection(db, 'inventory_logs'), removeUndefined({
     itemId: item.id,
@@ -99,6 +137,25 @@ export async function moveItemLocation(
     after: { location: toLabel },
     details: note ? { note } : undefined,
   }));
+}
+
+/**
+ * FLOW-1: relocate several items to the same destination in one gesture.
+ * Applies the identical single-move logic to each item (structured
+ * storageLocation + synced legacy location/room + currentLocation), and writes
+ * one `inventory_logs` row + one `auditEvents` entry per item. Correctness over
+ * cleverness: this simply loops `moveItemLocation` so the bulk path can never
+ * drift from the single-move path.
+ */
+export async function moveItemsBulk(
+  items: InventoryItem[],
+  dest: MoveDestination,
+  actor: AuditActor,
+  note?: string
+): Promise<void> {
+  for (const item of items) {
+    await moveItemLocation(item, dest, actor, note);
+  }
 }
 
 // ─── Receive shipment / restock ───────────────────────────────────────────────

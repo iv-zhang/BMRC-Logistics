@@ -226,7 +226,7 @@ export default function CheckoutPage() {
 
   return (
     <>
-      <div className="min-h-screen p-4 md:p-6 bg-background">
+      <div className="min-h-screen p-4 md:p-6 bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
         <div className="max-w-4xl mx-auto space-y-6">
           {/* Header */}
           <div className="flex items-center gap-3">

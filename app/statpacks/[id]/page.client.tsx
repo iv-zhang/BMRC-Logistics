@@ -25,7 +25,6 @@ import { auth, db } from '@/firebase';
 import type { Statpack, User, StatpackPocket } from '@/app/types';
 import { BagVisualizer } from '@/app/components/statpackvisualizer';
 import BarcodeScanner from '@/app/components/barcode-scanner';
-import StatpackCheckOffModal from '@/app/components/statpack-checkoff-modal';
 import StatpackHistory from '@/app/components/statpack-history';
 import { computeStatpackAssetValue } from '@/app/lib/inventory';
 
@@ -46,9 +45,6 @@ export default function StatpackDetailClient() {
 
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scannerTarget, setScannerTarget] = useState<Statpack | null>(null);
-
-  const checkoffDisclosure = useDisclosure();
-  const [checkoffAction, setCheckoffAction] = useState<'checkout' | 'checkin' | 'maintenance'>('checkout');
 
   const [isEditingSummary, setIsEditingSummary] = useState(false);
   const [summaryForm, setSummaryForm] = useState({ name: '', status: '', currentLocation: '', assetValue: '' });
@@ -374,16 +370,6 @@ export default function StatpackDetailClient() {
           </ModalFooter>
         </ModalContent>
       </Modal>
-
-      <StatpackCheckOffModal
-        isOpen={checkoffDisclosure.isOpen}
-        onOpenChange={(open) => (open ? checkoffDisclosure.onOpen() : checkoffDisclosure.onClose())}
-        statpack={pack}
-        action={checkoffAction}
-        userId={user?.uid || 'unknown'}
-        userName={user?.displayName || 'Unknown'}
-        onCheckOffComplete={() => checkoffDisclosure.onClose()}
-      />
 
       <BarcodeScanner
         isOpen={scannerOpen}

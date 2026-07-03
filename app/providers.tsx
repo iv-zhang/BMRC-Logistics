@@ -5,6 +5,7 @@ import { HeroUIProvider } from "@heroui/react";
 // toast provider intentionally not included to avoid runtime mismatch with static export
 import { useRouter } from 'next/navigation';
 import { ThemeProvider as NextThemesProvider } from "next-themes";
+import { OrgConfigProvider } from "@/app/hooks/useOrgConfig";
 
 // Provide a small global helper to toggle `inert` on the app root when overlays open.
 // This dynamically loads the wicg-inert polyfill if needed.
@@ -62,7 +63,9 @@ export function Providers({ children }: ProvidersProps) {
     <HeroUIProvider navigate={router.push}>
       {/* Theme provider wrapper */}
       <NextThemesProvider attribute="class" defaultTheme="system">
-        {children}
+        <OrgConfigProvider>
+          {children}
+        </OrgConfigProvider>
       </NextThemesProvider>
     </HeroUIProvider>
   );

@@ -266,6 +266,8 @@ export interface InventoryItem {
   auditNotes?: string;
   lastAuditDate?: Date;
   isLegacyItem?: boolean; // Quick-added legacy/found items
+  /** Training / non-deployable gear (trainer AEDs, manikins) — still tracked as an asset but must not be dispatched */
+  isTrainer?: boolean;
 
   createdAt: Date;
   updatedAt: Date;
@@ -389,6 +391,12 @@ export interface Statpack {
   lastAuditAt?: Date;
   lastAuditBy?: string;
   currentEvent?: string;
+  /** Pack-level sharps container safety check, stamped on each check-off */
+  sharpsContainer?: {
+    status: 'ok' | 'full' | 'na';
+    lastCheckedAt?: Date;
+    lastCheckedBy?: string;
+  };
   
   createdAt: Date;
   updatedAt: Date;
@@ -448,7 +456,11 @@ export interface StatpackLog {
     expiredCount: number;
     restockedCount?: number; // Items that were restocked during check-in
     shelfEmptyCount?: number; // Items where restock shelf was empty
+    reportedCount?: number; // Items the member filed an issue report on
   };
+
+  // Pack-level sharps container safety check submitted with this check-off
+  sharpsCheck?: { status: 'ok' | 'full' | 'na'; notes?: string };
   
   // Digital Check-Off: structured per-item check entries
   checkEntries?: {
@@ -463,6 +475,17 @@ export interface StatpackLog {
     serialNumber?: string; // For asset items
     notes?: string;
     expirationDate?: Date | FieldValue;
+    /** Freshly entered/confirmed expiration persisted onto the pack content */
+    newExpirationDate?: Date | FieldValue;
+    /** Oxygen tank PSI reading recorded during the check */
+    oxygenPsi?: number;
+    /** Regulator visual check passed */
+    regulatorOk?: boolean;
+    /** Member acknowledged a short/expired item and chose to proceed */
+    acknowledged?: boolean;
+    acknowledgeReason?: string;
+    /** Member reported a problem with this item (spawns an issue_report) */
+    issue?: { type: 'missing' | 'broken' | 'expired'; quantity?: number; notes?: string };
     checkedAt?: Date | FieldValue;
     checkedBy?: string;
     // Per-asset condition tracking (only for serialized/asset items)
@@ -605,6 +628,8 @@ export interface AssetInstance {
   assignedToId?: string;
   // Current human-friendly location or container id (e.g., 'Statpack-1' or 'Back Room')
   currentLocation?: string;
+  /** Training / non-deployable gear (trainer AEDs, manikins) — still tracked as an asset but must not be dispatched */
+  isTrainer?: boolean;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -616,6 +641,8 @@ export interface StorageZone {
   locationType: LocationType;
   room?: HQRoom;
   description?: string;
+  /** Building floor this zone is on: upper = entrance level, lower = main HQ */
+  level?: 'upper' | 'lower';
   createdAt?: Date;
   updatedAt?: Date;
 }
