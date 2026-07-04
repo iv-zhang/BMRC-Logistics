@@ -216,6 +216,16 @@ export interface InventoryItem {
   // Per-item expiry fields for consumable components (convenience for single-instance assets)
   batteryExpiration?: Date;
   padExpiration?: Date;
+  /**
+   * Control-test currency for reagent-based diagnostic assets (e.g. a glucometer):
+   * a fresh passing control test must be on file within `intervalDays`, otherwise
+   * the asset (and any pack holding it) is treated as not service-ready.
+   */
+  controlTest?: {
+    lastPassedAt?: Date;
+    intervalDays?: number;
+    lastResult?: 'pass' | 'fail' | string;
+  };
   // Optional top-level list of asset instances when the item represents multiple unique devices
   assets?: AssetInstance[];
   // Optional per-asset verification policy (admin-configurable)

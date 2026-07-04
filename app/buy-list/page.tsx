@@ -39,7 +39,6 @@ import {
   onSnapshot,
   query,
   orderBy,
-  addDoc,
   updateDoc,
   deleteDoc,
   doc,
@@ -47,6 +46,7 @@ import {
 } from "firebase/firestore";
 import { auth, db } from "@/firebase";
 import { useUserRole } from "@/app/hooks/useUserRole";
+import { addToBuyList } from "@/app/lib/buy-list";
 import type { BuyListItem } from "@/app/types";
 
 const PRIORITY_COLORS: Record<string, "default" | "primary" | "warning" | "danger"> = {
@@ -194,19 +194,18 @@ export default function BuyListPage() {
           notes: formNotes || null,
         });
       } else {
-        // Add new
-        await addDoc(collection(db, "buyList"), {
-          itemName: formName.trim(),
-          quantity: formQuantity ? Number(formQuantity) : null,
-          unit: formUnit || null,
-          category: formCategory || null,
-          priority: formPriority,
-          notes: formNotes || null,
-          status: "pending",
-          addedBy: user?.uid || "unknown",
-          addedByName: user?.displayName || user?.email || "Unknown",
-          addedAt: serverTimestamp(),
-        });
+        // Add new (de-duplicates against existing open entries)
+        await addToBuyList(
+          {
+            itemName: formName.trim(),
+            quantity: formQuantity ? Number(formQuantity) : null,
+            unit: formUnit || null,
+            category: formCategory || null,
+            priority: formPriority,
+            notes: formNotes || null,
+          },
+          { uid: user?.uid || "unknown", name: user?.displayName || user?.email || "Unknown" },
+        );
       }
       addModal.onClose();
       resetForm();

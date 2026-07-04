@@ -43,7 +43,7 @@ function getPackTier(pack: Statpack): PackTier {
   const hasExpired = pack.contents?.some(
     c => c.expirationDate && new Date(c.expirationDate as Date) < today,
   );
-  if (!hasExpired && (pack.status === 'Ready' || pack.status === 'Pending Initial Check')) return 'ready';
+  if (!hasExpired && pack.status === 'Ready') return 'ready';
   return 'attention';
 }
 

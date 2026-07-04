@@ -65,3 +65,12 @@ Thumbs.db
 
 # Claude Code worktrees (temporary agent working directories)
 .claude/worktrees/
+
+# Firebase emulator / Playwright artifacts
+firestore-debug.log
+firebase-debug.log
+ui-debug.log
+/test-results/
+/playwright-report/
+/blob-report/
+.playwright/

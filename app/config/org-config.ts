@@ -320,6 +320,10 @@ export interface ThresholdConfig {
   o2PsiWarning: number;
   /** Days between required statpack audits (biweekly cadence) */
   statpackAuditIntervalDays: number;
+  /** Days a glucometer control test stays valid before a fresh passing test is required */
+  glucometerControlTestIntervalDays: number;
+  /** Days between required AED checks (battery/pads) before it reads out-of-date */
+  aedCheckIntervalDays: number;
 }
 
 export const THRESHOLDS: ThresholdConfig = {
@@ -330,6 +334,8 @@ export const THRESHOLDS: ThresholdConfig = {
   o2PsiMin: 1800,
   o2PsiWarning: 500,
   statpackAuditIntervalDays: 14,
+  glucometerControlTestIntervalDays: 30,
+  aedCheckIntervalDays: 30,
 };
 
 // ---------------------------------------------------------------------------

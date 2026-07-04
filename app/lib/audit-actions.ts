@@ -14,13 +14,17 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   increment,
+  query,
   serverTimestamp,
   updateDoc,
+  where,
 } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { recordAuditEvent, removeUndefined } from '@/app/lib/audit';
 import { createReport } from '@/app/lib/reports';
+import { assertLafOnFile } from '@/app/lib/laf';
 import { computeBagStock, displayLocation } from '@/app/lib/item-status';
 import type {
   HQRoom,
@@ -79,20 +83,22 @@ export async function moveItemLocation(
     // leaving it under the OLD location, or showing under both).
     const zoneId = dest.storageLocation?.zoneId;
     if (zoneId) {
-      try {
-        const zoneSnap = await getDoc(doc(db, 'storage_zones', zoneId));
-        if (zoneSnap.exists()) {
-          const zone = zoneSnap.data() as Partial<StorageZone>;
-          const zoneLoc = zone.locationType;
-          resolvedLocation =
-            zoneLoc && LOCATION_TYPES.includes(zoneLoc as LocationType)
-              ? (zoneLoc as LocationType)
-              : 'Other';
-          resolvedRoom = zone.room ?? null;
-        }
-      } catch (e) {
-        console.warn('moveItemLocation: failed to read zone doc', e);
+      // INV-12: resolve the destination zone and REJECT a phantom code. A scan
+      // to a zone id that has no doc must be refused, never silently written —
+      // otherwise the item is stranded at a location that does not exist.
+      const zoneSnap = await getDoc(doc(db, 'storage_zones', zoneId));
+      if (!zoneSnap.exists()) {
+        throw new Error(
+          `Unknown storage zone '${zoneId}' — scan to a non-existent location is refused`,
+        );
       }
+      const zone = zoneSnap.data() as Partial<StorageZone>;
+      const zoneLoc = zone.locationType;
+      resolvedLocation =
+        zoneLoc && LOCATION_TYPES.includes(zoneLoc as LocationType)
+          ? (zoneLoc as LocationType)
+          : 'Other';
+      resolvedRoom = zone.room ?? null;
     }
   }
 
@@ -183,11 +189,54 @@ export async function addShipment(
   input: ShipmentInput,
   actor: AuditActor
 ): Promise<void> {
+  // INV-4 / HR-1: a dated SKU may never receive a lot with no expiration —
+  // that silently creates a "never expires" lot that can sit in a Ready pack
+  // indefinitely. Refuse before writing anything.
+  const isDated = item.tracksExpiration === true || item.requiresExpirationCheck === true;
+  if (isDated && !input.expirationMonth) {
+    throw new Error('Expiration date required for a dated SKU');
+  }
+
+  // INV-11 / B-3: controlled or LAF-gated meds may not be received without a
+  // current authorization on file. Refuse before writing anything.
+  const medInfo = item.medicationInfo as
+    | { isControlled?: boolean; requiresLAF?: boolean }
+    | undefined;
+  if (medInfo?.requiresLAF === true || medInfo?.isControlled === true) {
+    await assertLafOnFile(item.id);
+  }
+
+  const units = input.qty * input.perUnit;
+
+  // HR-8: two members (or a double-tap) logging one delivery double-counts
+  // on-hand with no idempotency check. Refuse a matching intake logged in the
+  // last ~5 minutes (same item + lot + quantity) before writing anything.
+  const DUP_WINDOW_MS = 5 * 60 * 1000;
+  const recentIntakes = await getDocs(query(
+    collection(db, 'inventory_logs'),
+    where('itemId', '==', item.id),
+    where('action', '==', 'intake'),
+  ));
+  const nowMs = Date.now();
+  const isDuplicate = recentIntakes.docs.some((d) => {
+    const data = d.data() as Record<string, unknown>;
+    if (data.quantity !== units) return false;
+    const loggedLot = (data.lotNumber ?? null) as string | null;
+    if (loggedLot !== (input.lotNumber || null)) return false;
+    const ts = data.timestamp as { toMillis?: () => number } | null | undefined;
+    // A pending serverTimestamp reads back null on an immediate re-log — treat
+    // that (and any timestamp inside the window) as a recent duplicate.
+    const tsMs = ts && typeof ts.toMillis === 'function' ? ts.toMillis() : nowMs;
+    return nowMs - tsMs <= DUP_WINDOW_MS;
+  });
+  if (isDuplicate) {
+    throw new Error('Duplicate shipment detected — this delivery appears already logged');
+  }
+
   const bagTracked = computeBagStock(item).hasBagTracking;
   const expirationDate = input.expirationMonth
     ? new Date(input.expirationMonth + '-01')
     : undefined;
-  const units = input.qty * input.perUnit;
   const itemRef = doc(db, 'inventory', item.id);
 
   if (bagTracked) {

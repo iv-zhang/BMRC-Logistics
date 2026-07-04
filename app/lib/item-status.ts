@@ -23,7 +23,18 @@ export type ItemStatus = 'ok' | 'low' | 'out' | 'expired' | 'expiring';
 export interface BagStock {
   totalBags: number;
   totalLoose: number;
+  /**
+   * PHYSICAL on-hand count — every unit sitting on the shelf, INCLUDING expired
+   * and quarantined lots. Inventory/audit UIs rely on this to show what is
+   * physically present; do NOT narrow its meaning.
+   */
   totalItems: number;
+  /**
+   * DEPLOYABLE count — units that may actually be used/counted toward a pack:
+   * has stock AND not past expiration AND not `status==='quarantined'`. This is
+   * the number readiness/availability decisions must consult (never `totalItems`).
+   */
+  availableItems: number;
   hasBagTracking: boolean;
 }
 
@@ -39,24 +50,34 @@ export function expiringCutoff(now = new Date()): Date {
  * itemsPerBag / looseItems) is the source of truth when present; otherwise
  * fall back to item-level box counts.
  */
-export function computeBagStock(item: InventoryItem): BagStock {
+export function computeBagStock(item: InventoryItem, now = new Date()): BagStock {
   const batches = item.batches || [];
   const hasBagTracking = batches.some(
     b => (b.bagCount !== undefined && b.bagCount > 0) ||
          (b.itemsPerBag !== undefined && (b.itemsPerBag ?? 0) > 0),
   );
   if (hasBagTracking) {
-    let totalBags = 0, totalLoose = 0, totalItems = 0;
+    let totalBags = 0, totalLoose = 0, totalItems = 0, availableItems = 0;
     for (const b of batches) {
       const bags = b.bagCount ?? 0, perBag = b.itemsPerBag ?? 0, loose = b.looseItems ?? 0;
-      totalBags += bags; totalLoose += loose; totalItems += bags * perBag + loose;
+      const units = bags * perBag + loose;
+      totalBags += bags; totalLoose += loose; totalItems += units;
+      // A lot is deployable only if it is not past its expiration and not
+      // quarantined/recalled. Expired-or-recalled stock is still PHYSICALLY on
+      // hand (counts toward totalItems) but must never be treated as available.
+      const expired = b.expirationDate ? b.expirationDate < now : false;
+      const quarantined = b.status === 'quarantined';
+      if (!expired && !quarantined) availableItems += units;
     }
-    return { totalBags, totalLoose, totalItems, hasBagTracking: true };
+    return { totalBags, totalLoose, totalItems, availableItems, hasBagTracking: true };
   }
   const boxes = item.unopenedBoxes ?? 0, perBox = item.itemsPerBox ?? 0, loose = item.looseUnits ?? 0;
+  const totalItems = perBox > 0 ? boxes * perBox + loose : boxes;
+  // Box-tracked stock has no per-lot quantity (quantity pools onto unopenedBoxes
+  // and lots are stock:0 tombstones — see B-5), so availability equals physical.
   return {
     totalBags: boxes, totalLoose: loose,
-    totalItems: perBox > 0 ? boxes * perBox + loose : boxes,
+    totalItems, availableItems: totalItems,
     hasBagTracking: false,
   };
 }
@@ -88,8 +109,8 @@ export function displayLocation(item: InventoryItem): string {
 
 /** Overall status for an item: expired > out > low > expiring > ok. */
 export function getItemStatus(item: InventoryItem): ItemStatus {
-  const bag = computeBagStock(item);
   const now = new Date();
+  const bag = computeBagStock(item, now);
   const cutoff = expiringCutoff(now);
   const batches = item.batches || [];
   // DATA-7: only batches that still have stock on hand can flag expiry — a
@@ -97,8 +118,10 @@ export function getItemStatus(item: InventoryItem): ItemStatus {
   if (batches.some(b => batchHasStock(b) && b.expirationDate && b.expirationDate < now))
     return 'expired';
   if (item.isOxygen) return 'ok';
-  if (bag.totalItems === 0) return 'out';
-  if (item.reorderThreshold > 0 && bag.totalItems <= item.reorderThreshold) return 'low';
+  // Availability, not physical count, drives out/low: an item whose only stock is
+  // expired or quarantined has zero deployable units and must read 'out', never 'ok'.
+  if (bag.availableItems === 0) return 'out';
+  if (item.reorderThreshold > 0 && bag.availableItems <= item.reorderThreshold) return 'low';
   if (batches.some(b => b.expirationDate && b.expirationDate >= now && b.expirationDate <= cutoff))
     return 'expiring';
   return 'ok';

@@ -43,6 +43,7 @@ import {
   RefreshCw,
   CheckSquare,
   GraduationCap,
+  ShieldAlert,
   Sun,
   Moon,
 } from 'lucide-react';
@@ -245,6 +246,14 @@ export default function AppNavbar() {
               </Link>
             </NavbarItem>
           )}
+
+          {isAdmin && (
+            <NavbarItem isActive={isActive('/reconciliation')}>
+              <Link href="/reconciliation" className={isActive('/reconciliation') ? 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] bg-primary-50 dark:bg-primary-900/20 text-primary font-semibold text-[15px] transition-colors duration-150' : 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] text-foreground-400 font-medium text-[15px] hover:bg-content2 transition-colors duration-150'}>
+                <ShieldAlert className="w-4 h-4" /> Exceptions
+              </Link>
+            </NavbarItem>
+          )}
         </div>
       </NavbarBrand>
 
@@ -362,6 +371,11 @@ export default function AppNavbar() {
           <NavbarMenuItem className="py-1">
             <Link href="/issue-reports" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/issue-reports') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/issue-reports')}>
               <AlertTriangle size={18} /> Reports
+            </Link>
+          </NavbarMenuItem>
+          <NavbarMenuItem className="py-1">
+            <Link href="/reconciliation" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/reconciliation') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/reconciliation')}>
+              <ShieldAlert size={18} /> Exceptions
             </Link>
           </NavbarMenuItem>
         </>)}

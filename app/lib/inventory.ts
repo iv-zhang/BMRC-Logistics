@@ -1,6 +1,6 @@
 import { collection, doc, getDoc, getDocs, writeBatch, serverTimestamp, addDoc, updateDoc, runTransaction, query, where, orderBy, limit, documentId } from 'firebase/firestore';
 import { db } from '@/firebase';
-import type { InventoryItem, Statpack, StatpackItem, StatpackPocket, Container, BoxLog, StatpackLog, PurchaseInfo, ValidationWarning, AssetInstance, AssetCheckResult, StatpackAuditResult, AssetVerificationRules } from '@/app/types';
+import type { InventoryItem, InventoryBatch, Statpack, StatpackItem, StatpackPocket, Container, BoxLog, StatpackLog, PurchaseInfo, ValidationWarning, AssetInstance, AssetCheckResult, StatpackAuditResult, AssetVerificationRules } from '@/app/types';
 import { recordAuditEvent, removeUndefined, deepRemoveUndefined } from '@/app/lib/audit';
 import { createReport } from '@/app/lib/reports';
 import { getAssetCategoriesRuntime, getThresholds } from '@/app/lib/org-config-store';
@@ -278,6 +278,74 @@ const resolveStatpackPairId = async (params: {
   return generateStatpackPairId();
 };
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Coerce a Date | Firestore Timestamp | ISO-string | ms into epoch ms (or undefined). */
+function toMillisLoose(v: unknown): number | undefined {
+  if (v === null || v === undefined) return undefined;
+  if (v instanceof Date) return v.getTime();
+  const anyV = v as { toMillis?: () => number; toDate?: () => Date };
+  if (typeof anyV.toMillis === 'function') return anyV.toMillis();
+  if (typeof anyV.toDate === 'function') return anyV.toDate().getTime();
+  const t = new Date(v as string | number).getTime();
+  return Number.isNaN(t) ? undefined : t;
+}
+
+/**
+ * Best-effort, bounded pre-assessment of the life-safety hazards a check-off must
+ * fail-closed on but that live on the *inventory* docs, not the member's entries:
+ *   • a lot referenced by the pack has been recalled (`batch.status==='quarantined'`)
+ *   • an AED in the pack has expired pads/battery or an overdue periodic check
+ *   • a glucometer (reagent asset) has no in-interval passing control test
+ * Reads are done once up front (not inside the check-off transaction) so the
+ * transaction stays light; a recall landing between this read and commit is
+ * acceptable — the next check-off/audit catches it.
+ */
+async function assessPackHazards(statpackId: string): Promise<{
+  quarantinedBatchIds: Set<string>;
+  assetCurrencyLapsed: boolean;
+}> {
+  const quarantinedBatchIds = new Set<string>();
+  let assetCurrencyLapsed = false;
+  try {
+    const sp = await getDoc(doc(db, 'statpacks', statpackId));
+    if (!sp.exists()) return { quarantinedBatchIds, assetCurrencyLapsed };
+    const contents = ((sp.data() as Statpack)?.contents ?? []) as StatpackItem[];
+    const itemIds = Array.from(new Set(contents.map(c => c?.itemId).filter(Boolean)));
+    const th = getThresholds();
+    const nowMs = Date.now();
+    await Promise.all(itemIds.map(async (iid) => {
+      const invSnap = await getDoc(doc(db, 'inventory', iid as string));
+      if (!invSnap.exists()) return;
+      const inv = invSnap.data() as InventoryItem;
+      for (const b of (inv.batches ?? [])) {
+        if (b?.status === 'quarantined' && b?.id) quarantinedBatchIds.add(b.id);
+      }
+      if (inv.isAsset) {
+        // AED: expired pads/battery, or an overdue periodic check → not current.
+        if (inv.assetCategory === 'AED') {
+          const pad = toMillisLoose(inv.padExpiration);
+          const bat = toMillisLoose(inv.batteryExpiration);
+          if ((pad !== undefined && pad < nowMs) || (bat !== undefined && bat < nowMs)) assetCurrencyLapsed = true;
+          const checked = toMillisLoose(inv.assetLastChecked);
+          if (checked !== undefined && (nowMs - checked) / DAY_MS > th.aedCheckIntervalDays) assetCurrencyLapsed = true;
+        }
+        // Glucometer / reagent asset: control test must be current AND passing.
+        const ct = inv.controlTest;
+        if (ct) {
+          const last = toMillisLoose(ct.lastPassedAt);
+          const interval = typeof ct.intervalDays === 'number' ? ct.intervalDays : th.glucometerControlTestIntervalDays;
+          if (last === undefined || (nowMs - last) / DAY_MS > interval) assetCurrencyLapsed = true;
+          if (ct.lastResult && ct.lastResult !== 'pass') assetCurrencyLapsed = true;
+        }
+      }
+    }));
+  } catch (e) {
+    console.warn('logStatpackCheckOff: hazard pre-assessment failed', e);
+  }
+  return { quarantinedBatchIds, assetCurrencyLapsed };
+}
+
 export async function logStatpackCheckOff(params: {
   statpackId: string;
   statpackName: string;
@@ -469,6 +537,10 @@ export async function logStatpackCheckOff(params: {
       entry.checkedAt = now;
     }
   }
+  // Pre-assess recall + asset-currency hazards from the backing inventory docs so
+  // readiness can fail-closed on them (bounded reads, outside the transaction).
+  const hazard = await assessPackHazards(statpackId);
+
   // Write the log and update the statpack inside a transaction to avoid races.
   const statpackRef = doc(db, 'statpacks', statpackId);
   const newLogRef = doc(collection(db, 'statpack_logs'));
@@ -524,6 +596,9 @@ export async function logStatpackCheckOff(params: {
       // Accumulate status signals while we walk the entries.
       let anyExpired = false;
       let anyShortConsumable = false;
+      // Fail-closed: a required consumable submitted WITHOUT a numeric count is an
+      // unknown, and unknown must resolve to not-ready (never optimistic 'Ready').
+      let anyUnknown = false;
       const nowMs = Date.now();
 
       for (const e of (checkEntries || [])) {
@@ -550,13 +625,25 @@ export async function logStatpackCheckOff(params: {
         const expiredByIssue = Boolean(e.issue && (e.issue.type === 'broken' || e.issue.type === 'expired'));
         if (expiredByDate || expiredByIssue) anyExpired = true;
 
-        if (!isAssetEntry
-          && typeof e.countedQuantity === 'number'
-          && typeof e.requiredQuantity === 'number'
-          && e.countedQuantity < e.requiredQuantity
-          && e.restockStatus !== 'restocked') {
-          anyShortConsumable = true;
+        if (!isAssetEntry && typeof e.requiredQuantity === 'number' && e.requiredQuantity > 0) {
+          if (typeof e.countedQuantity !== 'number' || !Number.isFinite(e.countedQuantity)) {
+            // Required consumable with no usable count → unknown → fail-closed.
+            anyUnknown = true;
+          } else if (e.countedQuantity < e.requiredQuantity && e.restockStatus !== 'restocked') {
+            anyShortConsumable = true;
+          }
         }
+      }
+
+      // Recall + stored-expiry hazards read from the pack's own persisted contents
+      // (not just what the member re-entered this pass): a lot already recalled, or
+      // a stored expiration already in the past, must flip the pack to not-ready.
+      let anyQuarantined = false;
+      let anyStoredExpired = false;
+      for (const c of contents) {
+        if (c?.batchId && hazard.quarantinedBatchIds.has(c.batchId)) anyQuarantined = true;
+        const storedExp = toMillisLoose(c?.expirationDate);
+        if (storedExp !== undefined && storedExp < nowMs) anyStoredExpired = true;
       }
 
       // Write updated contents back whenever the pack has contents to persist.
@@ -573,10 +660,16 @@ export async function logStatpackCheckOff(params: {
         });
       }
 
-      // Derive the resulting pack status for check-in / audit.
+      // Derive the resulting pack status for check-in / audit. Conservative:
+      // expired/recalled lots (entered OR already stored) block first; short,
+      // unknown (uncounted), stale life-safety assets, or a full sharps box all
+      // keep the pack out of 'Ready'.
       const deriveStatus = (): Statpack['status'] => {
-        if (anyExpired) return 'Expired Items';
-        if (anyShortConsumable || sharpsCheck?.status === 'full') return 'Restock Needed';
+        if (anyExpired || anyStoredExpired || anyQuarantined) return 'Expired Items';
+        if (anyShortConsumable
+          || anyUnknown
+          || hazard.assetCurrencyLapsed
+          || sharpsCheck?.status === 'full') return 'Restock Needed';
         return 'Ready';
       };
 
@@ -1581,8 +1674,9 @@ export async function consumeBox(
     updatedAt: serverTimestamp(),
   });
   
-  // Audit logs
-  await addDoc(collection(db, 'inventory_logs'), {
+  // Audit logs — strip undefined (e.g. a missing `notes`) so Firestore, which
+  // rejects `undefined` field values, does not throw on a no-note consume.
+  await addDoc(collection(db, 'inventory_logs'), removeUndefined({
     itemId,
     itemName: item.name,
     action: 'consume_box',
@@ -1595,9 +1689,104 @@ export async function consumeBox(
     userName: opts?.userName || 'System',
     timestamp: serverTimestamp(),
     notes: opts?.notes,
-  });
+  }));
   
   return batchId;
+}
+
+/**
+ * FEFO (first-expiry-first-out) consumption of a batch/lot-tracked SKU.
+ *
+ * Draws `quantity` units from the item's batches in EARLIEST-expiry-first order,
+ * skipping any lot that is expired or quarantined/recalled, and decrementing each
+ * drawn lot's `stock` (recomputing `bagCount`/`looseItems` from `itemsPerBag` so a
+ * bag-tracked lot stays consistent). REFUSES (throws) if `quantity` exceeds the
+ * available (deployable) total — stock is never driven negative. Writes one
+ * `inventory_logs` row describing the draw.
+ *
+ * This is the lot-level consume primitive the model previously lacked (INV-5);
+ * `consumeBox` only moves sealed boxes to an open batch and never picks by expiry.
+ */
+export async function consumeSku(params: {
+  itemId: string;
+  quantity: number;
+  actor: { uid: string; name: string; email?: string };
+  note?: string;
+}): Promise<{ consumed: number; draws: Array<{ batchId: string; units: number }> }> {
+  const { itemId, quantity, actor, note } = params;
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    throw new Error(`consumeSku: quantity must be a positive number (got ${quantity})`);
+  }
+
+  const itemRef = doc(db, 'inventory', itemId);
+
+  const { itemName, draws } = await runTransaction(db, async (tx) => {
+    const snap = await tx.get(itemRef);
+    if (!snap.exists()) throw new Error(`Inventory item ${itemId} not found`);
+    const item = snap.data() as InventoryItem;
+    const batches = (item.batches || []).map(b => ({ ...b }));
+    const nowMs = Date.now();
+
+    const unitsOf = (b: InventoryBatch): number => b.stock ?? 0;
+    const eligible = batches
+      .map((b, idx) => ({ b, idx }))
+      .filter(({ b }) => {
+        if (unitsOf(b) <= 0) return false;
+        if (b.status === 'quarantined') return false;
+        const exp = toMillisLoose(b.expirationDate);
+        if (exp !== undefined && exp < nowMs) return false; // expired
+        return true;
+      })
+      // Earliest expiry first; undated lots drawn last.
+      .sort((x, y) => (toMillisLoose(x.b.expirationDate) ?? Infinity) - (toMillisLoose(y.b.expirationDate) ?? Infinity));
+
+    const available = eligible.reduce((sum, { b }) => sum + unitsOf(b), 0);
+    if (quantity > available) {
+      throw new Error(`consumeSku: insufficient available stock for ${itemId}. Requested ${quantity}, available ${available}`);
+    }
+
+    let remaining = quantity;
+    const localDraws: Array<{ batchId: string; units: number }> = [];
+    for (const { b, idx } of eligible) {
+      if (remaining <= 0) break;
+      const take = Math.min(unitsOf(b), remaining);
+      const newStock = unitsOf(b) - take;
+      const updated = batches[idx];
+      updated.stock = newStock;
+      // Keep bag/loose accounting consistent when the lot is bag-tracked.
+      if (updated.itemsPerBag !== undefined && (updated.itemsPerBag ?? 0) > 0) {
+        const per = updated.itemsPerBag as number;
+        updated.bagCount = Math.floor(newStock / per);
+        updated.looseItems = newStock % per;
+      }
+      if (newStock === 0 && updated.status !== 'quarantined') updated.status = 'depleted';
+      remaining -= take;
+      localDraws.push({ batchId: b.id, units: take });
+    }
+
+    tx.update(itemRef, { batches, updatedAt: serverTimestamp() });
+    return { itemName: item.name, draws: localDraws };
+  });
+
+  // Immutable change log (best-effort; the consumption already committed).
+  try {
+    await addDoc(collection(db, 'inventory_logs'), removeUndefined({
+      itemId,
+      itemName,
+      action: 'consume_sku',
+      quantity,
+      batchId: draws.map(d => d.batchId).join(','),
+      userId: actor.uid,
+      userName: actor.name,
+      timestamp: serverTimestamp(),
+      notes: note,
+      details: { draws, method: 'FEFO' },
+    } as Record<string, unknown>));
+  } catch (e) {
+    console.warn('consumeSku: failed to write inventory_logs row', e);
+  }
+
+  return { consumed: quantity, draws };
 }
 
 /**

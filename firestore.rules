@@ -1,0 +1,21 @@
+rules_version = '2';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EMULATOR-ONLY RULES.
+//
+// These rules are wide-open on purpose: they exist so the Firestore Local
+// Emulator Suite can run seed + integration + property tests without an auth
+// layer. They are NOT the production security model.
+//
+// Safety: the test harness only ever targets a `demo-*` project id
+// (see scripts/emulator/guard.cjs). A `demo-*` project can never reach real
+// Google Cloud, so these permissive rules cannot expose production data.
+// Do NOT deploy this file to a live project.
+// ─────────────────────────────────────────────────────────────────────────────
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}
