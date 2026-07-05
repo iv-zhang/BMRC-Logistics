@@ -22,11 +22,11 @@ export interface AppSidebarProps {
   onShow: () => void;
 }
 
-type LucideIcon = React.ComponentType<{ size?: number; className?: string }>;
-interface NavItem { key: string; label: string; Icon: LucideIcon; path: string; }
-interface NavSection { label?: string; items: NavItem[]; }
+export type LucideIcon = React.ComponentType<{ size?: number; className?: string }>;
+export interface NavItem { key: string; label: string; Icon: LucideIcon; path: string; }
+export interface NavSection { label?: string; items: NavItem[]; }
 
-const ADMIN_NAV: NavSection[] = [
+export const ADMIN_NAV: NavSection[] = [
   {
     items: [
       { key: 'dashboard', label: 'Dashboard', Icon: Home, path: '/dashboard' },
@@ -61,7 +61,7 @@ const ADMIN_NAV: NavSection[] = [
   },
 ];
 
-const MEMBER_NAV: NavSection[] = [
+export const MEMBER_NAV: NavSection[] = [
   {
     items: [
       { key: 'dashboard', label: 'Dashboard', Icon: Home, path: '/dashboard' },
@@ -169,6 +169,10 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
   const isItemActive = (path: string) =>
     pathname === path || pathname.startsWith(path + '/');
 
+  // On mobile the icon rail is replaced app-wide by the bottom nav bar
+  // (see mobile-bottom-nav.tsx), so hide the rail below `md` on every route.
+  const railHideCls = 'max-md:hidden';
+
   const navSections = isAdmin ? ADMIN_NAV : MEMBER_NAV;
   const userInitial = (userData?.fullName?.[0] ?? user?.email?.[0] ?? 'U').toUpperCase();
   const userName = userData?.fullName || user?.email?.split('@')[0] || 'User';
@@ -195,7 +199,7 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
         <button
           onClick={onShow}
           title="Show sidebar"
-          className="fixed bottom-[18px] left-0 z-40 bg-content1 border border-l-0 border-divider text-foreground-400 hover:text-primary w-[30px] h-11 rounded-r-[12px] flex items-center justify-center transition-colors duration-150"
+          className={`fixed bottom-[18px] left-0 z-40 bg-content1 border border-l-0 border-divider text-foreground-400 hover:text-primary w-[30px] h-11 rounded-r-[12px] flex items-center justify-center transition-colors duration-150 ${railHideCls}`}
           style={{ boxShadow: '2px 2px 10px rgba(0,0,0,.08)' }}
         >
           <ChevronsRight size={18} />
@@ -211,7 +215,7 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
       <aside
         onMouseEnter={() => setNavHover(true)}
         onMouseLeave={() => setNavHover(false)}
-        className="fixed top-0 left-0 bottom-0 z-40 bg-content1 border-r border-divider overflow-hidden"
+        className={`fixed top-0 left-0 bottom-0 z-40 bg-content1 border-r border-divider overflow-hidden ${railHideCls}`}
         style={{
           width: expanded ? 248 : 72,
           transition: 'width 0.22s cubic-bezier(.16,1,.3,1), box-shadow 0.22s',

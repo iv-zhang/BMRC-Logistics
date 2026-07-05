@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Chip, Button, Spinner } from '@heroui/react';
 import {
   Plus, Minus, Search, MapPin, Download, ChevronDown, X, RotateCcw,
-  PackageOpen, LayoutList, Table2, ArrowRight,
+  PackageOpen, LayoutList, Table2, ArrowRight, SlidersHorizontal,
 } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import {
@@ -75,6 +75,7 @@ export default function InventoryPage() {
 
   // Views
   const [viewMode, setViewMode] = useState<'list' | 'table'>('list');
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [tableExpanded, setTableExpanded] = useState<Set<string>>(new Set());
   const [detailItem, setDetailItem] = useState<InventoryItem | null>(null);
 
@@ -435,7 +436,7 @@ export default function InventoryPage() {
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
-      <div className="max-w-7xl mx-auto px-6 py-8">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
 
         {/* ── Page header ────────────────────────────────────────────────── */}
         <div className="flex items-end justify-between gap-4 mb-6 flex-wrap">
@@ -464,7 +465,7 @@ export default function InventoryPage() {
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
             {/* View toggle */}
             <div className="flex bg-content1 border border-divider rounded-large p-1 gap-1">
               {([
@@ -503,10 +504,27 @@ export default function InventoryPage() {
 
         {/* ══ LIST VIEW ══════════════════════════════════════════════════════ */}
         {viewMode === 'list' && (
-          <div className="flex gap-6 items-start">
+          <div>
+
+            {/* Mobile filter toggle — collapses the sidebar into a disclosure below md */}
+            <button
+              onClick={() => setMobileFiltersOpen(o => !o)}
+              className="md:hidden w-full flex items-center gap-2 bg-content1 border border-divider rounded-large px-4 py-2.5 mb-3 text-sm font-semibold text-foreground-600 dark:text-foreground-300"
+            >
+              <SlidersHorizontal size={16} className="text-foreground-400" />
+              Filters
+              {[statusFilter, categoryFilter, locationFilter].filter(Boolean).length > 0 && (
+                <span className="font-mono text-xs px-2 py-0.5 rounded-full bg-primary-50 dark:bg-primary-900/20 text-primary tabular-nums">
+                  {[statusFilter, categoryFilter, locationFilter].filter(Boolean).length}
+                </span>
+              )}
+              <ChevronDown size={16} className={`ml-auto text-foreground-400 transition-transform duration-200 ${mobileFiltersOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+          <div className="flex flex-col md:flex-row gap-4 md:gap-6 items-stretch md:items-start">
 
             {/* Sidebar ────────────────────────────────────────────────────── */}
-            <aside className="w-64 flex-none flex flex-col gap-4">
+            <aside className={`w-full md:w-64 md:flex-none flex-col gap-4 ${mobileFiltersOpen ? 'flex' : 'hidden md:flex'}`}>
 
               {/* Stock Status */}
               <div className="bg-content1 border border-divider rounded-large p-4">
@@ -631,7 +649,7 @@ export default function InventoryPage() {
                     <div
                       key={item.id}
                       onClick={() => setDetailItem(item)}
-                      className={`flex gap-4 items-center border rounded-[14px] px-4 py-4 cursor-pointer transition-all duration-150 hover:-translate-y-px hover:shadow-[0_6px_22px_rgba(16,24,40,0.09)] dark:hover:shadow-[0_6px_22px_rgba(0,0,0,0.35)] ${getCardTint(status)}`}
+                      className={`flex flex-wrap sm:flex-nowrap gap-3 sm:gap-4 items-center border rounded-[14px] px-4 py-4 cursor-pointer transition-all duration-150 hover:-translate-y-px hover:shadow-[0_6px_22px_rgba(16,24,40,0.09)] dark:hover:shadow-[0_6px_22px_rgba(0,0,0,0.35)] ${getCardTint(status)}`}
                     >
                       {/* Category badge */}
                       <div className={`w-[50px] h-[50px] rounded-[13px] flex items-center justify-center font-mono font-semibold text-[15px] flex-none ${cfg.bg} ${cfg.text}`}>
@@ -639,7 +657,7 @@ export default function InventoryPage() {
                       </div>
 
                       {/* Info */}
-                      <div className="flex-1 min-w-0">
+                      <div className="flex-1 min-w-[55%] sm:min-w-0">
                         <div className="flex items-center gap-2 flex-wrap mb-1">
                           <span className="font-semibold text-foreground">{item.name}</span>
                           <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${cfg.bg} ${cfg.text}`}>
@@ -667,7 +685,7 @@ export default function InventoryPage() {
 
                       {/* Quantity */}
                       {item.isOxygen ? (
-                        <div className="w-36 flex-none flex flex-col items-end gap-1.5">
+                        <div className="w-full sm:w-36 flex-none flex flex-col items-end gap-1.5">
                           <div className="flex items-baseline gap-1">
                             <span className={`font-mono text-3xl font-semibold tabular-nums leading-none ${qtyColor}`}>
                               {item.oxygenPsi ?? 0}
@@ -683,7 +701,7 @@ export default function InventoryPage() {
                           <span className="text-[11px] text-foreground-400">Max {item.maxOxygenPsi} · O₂</span>
                         </div>
                       ) : (
-                        <div className="w-44 flex-none flex flex-col items-end gap-1.5">
+                        <div className="w-full sm:w-44 flex-none flex flex-col items-end gap-1.5">
                           <div className="flex items-center gap-3">
                             <button
                               onClick={e => { e.stopPropagation(); handleQuickAdjust(item.id, -1); }}
@@ -721,6 +739,7 @@ export default function InventoryPage() {
                 })
               )}
             </main>
+          </div>
           </div>
         )}
 
@@ -773,8 +792,9 @@ export default function InventoryPage() {
               </div>
             </div>
 
-            {/* Table */}
-            <div className="bg-content1 border border-divider rounded-large overflow-hidden">
+            {/* Table — scrolls horizontally on narrow screens */}
+            <div className="bg-content1 border border-divider rounded-large overflow-x-auto">
+              <div className="min-w-[760px]">
               {/* Header */}
               <div className="grid gap-4 px-5 py-3 bg-content2 border-b border-divider text-[11px] font-semibold uppercase tracking-wide text-foreground-400"
                 style={{ gridTemplateColumns: '2.3fr 1.3fr 1.2fr 100px 1.4fr 104px' }}>
@@ -914,6 +934,7 @@ export default function InventoryPage() {
                     </div>
                   );
                 })}
+              </div>
               </div>
             </div>
 

@@ -13,6 +13,7 @@ import type { Statpack, InventoryItem, StatpackLog, StatpackItem } from '@/app/t
 import MemberDashboard from './member-dashboard';
 import {
   AlertTriangle, ChevronDown, Search, X, ArrowUpRight, Clock, AlertCircle,
+  Bell, ArrowRightLeft, Plus, ScanLine, FileText, ChevronRight,
 } from 'lucide-react';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -110,6 +111,7 @@ export default function DashboardPage() {
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [packLogs, setPackLogs] = useState<Record<string, StatpackLog[]>>({});
   const [loadingLogs, setLoadingLogs] = useState<Record<string, boolean>>({});
+  const [recentLogs, setRecentLogs] = useState<StatpackLog[]>([]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -153,6 +155,30 @@ export default function DashboardPage() {
     }, () => { invOk = true; done(); });
 
     return () => { unsubPacks(); unsubInv(); };
+  }, [user]);
+
+  // Recent global activity — powers the mobile dashboard feed
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const snap = await getDocs(query(
+          collection(db, 'statpack_logs'),
+          orderBy('timestamp', 'desc'),
+          limit(6),
+        ));
+        if (cancelled) return;
+        setRecentLogs(snap.docs.map(doc => {
+          const d = doc.data();
+          const ts = d.timestamp instanceof Timestamp ? d.timestamp.toDate()
+            : d.clientTimestamp instanceof Timestamp ? d.clientTimestamp.toDate()
+            : null;
+          return { id: doc.id, ...d, timestamp: ts } as StatpackLog;
+        }));
+      } catch { /* silent */ }
+    })();
+    return () => { cancelled = true; };
   }, [user]);
 
   const lowStockItems = useMemo(
@@ -230,15 +256,32 @@ export default function DashboardPage() {
     return <MemberDashboard userData={userData} />;
   }
 
+  const userName = userData?.fullName || user?.email?.split('@')[0] || 'there';
+
   return (
-    <AdminDashboard
-      statpacks={statpacks}
-      lowStockItems={lowStockItems}
-      expiryAlerts={expiryAlerts}
-      packLogs={packLogs}
-      loadingLogs={loadingLogs}
-      onExpandPack={handleExpandPack}
-    />
+    <>
+      {/* Desktop app-shell dashboard — md and up */}
+      <div className="hidden md:block">
+        <AdminDashboard
+          statpacks={statpacks}
+          lowStockItems={lowStockItems}
+          expiryAlerts={expiryAlerts}
+          packLogs={packLogs}
+          loadingLogs={loadingLogs}
+          onExpandPack={handleExpandPack}
+        />
+      </div>
+      {/* Mobile dashboard (1A — hero readiness) — below md */}
+      <div className="md:hidden">
+        <MobileDashboard
+          userName={userName}
+          statpacks={statpacks}
+          lowStockItems={lowStockItems}
+          expiryAlerts={expiryAlerts}
+          recentLogs={recentLogs}
+        />
+      </div>
+    </>
   );
 }
 
@@ -729,6 +772,337 @@ function AdminDashboard({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MOBILE DASHBOARD — 1A "Hero readiness"
+// ═══════════════════════════════════════════════════════════════════════════════
+
+interface MobileDashboardProps {
+  userName: string;
+  statpacks: Statpack[];
+  lowStockItems: InventoryItem[];
+  expiryAlerts: ExpiryAlert[];
+  recentLogs: StatpackLog[];
+}
+
+const LOG_META: Record<StatpackLog['action'], { label: string; cls: string }> = {
+  checkin:     { label: 'Check-in', cls: 'bg-success-50 dark:bg-success-900/20 text-success' },
+  checkout:    { label: 'Checkout', cls: 'bg-warning-50 dark:bg-warning-900/20 text-warning' },
+  restock:     { label: 'Restock',  cls: 'bg-primary-50 dark:bg-primary-900/20 text-primary' },
+  maintenance: { label: 'Maint.',   cls: 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300' },
+  audit:       { label: 'Audit',    cls: 'bg-primary-50 dark:bg-primary-900/20 text-primary' },
+  created:     { label: 'Created',  cls: 'bg-content3 text-foreground-500' },
+};
+
+function greeting(): string {
+  const h = new Date().getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 18) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function relTime(d: Date | unknown): string {
+  if (!(d instanceof Date)) return '—';
+  const mins = Math.round((Date.now() - d.getTime()) / 60000);
+  if (mins < 1) return 'Just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  if (days === 1) return 'Yesterday';
+  return `${days}d ago`;
+}
+
+function MobileDashboard({
+  userName, statpacks, lowStockItems, expiryAlerts, recentLogs,
+}: MobileDashboardProps) {
+  const router = useRouter();
+  const [modalSection, setModalSection] = useState<'low' | 'exp' | null>(null);
+
+  const total       = statpacks.length;
+  const readyCount  = useMemo(() => statpacks.filter(p => getPackTier(p) === 'ready').length, [statpacks]);
+  const inuseCount  = useMemo(() => statpacks.filter(p => getPackTier(p) === 'inuse').length, [statpacks]);
+  const attnCount   = useMemo(() => statpacks.filter(p => getPackTier(p) === 'attention').length, [statpacks]);
+  const frac        = total ? readyCount / total : 0;
+
+  const outOfStock   = useMemo(() => lowStockItems.filter(i => (i.totalStockQuantity ?? 0) <= 0).length, [lowStockItems]);
+  const expiringSoon = useMemo(() => expiryAlerts.filter(a => a.daysLeft >= 0 && a.daysLeft <= 7).length, [expiryAlerts]);
+  const expiredCount = useMemo(() => expiryAlerts.filter(a => a.daysLeft < 0).length, [expiryAlerts]);
+
+  const firstName = userName.split(' ')[0];
+
+  const quickActions = [
+    { label: 'Check-out', Icon: ArrowRightLeft, tint: 'primary', to: '/statpacks/checkout' },
+    { label: 'Restock',   Icon: Plus,           tint: 'primary', to: '/restock' },
+    { label: 'Scan',      Icon: ScanLine,       tint: 'primary', to: '/audit' },
+    { label: 'Reports',   Icon: FileText,       tint: 'warning', to: '/issue-reports' },
+  ] as const;
+
+  const tintCls: Record<'primary' | 'warning', string> = {
+    primary: 'bg-primary-50 dark:bg-primary-900/20 text-primary',
+    warning: 'bg-warning-50 dark:bg-warning-900/20 text-warning',
+  };
+
+  return (
+    <div className="min-h-screen bg-background flex flex-col">
+
+      {/* Header */}
+      <header className="sticky top-0 z-30 bg-background/80 backdrop-blur-md flex items-center gap-3 px-5 pt-4 pb-3.5">
+        <div className="w-[42px] h-[42px] rounded-[13px] bg-primary text-white font-semibold text-base flex items-center justify-center flex-none">
+          {firstName[0]?.toUpperCase() ?? 'U'}
+        </div>
+        <div className="flex-1 min-w-0 leading-tight">
+          <div className="text-[11.5px] text-foreground-400 font-semibold">{greeting()}</div>
+          <div className="text-base font-bold tracking-tight text-foreground truncate">{firstName}</div>
+        </div>
+        <button
+          onClick={() => router.push('/issue-reports')}
+          className="w-10 h-10 rounded-[12px] border border-divider bg-content1 text-foreground-500 flex items-center justify-center flex-none relative active:scale-95 transition-transform"
+          aria-label="Reports"
+        >
+          <Bell size={19} />
+          {expiredCount + outOfStock > 0 && (
+            <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-danger border-2 border-content1" />
+          )}
+        </button>
+      </header>
+
+      {/* Scroll body */}
+      <div className="flex-1 px-4 pt-0.5 pb-32 flex flex-col gap-3.5">
+
+        {/* Hero readiness */}
+        <div className="bg-content1 border border-divider rounded-[22px] p-4" style={{ boxShadow: '0 1px 3px rgba(16,24,40,.05)' }}>
+          <div className="flex items-center mb-4">
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-bold tracking-tight text-foreground">Statpack readiness</div>
+              <div className="text-[11.5px] text-foreground-400 font-medium">{total} packs tracked · today</div>
+            </div>
+            <button
+              onClick={() => router.push('/statpacks')}
+              className="flex items-center gap-0.5 text-xs font-semibold text-primary active:opacity-70"
+            >
+              Details <ChevronRight size={15} />
+            </button>
+          </div>
+          <div className="flex items-center gap-5">
+            <div
+              className="w-[104px] h-[104px] rounded-full flex items-center justify-center flex-none"
+              style={{ background: `conic-gradient(hsl(var(--heroui-primary)) 0turn ${frac}turn, hsl(var(--heroui-content3)) ${frac}turn 1turn)` }}
+            >
+              <div className="w-[78px] h-[78px] rounded-full bg-content1 flex flex-col items-center justify-center">
+                <span className="text-[23px] font-bold tracking-tight text-foreground tabular-nums leading-none">{readyCount}/{total}</span>
+                <span className="text-[9px] font-bold uppercase tracking-widest text-foreground-400 mt-1">ready</span>
+              </div>
+            </div>
+            <div className="flex-1 min-w-0 flex flex-col gap-2.5">
+              <ReadinessRow dot="bg-success" label="Ready" value={readyCount} />
+              <div className="h-px bg-divider" />
+              <ReadinessRow dot="bg-primary" label="In use" value={inuseCount} />
+              <div className="h-px bg-divider" />
+              <ReadinessRow dot="bg-danger" label="Needs attention" value={attnCount} />
+            </div>
+          </div>
+        </div>
+
+        {/* Quick actions */}
+        <div className="grid grid-cols-4 gap-2.5">
+          {quickActions.map(({ label, Icon, tint, to }) => (
+            <button
+              key={label}
+              onClick={() => router.push(to)}
+              className="bg-content1 border border-divider rounded-[16px] py-3 px-1 flex flex-col items-center gap-2 active:scale-95 transition-transform"
+            >
+              <span className={`w-11 h-11 rounded-[13px] flex items-center justify-center ${tintCls[tint]}`}>
+                <Icon size={21} />
+              </span>
+              <span className="text-[10.5px] font-semibold text-foreground-500">{label}</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Alert tiles */}
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            onClick={() => setModalSection('low')}
+            className="text-left bg-content1 border border-divider rounded-[18px] p-4 flex flex-col gap-2.5 active:scale-[.98] transition-transform"
+          >
+            <div className="flex items-center">
+              <span className="w-9 h-9 rounded-[11px] bg-danger-50 dark:bg-danger-900/20 text-danger flex items-center justify-center flex-none">
+                <AlertTriangle size={18} />
+              </span>
+              <ChevronRight size={18} className="ml-auto text-foreground-300" />
+            </div>
+            <div>
+              <div className="text-[28px] font-bold tracking-tight text-foreground tabular-nums leading-none">{lowStockItems.length}</div>
+              <div className="text-[12.5px] font-semibold text-foreground-500 mt-1">Low supply</div>
+              <div className="text-[11px] font-semibold text-danger mt-0.5">{outOfStock} out of stock</div>
+            </div>
+          </button>
+          <button
+            onClick={() => setModalSection('exp')}
+            className="text-left bg-content1 border border-divider rounded-[18px] p-4 flex flex-col gap-2.5 active:scale-[.98] transition-transform"
+          >
+            <div className="flex items-center">
+              <span className="w-9 h-9 rounded-[11px] bg-warning-50 dark:bg-warning-900/20 text-warning flex items-center justify-center flex-none">
+                <Clock size={18} />
+              </span>
+              <ChevronRight size={18} className="ml-auto text-foreground-300" />
+            </div>
+            <div>
+              <div className="text-[28px] font-bold tracking-tight text-foreground tabular-nums leading-none">{expiryAlerts.length}</div>
+              <div className="text-[12.5px] font-semibold text-foreground-500 mt-1">Expiring</div>
+              <div className="text-[11px] font-semibold text-warning mt-0.5">{expiringSoon} within 7 days</div>
+            </div>
+          </button>
+        </div>
+
+        {/* Recent activity */}
+        <div className="bg-content1 border border-divider rounded-[18px] px-4 pt-4 pb-1.5" style={{ boxShadow: '0 1px 3px rgba(16,24,40,.04)' }}>
+          <div className="flex items-center mb-3">
+            <span className="text-sm font-bold tracking-tight text-foreground flex-1">Recent activity</span>
+            <button onClick={() => router.push('/statpacks/stats')} className="text-xs font-semibold text-primary active:opacity-70">See all</button>
+          </div>
+          {recentLogs.length > 0 ? recentLogs.map((log, i) => {
+            const meta = LOG_META[log.action] ?? LOG_META.created;
+            return (
+              <div
+                key={log.id ?? i}
+                className={`flex items-start gap-2.5 py-3 ${i < recentLogs.length - 1 ? 'border-b border-divider' : ''}`}
+              >
+                <span className={`text-[9.5px] font-semibold px-2 py-0.5 rounded-md flex-none whitespace-nowrap ${meta.cls}`}>
+                  {meta.label}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[12.5px] font-semibold text-foreground-500 leading-snug">
+                    {log.notes || log.statpackName || '—'}
+                  </div>
+                  <div className="text-[10.5px] text-foreground-400 font-medium mt-0.5">
+                    {log.userName} · {relTime(log.timestamp)}
+                  </div>
+                </div>
+              </div>
+            );
+          }) : (
+            <p className="text-[12px] text-foreground-400 py-4 text-center">No recent activity.</p>
+          )}
+        </div>
+      </div>
+
+      {/* FAB — scan */}
+      <button
+        onClick={() => router.push('/audit')}
+        aria-label="Scan"
+        className="fixed right-5 bottom-[92px] w-14 h-14 rounded-[18px] bg-primary text-white flex items-center justify-center z-30 active:scale-95 transition-transform"
+        style={{ boxShadow: '0 10px 24px rgba(0,111,238,.45)' }}
+      >
+        <ScanLine size={24} />
+      </button>
+
+      {/* Alert list sheet */}
+      {modalSection && (
+        <div className="fixed inset-0 z-50 flex flex-col justify-end" onClick={() => setModalSection(null)}>
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+          <div
+            className="relative bg-content1 rounded-t-[22px] flex flex-col overflow-hidden max-h-[85vh]"
+            style={{ boxShadow: '0 -12px 40px rgba(0,0,0,.25)' }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 px-5 py-4 border-b border-divider flex-none">
+              <div className={`w-[38px] h-[38px] rounded-[11px] flex items-center justify-center flex-none ${
+                modalSection === 'low'
+                  ? 'bg-danger-50 dark:bg-danger-900/20 text-danger'
+                  : 'bg-warning-50 dark:bg-warning-900/20 text-warning'
+              }`}>
+                {modalSection === 'low' ? <AlertTriangle size={19} /> : <Clock size={19} />}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-base font-bold tracking-tight text-foreground">
+                  {modalSection === 'low' ? 'Low supply' : 'Expiring items'}
+                </div>
+                <div className="text-[11.5px] text-foreground-400 font-medium">
+                  {(modalSection === 'low' ? lowStockItems.length : expiryAlerts.length)} items
+                </div>
+              </div>
+              <button
+                onClick={() => setModalSection(null)}
+                aria-label="Close"
+                className="w-9 h-9 rounded-[11px] bg-content2 text-foreground-400 flex items-center justify-center flex-none active:scale-95 transition-transform"
+              >
+                <X size={17} />
+              </button>
+            </div>
+            <div className="overflow-y-auto">
+              {modalSection === 'low' ? (
+                lowStockItems.length === 0 ? (
+                  <div className="px-6 py-10 text-center text-[13px] text-foreground-400">All stock levels healthy.</div>
+                ) : lowStockItems.map(item => {
+                  const out = (item.totalStockQuantity ?? 0) <= 0;
+                  return (
+                    <div key={item.id} className="flex items-center justify-between gap-3 px-5 py-3.5 border-b border-divider last:border-0">
+                      <div className="min-w-0">
+                        <div className="text-[13.5px] font-semibold text-foreground truncate">{item.name}</div>
+                        <div className="text-[11.5px] text-foreground-400 font-medium">{item.category}</div>
+                      </div>
+                      <div className="text-right flex-none">
+                        <div className="flex items-baseline gap-1 justify-end">
+                          <span className={`font-mono text-[15px] font-semibold tabular-nums ${out ? 'text-danger' : 'text-warning'}`}>
+                            {item.totalStockQuantity ?? 0}
+                          </span>
+                          <span className="text-[11.5px] text-foreground-400">/ {item.reorderThreshold}</span>
+                        </div>
+                        <div className={`text-[10.5px] font-semibold ${out ? 'text-danger' : 'text-warning'}`}>
+                          {out ? 'Out of stock' : 'Reorder needed'}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                expiryAlerts.length === 0 ? (
+                  <div className="px-6 py-10 text-center text-[13px] text-foreground-400">No immediate expirations.</div>
+                ) : expiryAlerts.map((alert, i) => {
+                  const expired = alert.daysLeft < 0;
+                  const srcCls  = alert.src === 'Bag'
+                    ? 'bg-primary-50 dark:bg-primary-900/20 text-primary'
+                    : 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300';
+                  return (
+                    <div key={i} className="flex items-center justify-between gap-3 px-5 py-3.5 border-b border-divider last:border-0">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[13.5px] font-semibold text-foreground truncate">{alert.name}</span>
+                          <span className={`text-[9.5px] font-semibold px-1.5 py-0.5 rounded-[5px] whitespace-nowrap flex-none ${srcCls}`}>
+                            {alert.src}
+                          </span>
+                        </div>
+                        <div className="text-[11.5px] text-foreground-400 font-medium truncate">{alert.loc}</div>
+                      </div>
+                      <div className="text-right flex-none">
+                        <div className={`text-[12.5px] font-semibold whitespace-nowrap ${expired ? 'text-danger' : 'text-warning'}`}>
+                          {expired ? `Expired ${Math.abs(alert.daysLeft)}d ago` : `In ${alert.daysLeft}d`}
+                        </div>
+                        <div className="text-[11px] text-foreground-400 font-medium">{fmtMonthYear(alert.expDate)}</div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReadinessRow({ dot, label, value }: { dot: string; label: string; value: number }) {
+  return (
+    <div className="flex items-center gap-2.5">
+      <span className={`w-[9px] h-[9px] rounded-full flex-none ${dot}`} />
+      <span className="text-[13px] font-semibold text-foreground-500 flex-1 min-w-0 truncate">{label}</span>
+      <span className="text-[15px] font-bold text-foreground tabular-nums">{value}</span>
     </div>
   );
 }

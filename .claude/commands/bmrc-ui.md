@@ -379,6 +379,128 @@ Table rules:
 - Action column: right-aligned `+`/`−` steppers and an expand chevron for sub-rows.
 - Expanded sub-rows: `bg-content2/50` inset with `bg-content1 border border-divider rounded-medium` sub-items.
 
+## Responsive: making desktop pages work on phones
+
+The `max-w-7xl` desktop pages (inventory, assets, roster, restock, storage) render on
+phones too — the app hides the icon rail below `md` and swaps in the bottom nav bar
+(see *Mobile bottom nav*), so each page must fit a ~360 px viewport with **no horizontal
+overflow**. The mobile-first full-screen flow pattern (below) is only for linear guided
+flows; regular pages instead stay one page and adapt at the `md` breakpoint. The default
+is **mobile-first Tailwind**: unprefixed = phone, `sm:`/`md:` layer the wider layout on top.
+
+Four failure modes cause the "page is too wide" bug, and their fixes:
+
+**1. Fixed-width sidebar beside content.** A `flex gap-6` row with a `w-64 flex-none`
+sidebar can't fit next to the list on a phone — the row is wider than the viewport.
+Stack it and let the sidebar go full width below `md`:
+
+```tsx
+{/* Mobile filter toggle — collapses the sidebar into a disclosure */}
+<button
+  onClick={() => setMobileFiltersOpen(o => !o)}
+  className="md:hidden w-full flex items-center gap-2 bg-content1 border border-divider rounded-large px-4 py-2.5 mb-3 text-sm font-semibold text-foreground-600 dark:text-foreground-300"
+>
+  <SlidersHorizontal size={16} className="text-foreground-400" />
+  Filters
+  {activeCount > 0 && (
+    <span className="font-mono text-xs px-2 py-0.5 rounded-full bg-primary-50 dark:bg-primary-900/20 text-primary tabular-nums">{activeCount}</span>
+  )}
+  <ChevronDown size={16} className={`ml-auto text-foreground-400 transition-transform duration-200 ${mobileFiltersOpen ? 'rotate-180' : ''}`} />
+</button>
+
+<div className="flex flex-col md:flex-row gap-4 md:gap-6 items-stretch md:items-start">
+  <aside className={`w-full md:w-64 md:flex-none flex-col gap-4 ${mobileFiltersOpen ? 'flex' : 'hidden md:flex'}`}>
+    {/* filter groups */}
+  </aside>
+  <main className="flex-1 min-w-0 flex flex-col gap-3">…</main>
+</div>
+```
+
+- Row: `flex flex-col md:flex-row` — stacked on phone, side-by-side at `md`.
+- Sidebar: `w-full md:w-64 md:flex-none` — never a bare `w-64` (that fixes the phone width too).
+- Collapse the filters behind a `md:hidden` **Filters** disclosure so they don't push the
+  list far down; show an active-filter count pill. Toggle visibility with
+  `${open ? 'flex' : 'hidden md:flex'}` — the sidebar is always visible at `md+`.
+- This does **not** violate the "no sidebar `overflow-y-auto`/`sticky`" rule — the sidebar
+  still flows with the page; it's only hidden/shown, never independently scrolled.
+
+**2. Wide grid table.** A multi-column `gridTemplateColumns` table can't reflow. Keep the
+desktop columns and let it **scroll horizontally inside its own container** — never let it
+widen the page:
+
+```tsx
+<div className="bg-content1 border border-divider rounded-large overflow-x-auto">
+  <div className="min-w-[760px]">
+    {/* grid header + rows exactly as desktop */}
+  </div>
+</div>
+```
+
+- Wrapper switches from `overflow-hidden` to `overflow-x-auto`; inner gets a `min-w-[NNNpx]`
+  matching the sum of the columns. The page body never scrolls sideways — only the table does.
+
+**3. Non-wrapping list rows.** A card row like `flex gap-4` with a fixed-width control
+(e.g. a `w-44` stepper) crushes the middle content on a phone. Let the control drop to its
+own full-width line:
+
+```tsx
+<div className="flex flex-wrap sm:flex-nowrap gap-3 sm:gap-4 items-center …">
+  <div className="…badge…" />                              {/* flex-none */}
+  <div className="flex-1 min-w-[55%] sm:min-w-0">…name/status…</div>
+  <div className="w-full sm:w-44 flex-none …">…stepper…</div> {/* wraps below on phone */}
+</div>
+```
+
+- Card: `flex-wrap sm:flex-nowrap`. The middle column's `min-w-[55%] sm:min-w-0` keeps the
+  badge + name on line 1 and forces the `w-full sm:w-44` control onto line 2 on phones.
+
+**4. Header / padding.** Page wrapper `px-6 py-8` → `px-4 sm:px-6 py-6 sm:py-8`. Any header
+action group (view toggle + Export + primary CTA) that is `flex items-center gap-3` must add
+`flex-wrap` so the buttons wrap instead of overflowing.
+
+Checklist for a responsive desktop page: open it at ~360 px — no horizontal scroll on the
+page body; sidebar stacked/collapsible; table scrolls only inside its own box; rows wrap;
+nothing clipped behind the bottom nav (the layout already adds `max-md:pb-[72px]`).
+
+## Mobile bottom nav
+
+Below `md` the app hides the icon rail (`app-sidebar.tsx` adds `max-md:hidden`) and renders
+a single shared bottom bar (`app/components/mobile-bottom-nav.tsx`) for every sidebar route
+except self-contained flows that have their own sticky footer (check-off / checkout /
+check-in). It is role-aware: admins get Dashboard · Statpacks · Inventory · Audit · **More**
+(a bottom sheet with the full nav + profile / theme / sign-out); members get Dashboard ·
+Report · Profile.
+
+```tsx
+<nav className="md:hidden fixed left-0 right-0 bottom-0 z-30 bg-background/85 backdrop-blur-md border-t border-divider px-2 pt-2 pb-[max(env(safe-area-inset-bottom),8px)] flex">
+  {tabs.map(({ key, label, Icon, path }) => {
+    const active = isActive(path);
+    return (
+      <button key={key} onClick={() => go(path)} className={`flex-1 flex flex-col items-center gap-1 py-1 active:scale-90 transition-transform ${active ? 'text-primary' : 'text-foreground-400'}`}>
+        <Icon size={22} />
+        <span className={`text-[10px] ${active ? 'font-semibold' : 'font-medium'}`}>{label}</span>
+      </button>
+    );
+  })}
+</nav>
+```
+
+- Bar: `md:hidden fixed bottom-0 z-30 bg-background/85 backdrop-blur-md border-t border-divider`,
+  `pb-[max(env(safe-area-inset-bottom),8px)]` for the home-indicator gap.
+- Active tab `text-primary`; inactive `text-foreground-400`. Tab label `text-[10px]`.
+- The layout wrapper adds `max-md:pb-[72px]` so page content clears the bar; a floating FAB
+  sits at `bottom-[92px]` to clear it too.
+- Any new full-screen mobile flow with its own footer must be added to `NO_BOTTOM_NAV_PATHS`
+  in `sidebar-layout.tsx` to suppress the global bar.
+- **iOS drift fix (required):** a `position: fixed` bar with `backdrop-filter` (our
+  `backdrop-blur-md`) is not auto-promoted to its own compositor layer, so on iOS Safari it
+  lags/drifts during momentum scroll on long pages and dips below the screen edge. Give the
+  `<nav>` `style={{ transform: 'translateZ(0)', willChange: 'transform', WebkitBackfaceVisibility: 'hidden' }}`
+  to pin it to a GPU layer. Put this on the fixed bar **itself only** — never on an ancestor
+  (a transformed ancestor becomes the containing block for *all* `fixed` descendants, which
+  reintroduces the scroll-with-page bug across the app) — and not on an element that also
+  animates via an `active:scale-*` class (inline `transform` beats the class and kills the press feedback).
+
 ## Search input
 
 Two variants depending on context:
@@ -1438,6 +1560,9 @@ Rules:
 - Mobile flow sticky header/footer without `bg-background/80 backdrop-blur-md` — causes content bleed-through while scrolling.
 - Forgetting `pb-28` on the scrollable main in mobile-first flows — content disappears behind sticky footer.
 - `sticky` on a filter sidebar whose content can exceed the viewport height — bottom filter groups become permanently unreachable and can't be scrolled to.
+- A bare `w-64` (no `md:` prefix) filter sidebar or a `flex gap-6` sidebar+content row with no `flex-col md:flex-row` — forces the page wider than a phone viewport (horizontal overflow). See *Responsive: making desktop pages work on phones*.
+- A wide `gridTemplateColumns` table in an `overflow-hidden` wrapper on a page that renders on phones — use `overflow-x-auto` + inner `min-w-[NNNpx]` so only the table scrolls, not the page.
+- A header action group (`flex items-center gap-3`) without `flex-wrap` — buttons overflow the viewport on narrow screens.
 - `overflow-y-auto` or `max-h` on a sidebar — creates a second independent scroll area, breaking the single-page-scroll contract.
 - Scrollable body cards without a `maxHeight` cap (`overflow-y-auto` without a max height) — card grows to fill the entire page.
 - `border-2` on non-selectable list cards — reserved for horizontally scrolling selection cards (e.g. statpack tiles). Use `border` everywhere else.
