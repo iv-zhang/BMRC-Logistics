@@ -36,9 +36,7 @@ import {
   Settings,
   MoreVertical,
   Edit3,
-  Circle,
   CheckCircle2,
-  Clock,
   ArrowUpDown,
   ListTodo,
   Package,
@@ -58,6 +56,7 @@ import {
 import { auth, db } from "@/firebase";
 import { useUserRole } from "@/app/hooks/useUserRole";
 import type { TaskItem, TaskCategory, BuyListItem } from "@/app/types";
+import { TASK_STATUS_CFG, getTaskStatusCfg, TaskStatusBadge } from "@/app/components/task-status-badge";
 
 const CATEGORY_CONFIG: Record<TaskCategory, { label: string; icon: React.ReactNode; color: "default" | "primary" | "secondary" | "success" | "warning" | "danger" }> = {
   buy: { label: "Buy", icon: <ShoppingCart size={14} />, color: "warning" },
@@ -72,6 +71,23 @@ const PRIORITY_COLORS: Record<string, "default" | "primary" | "warning" | "dange
   medium: "primary",
   high: "warning",
   urgent: "danger",
+};
+
+const STATUS_CARD_BG: Record<TaskItem["status"], string> = {
+  backlog: "bg-default-50",
+  this_cycle: "bg-secondary-50",
+  in_progress: "bg-primary-50",
+  blocked: "bg-danger-50",
+  done: "bg-success-50",
+};
+
+// Quick-toggle cycle; blocked is only entered explicitly via the menu
+const NEXT_STATUS: Record<TaskItem["status"], TaskItem["status"]> = {
+  backlog: "this_cycle",
+  this_cycle: "in_progress",
+  in_progress: "done",
+  blocked: "in_progress",
+  done: "backlog",
 };
 
 export default function TasksPage() {
@@ -98,6 +114,7 @@ export default function TasksPage() {
   const [formQuantity, setFormQuantity] = useState("");
   const [formUnit, setFormUnit] = useState("boxes");
   const [formNotes, setFormNotes] = useState("");
+  const [formDefinitionOfDone, setFormDefinitionOfDone] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -109,7 +126,12 @@ export default function TasksPage() {
   useEffect(() => {
     const q = query(collection(db, "tasks"), orderBy("createdAt", "desc"));
     const unsub = onSnapshot(q, (snap) => {
-      const data = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<TaskItem, "id">) })) as TaskItem[];
+      const data = snap.docs.map((d) => {
+        const raw = d.data() as Omit<TaskItem, "id" | "status"> & { status: string };
+        // Tolerant reader: legacy docs wrote status 'todo'; normalize instead of migrating
+        const status = (raw.status === "todo" ? "backlog" : raw.status) as TaskItem["status"];
+        return { id: d.id, ...raw, status } as TaskItem;
+      });
       setTasks(data);
       setLoading(false);
     }, (err) => {
@@ -137,7 +159,7 @@ export default function TasksPage() {
       description: item.notes || undefined,
       category: "buy" as TaskCategory,
       priority: item.priority,
-      status: item.status === "received" ? "done" as const : item.status === "ordered" ? "in_progress" as const : "todo" as const,
+      status: item.status === "received" ? "done" as const : item.status === "ordered" ? "in_progress" as const : "backlog" as const,
       quantity: item.quantity,
       unit: item.unit,
       linkedBuyListId: item.id,
@@ -185,9 +207,12 @@ export default function TasksPage() {
   }, [allItems, statusFilter, searchQuery, sortField]);
 
   // Stats
-  const todoCount = allItems.filter((t) => t.status === "todo").length;
-  const inProgressCount = allItems.filter((t) => t.status === "in_progress").length;
-  const doneCount = allItems.filter((t) => t.status === "done").length;
+  const statusCounts = useMemo(() => {
+    const counts: Record<TaskItem["status"], number> = { backlog: 0, this_cycle: 0, in_progress: 0, blocked: 0, done: 0 };
+    allItems.forEach((t) => { if (t.status in counts) counts[t.status] += 1; });
+    return counts;
+  }, [allItems]);
+  const activeCount = allItems.length - statusCounts.done;
 
   const resetForm = () => {
     setFormTitle("");
@@ -197,6 +222,7 @@ export default function TasksPage() {
     setFormQuantity("");
     setFormUnit("boxes");
     setFormNotes("");
+    setFormDefinitionOfDone("");
     setEditingTask(null);
   };
 
@@ -215,6 +241,7 @@ export default function TasksPage() {
     setFormQuantity(task.quantity ? String(task.quantity) : "");
     setFormUnit(task.unit || "boxes");
     setFormNotes(task.notes || "");
+    setFormDefinitionOfDone(task.definitionOfDone || "");
     addModal.onOpen();
   };
 
@@ -230,6 +257,7 @@ export default function TasksPage() {
         quantity: formQuantity ? Number(formQuantity) : null,
         unit: formUnit || null,
         notes: formNotes || null,
+        definitionOfDone: formDefinitionOfDone.trim() || null,
         updatedAt: serverTimestamp(),
       };
 
@@ -238,7 +266,7 @@ export default function TasksPage() {
       } else {
         await addDoc(collection(db, "tasks"), {
           ...payload,
-          status: "todo",
+          status: "backlog",
           createdBy: user?.uid || "unknown",
           createdByName: user?.displayName || user?.email || "Unknown",
           createdAt: serverTimestamp(),
@@ -315,8 +343,8 @@ export default function TasksPage() {
           <div className="flex items-center gap-2">
             <CheckSquare className="text-primary" size={24} />
             <h1 className="text-xl md:text-2xl font-semibold">Logistics Tasks</h1>
-            {todoCount > 0 && (
-              <Chip size="sm" color="warning" variant="solid">{todoCount} to do</Chip>
+            {activeCount > 0 && (
+              <Chip size="sm" color="warning" variant="solid">{activeCount} active</Chip>
             )}
           </div>
           <div className="flex gap-2 flex-wrap">
@@ -335,20 +363,17 @@ export default function TasksPage() {
           </div>
         </div>
 
-        {/* Stats cards */}
-        <div className="grid grid-cols-3 gap-2 md:gap-3">
-          <Card className="bg-default-50"><CardBody className="text-center py-2 md:py-3">
-            <p className="text-xl md:text-2xl font-semibold tabular-nums">{todoCount}</p>
-            <p className="text-xs text-default-500">To Do</p>
-          </CardBody></Card>
-          <Card className="bg-primary-50"><CardBody className="text-center py-2 md:py-3">
-            <p className="text-xl md:text-2xl font-semibold tabular-nums text-primary">{inProgressCount}</p>
-            <p className="text-xs text-primary-600">In Progress</p>
-          </CardBody></Card>
-          <Card className="bg-success-50"><CardBody className="text-center py-2 md:py-3">
-            <p className="text-xl md:text-2xl font-semibold tabular-nums text-success">{doneCount}</p>
-            <p className="text-xs text-success-600">Done</p>
-          </CardBody></Card>
+        {/* Stats cards — one per status */}
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 md:gap-3">
+          {(Object.keys(TASK_STATUS_CFG) as TaskItem["status"][]).map((s) => {
+            const cfg = TASK_STATUS_CFG[s];
+            return (
+              <Card key={s} className={STATUS_CARD_BG[s]}><CardBody className="text-center py-2 md:py-3">
+                <p className={`text-xl md:text-2xl font-semibold tabular-nums ${cfg.text}`}>{statusCounts[s]}</p>
+                <p className={`text-xs ${cfg.text}`}>{cfg.label}</p>
+              </CardBody></Card>
+            );
+          })}
         </div>
 
         {/* Tab filter + search */}
@@ -384,8 +409,10 @@ export default function TasksPage() {
               >
                 <SelectItem key="active">Active</SelectItem>
                 <SelectItem key="all">All</SelectItem>
-                <SelectItem key="todo">To Do</SelectItem>
+                <SelectItem key="backlog">Backlog</SelectItem>
+                <SelectItem key="this_cycle">This Cycle</SelectItem>
                 <SelectItem key="in_progress">In Progress</SelectItem>
+                <SelectItem key="blocked">Blocked</SelectItem>
                 <SelectItem key="done">Done</SelectItem>
               </Select>
               <Button
@@ -412,7 +439,10 @@ export default function TasksPage() {
           <div className="space-y-2">
             {filteredItems.map((task) => {
               const catConfig = CATEGORY_CONFIG[task.category] || CATEGORY_CONFIG.other;
-              
+              const statusCfg = getTaskStatusCfg(task.status);
+              const nextStatus = NEXT_STATUS[task.status];
+              const nextCfg = getTaskStatusCfg(nextStatus);
+
               return (
                 <Card
                   key={task.id || task.linkedBuyListId}
@@ -420,21 +450,13 @@ export default function TasksPage() {
                 >
                   <CardBody className="py-2 md:py-3">
                     <div className="flex items-start gap-2 md:gap-3">
-                      {/* Quick status toggle */}
+                      {/* Quick status toggle — advances along NEXT_STATUS */}
                       <button
                         className="mt-1 flex-shrink-0"
-                        onClick={() => {
-                          const next = task.status === "todo" ? "in_progress" : task.status === "in_progress" ? "done" : "todo";
-                          handleStatusChange(task, next as TaskItem["status"]);
-                        }}
+                        title={`Move to ${nextCfg.label}`}
+                        onClick={() => handleStatusChange(task, nextStatus)}
                       >
-                        {task.status === "done" ? (
-                          <CheckCircle2 size={20} className="text-success" />
-                        ) : task.status === "in_progress" ? (
-                          <Clock size={20} className="text-primary" />
-                        ) : (
-                          <Circle size={20} className="text-foreground-400" />
-                        )}
+                        <statusCfg.Icon size={20} className={statusCfg.text} />
                       </button>
 
                       {/* Main content */}
@@ -449,6 +471,7 @@ export default function TasksPage() {
                           <Chip size="sm" variant="flat" color={PRIORITY_COLORS[task.priority] || "default"}>
                             {task.priority}
                           </Chip>
+                          <TaskStatusBadge status={task.status} />
                         </div>
                         {task.description && (
                           <p className="text-xs text-default-500 mt-1">{task.description}</p>
@@ -481,20 +504,30 @@ export default function TasksPage() {
                           <DropdownTrigger>
                             <Button isIconOnly size="sm" variant="light"><MoreVertical size={14} /></Button>
                           </DropdownTrigger>
-                          <DropdownMenu>
-                            {task.status === "todo" ? (
-                              <DropdownItem key="start" startContent={<Clock size={14} />} onPress={() => handleStatusChange(task, "in_progress")}>Start</DropdownItem>
-                            ) : task.status === "in_progress" ? (
-                              <DropdownItem key="done" startContent={<CheckCircle2 size={14} />} onPress={() => handleStatusChange(task, "done")}>Mark Done</DropdownItem>
-                            ) : (
-                              <DropdownItem key="reopen" startContent={<RefreshCw size={14} />} onPress={() => handleStatusChange(task, "todo")}>Reopen</DropdownItem>
-                            )}
-                            {task.linkedBuyListId ? (
-                              <DropdownItem key="noop" className="hidden">.</DropdownItem>
-                            ) : (
-                              <DropdownItem key="edit" startContent={<Edit3 size={14} />} onPress={() => openEdit(task)}>Edit</DropdownItem>
-                            )}
-                            <DropdownItem key="delete" startContent={<Trash2 size={14} />} color="danger" className="text-danger" onPress={() => handleDelete(task)}>Delete</DropdownItem>
+                          <DropdownMenu
+                            aria-label="Task actions"
+                            items={[
+                              ...(Object.keys(TASK_STATUS_CFG) as TaskItem["status"][])
+                                .filter((s) => s !== task.status)
+                                .map((s) => ({ key: `status_${s}`, kind: "status" as const, status: s })),
+                              ...(task.linkedBuyListId ? [] : [{ key: "edit", kind: "edit" as const, status: task.status }]),
+                              { key: "delete", kind: "delete" as const, status: task.status },
+                            ]}
+                          >
+                            {(entry) => {
+                              if (entry.kind === "edit") {
+                                return <DropdownItem key="edit" startContent={<Edit3 size={14} />} onPress={() => openEdit(task)}>Edit</DropdownItem>;
+                              }
+                              if (entry.kind === "delete") {
+                                return <DropdownItem key="delete" startContent={<Trash2 size={14} />} color="danger" className="text-danger" onPress={() => handleDelete(task)}>Delete</DropdownItem>;
+                              }
+                              const cfg = TASK_STATUS_CFG[entry.status];
+                              return (
+                                <DropdownItem key={entry.key} startContent={<cfg.Icon size={14} />} onPress={() => handleStatusChange(task, entry.status)}>
+                                  Move to {cfg.label}
+                                </DropdownItem>
+                              );
+                            }}
                           </DropdownMenu>
                         </Dropdown>
                       </div>

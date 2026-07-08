@@ -31,6 +31,8 @@ export interface User {
   role: 'admin' | 'member' | 'FTO' | 'quartermaster' | 'inventory_helper';
   /** When true, this member can perform inventory audits even if not admin/quartermaster */
   canAudit?: boolean;
+  /** When true, this member is on the Logistics Committee (sees the Committee Board) even if not admin/quartermaster */
+  isCommitteeMember?: boolean;
   /** Whether the user has completed the onboarding tutorial */
   tutorialCompleted?: boolean;
   tutorialCompletedAt?: Date;
@@ -760,9 +762,12 @@ export interface TaskItem {
   id?: string;
   title: string;
   description?: string;
+  /** Acceptance criteria — what must be true for this task to count as done */
+  definitionOfDone?: string;
   category: TaskCategory;
   priority: 'low' | 'medium' | 'high' | 'urgent';
-  status: 'todo' | 'in_progress' | 'done';
+  /** Legacy docs may contain 'todo'; readers normalize it to 'backlog' (see app/tasks/page.tsx) */
+  status: 'backlog' | 'this_cycle' | 'in_progress' | 'blocked' | 'done';
   /** For buy-type tasks: quantity and unit */
   quantity?: number;
   unit?: string;
@@ -782,6 +787,27 @@ export interface TaskItem {
   createdAt: Date | FieldValue;
   updatedAt?: Date | FieldValue;
   notes?: string;
+}
+
+// --- TEAM TASK BOARD (Logistics Committee) ---
+export type TeamTaskStatus =
+  | 'backlog' | 'this_cycle' | 'in_progress' | 'blocked' | 'done';
+
+export interface TeamTask {
+  id?: string;
+  title: string;
+  ownerId: string;
+  ownerName: string;              // denormalized from users/{uid}.fullName
+  status: TeamTaskStatus;
+  definitionOfDone: string;
+  dueDate?: Date | null;
+  createdBy: string;
+  createdByName: string;
+  createdAt: Date | FieldValue;   // serverTimestamp() on write
+  /** Stamped when the card enters 'done'; cleared if it leaves */
+  completedAt?: Date | FieldValue | null;
+  completedBy?: string;
+  completedByName?: string;
 }
 
 export interface IssueReport {

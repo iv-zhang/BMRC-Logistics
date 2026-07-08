@@ -159,10 +159,25 @@ shelf metadata; `restock_shelf_events` rows carry `shelfId` + event data.
 [app/tasks/page.tsx:124](app/tasks/page.tsx#L124).
 
 ### `tasks` — logistics task list
-`TaskItem` ([app/types.ts:749-775](app/types.ts#L749-L775)): `title`, `description?`,
-`category: TaskCategory`, `priority`, `status: 'todo'|'in_progress'|'done'`, `quantity?`,
-`unit?`, `linkedInventoryId?`, `linkedBuyListId?`, `createdBy/Name`, `assignedTo/Name?`,
+`TaskItem` ([app/types.ts:759-788](app/types.ts#L759-L788)): `title`, `description?`,
+`definitionOfDone?`, `category: TaskCategory`, `priority`,
+`status: 'backlog'|'this_cycle'|'in_progress'|'blocked'|'done'` (legacy docs may contain
+`'todo'`; readernpm rs normalize it to `'backlog'`), `quantity?`, `unit?`,
+`linkedInventoryId?`, `linkedBuyListId?`, `createdBy/Name`, `assignedTo/Name?`,
 `dueDate?`, `completedAt/By/Name?`, timestamps.
+
+### `team_tasks` — Logistics Committee kanban board
+`TeamTask` ([app/types.ts:790-812](app/types.ts#L790-L812)): `title`, `ownerId`,
+`ownerName` (denormalized from `users/{uid}.fullName`),
+`status: TeamTaskStatus = 'backlog'|'this_cycle'|'in_progress'|'blocked'|'done'`,
+`definitionOfDone`, `dueDate?`, `createdBy/Name`, `createdAt`,
+`completedAt/By/Name?` (stamped on entering `done`, cleared on leaving). Deliberately
+separate from `tasks` so committee todos never mix with buy/fix/restock ops. Owner is
+always required. Read/written only from
+[app/committee-board/page.tsx](app/committee-board/page.tsx) via
+[app/hooks/useTeamTasks.ts](app/hooks/useTeamTasks.ts). Visibility: admins/quartermasters
+plus users with `isCommitteeMember: true` (UI gating only; rules deferred to the
+rules-hardening track).
 
 ### `issue_reports` — triage tickets
 `IssueReport` ([app/types.ts:777-817](app/types.ts#L777-L817)): `reporter{userId,userName,
@@ -171,9 +186,10 @@ userEmail,isAnonymous}`, `target?{collection,docId}`, `type`, `priority`, `statu
 `comments?[]`, `attachments?[]`, `linkedAuditId?`, timestamps.
 
 ### `users`, `org_settings`, plus minor collections
-- `users` — `User` ([app/types.ts:27-39](app/types.ts#L27-L39)): `fullName`, `email`,
+- `users` — `User` ([app/types.ts:27-41](app/types.ts#L27-L41)): `fullName`, `email`,
   `role: 'admin'|'member'|'FTO'|'quartermaster'|'inventory_helper'`, `canAudit?`,
-  `tutorialCompleted?`, timestamps.
+  `isCommitteeMember?` (Committee Board access for non-admins), `tutorialCompleted?`,
+  timestamps.
 - `org_settings/current` — runtime org config (thresholds, categories, locations,
   statpack types), merged over `DEFAULT_ORG_CONFIG` by
   [app/lib/org-config-store.ts:38-40](app/lib/org-config-store.ts#L38-L40).

@@ -12,6 +12,7 @@ import {
   BarChart2, Warehouse, Users, AlertTriangle, User,
   LogOut, ShieldCheck, GraduationCap, Sun, Moon,
   ChevronsLeft, ChevronsRight, ScanBarcode, SlidersHorizontal,
+  SquareKanban,
 } from 'lucide-react';
 import TutorialOverlay from './tutorial-overlay';
 import IssueReportForm from './IssueReportForm';
@@ -25,6 +26,14 @@ export interface AppSidebarProps {
 export type LucideIcon = React.ComponentType<{ size?: number; className?: string }>;
 export interface NavItem { key: string; label: string; Icon: LucideIcon; path: string; }
 export interface NavSection { label?: string; items: NavItem[]; }
+
+/** Shared by ADMIN_NAV and (for flagged members) MEMBER_NAV + the mobile bottom nav. */
+export const COMMITTEE_NAV_SECTION: NavSection = {
+  label: 'Committee',
+  items: [
+    { key: 'committee-board', label: 'Committee Board', Icon: SquareKanban, path: '/committee-board' },
+  ],
+};
 
 export const ADMIN_NAV: NavSection[] = [
   {
@@ -50,6 +59,7 @@ export const ADMIN_NAV: NavSection[] = [
       { key: 'tasks',         label: 'Tasks & Buy List', Icon: CheckSquare, path: '/tasks' },
     ],
   },
+  COMMITTEE_NAV_SECTION,
   {
     label: 'Admin',
     items: [
@@ -173,7 +183,13 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
   // (see mobile-bottom-nav.tsx), so hide the rail below `md` on every route.
   const railHideCls = 'max-md:hidden';
 
-  const navSections = isAdmin ? ADMIN_NAV : MEMBER_NAV;
+  // Committee members (flag on the users doc) get the board section without being admins
+  const isCommitteeMember = userData?.isCommitteeMember === true;
+  const navSections = isAdmin
+    ? ADMIN_NAV
+    : isCommitteeMember
+      ? [...MEMBER_NAV, COMMITTEE_NAV_SECTION]
+      : MEMBER_NAV;
   const userInitial = (userData?.fullName?.[0] ?? user?.email?.[0] ?? 'U').toUpperCase();
   const userName = userData?.fullName || user?.email?.split('@')[0] || 'User';
 

@@ -42,6 +42,7 @@ export function useUserRole(): UseUserRoleReturn {
               fullName: data.fullName || currentUser.displayName || 'Unknown User',
               role: data.role || 'member',
               canAudit: data.canAudit === true,
+              isCommitteeMember: data.isCommitteeMember === true,
               createdAt: data.createdAt?.toDate() || new Date(),
               updatedAt: data.updatedAt?.toDate() || new Date(),
             });

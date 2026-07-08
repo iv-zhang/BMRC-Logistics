@@ -19,7 +19,7 @@ import {
   Switch,
   Tooltip
 } from '@heroui/react';
-import { Users, ClipboardCheck } from 'lucide-react';
+import { Users, ClipboardCheck, SquareKanban } from 'lucide-react';
 import { collection, getDocs, doc, updateDoc } from 'firebase/firestore';
 import { db } from '@/firebase'; // Assuming your firebase config export
 import type { User } from '@/app/types'; // Adjust path based on your folder structure
@@ -38,6 +38,7 @@ const COLUMNS = [
   { name: "MEMBER", uid: "member" },
   { name: "CURRENT ROLE", uid: "role" },
   { name: "AUDIT ACCESS", uid: "audit" },
+  { name: "COMMITTEE", uid: "committee" },
   { name: "DELEGATE ROLE", uid: "actions" },
 ];
 
@@ -99,6 +100,22 @@ export default function RosterPage() {
     }
   };
 
+  const handleCommitteeToggle = async (userId: string, currentValue: boolean) => {
+    setUpdatingId(userId);
+    try {
+      const userRef = doc(db, 'users', userId);
+      await updateDoc(userRef, { isCommitteeMember: !currentValue });
+      setUsers(prev => prev.map(u =>
+        u.id === userId ? { ...u, isCommitteeMember: !currentValue } : u
+      ));
+    } catch (error) {
+      console.error("Error updating committee membership:", error);
+      alert("Failed to update committee membership. Check console.");
+    } finally {
+      setUpdatingId(null);
+    }
+  };
+
   const renderCell = React.useCallback((user: User, columnKey: React.Key) => {
     const cellValue = user[columnKey as keyof User];
 
@@ -133,6 +150,24 @@ export default function RosterPage() {
                 isDisabled={inheritsAudit || updatingId === user.id}
                 onValueChange={() => handleCanAuditToggle(user.id, user.canAudit === true)}
                 startContent={<ClipboardCheck size={14} />}
+              />
+            </Tooltip>
+            {updatingId === user.id && <Spinner size="sm" />}
+          </div>
+        );
+      case "committee":
+        // Admins and quartermasters are always on the Logistics Committee (no toggle needed)
+        const inheritsCommittee = user.role === 'admin' || user.role === 'quartermaster';
+        return (
+          <div className="flex items-center gap-2">
+            <Tooltip content={inheritsCommittee ? `${user.role} role is always on the committee` : (user.isCommitteeMember ? 'On the Logistics Committee (sees the Committee Board)' : 'Not on the Logistics Committee')}>
+              <Switch
+                size="sm"
+                color="secondary"
+                isSelected={inheritsCommittee || (user.isCommitteeMember === true)}
+                isDisabled={inheritsCommittee || updatingId === user.id}
+                onValueChange={() => handleCommitteeToggle(user.id, user.isCommitteeMember === true)}
+                startContent={<SquareKanban size={14} />}
               />
             </Tooltip>
             {updatingId === user.id && <Spinner size="sm" />}

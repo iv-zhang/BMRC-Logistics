@@ -7,7 +7,7 @@ import { useUserRole } from '@/app/hooks/useUserRole';
 import { useTheme } from 'next-themes';
 import {
   Home, ClipboardList, Package, CheckSquare, MoreHorizontal,
-  AlertTriangle, User, X, Sun, Moon, LogOut,
+  AlertTriangle, User, X, Sun, Moon, LogOut, SquareKanban,
 } from 'lucide-react';
 import { ADMIN_NAV, type LucideIcon } from './app-sidebar';
 import IssueReportForm from './IssueReportForm';
@@ -38,7 +38,11 @@ export default function MobileBottomNav() {
 
   const isAdmin = role === 'admin' || role === 'quartermaster';
   const isDark = mounted && theme === 'dark';
-  const tabs = isAdmin ? ADMIN_TABS : MEMBER_TABS;
+  // Committee members get a Board tab; admins reach the board via the More sheet (ADMIN_NAV)
+  const memberTabs = userData?.isCommitteeMember === true
+    ? [...MEMBER_TABS, { key: 'committee-board', label: 'Board', Icon: SquareKanban, path: '/committee-board' }]
+    : MEMBER_TABS;
+  const tabs = isAdmin ? ADMIN_TABS : memberTabs;
 
   const isActive = (path: string) => pathname === path || pathname.startsWith(path + '/');
   const primaryActive = tabs.some(t => isActive(t.path));
