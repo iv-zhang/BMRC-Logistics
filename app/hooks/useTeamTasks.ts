@@ -9,7 +9,7 @@ import {
   Timestamp,
 } from 'firebase/firestore';
 import { db } from '@/firebase';
-import type { TeamTask } from '@/app/types';
+import type { TeamTask, TeamTaskOwner, TeamTaskUpdate, TeamSubtask } from '@/app/types';
 
 export interface UseTeamTasksReturn {
   /** All committee tasks, newest first */
@@ -23,6 +23,37 @@ function toDate(value: unknown): Date | null {
   if (value instanceof Timestamp) return value.toDate();
   if (value instanceof Date) return value;
   return null;
+}
+
+/**
+ * Owners are stored as `owners: TeamTaskOwner[]`, but legacy docs only have the
+ * single `ownerId`/`ownerName` pair. Normalize both shapes so the board always
+ * renders a non-empty owners array.
+ */
+function normalizeOwners(raw: Record<string, unknown>): TeamTaskOwner[] {
+  const owners = raw.owners;
+  if (Array.isArray(owners) && owners.length > 0) {
+    return owners
+      .filter((o): o is TeamTaskOwner => !!o && typeof (o as TeamTaskOwner).id === 'string')
+      .map((o) => ({ id: o.id, name: o.name ?? '' }));
+  }
+  if (typeof raw.ownerId === 'string' && raw.ownerId) {
+    return [{ id: raw.ownerId, name: (raw.ownerName as string) ?? '' }];
+  }
+  return [];
+}
+
+/** Normalize embedded update timestamps (client-written via Timestamp.now()) to Date. */
+function normalizeUpdates(raw: unknown): TeamTaskUpdate[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((u): u is TeamTaskUpdate => !!u && typeof (u as TeamTaskUpdate).id === 'string')
+    .map((u) => ({ ...u, createdAt: toDate(u.createdAt) ?? new Date() }));
+}
+
+function normalizeSubtasks(raw: unknown): TeamSubtask[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((s): s is TeamSubtask => !!s && typeof (s as TeamSubtask).id === 'string');
 }
 
 /**
@@ -47,6 +78,9 @@ export function useTeamTasks(): UseTeamTasksReturn {
             return {
               ...raw,
               id: d.id,
+              owners: normalizeOwners(raw),
+              updates: normalizeUpdates(raw.updates),
+              subtasks: normalizeSubtasks(raw.subtasks),
               dueDate: toDate(raw.dueDate),
               createdAt: toDate(raw.createdAt) ?? new Date(),
               completedAt: toDate(raw.completedAt),

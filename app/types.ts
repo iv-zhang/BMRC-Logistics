@@ -793,14 +793,43 @@ export interface TaskItem {
 export type TeamTaskStatus =
   | 'backlog' | 'this_cycle' | 'in_progress' | 'blocked' | 'done';
 
+/** One owner of a team task (owners are admins/quartermasters). */
+export interface TeamTaskOwner {
+  id: string;                     // users/{uid}
+  name: string;                   // denormalized fullName
+}
+
+/** A progress note appended to a task's timeline. */
+export interface TeamTaskUpdate {
+  id: string;
+  text: string;
+  authorId: string;
+  authorName: string;
+  // Timestamp.now() on write — serverTimestamp() is rejected inside array elements.
+  createdAt: Date | Timestamp;
+}
+
+/** A checklist item within a task. */
+export interface TeamSubtask {
+  id: string;
+  text: string;
+  done: boolean;
+}
+
 export interface TeamTask {
   id?: string;
   title: string;
-  ownerId: string;
-  ownerName: string;              // denormalized from users/{uid}.fullName
+  owners: TeamTaskOwner[];        // one or more admins/quartermasters
+  /** @deprecated legacy single-owner fields — read-only, kept for back-compat */
+  ownerId?: string;
+  ownerName?: string;
   status: TeamTaskStatus;
   definitionOfDone: string;
   dueDate?: Date | null;
+  /** Progress notes, oldest→newest */
+  updates?: TeamTaskUpdate[];
+  /** Checklist / todo items within the task */
+  subtasks?: TeamSubtask[];
   createdBy: string;
   createdByName: string;
   createdAt: Date | FieldValue;   // serverTimestamp() on write

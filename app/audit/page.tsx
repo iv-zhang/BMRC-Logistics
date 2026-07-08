@@ -99,7 +99,14 @@ export default function AuditPage() {
   // Filter state
   const [selectedZone, setSelectedZone] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<AuditTab>('disposables');
+  const [activeTab, setActiveTab] = useState<AuditTab>(() => {
+    // Deep-link support (e.g. /audit?tab=statpacks) — window.location avoids the
+    // Suspense requirement that useSearchParams imposes under output: export.
+    if (typeof window === 'undefined') return 'disposables';
+    const t = new URLSearchParams(window.location.search).get('tab');
+    const valid: AuditTab[] = ['disposables', 'assets', 'statpacks', 'restock'];
+    return valid.includes(t as AuditTab) ? (t as AuditTab) : 'disposables';
+  });
   const [dueOnly, setDueOnly] = useState(false);
   const [hideTrainers, setHideTrainers] = useState(false);
 
