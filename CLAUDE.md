@@ -1,6 +1,5 @@
 # CLAUDE.md
 
-
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Commands
@@ -123,8 +122,15 @@ The audit page is deliberately **orderless** — members act on whatever is phys
 - `determineIsAsset` (`app/lib/inventory.ts`) treats an item as an asset on any asset signal (serial, status, category, `assets[]`, `maintenance_logs`, `isOxygen`), not only `assetValue ≥ threshold`.
 - Expiry checks in `getItemStatus` / `generateAuditSnapshot` ignore zero-stock (tombstone) batches, so a depleted lot's date can't mark an item permanently expired.
 
-### Firestore Collections (notable)
-`inventory`, `inventory_logs`, `statpacks`, `statpack_logs`, `assets`, `restock_shelves`, `restock_logs`, `restock_reports`, `auditEvents` (audit ledger — camelCase, written by `app/lib/audit.ts`), `issue_reports`, `buy_list`, `tasks`, `users`, `storage_zones`, `shelves`, `containers`, `box_logs`, `medication_logs`
+### Firestore Collections (what the code actually reads/writes — see MODEL.md for shapes)
+`inventory` (central collection — consumables, assets, oxygen, and medications are all `inventory` docs discriminated by flags; there is **no** separate `assets` collection), `inventory_logs`, `inventory_alerts`, `auditEvents` (audit ledger — camelCase, written by `app/lib/audit.ts`), `statpacks`, `statpack_logs`, `restock_shelves`, `restock_shelf_events`, `restock_actions`, `restock_reports`, `storage_zones`, `shelves`, `containers`, `box_logs`, `medication_logs`, `buyList` (camelCase — **not** `buy_list`), `tasks`, `issue_reports`, `users`, `org_settings`, `laf_records`, `reconciliation_exceptions`
+
+### Known open design gaps (do not silently "fix")
+Two schema decisions are deliberately deferred, tracked in `FINDINGS.md`/`invariants.md`:
+- **No stock-pool axis** distinguishing class-use stock from field/event stock.
+- **No real per-lot quantity for box-tracked SKUs** — quantity is pooled onto `unopenedBoxes` with a zero-stock metadata batch standing in for the lot.
+
+If a task touches either, flag it as an open design question and ask before assuming there's a bug to patch — changing this without a decision would change how on-hand counts are computed.
 
 ### Shared Status Logic
 `app/lib/item-status.ts` is the single source of truth for stock math (`computeBagStock`), item status (`getItemStatus`: expired > out > low > expiring > ok), location display (`displayLocation`), expiry formatting, and the monthly audit cycle (`isAuditedThisMonth` — an item is "verified" only if `lastAuditDate` falls in the current calendar month; the sticky `auditVerified` boolean must not be trusted alone). Expiration windows come from `THRESHOLDS` in org-config. Category badge colors live in `app/components/category-badge.tsx`. Location filter dropdowns derive from `getInventoryAreaOptions()` in org-config — never hardcode location lists in pages.
