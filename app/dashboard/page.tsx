@@ -332,10 +332,10 @@ function AdminDashboard({
   const isLoadingLogs   = loadingLogs[expandedPackId ?? ''] ?? false;
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex flex-col">
 
       {/* Sticky top header */}
-      <header className="sticky top-0 z-20 bg-content1/80 backdrop-blur-md border-b border-divider h-[54px] flex items-center gap-3.5 px-6">
+      <header className="sticky top-0 z-20 bg-content1/60 backdrop-blur-md border-b border-divider h-[54px] flex items-center gap-3.5 px-6">
         <h1 className="text-lg font-bold tracking-tight text-foreground flex-none">Dashboard</h1>
 
         {/* Search */}
@@ -847,10 +847,10 @@ function MobileDashboard({
   };
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex flex-col">
 
       {/* Header */}
-      <header className="sticky top-0 z-30 bg-background/80 backdrop-blur-md flex items-center gap-3 px-5 pt-4 pb-3.5">
+      <header className="sticky top-0 z-30 bg-transparent backdrop-blur-md flex items-center gap-3 px-5 pt-4 pb-3.5">
         <div className="w-[42px] h-[42px] rounded-[13px] bg-primary text-white font-semibold text-base flex items-center justify-center flex-none">
           {firstName[0]?.toUpperCase() ?? 'U'}
         </div>
@@ -963,7 +963,7 @@ function MobileDashboard({
         <div className="bg-content1 border border-divider rounded-[18px] px-4 pt-4 pb-1.5" style={{ boxShadow: '0 1px 3px rgba(16,24,40,.04)' }}>
           <div className="flex items-center mb-3">
             <span className="text-sm font-bold tracking-tight text-foreground flex-1">Recent activity</span>
-            <button onClick={() => router.push('/statpacks/stats')} className="text-xs font-semibold text-primary active:opacity-70">See all</button>
+            <button onClick={() => router.push('/stats?tab=statpacks')} className="text-xs font-semibold text-primary active:opacity-70">See all</button>
           </div>
           {recentLogs.length > 0 ? recentLogs.map((log, i) => {
             const meta = LOG_META[log.action] ?? LOG_META.created;

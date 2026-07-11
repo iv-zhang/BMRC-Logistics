@@ -28,7 +28,6 @@ import type { Statpack, StatpackLog, User } from '@/app/types';
 import {
   LogIn,
   LogOut,
-  Smartphone,
   ScanLine,
   PackageCheck,
   Clock,
@@ -64,7 +63,6 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
   const [expiringItems, setExpiringItems] = useState<any[]>([]);
   const [purchaseHistoryMap, setPurchaseHistoryMap] = useState<Record<string, any[]>>({});
   const [creatingRequest, setCreatingRequest] = useState<string | null>(null);
-  const lowStockCount = lowStockItems.length;
   const expiringCount = expiringItems.length;
   const attentionList = useMemo(() => {
     const combined = [...lowStockItems, ...expiringItems];
@@ -309,17 +307,11 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
               <h2 className="text-xl md:text-2xl font-semibold mb-2">Keep Us Safe</h2>
               <p className="text-sm md:text-base opacity-90">Found expired items or untracked boxes? Report them now.</p>
               <div className="flex flex-wrap gap-2 mt-3">
-                {lowStockCount > 0 && (
-                  <Chip size="sm" color="warning" variant="flat" className="text-white border border-white/30 bg-white/20">
-                    Stock alerts
-                  </Chip>
-                )}
-                {expiringCount > 0 && (
+                {expiringCount > 0 ? (
                   <Chip size="sm" color="danger" variant="flat" className="text-white border border-white/30 bg-white/20">
                     {expiringCount} expiring
                   </Chip>
-                )}
-                {lowStockCount === 0 && expiringCount === 0 && (
+                ) : (
                   <Chip size="sm" color="success" variant="flat" className="text-white border border-white/30 bg-white/20">
                     All clear
                   </Chip>
@@ -593,32 +585,6 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
             </CardBody>
           </Card>
         </div>
-
-        {/* Mobile Dashboard Link */}
-        <Card className="bg-gradient-to-r from-indigo-500 to-blue-500 text-white">
-          <CardBody className="py-4 md:py-6">
-            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3 md:gap-4">
-              <div className="flex items-center gap-3">
-                <Smartphone size={32} className="hidden md:block" />
-                <div>
-                  <h3 className="text-lg md:text-xl font-semibold mb-1">Manage Your Packs</h3>
-                  <p className="text-xs md:text-sm opacity-90">
-                    Check items in and out from your mobile device
-                  </p>
-                </div>
-              </div>
-              <Button
-                color="default"
-                variant="solid"
-                size="sm"
-                onPress={() => router.push('/statpacks')}
-                className="w-full md:w-auto"
-              >
-                Open Statpacks
-              </Button>
-            </div>
-          </CardBody>
-        </Card>
       </div>
     </div>
     </>

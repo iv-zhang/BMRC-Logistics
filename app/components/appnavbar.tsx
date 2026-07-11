@@ -35,7 +35,6 @@ import {
   LogOut,
   AlertTriangle,
   ShieldCheck,
-  ClipboardList,
   Package,
   BarChart2,
   Warehouse,
@@ -205,8 +204,7 @@ export default function AppNavbar() {
                 </DropdownTrigger>
               </NavbarItem>
               <DropdownMenu aria-label="Assets menu">
-                <DropdownItem key="assets" onClick={() => router.push('/assets')} startContent={<Package size={16} />}>Manage Assets</DropdownItem>
-                <DropdownItem key="statpacks" onClick={() => router.push('/statpacks')} startContent={<ClipboardList size={16} />}>Statpacks</DropdownItem>
+                <DropdownItem key="assets" onClick={() => router.push('/assets')} startContent={<Package size={16} />}>Assets &amp; Statpacks</DropdownItem>
               </DropdownMenu>
             </Dropdown>
           )}
@@ -215,7 +213,7 @@ export default function AppNavbar() {
             <Dropdown>
               <NavbarItem>
                 <DropdownTrigger>
-                  <button className={isActive('/inventory') || isActive('/restock') || isActive('/restock-stats') || isActive('/storage') || isActive('/audit') ? 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] bg-primary-50 dark:bg-primary-900/20 text-primary font-semibold text-[15px] transition-colors duration-150' : 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] text-foreground-400 font-medium text-[15px] hover:bg-content2 transition-colors duration-150'}>
+                  <button className={isActive('/inventory') || isActive('/restock') || isActive('/stats') || isActive('/storage') || isActive('/audit') ? 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] bg-primary-50 dark:bg-primary-900/20 text-primary font-semibold text-[15px] transition-colors duration-150' : 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] text-foreground-400 font-medium text-[15px] hover:bg-content2 transition-colors duration-150'}>
                     <Warehouse className="w-4 h-4" /> Inventory
                   </button>
                 </DropdownTrigger>
@@ -224,7 +222,7 @@ export default function AppNavbar() {
                 <DropdownItem key="inventory" onClick={() => router.push('/inventory')} startContent={<Package size={16} />}>View Inventory</DropdownItem>
                 <DropdownItem key="audit" onClick={() => router.push('/audit')} startContent={<ScanBarcode size={16} />}>Supply Audit</DropdownItem>
                 <DropdownItem key="restock" onClick={() => router.push('/restock')} startContent={<RefreshCw size={16} />}>Restock Items</DropdownItem>
-                <DropdownItem key="restock-stats" onClick={() => router.push('/restock-stats')} startContent={<BarChart2 size={16} />}>Restock Stats</DropdownItem>
+                <DropdownItem key="stats" onClick={() => router.push('/stats')} startContent={<BarChart2 size={16} />}>Stats</DropdownItem>
                 <DropdownItem key="storage" onClick={() => router.push('/storage')} startContent={<Warehouse size={16} />}>Storage Management</DropdownItem>
                 <DropdownItem key="tasks" onClick={() => router.push('/tasks')} startContent={<CheckSquare size={16} />}>Tasks & Buy List</DropdownItem>
               </DropdownMenu>
@@ -316,13 +314,8 @@ export default function AppNavbar() {
           <Divider className="my-1" />
           <NavbarMenuItem className="py-1"><p className="px-3 py-1 text-xs font-semibold text-foreground-400 uppercase tracking-wide">Assets</p></NavbarMenuItem>
           <NavbarMenuItem className="py-1">
-            <Link href="/assets" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/assets') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/assets')}>
-              <Package size={18} /> Manage Assets
-            </Link>
-          </NavbarMenuItem>
-          <NavbarMenuItem className="py-1">
-            <Link href="/statpacks" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActivePrefix('/statpacks') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/statpacks')}>
-              <ClipboardList size={18} /> Statpacks
+            <Link href="/assets" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/assets') || isActivePrefix('/statpacks') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/assets')}>
+              <Package size={18} /> Assets &amp; Statpacks
             </Link>
           </NavbarMenuItem>
         </>)}
@@ -345,8 +338,8 @@ export default function AppNavbar() {
             </Link>
           </NavbarMenuItem>
           <NavbarMenuItem className="py-1">
-            <Link href="/restock-stats" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/restock-stats') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/restock-stats')}>
-              <BarChart2 size={18} /> Restock Stats
+            <Link href="/stats" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/stats') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/stats')}>
+              <BarChart2 size={18} /> Stats
             </Link>
           </NavbarMenuItem>
           <NavbarMenuItem className="py-1">

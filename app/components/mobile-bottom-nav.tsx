@@ -6,8 +6,8 @@ import { auth } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { useTheme } from 'next-themes';
 import {
-  Home, ClipboardList, Package, CheckSquare, MoreHorizontal,
-  AlertTriangle, User, X, Sun, Moon, LogOut, SquareKanban,
+  Home, Boxes, Package, CheckSquare, MoreHorizontal,
+  AlertTriangle, User, X, Sun, Moon, LogOut, SquareKanban, ShieldCheck,
 } from 'lucide-react';
 import { ADMIN_NAV, type LucideIcon } from './app-sidebar';
 import IssueReportForm from './IssueReportForm';
@@ -16,7 +16,7 @@ interface Tab { key: string; label: string; Icon: LucideIcon; path: string; }
 
 const ADMIN_TABS: Tab[] = [
   { key: 'dashboard', label: 'Dashboard', Icon: Home,          path: '/dashboard' },
-  { key: 'statpacks', label: 'Statpacks', Icon: ClipboardList, path: '/statpacks' },
+  { key: 'assets',    label: 'Assets',    Icon: Boxes,         path: '/assets' },
   { key: 'inventory', label: 'Inventory', Icon: Package,       path: '/inventory' },
   { key: 'audit',     label: 'Audit',     Icon: CheckSquare,   path: '/audit' },
 ];
@@ -28,7 +28,7 @@ const MEMBER_TABS: Tab[] = [
 export default function MobileBottomNav() {
   const pathname = usePathname() ?? '';
   const router = useRouter();
-  const { role, user, userData } = useUserRole();
+  const { role, user, userData, isRoleOverridden } = useUserRole();
   const { theme, setTheme } = useTheme();
   const [moreOpen, setMoreOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
@@ -37,6 +37,9 @@ export default function MobileBottomNav() {
   React.useEffect(() => setMounted(true), []);
 
   const isAdmin = role === 'admin' || role === 'quartermaster';
+  // Real (non-overridden) role — an override can drop `role` to 'member', so this
+  // is how an admin testing a member role stays able to exit back to admin view.
+  const isRealAdmin = userData?.role === 'admin' || userData?.role === 'quartermaster';
   const isDark = mounted && theme === 'dark';
   // Committee members get a Board tab; admins reach the board via the More sheet (ADMIN_NAV)
   const memberTabs = userData?.isCommitteeMember === true
@@ -51,6 +54,13 @@ export default function MobileBottomNav() {
 
   const handleSignOut = async () => {
     try { await signOut(auth); router.push('/'); } catch (e) { console.error('Sign out error:', e); }
+  };
+
+  const handleExitTestRole = () => {
+    try {
+      localStorage.removeItem('bmrc_role_override');
+      window.dispatchEvent(new Event('bmrc-role-changed'));
+    } catch (e) { console.error('exit test role failed', e); }
   };
 
   const userInitial = (userData?.fullName?.[0] ?? user?.email?.[0] ?? 'U').toUpperCase();
@@ -85,6 +95,12 @@ export default function MobileBottomNav() {
           </button>
         ) : (
           <>
+            {isRealAdmin && isRoleOverridden && (
+              <button onClick={() => { handleExitTestRole(); go('/dashboard'); }} className={tabBtnCls(false)}>
+                <ShieldCheck size={22} />
+                <span className="text-[10px] font-medium">Exit Test</span>
+              </button>
+            )}
             <button onClick={() => setReportOpen(true)} className={tabBtnCls(false)}>
               <AlertTriangle size={22} />
               <span className="text-[10px] font-medium">Report</span>

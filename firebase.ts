@@ -1,7 +1,7 @@
 // Import the functions you need from the SDKs you need
 import { initializeApp } from "firebase/app";
 import { getAnalytics } from "firebase/analytics";
-import { getAuth } from "firebase/auth";
+import { getAuth, connectAuthEmulator } from "firebase/auth";
 import { getFirestore, connectFirestoreEmulator } from "firebase/firestore";
 // TODO: Add SDKs for Firebase products that you want to use
 // https://firebase.google.com/docs/web/setup#available-libraries
@@ -19,6 +19,12 @@ const EMULATOR_HOST =
   process.env.FIRESTORE_EMULATOR_HOST ||
   "";
 const USING_EMULATOR = EMULATOR_HOST.length > 0;
+
+// Optional Auth emulator host (browser bundle or Node). Empty in prod.
+const AUTH_EMULATOR_HOST =
+  process.env.NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST ||
+  process.env.FIREBASE_AUTH_EMULATOR_HOST ||
+  "";
 
 // Your web app's Firebase configuration
 // Values are read from environment variables to avoid committing secrets.
@@ -60,6 +66,23 @@ if (USING_EMULATOR) {
 
 // Initialize Auth after Firestore is wired.
 export const auth = getAuth(app);
+
+// Wire the Auth emulator when running against the local emulator suite. Gated on
+// USING_EMULATOR (never touches prod) and on either an explicit auth host env or
+// a browser context — so the Node-only Firestore test runs (invariants /
+// properties / simulation), which never call auth and don't start an auth
+// emulator, are left completely untouched. In the browser we default to the
+// standard auth-emulator port so `next dev:emulator` + `--only firestore,auth`
+// just works. connectAuthEmulator must run before any auth call, so it's here.
+if (USING_EMULATOR && (AUTH_EMULATOR_HOST || typeof window !== "undefined")) {
+  const authHost = AUTH_EMULATOR_HOST || "127.0.0.1:9099";
+  try {
+    connectAuthEmulator(auth, `http://${authHost}`, { disableWarnings: true });
+    console.info(`[firebase] Auth connected to EMULATOR at ${authHost}`);
+  } catch {
+    // connectAuthEmulator throws if auth was already used; safe on hot reload.
+  }
+}
 
 let analytics;
 if (typeof window !== "undefined" && !USING_EMULATOR) {

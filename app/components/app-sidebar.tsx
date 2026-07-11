@@ -8,7 +8,7 @@ import { auth, db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { useTheme } from 'next-themes';
 import {
-  Home, Package, ClipboardList, CheckSquare, RefreshCw,
+  Home, Package, CheckSquare, RefreshCw,
   BarChart2, Warehouse, Users, AlertTriangle, User,
   LogOut, ShieldCheck, GraduationCap, Sun, Moon,
   ChevronsLeft, ChevronsRight, ScanBarcode, SlidersHorizontal,
@@ -44,8 +44,7 @@ export const ADMIN_NAV: NavSection[] = [
   {
     label: 'Assets',
     items: [
-      { key: 'assets',    label: 'Assets',    Icon: Package,       path: '/assets' },
-      { key: 'statpacks', label: 'Statpacks', Icon: ClipboardList, path: '/statpacks' },
+      { key: 'assets',    label: 'Assets & Statpacks', Icon: Package,   path: '/assets' },
     ],
   },
   {
@@ -54,7 +53,7 @@ export const ADMIN_NAV: NavSection[] = [
       { key: 'inventory',     label: 'Inventory',        Icon: Package,     path: '/inventory' },
       { key: 'audit',         label: 'Supply Audit',     Icon: ScanBarcode, path: '/audit' },
       { key: 'restock',       label: 'Restock',          Icon: RefreshCw,   path: '/restock' },
-      { key: 'restock-stats', label: 'Restock Stats',    Icon: BarChart2,   path: '/restock-stats' },
+      { key: 'stats',         label: 'Stats',            Icon: BarChart2,   path: '/stats' },
       { key: 'storage',       label: 'Storage',          Icon: Warehouse,   path: '/storage' },
       { key: 'tasks',         label: 'Tasks & Buy List', Icon: CheckSquare, path: '/tasks' },
     ],
@@ -65,7 +64,6 @@ export const ADMIN_NAV: NavSection[] = [
     items: [
       { key: 'roster',         label: 'Roster',         Icon: Users,             path: '/roster' },
       { key: 'reports',        label: 'Reports',        Icon: AlertTriangle,     path: '/issue-reports' },
-      { key: 'statpack-stats', label: 'Statpack Stats', Icon: BarChart2,         path: '/statpacks/stats' },
       { key: 'settings',       label: 'Settings',       Icon: SlidersHorizontal, path: '/settings' },
     ],
   },
@@ -93,6 +91,9 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
   useEffect(() => setMounted(true), []);
 
   const isAdmin = role === 'admin' || role === 'quartermaster';
+  // Real (non-overridden) role — an override can drop `role` to 'member', so use
+  // this to keep the test-role control reachable while an override is active.
+  const isRealAdmin = userData?.role === 'admin' || userData?.role === 'quartermaster';
   const isDark = mounted && theme === 'dark';
   const expanded = navHover && !navHidden;
 
@@ -333,8 +334,9 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
               <span className={labelCls}>Profile</span>
             </button>
 
-            {/* Role override — admin only */}
-            {isAdmin && (
+            {/* Role override — real admins, plus anyone with an active override so
+                it can always be cleared (an override drops `isAdmin` to false). */}
+            {(isRealAdmin || roleOverrideActive) && (
               <button
                 onClick={handleRoleOverride}
                 className="flex items-center gap-[13px] h-9 px-[11px] rounded-[10px] whitespace-nowrap text-[12px] w-full text-left text-foreground-400 font-medium hover:bg-content2 transition-colors duration-150"

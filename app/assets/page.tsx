@@ -51,9 +51,9 @@ import { getDoc } from 'firebase/firestore';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { auth, db } from '@/firebase';
 import type { Statpack, InventoryItem, User, StatpackPocket, StatpackCompartment } from '@/app/types';
-import { BagVisualizer } from '@/app/components/statpackvisualizer';
 import StatpackCheckOffModal from '@/app/components/statpack-checkoff-modal';
 import StatpackHistory from '@/app/components/statpack-history';
+import StatpackEditorModal from '@/app/components/statpack-editor-modal';
 import { updateAssetAssignment, assignBarcode } from '@/app/lib/inventory';
 import {
   Package,
@@ -138,21 +138,6 @@ export default function AssetsPage() {
   const [auditSelectedPocketId, setAuditSelectedPocketId] = useState<string | null>(null);
   const [auditCompletedPockets, setAuditCompletedPockets] = useState<string[]>([]);
   const assetAttachDisclosure = useDisclosure();
-
-  // Helpers to update contents and compartment items by index (avoid id-collision issues)
-  const updateContentAt = (idx: number, patch: Partial<any>) => {
-    if (!editingPack) return;
-    const contents = [...(editingPack.contents || [])];
-    contents[idx] = { ...contents[idx], ...patch };
-    setEditingPack({ ...editingPack, contents });
-  };
-
-  const removeContentAt = (idx: number) => {
-    if (!editingPack) return;
-    const contents = [...(editingPack.contents || [])];
-    contents.splice(idx, 1);
-    setEditingPack({ ...editingPack, contents });
-  };
 
     const handleAssetAttachedToLoose = (assetId: string, serial?: string, displayName?: string) => {
       if (!editingPack) return;
@@ -241,6 +226,41 @@ export default function AssetsPage() {
     setEditingPack(packWithId);
     setEditorSelectedPocket('all');
     statpackDisclosure.onOpen();
+  };
+
+  // Statpack check-out / check-in route into the shared pocket-by-pocket flow.
+  const openStatpackCheckout = (asset: AssetRecord) => {
+    if (asset.id) router.push(`/statpacks/check-off?id=${asset.id}&mode=checkout`);
+  };
+  const openStatpackCheckin = (asset: AssetRecord) => {
+    if (asset.id) router.push(`/statpacks/check-off?id=${asset.id}&mode=checkin`);
+  };
+
+  // Persist an edited statpack draft coming from StatpackEditorModal.
+  const saveStatpackDraft = async (draft: Statpack) => {
+    try {
+      await updateDoc(doc(db, 'statpacks', String(draft.id)), {
+        ...draft,
+        updatedAt: serverTimestamp(),
+      });
+      statpackDisclosure.onClose();
+      setEditingPack(null);
+    } catch (err) {
+      console.error('Failed to save statpack:', err);
+      alert('Failed to save statpack');
+    }
+  };
+  const deleteStatpackFromEditor = async () => {
+    if (!editingPack?.id) return;
+    if (!confirm(`Delete statpack "${editingPack.name}"? This cannot be undone.`)) return;
+    try {
+      await deleteDoc(doc(db, 'statpacks', String(editingPack.id)));
+      statpackDisclosure.onClose();
+      setEditingPack(null);
+    } catch (err) {
+      console.error('Failed to delete statpack:', err);
+      alert('Failed to delete statpack');
+    }
   };
   const [maintenanceReason, setMaintenanceReason] = useState('');
   const [maintenanceNotes, setMaintenanceNotes] = useState('');
@@ -1021,6 +1041,19 @@ export default function AssetsPage() {
                                   </DropdownItem>
                                 ) : null}
                                 {asset.type === 'statpack' ? (
+                                  (asset.data as Statpack).isCheckedOut ? (
+                                    <DropdownItem key="sp-checkin" startContent={<CheckCircle size={14} />} color="success" onPress={() => openStatpackCheckin(asset)}>
+                                      Check In
+                                    </DropdownItem>
+                                  ) : (
+                                    <DropdownItem key="sp-checkout" startContent={<Package size={14} />} onPress={() => openStatpackCheckout(asset)}>
+                                      Check Out
+                                    </DropdownItem>
+                                  )
+                                ) : (
+                                  <DropdownItem key="noop-sp" className="hidden">.</DropdownItem>
+                                )}
+                                {asset.type === 'statpack' ? (
                                   <DropdownItem key="edit" startContent={<Pencil size={14} />} onPress={() => openStatpackEditorModal(asset)}>
                                     Edit Statpack
                                   </DropdownItem>
@@ -1505,439 +1538,15 @@ export default function AssetsPage() {
         </ModalContent>
       </Modal>
 
-      {/* Statpack Editor Modal (admin) */}
-      <Modal isOpen={statpackDisclosure.isOpen} onOpenChange={statpackDisclosure.onOpenChange} size="3xl">
-        <ModalContent>
-          <ModalHeader>Statpack Editor - {editingPack?.name}</ModalHeader>
-          <ModalBody className="space-y-4">
-            {!editingPack && <p className="text-sm text-foreground-500">No statpack loaded.</p>}
-            {editingPack && (
-              <div ref={statpackBodyRef} className="space-y-4 max-h-[70vh] overflow-y-auto p-2">
-                <div className="flex justify-center">
-                  <BagVisualizer
-                    statpack={editingPack}
-                    selectedPocket={editorSelectedPocket}
-                    onSelectPocket={(p) => setEditorSelectedPocket(p)}
-                    completedPockets={new Set()}
-                  />
-                </div>
-
-                <div className="flex gap-2">
-                  <Input
-                    label="Pack Name"
-                    value={editingPack.name}
-                    onValueChange={(v) => setEditingPack({ ...editingPack, name: v })}
-                  />
-                  <Select
-                    label="Status"
-                    selectedKeys={[editingPack.status || 'Ready']}
-                    onChange={(e) => setEditingPack({ ...editingPack, status: e.target.value as Statpack['status'] })}
-                  >
-                    <SelectItem key="Ready">Ready</SelectItem>
-                    <SelectItem key="In Use">In Use</SelectItem>
-                    <SelectItem key="Not Ready">Not Ready</SelectItem>
-                  </Select>
-                </div>
-
-                <Divider />
-
-                <div className="space-y-4">
-                  <div>
-                    <h3 className="font-semibold mb-2">Statpack Pockets</h3>
-                    <p className="text-xs text-foreground-500 mb-3">Configure items for each pocket (Center • Front • Left • Right)</p>
-                    
-                    {/* Pocket tabs */}
-                    <div className="flex gap-2 mb-4 flex-wrap">
-                      {[
-                        { id: 'all' as const, label: 'All Pockets' },
-                        { id: 'main' as const, label: 'Center Pocket (Main)' },
-                        { id: 'front_aux' as const, label: 'Front Pocket' },
-                        { id: 'side_left' as const, label: 'Left Side Pocket' },
-                        { id: 'side_right' as const, label: 'Right Side Pocket' },
-                      ].map(p => (
-                        <Button
-                          key={p.id}
-                          size="sm"
-                          variant={editorSelectedPocket === p.id ? 'solid' : 'bordered'}
-                          color={editorSelectedPocket === p.id ? 'primary' : 'default'}
-                          onPress={() => setEditorSelectedPocket(p.id)}
-                        >
-                          {p.label}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {editorSelectedPocket !== 'all' && (
-                    <Card>
-                      <CardHeader className="flex justify-between items-center bg-default-50">
-                        <div>
-                          <h4 className="font-semibold">
-                            {editorSelectedPocket === 'main' && 'Center Pocket (Main)'}
-                            {editorSelectedPocket === 'front_aux' && 'Front Pocket'}
-                            {editorSelectedPocket === 'side_left' && 'Left Side Pocket'}
-                            {editorSelectedPocket === 'side_right' && 'Right Side Pocket'}
-                          </h4>
-                          <p className="text-xs text-foreground-500">Sealed compartments and loose items</p>
-                        </div>
-                        <Button
-                          size="sm"
-                          onPress={() => {
-                            const pocketForNew = editorSelectedPocket;
-                            const newComp: StatpackCompartment = {
-                              id: `comp_${Date.now()}`,
-                              name: 'New Sealed Compartment',
-                              parentPocket: pocketForNew as StatpackPocket,
-                              isSealed: false,
-                              sealNumber: '',
-                              expirationDate: undefined,
-                            };
-                            setEditingPack({ ...editingPack, compartments: [...(editingPack.compartments || []), newComp] });
-                          }}
-                        >
-                          + Add Compartment
-                        </Button>
-                      </CardHeader>
-                      <CardBody className="gap-4">
-                        {/* Loose items section */}
-                        <div className="space-y-2">
-                          <h5 className="text-sm font-medium">Loose Items</h5>
-                          {((editingPack.contents || []).filter((it) => it.pocket === editorSelectedPocket)).length === 0 && (
-                            <p className="text-xs text-foreground-500">No loose items yet.</p>
-                          )}
-                          {((editingPack.contents || [])
-                            .map((c, idx) => ({ c, idx }))
-                            .filter(({ c }) => c.pocket === editorSelectedPocket))
-                            .map(({ c: it, idx }) => (
-                              <div key={it.itemId || idx} className="flex items-center gap-2 p-2 bg-default-50 rounded">
-                                <Input
-                                  label="Item"
-                                  size="sm"
-                                  value={(it as any).name ?? it.itemDetails?.name ?? it.itemId ?? ''}
-                                  onValueChange={(v) => updateContentAt(idx, { name: v } as any)}
-                                />
-                                <Input
-                                  label="Qty"
-                                  size="sm"
-                                  className="w-20"
-                                  value={
-                                    (it as any).qty !== undefined && (it as any).qty !== null
-                                      ? String((it as any).qty)
-                                      : (it as any).currentQuantity !== undefined && (it as any).currentQuantity !== null
-                                      ? String((it as any).currentQuantity)
-                                      : (it as any).requiredQuantity !== undefined && (it as any).requiredQuantity !== null
-                                      ? String((it as any).requiredQuantity)
-                                      : ''
-                                  }
-                                  onValueChange={(v) => updateContentAt(idx, { qty: v === '' ? '' : Number(v), currentQuantity: v === '' ? '' : Number(v) } as any)}
-                                />
-                                    <div className="flex items-center gap-2">
-                                      {((it as any).assetInstanceId || (it as any).serialNumber) && (
-                                        <Button size="sm" variant="light" isIconOnly onPress={() => openAssetPolicyEditor((it as any).assetInstanceId || (it as any).serialNumber)} title="Edit asset verification policy">
-                                          <ShieldCheck size={16} />
-                                        </Button>
-                                      )}
-                                      <Button size="sm" variant="light" isIconOnly onPress={() => removeContentAt(idx)}>
-                                        <X size={16} />
-                                      </Button>
-                                    </div>
-                              </div>
-                            ))}
-                          <Button
-                            size="sm"
-                            variant="flat"
-                            onPress={() => {
-                              const newItem = { id: `free_${Date.now()}`, name: 'New Item', qty: 1, pocket: editorSelectedPocket } as any;
-                              const contents = [...(editingPack.contents || []), newItem];
-                              setEditingPack({ ...editingPack, contents });
-                            }}
-                          >
-                            + Add Loose Item
-                          </Button>
-                          {userRole === 'admin' && (
-                            <Button
-                              size="sm"
-                              variant="flat"
-                              className="ml-2"
-                              onPress={() => {
-                                assetAttachDisclosure.onOpen();
-                              }}
-                            >
-                              + Attach Asset
-                            </Button>
-                          )}
-                        </div>
-
-                        {/* Compartments for this pocket */}
-                        <div className="space-y-2">
-                          <h5 className="text-sm font-medium">Sealed Compartments</h5>
-                          {((editingPack.compartments || []).filter((c) => c.parentPocket === editorSelectedPocket)).length === 0 && (
-                            <p className="text-xs text-foreground-500">No sealed compartments yet.</p>
-                          )}
-                          {((editingPack.compartments || []).filter((c) => c.parentPocket === editorSelectedPocket)).map((comp, ci) => {
-                            const origIndex = (editingPack.compartments || []).indexOf(comp);
-                            return (
-                              <Card key={comp.id || ci} className="border-l-4 border-l-primary bg-default-50">
-                                <CardBody className="gap-2 py-3 px-3">
-                                  <div className="flex justify-between items-start gap-2">
-                                    <div className="flex-1">
-                                      <Input
-                                        label="Compartment Name"
-                                        size="sm"
-                                        value={comp.name}
-                                        onValueChange={(v) => {
-                                          const comps = [...(editingPack.compartments || [])];
-                                          comps[origIndex] = { ...comps[origIndex], name: v };
-                                          setEditingPack({ ...editingPack, compartments: comps });
-                                        }}
-                                      />
-                                      <div className="flex gap-2 mt-2">
-                                        <Chip
-                                          size="sm"
-                                          variant="flat"
-                                          color={comp.isSealed ? 'success' : 'default'}
-                                          startContent={comp.isSealed ? <Lock size={12} /> : <Unlock size={12} />}
-                                          onClick={() => {
-                                            const comps = [...(editingPack.compartments || [])];
-                                            comps[origIndex] = { ...comps[origIndex], isSealed: !comps[origIndex].isSealed };
-                                            setEditingPack({ ...editingPack, compartments: comps });
-                                          }}
-                                        >
-                                          {comp.isSealed ? 'Sealed' : 'Open'}
-                                        </Chip>
-                                        {comp.isSealed && (
-                                          <Input
-                                            label="Seal #"
-                                            size="sm"
-                                            className="flex-1"
-                                            value={comp.sealNumber || ''}
-                                            onValueChange={(v) => {
-                                              const comps = [...(editingPack.compartments || [])];
-                                              comps[origIndex] = { ...comps[origIndex], sealNumber: v };
-                                              setEditingPack({ ...editingPack, compartments: comps });
-                                            }}
-                                          />
-                                        )}
-                                      </div>
-                                    </div>
-                                    <Button
-                                      size="sm"
-                                      variant="light"
-                                      isIconOnly
-                                      onPress={() => {
-                                        const comps = [...(editingPack.compartments || [])];
-                                        comps.splice(origIndex, 1);
-                                        setEditingPack({ ...editingPack, compartments: comps });
-                                      }}
-                                    >
-                                      <X size={16} />
-                                    </Button>
-                                  </div>
-                                  
-                                  <Divider />
-                                  
-                                  <div className="text-xs text-foreground-500 font-medium">Items in this compartment:</div>
-                                  {((comp as any).items || []).length === 0 && (
-                                    <p className="text-xs text-foreground-500 italic">No items assigned yet.</p>
-                                  )}
-                                  {((comp as any).items || []).map((it: any, ii: number) => (
-                                    <div key={it.id || it.itemId || ii} className="flex items-center gap-2 p-2 bg-content1 rounded text-xs">
-                                      <Input
-                                        label="Item"
-                                        size="sm"
-                                        value={(it as any).name ?? it.itemDetails?.name ?? it.itemId ?? ''}
-                                        onValueChange={(v) => {
-                                          const comps = [...(editingPack.compartments || [])];
-                                          const items = [...((comps[origIndex] as any).items || [])];
-                                          items[ii] = { ...items[ii], name: v };
-                                          comps[origIndex] = { ...comps[origIndex], items } as any;
-                                          setEditingPack({ ...editingPack, compartments: comps });
-                                        }}
-                                      />
-                                      <Input
-                                        label="Qty"
-                                        size="sm"
-                                        className="w-20"
-                                        value={
-                                          (it as any).qty !== undefined && (it as any).qty !== null
-                                            ? String((it as any).qty)
-                                            : (it as any).currentQuantity !== undefined && (it as any).currentQuantity !== null
-                                            ? String((it as any).currentQuantity)
-                                            : ''
-                                        }
-                                        onValueChange={(v) => {
-                                          const comps = [...(editingPack.compartments || [])];
-                                          const items = [...((comps[origIndex] as any).items || [])];
-                                          items[ii] = { ...items[ii], qty: v === '' ? '' : Number(v), currentQuantity: v === '' ? '' : Number(v) };
-                                          comps[origIndex] = { ...comps[origIndex], items } as any;
-                                          setEditingPack({ ...editingPack, compartments: comps });
-                                        }}
-                                      />
-                                      <Button
-                                        size="sm"
-                                        variant="light"
-                                        isIconOnly
-                                        onPress={() => {
-                                          const comps = [...(editingPack.compartments || [])];
-                                          const items = [...((comps[origIndex] as any).items || [])];
-                                          items.splice(ii, 1);
-                                          comps[origIndex] = { ...comps[origIndex], items } as any;
-                                          setEditingPack({ ...editingPack, compartments: comps });
-                                        }}
-                                      >
-                                        <X size={14} />
-                                      </Button>
-                                    </div>
-                                  ))}
-                                  <Button
-                                    size="sm"
-                                    variant="flat"
-                                    onPress={() => {
-                                      const comps = [...(editingPack.compartments || [])];
-                                      const items = (comps[origIndex] as any).items ? [...(comps[origIndex] as any).items] : [];
-                                      items.push({ id: `it_${Date.now()}`, name: 'New Item', qty: 1 });
-                                      comps[origIndex] = { ...comps[origIndex], items } as any;
-                                      setEditingPack({ ...editingPack, compartments: comps });
-                                    }}
-                                  >
-                                    + Add Item
-                                  </Button>
-                                </CardBody>
-                              </Card>
-                            );
-                          })}
-                        </div>
-                      </CardBody>
-                    </Card>
-                  )}
-                </div>
-              </div>
-            )}
-          </ModalBody>
-          <ModalFooter>
-            <Button
-              variant="light"
-              onPress={() => {
-                statpackDisclosure.onClose();
-                setEditingPack(null);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              color="primary"
-              onPress={async () => {
-                if (!editingPack) return;
-                try {
-                    const parseQty = (v: any) => {
-                      if (v === '' || v === null || v === undefined) return undefined;
-                      const n = Number(v);
-                      return Number.isFinite(n) ? n : undefined;
-                    };
-                  // Normalize contents and compartments so edits to pocket/qty/compartment items are persisted
-                  const pack = JSON.parse(JSON.stringify(editingPack));
-
-                  const normalizedContents: any[] = [];
-
-                  // 1) Loose items from pack.contents (those without compartmentId)
-                  (pack.contents || []).forEach((c: any) => {
-                    if (c && !c.compartmentId) {
-                      const itemId = c.itemId || c.id || `it_${Date.now()}_${Math.floor(Math.random()*1000)}`;
-                      const requiredQuantity = parseQty(c.qty) ?? parseQty(c.requiredQuantity) ?? parseQty(c.currentQuantity) ?? 1;
-                      const currentQuantity = parseQty(c.currentQuantity) ?? requiredQuantity;
-                      normalizedContents.push({
-                        ...c,
-                        itemId,
-                        requiredQuantity,
-                        currentQuantity,
-                        pocket: c.pocket || 'main',
-                      });
-                    }
-                  });
-
-                  // 2) Items declared inside compartments (comp.items)
-                  (pack.compartments || []).forEach((comp: any) => {
-                    const items = (comp.items || []) as any[];
-                    items.forEach((it: any) => {
-                      const itemId = it.itemId || it.id || `it_${Date.now()}_${Math.floor(Math.random()*1000)}`;
-                      const requiredQuantity = parseQty(it.qty) ?? parseQty(it.requiredQuantity) ?? parseQty(it.currentQuantity) ?? 1;
-                      const currentQuantity = parseQty(it.currentQuantity) ?? requiredQuantity;
-                      normalizedContents.push({
-                        itemId,
-                        name: it.name ?? it.itemDetails?.name,
-                        itemDetails: it.itemDetails ?? undefined,
-                        requiredQuantity,
-                        currentQuantity,
-                        pocket: comp.parentPocket || 'main',
-                        compartmentId: comp.id,
-                        lotNumber: it.lotNumber ?? undefined,
-                        expirationDate: it.expirationDate ?? undefined,
-                      });
-                    });
-                  });
-
-                  // 3) Preserve any existing contents that explicitly reference a compartmentId (in case they were present)
-                  (pack.contents || []).forEach((c: any) => {
-                    if (c && c.compartmentId) {
-                      const existing = normalizedContents.find(n => n.itemId === (c.itemId || c.id));
-                      if (!existing) {
-                        const requiredQuantity = parseQty(c.qty) ?? parseQty(c.requiredQuantity) ?? parseQty(c.currentQuantity) ?? 1;
-                        const currentQuantity = parseQty(c.currentQuantity) ?? requiredQuantity;
-                        normalizedContents.push({
-                          ...c,
-                          itemId: c.itemId || c.id || `it_${Date.now()}_${Math.floor(Math.random()*1000)}`,
-                          requiredQuantity,
-                          currentQuantity,
-                        });
-                      }
-                    }
-                  });
-
-                  // Strip nested `items` arrays from compartments before saving (source of truth is pack.contents)
-                  const normalizedCompartments = (pack.compartments || []).map((c: any) => {
-                    const { items, ...rest } = c;
-                    return { ...rest };
-                  });
-
-                  // Ensure display-friendly `itemDetails.name` exists when admins entered a freeform `name`.
-                  const enrichedContents = normalizedContents.map((n) => {
-                    const out = { ...n };
-                    if (!out.itemDetails && out.name) {
-                      out.itemDetails = { name: out.name } as any;
-                    }
-                    return out;
-                  });
-
-                  const normalizedPack = {
-                    ...pack,
-                    contents: enrichedContents,
-                    compartments: normalizedCompartments,
-                    updatedAt: serverTimestamp(),
-                  } as any;
-
-                  const docId = pack.id || editingPack?.id;
-                  if (!docId) {
-                    // No id: create a new statpack document and update editing state so the UI can continue editing
-                    const ref = await addDoc(collection(db, 'statpacks'), normalizedPack as any);
-                    const newId = ref.id;
-                    // persist the id into local editing state so subsequent saves use updateDoc
-                    setEditingPack(prev => prev ? ({ ...prev, id: newId } as Statpack) : null);
-                  } else {
-                    await updateDoc(doc(db, 'statpacks', String(docId)), normalizedPack);
-                  }
-                  statpackDisclosure.onClose();
-                  setEditingPack(null);
-                } catch (err) {
-                  console.error('Failed to save statpack:', err);
-                  alert('Failed to save statpack');
-                }
-              }}
-            >
-              Save Changes
-            </Button>
-          </ModalFooter>
-        </ModalContent>
-      </Modal>
+      {/* Statpack Editor Modal (admin) — full-featured editor */}
+      <StatpackEditorModal
+        pack={editingPack}
+        isOpen={statpackDisclosure.isOpen}
+        onClose={() => { statpackDisclosure.onClose(); setEditingPack(null); }}
+        onSave={saveStatpackDraft}
+        onDelete={deleteStatpackFromEditor}
+        canDelete={userRole === 'admin'}
+      />
 
       <AssetAttachModal
         isOpen={assetAttachDisclosure.isOpen}

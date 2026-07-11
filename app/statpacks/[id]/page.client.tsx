@@ -7,11 +7,6 @@ import {
   Button,
   Chip,
   Divider,
-  Modal,
-  ModalContent,
-  ModalHeader,
-  ModalBody,
-  ModalFooter,
   Input,
   Select,
   SelectItem,
@@ -20,10 +15,10 @@ import {
 } from '@heroui/react';
 import { Package, MapPin, Pencil, Save, X, Clock } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
-import { doc, onSnapshot, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, onSnapshot, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
-import type { Statpack, User, StatpackPocket } from '@/app/types';
-import { BagVisualizer } from '@/app/components/statpackvisualizer';
+import type { Statpack, User } from '@/app/types';
+import StatpackEditorModal from '@/app/components/statpack-editor-modal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import StatpackHistory from '@/app/components/statpack-history';
 import { computeStatpackAssetValue } from '@/app/lib/inventory';
@@ -40,8 +35,6 @@ export default function StatpackDetailClient() {
   const [pack, setPack] = useState<Statpack | null>(null);
 
   const editorDisclosure = useDisclosure();
-  const [editingPack, setEditingPack] = useState<Statpack | null>(null);
-  const [editorSelectedPocket, setEditorSelectedPocket] = useState<StatpackPocket | 'all'>('all');
 
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scannerTarget, setScannerTarget] = useState<Statpack | null>(null);
@@ -144,22 +137,32 @@ export default function StatpackDetailClient() {
 
   const openEditor = () => {
     if (!pack) return;
-    setEditingPack(JSON.parse(JSON.stringify(pack)) as Statpack);
     editorDisclosure.onOpen();
   };
 
-  const saveEditor = async () => {
-    if (!editingPack) return;
+  const saveEditor = async (draft: Statpack) => {
     try {
-      await updateDoc(doc(db, 'statpacks', editingPack.id as string), {
-        ...editingPack,
+      await updateDoc(doc(db, 'statpacks', draft.id as string), {
+        ...draft,
         updatedAt: serverTimestamp(),
       });
       editorDisclosure.onClose();
-      setEditingPack(null);
     } catch (err) {
       console.error('Failed to save statpack:', err);
       alert('Failed to save statpack');
+    }
+  };
+
+  const deleteStatpack = async () => {
+    if (!pack) return;
+    if (!confirm(`Delete statpack "${pack.name}"? This cannot be undone.`)) return;
+    try {
+      await deleteDoc(doc(db, 'statpacks', pack.id as string));
+      editorDisclosure.onClose();
+      router.push('/statpacks');
+    } catch (err) {
+      console.error('Failed to delete statpack:', err);
+      alert('Failed to delete statpack');
     }
   };
 
@@ -336,40 +339,14 @@ export default function StatpackDetailClient() {
         </Card>
       </div>
 
-      <Modal isOpen={editorDisclosure.isOpen} onOpenChange={editorDisclosure.onOpenChange} size="3xl">
-        <ModalContent>
-          <ModalHeader>Statpack Editor - {editingPack?.name}</ModalHeader>
-          <ModalBody className="space-y-4">
-            {!editingPack && <p className="text-sm text-foreground-500">No statpack loaded.</p>}
-            {editingPack && (
-              <div className="space-y-4">
-                <div className="flex justify-center">
-                  <BagVisualizer
-                    statpack={editingPack}
-                    selectedPocket={editorSelectedPocket}
-                    onSelectPocket={(p) => setEditorSelectedPocket(p)}
-                    completedPockets={new Set()}
-                  />
-                </div>
-                <div className="flex gap-2">
-                  <Input label="Pack Name" value={editingPack.name} onValueChange={(v) => setEditingPack({ ...editingPack, name: v })} />
-                  <Select label="Status" selectedKeys={[editingPack.status || 'Ready']} onChange={(e) => setEditingPack({ ...editingPack, status: e.target.value as Statpack['status'] })}>
-                    <SelectItem key="Ready">Ready</SelectItem>
-                    <SelectItem key="In Use">In Use</SelectItem>
-                    <SelectItem key="Not Ready">Not Ready</SelectItem>
-                  </Select>
-                </div>
-                <Divider />
-                <p className="text-sm text-foreground-500">Use the visualizer to navigate compartments and edit items as needed.</p>
-              </div>
-            )}
-          </ModalBody>
-          <ModalFooter>
-            <Button variant="light" onPress={() => { editorDisclosure.onClose(); setEditingPack(null); }}>Cancel</Button>
-            <Button color="primary" onPress={saveEditor}>Save Changes</Button>
-          </ModalFooter>
-        </ModalContent>
-      </Modal>
+      <StatpackEditorModal
+        pack={pack}
+        isOpen={editorDisclosure.isOpen}
+        onClose={editorDisclosure.onClose}
+        onSave={saveEditor}
+        onDelete={deleteStatpack}
+        canDelete={userRole === 'admin'}
+      />
 
       <BarcodeScanner
         isOpen={scannerOpen}

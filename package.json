@@ -18,7 +18,7 @@
     "test:simulation": "firebase emulators:exec --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx ./scripts/emulator/semester-sim.ts\"",
     "test:emulator": "firebase emulators:exec --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx ./scripts/emulator/seed-cli.ts && ./node_modules/.bin/tsx ./scripts/emulator/run-invariants.ts && ./node_modules/.bin/tsx ./scripts/emulator/run-properties.ts && ./node_modules/.bin/tsx ./scripts/emulator/semester-sim.ts\"",
     "test:e2e": "firebase emulators:exec --only firestore --project demo-bmrc-logistics \"playwright test\"",
-    "dev:emulator": "NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 NEXT_PUBLIC_FIREBASE_PROJECT_ID=demo-bmrc-logistics next dev"
+    "dev:emulator": "NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099 NEXT_PUBLIC_FIREBASE_PROJECT_ID=demo-bmrc-logistics next dev"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

@@ -15,4 +15,13 @@ export default async function globalSetup() {
   });
   // eslint-disable-next-line no-console
   console.log('[e2e] emulator seeded with representative BMRC data');
+
+  // If an Auth emulator is running, seed a signed-in-able admin so drivers can
+  // pass the Firebase auth gate. Self-skips when no Auth emulator host is set.
+  if (process.env.FIREBASE_AUTH_EMULATOR_HOST) {
+    execSync('./node_modules/.bin/tsx ./scripts/emulator/seed-auth-user.ts', {
+      stdio: 'inherit',
+      env: process.env,
+    });
+  }
 }

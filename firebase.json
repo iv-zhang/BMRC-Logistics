@@ -1,6 +1,9 @@
 {
   "hosting": {
     "public": "out",
+    "predeploy": [
+      "npm run build"
+    ],
     "ignore": [
       "firebase.json",
       "**/.*",
@@ -19,6 +22,10 @@
     "indexes": "firestore.indexes.json"
   },
   "emulators": {
+    "auth": {
+      "port": 9099,
+      "host": "127.0.0.1"
+    },
     "firestore": {
       "port": 8080,
       "host": "127.0.0.1"

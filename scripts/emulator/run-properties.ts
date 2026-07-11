@@ -59,7 +59,8 @@ function itemFromLots(lots: { stock: number; expDays: number; recalled: boolean 
 }
 
 // ── Runner ───────────────────────────────────────────────────────────────────
-type Track = 'A (reference oracle — must pass)' | 'B (real code — documents gaps)';
+// Free-form label; only the leading 'A'/'B' track prefix is significant.
+type Track = string;
 function runProp(track: Track, name: string, prop: fc.IProperty<unknown>, expect: 'pass' | 'fail-documents-gap') {
   const res = fc.check(prop, { numRuns: 500, verbose: false });
   const status = res.failed ? 'FAIL' : 'PASS';
@@ -68,7 +69,7 @@ function runProp(track: Track, name: string, prop: fc.IProperty<unknown>, expect
   if (res.failed) {
     if (track.startsWith('A')) refFailures++;
     log(`      minimal counterexample (after ${res.numShrinks} shrinks):`);
-    log(`      \x1b[33m${JSON.stringify(res.counterexample?.[0])}\x1b[0m`);
+    log(`      \x1b[33m${JSON.stringify((res.counterexample as unknown[] | null)?.[0])}\x1b[0m`);
     if (expect === 'fail-documents-gap') log(`      → EXPECTED: this is a documented real-code gap.`);
   }
 }

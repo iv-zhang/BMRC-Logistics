@@ -12,6 +12,8 @@ interface UseUserRoleReturn {
   userData: User | null;
   role: User['role'] | null;
   fullName: string | null;
+  /** True when `role` reflects a `bmrc_role_override` test value rather than the real Firestore role. */
+  isRoleOverridden: boolean;
 }
 
 export function useUserRole(): UseUserRoleReturn {
@@ -104,5 +106,6 @@ export function useUserRole(): UseUserRoleReturn {
     userData,
     role: effectiveRole,
     fullName: userData?.fullName || null,
+    isRoleOverridden: roleOverride !== null,
   };
 }
