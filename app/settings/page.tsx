@@ -204,7 +204,7 @@ export default function SettingsPage() {
             </div>
           </Tab>
 
-          <Tab key="vehicles" title="Vehicles">
+          <Tab key="vehicles" title="Vehicle Types">
             <div className="mt-4">
               <VehiclesTab vehicles={draft.vehicles} onChange={(vehicles) => updateDraft({ vehicles })} />
             </div>

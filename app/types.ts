@@ -922,6 +922,90 @@ export interface MedicationLog {
   timestamp: Date | FieldValue;
 }
 
+// --- VEHICLES ---
+// Individual fleet vehicles (roster docs in `vehicles`). Vehicle TYPES stay in
+// org config (`VehicleDef` in app/config/org-config.ts); `Vehicle.typeId`
+// references a VehicleDef.id.
+
+export type VehicleStatus = 'active' | 'retired';
+
+export interface Vehicle {
+  id?: string;
+  /** "Ambulance 2", "UTV-1" */
+  name: string;
+  /** VehicleDef.id from org config ('ambulance' | 'utv' | 'ebike' | …) */
+  typeId: string;
+  status: VehicleStatus;
+  notes?: string;
+  /** Live checkout state — AUTHORITATIVE; the open vehicle_logs doc mirrors it
+   *  (both written in one transaction, statpack pattern). */
+  isCheckedOut: boolean;
+  /** Open vehicle_logs doc id while checked out; O(1) check-in lookup */
+  activeLogId?: string | null;
+  assignedToUserId?: string | null;
+  assignedToUserName?: string | null;
+  checkedOutAt?: Date | FieldValue | null;
+  /** Last known readings, denormalized FROM the latest closed log */
+  lastMileage?: number | null;
+  /** 0 | 25 | 50 | 75 | 100 (E / ¼ / ½ / ¾ / F) */
+  lastFuelLevel?: number | null;
+  /** 0–100 % */
+  lastBatteryLevel?: number | null;
+  createdAt?: Date | FieldValue;
+  createdBy?: string;
+  updatedAt?: Date | FieldValue;
+  retiredAt?: Date | FieldValue | null;
+  retiredBy?: string | null;
+}
+
+/** Pre- or post-shift readings; which fields apply comes from the vehicle
+ *  type's reading fields (getReadingFieldsForVehicleType in org-config). */
+export interface VehicleShiftReadings {
+  mileage?: number;
+  /** 0 | 25 | 50 | 75 | 100 (E / ¼ / ½ / ¾ / F) */
+  fuelLevel?: number;
+  /** 0–100 % */
+  batteryLevel?: number;
+}
+
+export type VehicleLogStatus = 'open' | 'closed' | 'force_closed';
+
+/** One document per shift in `vehicle_logs`: created 'open' at checkout with
+ *  pre-readings, completed at check-in with post-readings. Abandoned shifts
+ *  stay visibly 'open' until an admin force-closes them. */
+export interface VehicleLog {
+  id?: string;
+  vehicleId: string;
+  /** Snapshot at checkout — history stays readable after rename/retire */
+  vehicleName: string;
+  /** Snapshot at checkout */
+  vehicleTypeId: string;
+  status: VehicleLogStatus;
+  driverUserId: string;
+  driverName: string;
+  /** Free-text team member names */
+  crewNames?: string[];
+  checkoutAt: Date | FieldValue;
+  /** Client-side time for immediate display (StatpackLog.clientTimestamp pattern) */
+  checkoutClientAt?: Date;
+  checkinAt?: Date | FieldValue | null;
+  checkinClientAt?: Date | null;
+  /** Who closed the log (driver or admin) */
+  checkinUserId?: string | null;
+  checkinUserName?: string | null;
+  preReadings?: VehicleShiftReadings;
+  postReadings?: VehicleShiftReadings;
+  /** NEW damage noted at checkout (free text; also files an issue report) */
+  preDamage?: string | null;
+  /** NEW damage noted at check-in (free text; also files an issue report) */
+  postDamage?: string | null;
+  /** Required note when checkout mileage ≠ vehicle.lastMileage */
+  mileageMismatchAck?: string | null;
+  notes?: string;
+  /** Set with status 'force_closed' by an admin */
+  forceCloseReason?: string | null;
+}
+
 /** Medication-specific fields added to InventoryItem when isMedication is true */
 export interface MedicationInfo {
   /** Whether this is a controlled substance */

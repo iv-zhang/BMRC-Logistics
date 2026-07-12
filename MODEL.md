@@ -122,6 +122,31 @@ mismatchCount,expiredCount,restockedCount,reportedCount}`, `sharpsCheck?`,
 `newExpirationDate`, `oxygenPsi`, `regulatorOk`, `acknowledged`, `issue`), `issues?`,
 `itemsUsed?`.
 
+### `vehicles` — individual fleet vehicles (roster + live checkout state)
+`Vehicle` ([app/types.ts:932-961](app/types.ts#L932-L961)): `name` ("Ambulance 2"),
+`typeId` (a `VehicleDef.id` from org-config — vehicle *types* stay in `org_settings`),
+`status: 'active'|'retired'`, `notes?`; live state `isCheckedOut` (authoritative,
+statpack pattern), `activeLogId?`, `assignedToUserId/Name?`, `checkedOutAt?`;
+last-known readings denormalized from the latest closed log (`lastMileage?`,
+`lastFuelLevel?` 0/25/50/75/100, `lastBatteryLevel?` 0–100), `createdAt/By`,
+`retiredAt/By?`. Vehicles are retired, never deleted (hard delete only when zero
+logs reference them) — logs reference them. Written only via
+[app/lib/vehicles.ts](app/lib/vehicles.ts).
+
+### `vehicle_logs` — vehicle shift log (one doc per shift)
+`VehicleLog` ([app/types.ts:976-1008](app/types.ts#L976-L1008)): `vehicleId/Name`
+(name/type snapshotted at checkout), `vehicleTypeId`,
+`status: 'open'|'closed'|'force_closed'` (created `open` at checkout, closed at
+check-in; abandoned shifts stay visibly `open` until admin force-close),
+`driverUserId/Name`, `crewNames?[]`, `checkoutAt`/`checkinAt?` (+ client
+timestamps), `checkinUserId/Name?`, `preReadings?`/`postReadings?` (`mileage?`,
+`fuelLevel?`, `batteryLevel?` — applicable fields come from the vehicle type's
+reading fields, `getReadingFieldsForVehicleType` in org-config),
+`preDamage?`/`postDamage?` (NEW-damage free text; non-empty also opens an
+`issue_reports` doc targeting `vehicles/<id>`), `mileageMismatchAck?`, `notes?`,
+`forceCloseReason?`. Vehicle doc + log row written in one transaction by
+[app/lib/vehicles.ts](app/lib/vehicles.ts).
+
 ### `restock_shelves`, `restock_shelf_events`, `restock_actions`, `restock_reports`
 Restock-shelf workbench ([app/restock/page.tsx](app/restock/page.tsx)). No dedicated
 types in `types.ts`; shapes are inline. `restock_shelves` docs carry `createdAt` +

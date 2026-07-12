@@ -33,6 +33,8 @@ import {
   Clock,
   AlertTriangle,
   ClipboardCheck,
+  Ambulance,
+  Truck,
 } from 'lucide-react';
 
 interface InventorySnapshot {
@@ -358,6 +360,34 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
                 <h3 className="text-sm md:text-xl font-semibold">Check In</h3>
                 <p className="text-xs md:text-sm text-center opacity-90 hidden md:block">
                   Return supplies
+                </p>
+              </CardBody>
+            </Card>
+
+            <Card
+              isPressable
+              onPress={() => router.push('/vehicles/checkout')}
+              className="bg-gradient-to-br from-sky-500 to-sky-600 text-white transition-transform"
+            >
+              <CardBody className="flex flex-col items-center justify-center py-4 md:py-8 gap-2 md:gap-3">
+                <Ambulance size={36} className="md:w-12 md:h-12" />
+                <h3 className="text-sm md:text-xl font-semibold">Vehicle Check Out</h3>
+                <p className="text-xs md:text-sm text-center opacity-90 hidden md:block">
+                  Start a vehicle shift log
+                </p>
+              </CardBody>
+            </Card>
+
+            <Card
+              isPressable
+              onPress={() => router.push('/vehicles/checkin')}
+              className="bg-gradient-to-br from-teal-500 to-teal-600 text-white transition-transform"
+            >
+              <CardBody className="flex flex-col items-center justify-center py-4 md:py-8 gap-2 md:gap-3">
+                <Truck size={36} className="md:w-12 md:h-12" />
+                <h3 className="text-sm md:text-xl font-semibold">Vehicle Check In</h3>
+                <p className="text-xs md:text-sm text-center opacity-90 hidden md:block">
+                  Close out a vehicle shift
                 </p>
               </CardBody>
             </Card>

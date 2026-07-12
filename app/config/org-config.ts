@@ -23,6 +23,7 @@ import {
   getLocationsRuntime,
   getAssetCategoriesRuntime,
   getStatpackTypesRuntime,
+  getVehiclesRuntime,
 } from '@/app/lib/org-config-store';
 
 // ---------------------------------------------------------------------------
@@ -177,14 +178,81 @@ export interface VehicleDef {
   hasStatpacks: boolean;
   /** How many statpacks it typically carries */
   maxStatpacks?: number;
+  /**
+   * Reading-field ids (from VEHICLE_READING_FIELDS) captured pre/post shift on
+   * the vehicle checkout log. Optional + additive: when absent, the code
+   * default in DEFAULT_VEHICLE_READING_FIELDS_BY_TYPE applies.
+   */
+  readingFields?: string[];
 }
 
 export const VEHICLE_TYPES: VehicleDef[] = [
   { id: 'ambulance', name: 'Ambulance', icon: 'Ambulance', hasStatpacks: true, maxStatpacks: 2 },
+  { id: 'ebike', name: 'E-Bike', icon: 'Bike', hasStatpacks: true, maxStatpacks: 1 },
+  { id: 'utv', name: 'UTV', icon: 'Truck', hasStatpacks: true, maxStatpacks: 2 },
   // Uncomment / add as fleet grows:
-  // { id: 'ebike', name: 'E-Bike', icon: 'Bike', hasStatpacks: true, maxStatpacks: 1 },
-  // { id: 'utv', name: 'UTV', icon: 'Truck', hasStatpacks: true, maxStatpacks: 2 },
   // { id: 'golf_cart', name: 'Golf Cart', icon: 'Car', hasStatpacks: false },
+];
+
+// ---------------------------------------------------------------------------
+// Vehicle Reading Fields — pre/post-shift readings on the vehicle checkout log
+//
+// Code-owned like VERIFICATION_FIELDS (kept separate so vehicle-only fields
+// never pollute the asset-check palette). Which fields a vehicle type uses
+// comes from VehicleDef.readingFields, falling back to the per-type defaults
+// below. Fuel is a gauge read (E/¼/½/¾/F), stored numerically as
+// 0/25/50/75/100 so it stays queryable.
+// ---------------------------------------------------------------------------
+
+export const VEHICLE_READING_FIELDS: Record<string, VerificationFieldDef> = {
+  fuel_level: {
+    id: 'fuel_level',
+    label: 'Fuel Level',
+    type: 'select',
+    options: ['E', '¼', '½', '¾', 'F'],
+    required: true,
+    icon: 'Fuel',
+  },
+  mileage: {
+    id: 'mileage',
+    label: 'Mileage',
+    type: 'number',
+    unit: 'mi',
+    min: 0,
+    required: true,
+    icon: 'Gauge',
+  },
+  battery_level: {
+    id: 'battery_level',
+    label: 'Battery Level',
+    type: 'number',
+    unit: '%',
+    min: 0,
+    max: 100,
+    warningThreshold: 30,
+    criticalThreshold: 10,
+    severity: 'warning',
+    required: true,
+    icon: 'Battery',
+  },
+};
+
+/** Code defaults when a VehicleDef doesn't specify readingFields.
+ *  E-bikes are battery-only in v1 (whether they track mileage is an open
+ *  question — add 'mileage' here or via readingFields once decided). */
+export const DEFAULT_VEHICLE_READING_FIELDS_BY_TYPE: Record<string, string[]> = {
+  ambulance: ['fuel_level', 'mileage'],
+  utv: ['fuel_level', 'mileage'],
+  ebike: ['battery_level'],
+};
+
+/** Fuel gauge label ⇄ stored value mapping (E/¼/½/¾/F → 0/25/50/75/100). */
+export const FUEL_LEVEL_STEPS: { label: string; value: number }[] = [
+  { label: 'E', value: 0 },
+  { label: '¼', value: 25 },
+  { label: '½', value: 50 },
+  { label: '¾', value: 75 },
+  { label: 'F', value: 100 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -477,6 +545,24 @@ export function getVerificationFieldsForCategory(categoryId: string): Verificati
 
 export function getStatpackTypeConfig(typeId: string): StatpackTypeDef | undefined {
   return getStatpackTypesRuntime().find(t => t.id.toLowerCase() === typeId.toLowerCase());
+}
+
+export function getVehicleTypeConfig(typeId: string): VehicleDef | undefined {
+  return getVehiclesRuntime().find(v => v.id === typeId);
+}
+
+/** Reading fields captured pre/post shift for a vehicle type: the runtime
+ *  VehicleDef.readingFields override when present, else the code default map.
+ *  A type created purely via the Settings UI (id outside the default map)
+ *  falls back to fuel + mileage unless its readingFields is set. */
+export function getReadingFieldsForVehicleType(typeId: string): VerificationFieldDef[] {
+  const def = getVehicleTypeConfig(typeId);
+  const ids = def?.readingFields && def.readingFields.length > 0
+    ? def.readingFields
+    : DEFAULT_VEHICLE_READING_FIELDS_BY_TYPE[typeId] ?? ['fuel_level', 'mileage'];
+  return ids
+    .map(id => VEHICLE_READING_FIELDS[id])
+    .filter((f): f is VerificationFieldDef => !!f);
 }
 
 export function getLocationConfig(locationId: string): LocationDef | undefined {

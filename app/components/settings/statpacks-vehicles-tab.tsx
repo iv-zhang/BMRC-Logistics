@@ -179,6 +179,11 @@ export function VehiclesTab({ vehicles, onChange }: VehiclesTabProps) {
 
   return (
     <div className="flex flex-col gap-4">
+      <p className="text-sm text-foreground-500">
+        These are vehicle <span className="font-semibold text-foreground-600">types</span> (fleet categories).
+        Individual vehicles — &quot;Ambulance 2&quot;, &quot;UTV-1&quot; — are managed on the{' '}
+        <a href="/vehicles" className="text-primary font-semibold">Vehicles</a> page.
+      </p>
       {vehicles.map((v) => (
         <div key={v.id} className="bg-content1 border border-divider rounded-large p-5">
           <div className="flex items-start justify-between gap-3">
@@ -237,7 +242,7 @@ export function VehiclesTab({ vehicles, onChange }: VehiclesTabProps) {
       ))}
 
       <Button color="primary" startContent={<Plus size={16} />} onPress={addVehicle} className="self-start">
-        Add vehicle
+        Add vehicle type
       </Button>
     </div>
   );

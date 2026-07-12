@@ -8,7 +8,10 @@ import { useUserRole } from '@/app/hooks/useUserRole';
 const NO_SIDEBAR_PATHS = ['/login', '/register', '/forgot-password'];
 // Self-contained mobile flows that ship their own sticky bottom action bar —
 // no global bottom nav there (it would overlap / double up).
-const NO_BOTTOM_NAV_PATHS = ['/statpacks/check-off', '/statpacks/checkout', '/statpacks/checkin'];
+const NO_BOTTOM_NAV_PATHS = [
+  '/statpacks/check-off', '/statpacks/checkout', '/statpacks/checkin',
+  '/vehicles/check-off', '/vehicles/checkout', '/vehicles/checkin',
+];
 
 export default function SidebarLayout({ children }: { children: React.ReactNode }) {
   const [navHidden, setNavHidden] = useState(false);

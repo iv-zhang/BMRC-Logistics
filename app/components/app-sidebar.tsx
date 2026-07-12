@@ -12,7 +12,7 @@ import {
   BarChart2, Warehouse, Users, AlertTriangle, User,
   LogOut, ShieldCheck, GraduationCap, Sun, Moon,
   ChevronsLeft, ChevronsRight, ScanBarcode, SlidersHorizontal,
-  SquareKanban,
+  SquareKanban, Ambulance,
 } from 'lucide-react';
 import TutorialOverlay from './tutorial-overlay';
 import IssueReportForm from './IssueReportForm';
@@ -44,7 +44,8 @@ export const ADMIN_NAV: NavSection[] = [
   {
     label: 'Assets',
     items: [
-      { key: 'assets',    label: 'Assets & Statpacks', Icon: Package,   path: '/assets' },
+      { key: 'assets',   label: 'Assets & Statpacks', Icon: Package,   path: '/assets' },
+      { key: 'vehicles', label: 'Vehicles',           Icon: Ambulance, path: '/vehicles' },
     ],
   },
   {
