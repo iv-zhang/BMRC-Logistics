@@ -14,6 +14,7 @@ import {
   ModalBody,
   ModalFooter,
   Input,
+  Tooltip,
 } from '@heroui/react';
 import {
   Search,
@@ -31,10 +32,21 @@ import {
   PackagePlus,
   ArrowRightLeft,
   X,
+  Pencil,
 } from 'lucide-react';
-import { collection, onSnapshot, orderBy, query, Timestamp } from 'firebase/firestore';
+import {
+  addDoc,
+  collection,
+  doc,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  Timestamp,
+  updateDoc,
+} from 'firebase/firestore';
 import { db } from '@/firebase';
-import type { InventoryItem, Statpack, StorageLocationRef } from '@/app/types';
+import type { InventoryItem, Statpack, StatpackItem, StorageLocationRef } from '@/app/types';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import {
   canUserAudit,
@@ -56,6 +68,7 @@ import {
   AssetAuditCard,
 } from '@/app/components/audit-item-card';
 import AuditActionDrawer, { type DrawerAction } from '@/app/components/audit-action-drawer';
+import StatpackEditorModal from '@/app/components/statpack-editor-modal';
 import StorageLocationPicker from '@/app/components/storage-location-picker';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import AuditPermissionModal from '@/app/components/audit-permission-modal';
@@ -132,6 +145,10 @@ export default function AuditPage() {
 
   // Restock analysis
   const [restockDecisions, setRestockDecisions] = useState<RestockDecision[]>([]);
+
+  // Statpack expected-contents editor (admin/quartermaster only)
+  const [editingPack, setEditingPack] = useState<Statpack | null>(null);
+  const [savingPack, setSavingPack] = useState(false);
 
   // ─── Auth & permission check ──────────────────────────────────────────────
   const hasAuditAccess = useMemo(() => canUserAudit(userData), [userData]);
@@ -255,11 +272,14 @@ export default function AuditPage() {
   const statpackRows = useMemo(() => {
     let packs = statpacks.map((p) => {
       const lastAuditAt = toDate(p.lastAuditAt);
+      const contentsUpdatedAt = toDate(p.contentsUpdatedAt);
       return {
         pack: p,
         lastAuditAt,
         auditCurrent: isStatpackAuditCurrent(lastAuditAt),
         dueInDays: statpackAuditDueInDays(lastAuditAt),
+        contentsChangedSinceAudit:
+          !!lastAuditAt && !!contentsUpdatedAt && contentsUpdatedAt > lastAuditAt,
       };
     });
     if (searchQuery) {
@@ -310,6 +330,86 @@ export default function AuditPage() {
     },
     [showToast]
   );
+
+  // ─── Statpack expected-contents editing ───────────────────────────────────
+  const openContentEditor = useCallback((pack: Statpack) => {
+    // Deep-clone so in-modal edits never mutate the live onSnapshot array.
+    setEditingPack(JSON.parse(JSON.stringify(pack)) as Statpack);
+  }, []);
+
+  const contentEditSummary = (before: StatpackItem[], after: StatpackItem[]): string => {
+    const nameOf = (i: StatpackItem) => i.itemDetails?.name || i.itemId;
+    const beforeMap = new Map(before.map((i) => [i.itemId, i]));
+    const afterIds = new Set(after.map((i) => i.itemId));
+    const added = after
+      .filter((i) => !beforeMap.has(i.itemId))
+      .map((i) => `${nameOf(i)} (${i.pocket || 'main'}, par ${i.requiredQuantity})`);
+    const removed = before.filter((i) => !afterIds.has(i.itemId)).map(nameOf);
+    const parChanged = after
+      .filter((i) => {
+        const b = beforeMap.get(i.itemId);
+        return b && b.requiredQuantity !== i.requiredQuantity;
+      })
+      .map((i) => `${nameOf(i)} ${beforeMap.get(i.itemId)!.requiredQuantity}→${i.requiredQuantity}`);
+    const parts: string[] = [];
+    if (added.length) parts.push(`Added: ${added.join(', ')}`);
+    if (removed.length) parts.push(`Removed: ${removed.join(', ')}`);
+    if (parChanged.length) parts.push(`Par changed: ${parChanged.join(', ')}`);
+    return parts.length ? parts.join('. ') : 'Contents edited (no add/remove/par changes)';
+  };
+
+  const saveContentEdit = async (draft: Statpack) => {
+    if (!user || savingPack) return;
+    // Check-off entry matching applies counts to the first row matching
+    // itemId + pocket + compartment, so duplicates silently miss updates.
+    const seen = new Set<string>();
+    const hasDup = draft.contents.some((it) => {
+      const key = `${it.itemId}|${it.pocket || 'main'}|${it.compartmentId || ''}`;
+      if (seen.has(key)) return true;
+      seen.add(key);
+      return false;
+    });
+    if (
+      hasDup &&
+      !confirm(
+        'Two rows share the same item and pocket — check-off counts will only apply to the first. Save anyway?'
+      )
+    ) {
+      return;
+    }
+    setSavingPack(true);
+    try {
+      const original = statpacks.find((p) => p.id === draft.id);
+      const { id: _id, ...docFields } = draft;
+      void _id;
+      await updateDoc(doc(db, 'statpacks', String(draft.id)), {
+        ...docFields,
+        updatedAt: serverTimestamp(),
+        contentsUpdatedAt: serverTimestamp(),
+      });
+      await addDoc(collection(db, 'statpack_logs'), {
+        statpackId: String(draft.id),
+        statpackName: draft.name,
+        action: 'content_edit',
+        userId: user.uid,
+        userName: userData?.fullName || user.displayName || user.email || 'Unknown',
+        timestamp: serverTimestamp(),
+        clientTimestamp: new Date(),
+        notes: contentEditSummary(original?.contents ?? [], draft.contents),
+        summary: {
+          totalItems: draft.contents.length,
+          verifiedCount: 0,
+          mismatchCount: 0,
+          expiredCount: 0,
+        },
+      });
+      setEditingPack(null);
+      showToast(`${draft.name} contents saved`, true);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Failed to save contents', false);
+    }
+    setSavingPack(false);
+  };
 
   // ─── Multi-select + bulk move ─────────────────────────────────────────────
   const toggleSelect = useCallback((id: string) => {
@@ -709,7 +809,7 @@ export default function AuditPage() {
                 <p className="text-xs text-foreground-400 mt-1">Try clearing the search.</p>
               </div>
             ) : (
-              statpackRows.map(({ pack, lastAuditAt, auditCurrent, dueInDays }) => (
+              statpackRows.map(({ pack, lastAuditAt, auditCurrent, dueInDays, contentsChangedSinceAudit }) => (
                 <div
                   key={pack.id}
                   className="flex gap-4 items-center flex-wrap bg-content1 border border-divider rounded-large px-4 py-4 hover:border-primary/30 hover:shadow-sm transition-all duration-150"
@@ -736,6 +836,9 @@ export default function AuditPage() {
                       ) : (
                         <Chip size="sm" variant="flat" color="warning">Audit due</Chip>
                       )}
+                      {contentsChangedSinceAudit && (
+                        <Chip size="sm" variant="flat" color="secondary">Contents changed since audit</Chip>
+                      )}
                       <span className="text-xs text-foreground-400">
                         {lastAuditAt
                           ? `Audited ${lastAuditAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}${
@@ -746,7 +849,25 @@ export default function AuditPage() {
                     </div>
                   </div>
 
-                  <div className="flex-none">
+                  <div className="flex-none flex items-center gap-2">
+                    {isAdmin && (
+                      <Tooltip
+                        content="Pack is checked out — edit after check-in"
+                        isDisabled={!pack.isCheckedOut}
+                      >
+                        <span>
+                          <Button
+                            size="sm"
+                            variant="flat"
+                            isDisabled={pack.isCheckedOut}
+                            startContent={<Pencil size={14} />}
+                            onPress={() => openContentEditor(pack)}
+                          >
+                            Edit contents
+                          </Button>
+                        </span>
+                      </Tooltip>
+                    )}
                     <Button
                       size="sm"
                       color="primary"
@@ -892,6 +1013,16 @@ export default function AuditPage() {
           </div>
           <span>{toast.msg}</span>
         </div>
+      )}
+
+      {/* Statpack expected-contents editor (shared with /statpacks/[id] and /assets) */}
+      {isAdmin && (
+        <StatpackEditorModal
+          pack={editingPack}
+          isOpen={!!editingPack}
+          onClose={() => setEditingPack(null)}
+          onSave={saveContentEdit}
+        />
       )}
 
       {/* Permission modal */}

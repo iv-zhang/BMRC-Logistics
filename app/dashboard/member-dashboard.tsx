@@ -591,7 +591,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
                               }
                               variant="flat"
                             >
-                              {log.action === 'checkout' ? 'Checked Out' : log.action === 'checkin' ? 'Checked In' : log.action}
+                              {log.action === 'checkout' ? 'Checked Out' : log.action === 'checkin' ? 'Checked In' : log.action.replace(/_/g, ' ')}
                             </Chip>
                           </div>
                           <p className="text-xs md:text-sm font-medium truncate">

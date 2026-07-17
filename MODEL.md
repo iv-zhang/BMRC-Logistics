@@ -99,6 +99,8 @@ audit-workbench action writes one of these plus the `inventory_logs` row.
 `status: 'Ready'|'Restock Needed'|'Expired Items'|'CRITICAL - EXPIRED ITEMS'|'In Use'|'Pending Initial Check'`,
 `compartments: StatpackCompartment[]`, `contents: StatpackItem[]`, `isCheckedOut: boolean`,
 `assignedToUserId/Name?`, `checkedOutAt?`, `lastCheckedBy/At?`, `lastAuditAt/By?`,
+`contentsUpdatedAt?` (stamped by admin expected-contents edits; drives the
+"contents changed since last audit" chip on `/audit`),
 `currentEvent?`, `sharpsContainer?:{status:'ok'|'full'|'na',lastCheckedAt/By}`,
 `assetValue?`, `currentLocation?`, `assetSerial?`, `maintenance_logs?[]`, timestamps.
 
@@ -114,7 +116,9 @@ audit-workbench action writes one of these plus the `inventory_logs` row.
 
 ### `statpack_logs` — check-off history
 `StatpackLog` ([app/types.ts:436-515](app/types.ts#L436-L515)): `statpackId/Name`,
-`action: 'checkout'|'checkin'|'restock'|'created'|'maintenance'|'audit'`, `pairId?`,
+`action: 'checkout'|'checkin'|'restock'|'created'|'maintenance'|'audit'|'content_edit'`
+(`content_edit` = admin edited expected contents from `/audit`; `notes` carries the
+added/removed/par-change summary), `pairId?`,
 `quickCheckin?`, `userId/Name`, `timestamp`, `clientTimestamp?`, `notes?`,
 `mismatchResolutions?`, `validationWarnings?`, `summary?{totalItems,verifiedCount,
 mismatchCount,expiredCount,restockedCount,reportedCount}`, `sharpsCheck?`,

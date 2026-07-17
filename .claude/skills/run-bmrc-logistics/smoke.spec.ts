@@ -111,6 +111,27 @@ test('assets page renders merged statpacks (signed in)', async ({ page }) => {
   await expect(page.getByText('MRC1 Primary').first()).toBeVisible();
 });
 
+// AUTH-GATED: admin edits a pack's expected contents straight from the audit
+// Statpacks tab — opens the shared StatpackEditorModal, adds an item, saves,
+// and expects the success toast (toast only fires after the Firestore writes).
+test('audit statpacks tab edits pack contents', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/audit?tab=statpacks', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2500);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+  await page.screenshot({ path: join(SHOTS, 'audit-statpacks.png'), fullPage: true });
+  const edit = page.getByRole('button', { name: 'Edit contents' }).first();
+  await expect(edit).toBeVisible();
+  await edit.click();
+  await expect(page.getByRole('button', { name: 'Save changes' })).toBeVisible();
+  await page.getByText('Add item', { exact: false }).first().click();
+  await page.screenshot({ path: join(SHOTS, 'audit-edit-contents.png'), fullPage: true });
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  await expect(page.getByText('contents saved', { exact: false })).toBeVisible({ timeout: 10_000 });
+});
+
 // AUTH-GATED: without a real Firebase user these redirect to /login. We capture
 // the login screen (as documentation) and assert the gate behaves as expected.
 test('dashboard is auth-gated (shows login)', async ({ page }) => {

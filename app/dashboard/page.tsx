@@ -520,7 +520,8 @@ function AdminDashboard({
                                                       'bg-primary-50 dark:bg-primary-900/20 text-primary';
                         const logLabel =
                           log.action === 'checkout' ? 'Checkout' :
-                          log.action === 'checkin'  ? 'Check-in' : 'Maintenance';
+                          log.action === 'checkin'  ? 'Check-in' :
+                          log.action === 'content_edit' ? 'Contents edited' : 'Maintenance';
                         const ts = log.timestamp instanceof Date ? log.timestamp : null;
                         const timeLabel = ts ? (() => {
                           const d = Math.round((today.getTime() - ts.getTime()) / 86400000);
@@ -795,6 +796,7 @@ const LOG_META: Record<StatpackLog['action'], { label: string; cls: string }> = 
   maintenance: { label: 'Maint.',   cls: 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300' },
   audit:       { label: 'Audit',    cls: 'bg-primary-50 dark:bg-primary-900/20 text-primary' },
   created:     { label: 'Created',  cls: 'bg-content3 text-foreground-500' },
+  content_edit: { label: 'Contents edited', cls: 'bg-secondary-50 dark:bg-secondary-900/20 text-secondary' },
 };
 
 function greeting(): string {

@@ -195,7 +195,9 @@ export default function StatpackEditorModal({
       itemId: `manual-${Date.now()}`,
       batchId: 'manual',
       requiredQuantity: 1,
-      currentQuantity: 1,
+      // New expected items start at 0 on-hand: the pack physically lacks the item
+      // until someone stocks it, so the next check-off surfaces it as short.
+      currentQuantity: 0,
       pocket: target,
       itemValue: 0,
       itemDetails: details,

@@ -402,6 +402,8 @@ export interface Statpack {
   /** Last full audit (biweekly cadence) — set only by mode=audit check-offs */
   lastAuditAt?: Date;
   lastAuditBy?: string;
+  /** Last admin edit of expected contents; drives the "contents changed since last audit" indicator */
+  contentsUpdatedAt?: Date;
   currentEvent?: string;
   /** Pack-level sharps container safety check, stamped on each check-off */
   sharpsContainer?: {
@@ -449,7 +451,7 @@ export interface StatpackLog {
   id?: string;
   statpackId: string;
   statpackName: string;
-  action: 'checkout' | 'checkin' | 'restock' | 'created' | 'maintenance' | 'audit';
+  action: 'checkout' | 'checkin' | 'restock' | 'created' | 'maintenance' | 'audit' | 'content_edit';
   pairId?: string; // Explicit pairing between checkout + checkin
   quickCheckin?: boolean; // True when member used quick check-in (no items used)
   userId: string;
