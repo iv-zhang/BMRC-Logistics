@@ -9,9 +9,65 @@ export interface PurchaseInfo {
   quantityReceived?: number;
   unitOfMeasure?: string; // 'box', 'each', 'case', etc.
   purchaseOrderId?: string;
+  orderDate?: Timestamp | Date;
   invoiceRef?: string;
   receivedAt?: Timestamp | Date;
   notes?: string;
+}
+
+// --- PROCUREMENT: LOG PURCHASE -> RECEIVE (two-phase) ---
+/** One line item within a `Purchase` order. */
+export interface PurchaseLine {
+  lineId: string;
+  kind: 'inventory' | 'asset';
+  itemName: string;
+  /** Existing item, or the placeholder doc created for a new SKU */
+  linkedInventoryId?: string;
+  /** Set when a placeholder inventory doc was created for this line */
+  createdInventoryId?: string;
+  /** Vendor catalog/SKU # to verify on arrival */
+  itemNumber?: string;
+  category?: string;
+  /** Number of packages ordered */
+  orderedQty: number;
+  /** 'box' | 'bag' | 'case' | 'each' */
+  unit?: string;
+  unitsPerPackage?: number;
+  /** Goods subtotal for this line (pre ship/tax) */
+  lineCost?: number;
+  // --- receipt (filled at Receive) ---
+  received: boolean;
+  receivedQty?: number;
+  lotNumber?: string;
+  /** 'YYYY-MM' */
+  expirationMonth?: string;
+  receivedAt?: Timestamp | Date;
+  receivedBy?: string;
+}
+
+/** Order-level source of truth for cost (`purchases` collection). */
+export interface Purchase {
+  id?: string;
+  vendor: string;
+  vendorId?: string;
+  orderDate: Timestamp | Date;
+  status: 'ordered' | 'partially_received' | 'received' | 'cancelled';
+  currency?: string; // Default: 'USD'
+  /** Goods, pre-shipping & pre-tax */
+  subtotal?: number;
+  shipping?: number;
+  tax?: number;
+  discount?: number;
+  /** Grand total (subtotal - discount + shipping + tax) */
+  total?: number;
+  poNumber?: string;
+  invoiceRef?: string;
+  notes?: string;
+  lines: PurchaseLine[];
+  createdBy: string;
+  createdByName?: string;
+  createdAt: Timestamp | Date | FieldValue;
+  updatedAt?: Timestamp | Date | FieldValue;
 }
 
 // --- ASSET MANAGEMENT CONSTANTS ---
@@ -283,7 +339,21 @@ export interface InventoryItem {
 
   createdAt: Date;
   updatedAt: Date;
-  
+
+  // --- PROCUREMENT: ON-ORDER TRACKING ---
+  /** Present on a placeholder row for a brand-new SKU with 0 real stock, logged via Log Purchase */
+  orderStatus?: 'on_order';
+  /** Pending purchase-order lines for this item; on-order is NOT on-hand (never feeds stock math) */
+  incomingOrders?: {
+    purchaseId: string;
+    lineId: string;
+    qty: number;
+    unitsPerPackage?: number;
+    unit?: string;
+    orderDate: Timestamp | Date;
+    vendor?: string;
+  }[];
+
   // --- STATPACK ASSIGNMENT (bidirectional link) ---
   /** Structured assignment linking this asset to a specific statpack and pocket */
   statpackAssignment?: {
@@ -311,6 +381,8 @@ export interface InventoryItem {
   // Asset-specific fields (for non-disposable high-value items: O2 tanks, AEDs, bikes, radios, etc.)
   assetValue?: number; // Monetary value in dollars
   currentLocation?: string; // Where the asset is currently (GPS or room location)
+  /** Per-unit dollar value for consumables (mirrors `assetValue` for assets). Stamped from purchase unit cost. */
+  itemValue?: number;
   maintenance_logs?: Array<{
     id?: string;
     timestamp?: Date;

@@ -4,10 +4,9 @@ import { usePathname, useRouter } from 'next/navigation';
 import { signOut } from 'firebase/auth';
 import { auth } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
-import { useTheme } from 'next-themes';
 import {
   Home, Boxes, Package, CheckSquare, MoreHorizontal,
-  AlertTriangle, User, X, Sun, Moon, LogOut, SquareKanban, ShieldCheck,
+  AlertTriangle, User, X, LogOut, SquareKanban, ShieldCheck,
 } from 'lucide-react';
 import { ADMIN_NAV, type LucideIcon } from './app-sidebar';
 import IssueReportForm from './IssueReportForm';
@@ -29,18 +28,13 @@ export default function MobileBottomNav() {
   const pathname = usePathname() ?? '';
   const router = useRouter();
   const { role, user, userData, isRoleOverridden } = useUserRole();
-  const { theme, setTheme } = useTheme();
   const [moreOpen, setMoreOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
-  const [mounted, setMounted] = useState(false);
-
-  React.useEffect(() => setMounted(true), []);
 
   const isAdmin = role === 'admin' || role === 'quartermaster';
   // Real (non-overridden) role — an override can drop `role` to 'member', so this
   // is how an admin testing a member role stays able to exit back to admin view.
   const isRealAdmin = userData?.role === 'admin' || userData?.role === 'quartermaster';
-  const isDark = mounted && theme === 'dark';
   // Committee members get a Board tab; admins reach the board via the More sheet (ADMIN_NAV)
   const memberTabs = userData?.isCommitteeMember === true
     ? [...MEMBER_TABS, { key: 'committee-board', label: 'Board', Icon: SquareKanban, path: '/committee-board' }]
@@ -86,16 +80,6 @@ export default function MobileBottomNav() {
             </button>
           );
         })}
-
-        {/* Theme toggle — the only way to switch themes for members, who have no More sheet. */}
-        <button
-          onClick={() => setTheme(isDark ? 'light' : 'dark')}
-          aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-          className={tabBtnCls(false)}
-        >
-          {isDark ? <Sun size={22} /> : <Moon size={22} />}
-          <span className="text-[10px] font-medium">{isDark ? 'Light' : 'Dark'}</span>
-        </button>
 
         {/* Members: Report shortcut. Admins: More sheet. */}
         {isAdmin ? (
@@ -186,15 +170,6 @@ export default function MobileBottomNav() {
                   }`}
                 >
                   <User size={19} className="flex-none" /> Profile
-                </button>
-                <button
-                  onClick={() => { setTheme(isDark ? 'light' : 'dark'); }}
-                  className="flex items-center gap-3 w-full text-left h-11 px-2.5 rounded-[11px] text-[13.5px] text-foreground-500 font-medium active:bg-content2 transition-colors"
-                >
-                  <span className="flex-none w-[19px] flex justify-center">
-                    {mounted && (isDark ? <Sun size={17} /> : <Moon size={17} />)}
-                  </span>
-                  {isDark ? 'Light mode' : 'Dark mode'}
                 </button>
                 <button
                   onClick={handleSignOut}

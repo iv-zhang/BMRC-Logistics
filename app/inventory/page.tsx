@@ -6,7 +6,7 @@ import { Chip, Button, Spinner, Select, SelectItem } from '@heroui/react';
 import type { Selection } from '@heroui/react';
 import {
   Plus, Minus, Search, MapPin, Download, ChevronDown, X, RotateCcw,
-  PackageOpen, LayoutList, Table2, ArrowRight, SlidersHorizontal,
+  PackageOpen, LayoutList, Table2, ArrowRight, SlidersHorizontal, Truck, Receipt,
 } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import {
@@ -18,7 +18,8 @@ import { recordAuditEvent } from '../lib/audit';
 import InventoryModal from '@/app/components/additemmodal';
 import ConsumeBoxModal from '@/app/components/consume-box-modal';
 import MedicationCabinetModal from '@/app/components/medication-cabinet-modal';
-import IntakeWizard from '@/app/components/intake-wizard';
+import PurchaseModal from '@/app/components/purchase-modal';
+import ReceiveDrawer from '@/app/components/receive-drawer';
 import { getOldestValidBatch, isBatchExpired } from '@/app/utils/batchHelpers';
 import { preparePayload, safeParseDate } from '@/app/utils/inventoryNormalization';
 import { ITEM_CATEGORIES, getInventoryAreaOptions } from '@/app/config/org-config';
@@ -26,7 +27,7 @@ import { useOrgConfig } from '@/app/hooks/useOrgConfig';
 import { CAT_CFG } from '@/app/components/category-badge';
 import {
   computeBagStock, displayLocation, getItemStatus, formatExp, expTextColor,
-  statusQtyColor, statusBarColor, type ItemStatus,
+  statusQtyColor, statusBarColor, isOnTheWay, incomingQty, type ItemStatus,
 } from '@/app/lib/item-status';
 import type {
   InventoryItem, InventoryBatch, ItemCategory, User, BatchStatus, MedicationInfo,
@@ -83,7 +84,8 @@ export default function InventoryPage() {
   // Modals
   const [isOpen, setIsOpen] = useState(false);
   const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null);
-  const [intakeOpen, setIntakeOpen] = useState(false);
+  const [purchaseOpen, setPurchaseOpen] = useState(false);
+  const [receiveItem, setReceiveItem] = useState<InventoryItem | null>(null);
   const [consumeBoxModalOpen, setConsumeBoxModalOpen] = useState(false);
   const [consumeBoxItem, setConsumeBoxItem] = useState<InventoryItem | null>(null);
   const [medCabinetOpen, setMedCabinetOpen] = useState(false);
@@ -156,6 +158,18 @@ export default function InventoryPage() {
           hasVariants: false,
           createdAt: raw.createdAt instanceof Timestamp ? raw.createdAt.toDate() : new Date(raw.createdAt || Date.now()),
           updatedAt: raw.updatedAt instanceof Timestamp ? raw.updatedAt.toDate() : new Date(raw.updatedAt || Date.now()),
+          orderStatus: raw.orderStatus,
+          incomingOrders: Array.isArray(raw.incomingOrders)
+            ? raw.incomingOrders.map((o: Record<string, unknown>) => ({
+                purchaseId: o.purchaseId as string,
+                lineId: o.lineId as string,
+                qty: Number(o.qty ?? 0),
+                unitsPerPackage: o.unitsPerPackage !== undefined ? Number(o.unitsPerPackage) : undefined,
+                unit: o.unit as string | undefined,
+                orderDate: o.orderDate instanceof Timestamp ? o.orderDate.toDate() : new Date((o.orderDate as string | Date | undefined) || Date.now()),
+                vendor: o.vendor as string | undefined,
+              }))
+            : undefined,
           batches: [],
         };
         if (Array.isArray(raw.batches) && raw.batches.length > 0) {
@@ -366,6 +380,8 @@ export default function InventoryPage() {
     return c;
   }, [inventory]);
 
+  const onTheWayCount = useMemo(() => inventory.filter(isOnTheWay).length, [inventory]);
+
   const catCounts = useMemo(() => {
     const m: Record<string, number> = {};
     for (const cat of CATEGORIES) m[cat] = inventory.filter(i => i.category === cat).length;
@@ -391,6 +407,7 @@ export default function InventoryPage() {
         if (statusFilter === 'low') return s === 'low' || s === 'out';
         if (statusFilter === 'expired') return s === 'expired';
         if (statusFilter === 'expiring') return s === 'expiring';
+        if (statusFilter === 'on_the_way') return isOnTheWay(i);
         return true;
       });
     }
@@ -429,16 +446,20 @@ export default function InventoryPage() {
   );
   if (!user) return null;
 
+  // ── Actor for Log Purchase / Receive writes ─────────────────────────────────
+  const actor = { uid: user.uid, name: user.displayName || user.email || undefined, email: user.email };
+
   // ── Status pill config ─────────────────────────────────────────────────────
   const statusPills = [
-    { key: '',          label: 'All Items',     count: inventory.length,                    dot: 'bg-foreground-300' },
-    { key: 'ok',        label: 'OK',            count: statusCounts.ok,                     dot: 'bg-success' },
-    { key: 'low',       label: 'Low / Out',     count: statusCounts.low + statusCounts.out, dot: 'bg-warning' },
-    { key: 'expired',   label: 'Expired',       count: statusCounts.expired,                dot: 'bg-danger' },
-    { key: 'expiring',  label: 'Expiring Soon', count: statusCounts.expiring,               dot: 'bg-warning/60' },
+    { key: '',           label: 'All Items',     count: inventory.length,                    dot: 'bg-foreground-300', icon: false },
+    { key: 'ok',         label: 'OK',            count: statusCounts.ok,                     dot: 'bg-success',        icon: false },
+    { key: 'low',        label: 'Low / Out',     count: statusCounts.low + statusCounts.out, dot: 'bg-warning',        icon: false },
+    { key: 'expired',    label: 'Expired',       count: statusCounts.expired,                dot: 'bg-danger',         icon: false },
+    { key: 'expiring',   label: 'Expiring Soon', count: statusCounts.expiring,               dot: 'bg-warning/60',     icon: false },
+    { key: 'on_the_way', label: 'On the way',    count: onTheWayCount,                       dot: 'bg-primary',        icon: true },
   ] as const;
 
-  // ── Shared toolbar cluster (view toggle + Export + Intake) ─────────────────
+  // ── Shared toolbar cluster (view toggle + Export + Log Purchase) ───────────
   const toolbarControls = (
     <div className="flex items-center gap-2 flex-none">
       <div className="flex bg-content1 border border-divider rounded-large p-1 gap-1">
@@ -467,10 +488,10 @@ export default function InventoryPage() {
         <Button
           color="primary"
           size="sm"
-          startContent={<Plus size={15} />}
-          onPress={() => setIntakeOpen(true)}
+          startContent={<Receipt size={15} />}
+          onPress={() => setPurchaseOpen(true)}
         >
-          Intake Stock
+          Log Purchase
         </Button>
       )}
     </div>
@@ -516,7 +537,7 @@ export default function InventoryPage() {
                   Stock Status
                 </p>
                 <div className="flex flex-col gap-1">
-                  {statusPills.map(({ key, label, count, dot }) => (
+                  {statusPills.map(({ key, label, count, dot, icon }) => (
                     <button
                       key={key}
                       onClick={() => setStatusFilter(statusFilter === key ? '' : key)}
@@ -527,7 +548,9 @@ export default function InventoryPage() {
                       }`}
                     >
                       <span className="flex items-center gap-2">
-                        <span className={`w-2 h-2 rounded-sm flex-none ${dot}`} />
+                        {icon
+                          ? <Truck size={12} className="text-primary flex-none" />
+                          : <span className={`w-2 h-2 rounded-sm flex-none ${dot}`} />}
                         {label}
                       </span>
                       <span className="tabular-nums text-xs text-foreground-400">{count}</span>
@@ -638,18 +661,23 @@ export default function InventoryPage() {
                   const cfg = CAT_CFG[item.category];
                   const qtyColor = statusQtyColor(status);
                   const barColor = statusBarColor(status);
+                  const onTheWay = isOnTheWay(item);
+                  const isPlaceholder = item.orderStatus === 'on_order';
                   const maxForBar = item.isOxygen
                     ? (item.maxOxygenPsi ?? 2000)
                     : (item.maxUnits ?? (item.reorderThreshold > 0 ? item.reorderThreshold * 2 : Math.max(bag.totalItems, 1)));
                   const barPct = item.isOxygen
                     ? Math.min(100, ((item.oxygenPsi ?? 0) / maxForBar) * 100)
                     : Math.min(100, (bag.totalItems / maxForBar) * 100);
+                  const cardTint = isPlaceholder
+                    ? 'bg-primary-50/40 dark:bg-primary-950/20 border-primary/25 dark:border-primary/15'
+                    : getCardTint(status);
 
                   return (
                     <div
                       key={item.id}
                       onClick={() => setDetailItem(item)}
-                      className={`flex flex-wrap sm:flex-nowrap gap-3 sm:gap-4 items-center border rounded-[14px] px-4 py-4 cursor-pointer transition-all duration-150 hover:-translate-y-px hover:shadow-[0_6px_22px_rgba(16,24,40,0.09)] dark:hover:shadow-[0_6px_22px_rgba(0,0,0,0.35)] ${getCardTint(status)}`}
+                      className={`flex flex-wrap sm:flex-nowrap gap-3 sm:gap-4 items-center border rounded-[14px] px-4 py-4 cursor-pointer transition-all duration-150 hover:-translate-y-px hover:shadow-[0_6px_22px_rgba(16,24,40,0.09)] dark:hover:shadow-[0_6px_22px_rgba(0,0,0,0.35)] ${cardTint}`}
                     >
                       {/* Category badge */}
                       <div className={`w-[50px] h-[50px] rounded-[13px] flex items-center justify-center font-mono font-semibold text-[15px] flex-none ${cfg.bg} ${cfg.text}`}>
@@ -669,10 +697,10 @@ export default function InventoryPage() {
                             <MapPin size={11} className="flex-none" /> {loc}
                           </div>
                         )}
-                        <div className="flex gap-1.5 flex-wrap">
+                        <div className="flex gap-1.5 flex-wrap items-center">
                           {status === 'expired'  && <Chip size="sm" variant="flat" color="danger">Expired</Chip>}
                           {status === 'low'      && <Chip size="sm" variant="flat" color="warning">Low Stock</Chip>}
-                          {status === 'out'      && <Chip size="sm" variant="flat" color="danger">Out of Stock</Chip>}
+                          {status === 'out' && !isPlaceholder && <Chip size="sm" variant="flat" color="danger">Out of Stock</Chip>}
                           {status === 'expiring' && <Chip size="sm" variant="flat" color="warning">Exp. Soon</Chip>}
                           {(item.batches || []).length > 0 && (
                             <Chip size="sm" variant="flat" color="default">
@@ -680,6 +708,19 @@ export default function InventoryPage() {
                             </Chip>
                           )}
                           {item.isMedication && <Chip size="sm" variant="flat" color="danger">Med</Chip>}
+                          {onTheWay && (
+                            <>
+                              <Chip size="sm" variant="flat" color="primary" startContent={<Truck size={12} />}>
+                                On the way · {incomingQty(item)} units
+                              </Chip>
+                              <button
+                                onClick={e => { e.stopPropagation(); setReceiveItem(item); }}
+                                className="text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-primary-50 hover:bg-primary-100 dark:bg-primary-900/20 dark:hover:bg-primary-800/30 text-primary transition-colors duration-150"
+                              >
+                                Receive
+                              </button>
+                            </>
+                          )}
                         </div>
                       </div>
 
@@ -825,6 +866,8 @@ export default function InventoryPage() {
                   const isExpanded = tableExpanded.has(item.id);
                   const loc = displayLocation(item);
                   const qtyColor = statusQtyColor(status);
+                  const onTheWay = isOnTheWay(item);
+                  const isPlaceholder = item.orderStatus === 'on_order';
                   const sortedBatches = [...(item.batches || [])].sort(
                     (a, b) => (a.expirationDate?.getTime() ?? Infinity) - (b.expirationDate?.getTime() ?? Infinity),
                   );
@@ -870,12 +913,25 @@ export default function InventoryPage() {
                           </div>
                         </div>
                         {/* Status */}
-                        <div className="flex gap-1 flex-wrap self-center">
+                        <div className="flex gap-1 flex-wrap items-center self-center">
                           {status === 'expired'  && <Chip size="sm" variant="flat" color="danger">Expired</Chip>}
                           {status === 'low'      && <Chip size="sm" variant="flat" color="warning">Low Stock</Chip>}
-                          {status === 'out'      && <Chip size="sm" variant="flat" color="danger">Out of Stock</Chip>}
+                          {status === 'out' && !isPlaceholder && <Chip size="sm" variant="flat" color="danger">Out of Stock</Chip>}
                           {status === 'expiring' && <Chip size="sm" variant="flat" color="warning">Exp. Soon</Chip>}
                           {status === 'ok'       && <Chip size="sm" variant="flat" color="success">OK</Chip>}
+                          {onTheWay && (
+                            <>
+                              <Chip size="sm" variant="flat" color="primary" startContent={<Truck size={11} />}>
+                                On the way
+                              </Chip>
+                              <button
+                                onClick={e => { e.stopPropagation(); setReceiveItem(item); }}
+                                className="text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-primary-50 hover:bg-primary-100 dark:bg-primary-900/20 dark:hover:bg-primary-800/30 text-primary transition-colors duration-150"
+                              >
+                                Receive
+                              </button>
+                            </>
+                          )}
                         </div>
                         {/* Actions */}
                         <div className="flex items-center justify-end gap-1.5 self-center" onClick={e => e.stopPropagation()}>
@@ -967,6 +1023,8 @@ export default function InventoryPage() {
         const cfg = CAT_CFG[item.category];
         const loc = displayLocation(item);
         const qtyColor = statusQtyColor(status);
+        const onTheWay = isOnTheWay(item);
+        const isPlaceholder = item.orderStatus === 'on_order';
         const sortedBatches = [...(item.batches || [])].sort(
           (a, b) => (a.expirationDate?.getTime() ?? Infinity) - (b.expirationDate?.getTime() ?? Infinity),
         );
@@ -1005,16 +1063,42 @@ export default function InventoryPage() {
                 <div className="flex gap-1.5 flex-wrap mt-4">
                   {status === 'expired'  && <Chip size="sm" variant="flat" color="danger">Expired</Chip>}
                   {status === 'low'      && <Chip size="sm" variant="flat" color="warning">Low Stock</Chip>}
-                  {status === 'out'      && <Chip size="sm" variant="flat" color="danger">Out of Stock</Chip>}
+                  {status === 'out' && !isPlaceholder && <Chip size="sm" variant="flat" color="danger">Out of Stock</Chip>}
                   {status === 'expiring' && <Chip size="sm" variant="flat" color="warning">Exp. Soon</Chip>}
                   {status === 'ok'       && <Chip size="sm" variant="flat" color="success">OK</Chip>}
                   {item.isMedication     && <Chip size="sm" variant="flat" color="danger">Med</Chip>}
                   {item.isOxygen         && <Chip size="sm" variant="flat" color="secondary">O₂</Chip>}
+                  {onTheWay && (
+                    <Chip size="sm" variant="flat" color="primary" startContent={<Truck size={12} />}>
+                      On the way · {incomingQty(item)} units
+                    </Chip>
+                  )}
                 </div>
               </div>
 
               {/* Drawer body */}
               <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+                {/* On the way — Receive action */}
+                {onTheWay && (
+                  <div className="bg-primary-50 dark:bg-primary-900/20 border border-primary/30 rounded-large px-4 py-3 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <Truck size={16} className="text-primary flex-none" />
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-primary">On the way</div>
+                        <div className="text-xs text-primary/80 truncate">{incomingQty(item)} units incoming</div>
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      color="primary"
+                      className="flex-none"
+                      onPress={() => { setDetailItem(null); setReceiveItem(item); }}
+                    >
+                      Receive
+                    </Button>
+                  </div>
+                )}
+
                 {/* Stock stats */}
                 <div className="flex gap-3">
                   <div className="flex-1 bg-content2 rounded-large p-4">
@@ -1037,12 +1121,14 @@ export default function InventoryPage() {
                       {item.reorderThreshold}
                     </div>
                     <div className={`text-xs font-semibold mt-1 ${
+                      isPlaceholder ? 'text-primary' :
                       status === 'ok' ? 'text-success' :
                       status === 'low' ? 'text-warning' :
                       status === 'out' ? 'text-danger' :
                       status === 'expired' ? 'text-danger' : 'text-foreground-500'
                     }`}>
-                      {status === 'ok' ? 'Well stocked' :
+                      {isPlaceholder ? 'On the way' :
+                       status === 'ok' ? 'Well stocked' :
                        status === 'low' ? 'Below threshold' :
                        status === 'out' ? 'Out of stock' :
                        status === 'expired' ? 'Has expired batches' : 'Expiring soon'}
@@ -1229,7 +1315,20 @@ export default function InventoryPage() {
         />
       )}
 
-      <IntakeWizard isOpen={intakeOpen} onClose={() => setIntakeOpen(false)} />
+      <PurchaseModal
+        isOpen={purchaseOpen}
+        onClose={() => setPurchaseOpen(false)}
+        actor={actor}
+        defaultKind="inventory"
+        items={inventory.map(i => ({ id: i.id, name: i.name, category: i.category, isAsset: i.isAsset }))}
+      />
+      <ReceiveDrawer
+        isOpen={!!receiveItem}
+        item={receiveItem}
+        onClose={() => setReceiveItem(null)}
+        actor={actor}
+        onReceived={() => setReceiveItem(null)}
+      />
 
       {opLoading && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] bg-content1 border border-divider rounded-large px-4 py-2 shadow-lg flex items-center gap-2 text-sm text-foreground-600">

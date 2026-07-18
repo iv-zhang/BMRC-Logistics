@@ -78,6 +78,8 @@ import {
   ChevronDown,
   ChevronUp,
   Search,
+  Truck,
+  Receipt,
 } from 'lucide-react';
 import AssetModal from '@/app/components/assetmodal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
@@ -86,6 +88,9 @@ import AdminAuditModal from '@/app/components/admin-audit-modal';
 import AssetAttachModal from '@/app/components/asset-attach-modal';
 import AssetStatpackBadge from '@/app/components/asset-statpack-badge';
 import AssetCheckoutModal from '@/app/components/asset-checkout-modal';
+import PurchaseModal from '@/app/components/purchase-modal';
+import ReceiveDrawer from '@/app/components/receive-drawer';
+import { isOnTheWay, incomingQty } from '@/app/lib/item-status';
 
   
 interface AssetRecord {
@@ -142,6 +147,10 @@ export default function AssetsPage() {
   const [auditSelectedPocketId, setAuditSelectedPocketId] = useState<string | null>(null);
   const [auditCompletedPockets, setAuditCompletedPockets] = useState<string[]>([]);
   const assetAttachDisclosure = useDisclosure();
+
+  // Log Purchase → Receive (procurement) state
+  const [purchaseOpen, setPurchaseOpen] = useState(false);
+  const [receiveItem, setReceiveItem] = useState<InventoryItem | null>(null);
 
     const handleAssetAttachedToLoose = (assetId: string, serial?: string, displayName?: string) => {
       if (!editingPack) return;
@@ -802,6 +811,17 @@ export default function AssetsPage() {
     setQuickAssignAsset(null);
   };
 
+  // Actor for procurement writes (Log Purchase / Receive) — built from the
+  // page's existing auth state (user + userRole), no separate hook needed.
+  const actor = useMemo(
+    () => ({
+      uid: user?.uid || '',
+      name: user?.displayName || user?.email || undefined,
+      email: user?.email || undefined,
+    }),
+    [user]
+  );
+
   // Category filter state
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
 
@@ -855,6 +875,23 @@ export default function AssetsPage() {
       return a.localeCompare(b);
     });
   }, [assets, categoryFilter, searchTerm]);
+
+  // Existing inventory-backed assets for PurchaseModal's "link to existing SKU" autocomplete.
+  const purchaseModalItems = useMemo(
+    () =>
+      assets
+        .filter((a) => a.type === 'inventory')
+        .map((a) => {
+          const item = a.data as InventoryItem;
+          return {
+            id: a.id,
+            name: a.name,
+            category: item.assetCategory || item.category,
+            isAsset: true,
+          };
+        }),
+    [assets]
+  );
 
   if (loading) return <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center"><Spinner size="lg" color="primary" /></div>;
 
@@ -911,6 +948,16 @@ export default function AssetsPage() {
             >
               Scan to Checkout
             </Button>
+            {userRole === 'admin' && (
+              <Button
+                variant="flat"
+                color="primary"
+                startContent={<Receipt size={16} />}
+                onPress={() => setPurchaseOpen(true)}
+              >
+                Log Purchase
+              </Button>
+            )}
             {userRole === 'admin' && (
               <Button onPress={() => { setEditingAsset(null); assetModalDisclosure.onOpen(); }}>Add Asset</Button>
             )}
@@ -1002,6 +1049,11 @@ export default function AssetsPage() {
                                   size="sm"
                                 />
                               )}
+                              {asset.type === 'inventory' && isOnTheWay(asset.data as InventoryItem) && (
+                                <Chip size="sm" color="primary" variant="flat" startContent={<Truck size={12} />}>
+                                  On the way{incomingQty(asset.data as InventoryItem) > 0 ? ` · +${incomingQty(asset.data as InventoryItem)}` : ''}
+                                </Chip>
+                              )}
                             </div>
                             <div className="flex items-center gap-1 mt-1 text-xs text-foreground-400">
                               <MapPin size={12} className="text-foreground-400" />
@@ -1019,6 +1071,19 @@ export default function AssetsPage() {
                             </div>
                           </div>
                           <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                            {asset.type === 'inventory' && isOnTheWay(asset.data as InventoryItem) && (
+                              <Tooltip content="Receive shipment">
+                                <Button
+                                  isIconOnly
+                                  size="sm"
+                                  variant="light"
+                                  color="primary"
+                                  onPress={() => setReceiveItem({ ...(asset.data as InventoryItem), id: asset.id })}
+                                >
+                                  <Truck size={16} />
+                                </Button>
+                              </Tooltip>
+                            )}
                             {/* Statpack rows open the editor on row click — no eye button needed. */}
                             {asset.type !== 'statpack' && (
                               <Tooltip content="View details">
@@ -1101,7 +1166,7 @@ export default function AssetsPage() {
                                 )}
                                 {userRole === 'admin' ? (
                                   <DropdownItem key="audit" startContent={<ShieldCheck size={14} />} onPress={() => {
-                                    if (asset.type === 'statpack') { openStatpackAudit(asset); return; }
+                                    if (asset.type === 'statpack') { if (asset.id) router.push(`/statpacks/check-off?id=${asset.id}&mode=audit`); return; }
                                     setAuditTarget(asset); setAuditType('asset'); auditModalDisclosure.onOpen();
                                   }}>
                                     Run Audit
@@ -1874,6 +1939,24 @@ export default function AssetsPage() {
           </ModalFooter>
         </ModalContent>
       </Modal>
+
+      {/* Log Purchase (order-time record; stock enters only on Receive) */}
+      <PurchaseModal
+        isOpen={purchaseOpen}
+        onClose={() => setPurchaseOpen(false)}
+        actor={actor}
+        defaultKind="asset"
+        items={purchaseModalItems}
+      />
+
+      {/* Receive Shipment — opened from an "On the way" asset row */}
+      <ReceiveDrawer
+        isOpen={!!receiveItem}
+        item={receiveItem}
+        onClose={() => setReceiveItem(null)}
+        actor={actor}
+        onReceived={() => setReceiveItem(null)}
+      />
     </div>
   );
 }

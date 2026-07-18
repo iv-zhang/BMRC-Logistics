@@ -30,6 +30,7 @@ import type {
   HQRoom,
   InventoryItem,
   LocationType,
+  PurchaseInfo,
   StorageLocationRef,
   StorageZone,
 } from '@/app/types';
@@ -176,6 +177,9 @@ export interface ShipmentInput {
   expirationMonth?: string;
   supplier?: string;
   notes?: string;
+  /** Set when this shipment is receiving a logged purchase-order line — stamped onto the batch */
+  purchase?: PurchaseInfo;
+  purchaseOrderId?: string;
 }
 
 /**
@@ -252,6 +256,7 @@ export async function addShipment(
       receivedAt: new Date(),
       supplier: input.supplier || undefined,
       notes: input.notes || undefined,
+      purchase: input.purchase || undefined,
     });
     await updateDoc(itemRef, {
       batches: arrayUnion(newBatch),
@@ -274,6 +279,7 @@ export async function addShipment(
         receivedAt: new Date(),
         supplier: input.supplier || undefined,
         notes: `Shipment of ${input.qty} box(es) — counted in unopenedBoxes`,
+        purchase: input.purchase || undefined,
       }));
     }
     await updateDoc(itemRef, payload);

@@ -10,7 +10,7 @@ import { useTheme } from 'next-themes';
 import {
   Home, Package, RefreshCw,
   BarChart2, Warehouse, Users, AlertTriangle,
-  LogOut, ShieldCheck, GraduationCap, Sun, Moon,
+  LogOut, ShieldCheck, GraduationCap,
   ChevronsLeft, ChevronsRight, ScanBarcode, SlidersHorizontal,
   SquareKanban, Ambulance,
 } from 'lucide-react';
@@ -81,7 +81,7 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
   const pathname = usePathname();
   const router = useRouter();
   const { user, userData, role } = useUserRole();
-  const { theme, setTheme } = useTheme();
+  const { theme } = useTheme();
   const [mounted, setMounted] = useState(false);
   const [navHover, setNavHover] = useState(false);
   const [showTutorial, setShowTutorial] = useState(false);
@@ -304,17 +304,6 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
 
           {/* Bottom controls */}
           <div className="px-3 pb-3.5 pt-2 border-t border-divider flex flex-col gap-[2px]">
-
-            {/* Theme toggle */}
-            <button
-              onClick={() => setTheme(isDark ? 'light' : 'dark')}
-              className="flex items-center gap-[13px] h-9 px-[11px] rounded-[10px] whitespace-nowrap text-[13px] w-full text-left text-foreground-500 font-medium hover:bg-content2 transition-colors duration-150"
-            >
-              <span className="flex-none w-[19px] flex justify-center">
-                {mounted && (isDark ? <Sun size={17} /> : <Moon size={17} />)}
-              </span>
-              <span className={labelCls}>{isDark ? 'Light mode' : 'Dark mode'}</span>
-            </button>
 
             {/* Tutorial */}
             <button

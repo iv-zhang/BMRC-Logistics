@@ -127,6 +127,24 @@ export function getItemStatus(item: InventoryItem): ItemStatus {
   return 'ok';
 }
 
+// ── Procurement: on-the-way display (Log Purchase → Receive) ─────────────────
+// Display-only — on-order is NOT on-hand, so these never feed computeBagStock
+// or getItemStatus. A placeholder row (0 stock) shows "On the way"; a stocked
+// item shows its real status plus a "+N incoming" chip.
+
+/** True when this item has one or more pending purchase-order lines. */
+export function isOnTheWay(item: InventoryItem): boolean {
+  return (item.incomingOrders?.length ?? 0) > 0;
+}
+
+/** Total incoming units across all pending purchase-order lines for this item. */
+export function incomingQty(item: InventoryItem): number {
+  return (item.incomingOrders || []).reduce(
+    (sum, o) => sum + o.qty * (o.unitsPerPackage || 1),
+    0,
+  );
+}
+
 /** "Mar 2027" or "Expired Mar 2025". */
 export function formatExp(date?: Date): string {
   if (!date) return '—';

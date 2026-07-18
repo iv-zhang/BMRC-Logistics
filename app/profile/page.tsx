@@ -2,9 +2,10 @@
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, Chip, Spinner } from '@heroui/react';
-import { ArrowLeft, Mail, UserRound } from 'lucide-react';
+import { ArrowLeft, Mail, UserRound, Sun, Moon } from 'lucide-react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
+import { useTheme } from 'next-themes';
 import { auth, db } from '@/firebase';
 import { ROLES } from '@/app/config/org-config';
 import type { User } from '@/app/types';
@@ -13,6 +14,10 @@ export default function ProfilePage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [mounted, setMounted] = useState(false);
+  const { setTheme, resolvedTheme } = useTheme();
+
+  useEffect(() => setMounted(true), []);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
@@ -139,6 +144,32 @@ export default function ProfilePage() {
                   {user.createdAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                 </div>
               </div>
+            </div>
+          </div>
+
+          <div className="bg-content1 border border-divider rounded-large p-5 mt-4">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-3">Appearance</div>
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-foreground">Theme</div>
+                <div className="text-xs text-foreground-400 mt-0.5">Choose light or dark mode</div>
+              </div>
+              {mounted && (
+                <div className="flex items-center gap-1 bg-content2 rounded-large p-1 flex-none">
+                  <button
+                    onClick={() => setTheme('light')}
+                    className={`flex items-center gap-1.5 h-8 px-3 rounded-medium text-[13px] font-medium transition-colors ${resolvedTheme === 'light' ? 'bg-content1 text-foreground shadow-sm' : 'text-foreground-400 hover:text-foreground-600'}`}
+                  >
+                    <Sun size={15} /> Light
+                  </button>
+                  <button
+                    onClick={() => setTheme('dark')}
+                    className={`flex items-center gap-1.5 h-8 px-3 rounded-medium text-[13px] font-medium transition-colors ${resolvedTheme === 'dark' ? 'bg-content1 text-foreground shadow-sm' : 'text-foreground-400 hover:text-foreground-600'}`}
+                  >
+                    <Moon size={15} /> Dark
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>

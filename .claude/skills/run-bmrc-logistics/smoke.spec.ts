@@ -136,7 +136,8 @@ test('audit statpacks tab edits pack contents', async ({ page }) => {
 // the login screen (as documentation) and assert the gate behaves as expected.
 test('dashboard is auth-gated (shows login)', async ({ page }) => {
   await shoot(page, '/dashboard', 'dashboard-login');
-  await expect(page.getByText('Sign in to BMRC')).toBeVisible();
+  await expect(page.getByText('BMRC Logistics')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
 });
 
 // Inventory is a fixed-height app shell on desktop: only the item list scrolls.
@@ -182,6 +183,102 @@ test('committee board hosts the merged tasks view', async ({ page }) => {
   await page.goto('/tasks', { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(2000);
   await expect(page).toHaveURL(/committee-board/);
+});
+
+// Reads inventory docs straight from the Firestore emulator REST API so a test
+// can assert on persisted fields (e.g. itemValue) the UI doesn't surface.
+async function fetchInventoryDoc(name: string): Promise<Record<string, unknown> | null> {
+  const host = process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:8080';
+  const url = `http://${host}/v1/projects/demo-bmrc-logistics/databases/(default)/documents/inventory?pageSize=300`;
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  const body = (await res.json()) as { documents?: { fields?: Record<string, { stringValue?: string }> }[] };
+  return (body.documents || []).find(d => d.fields?.name?.stringValue === name) ?? null;
+}
+
+// Log Purchase → Receive, end-to-end through the real helpers (logPurchase →
+// receivePurchaseLine → addShipment) against the emulator. Drives the 3-step
+// wizard (vendor dropdown w/ seeded + custom vendor, qty steppers, review value
+// cards), creates an "On the way" placeholder row, receives it (stock enters,
+// on-order clears), and asserts the received item persisted itemValue (worth).
+test('log purchase then receive it (inventory, signed in)', async ({ page }) => {
+  const ITEM = `E2E OnTheWay Bandages ${Date.now()}`;
+  const NEW_VENDOR = `E2E Vendor ${Date.now()}`;
+  await signIn(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/inventory', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2500);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+
+  // ── Phase 1: Log Purchase — Step 0: Order (vendor dropdown) ────────────────
+  await page.getByRole('button', { name: 'Log Purchase' }).first().click();
+  await expect(page.getByText('Record an order', { exact: false })).toBeVisible();
+  const vendorBox = page.getByRole('combobox', { name: 'Vendor' });
+  // On a fresh emulator the vendors collection is empty; the modal seeds the two
+  // defaults on open, then subscribes. Give that write + snapshot a beat before
+  // opening the dropdown so the options are present.
+  await page.waitForTimeout(3000);
+  await vendorBox.click();
+  // Seeded defaults must be offered in the dropdown.
+  await expect(page.getByRole('option', { name: 'Bound Tree Medical' })).toBeVisible({ timeout: 8000 });
+  await expect(page.getByRole('option', { name: 'Amazon' })).toBeVisible();
+  await page.screenshot({ path: join(SHOTS, 'purchase-vendor-dropdown.png') });
+  // allowsCustomValue: type a brand-new vendor (must persist on submit).
+  await vendorBox.fill(NEW_VENDOR);
+  // Blur into another field to close the popover (and commit the custom value)
+  // so it stops covering the footer Continue button.
+  await page.locator('input[type="date"]').click();
+  await page.waitForTimeout(300);
+  await page.getByRole('button', { name: 'Continue' }).click();
+
+  // ── Step 1: Line Items (new SKU, qty steppers, line cost) ──────────────────
+  await page.getByRole('button', { name: 'New item' }).first().click();
+  await page.getByPlaceholder('e.g. Nitrile Gloves').fill(ITEM);
+  await page.getByPlaceholder('e.g. GLV-7782-M').fill('E2E-SKU-001');
+  await page.getByPlaceholder('—').fill('10');        // units/package stepper input
+  await page.getByPlaceholder('Optional').fill('50'); // line cost → $5.00/unit
+  await page.screenshot({ path: join(SHOTS, 'purchase-line-items.png') });
+  await page.getByRole('button', { name: 'Continue' }).click();
+
+  // ── Step 2: Costs & Review (value cards) ───────────────────────────────────
+  await expect(page.getByText('Total purchase value')).toBeVisible();
+  await expect(page.getByText('$5.00/unit')).toBeVisible();
+  await page.screenshot({ path: join(SHOTS, 'purchase-review.png') });
+  // Footer submit shares the "Log Purchase" label with the toolbar button → .last()
+  await page.getByRole('button', { name: 'Log Purchase' }).last().click();
+  await expect(page.getByText('Record an order', { exact: false })).toBeHidden({ timeout: 10_000 });
+
+  // The placeholder row arrives via onSnapshot and reads as "On the way".
+  await expect(page.getByText(ITEM).first()).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText('On the way', { exact: false }).first()).toBeVisible();
+  await page.screenshot({ path: join(SHOTS, 'inventory-on-the-way.png') });
+
+  // ── Phase 2: Receive it ───────────────────────────────────────────────────
+  await page.getByRole('button', { name: 'Receive', exact: true }).first().click();
+  await expect(page.getByText('Receive Shipment')).toBeVisible();
+  await page.getByRole('button', { name: 'Receive this line' }).first().click();
+  // The drawer closes itself only after receivePurchaseLine resolves for every
+  // line — so a clean close is proof the Firestore round-trip succeeded.
+  await expect(page.getByText('Receive Shipment')).toBeHidden({ timeout: 15_000 });
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'inventory-after-receive.png') });
+
+  // ── Assert persisted worth + vendor persistence ───────────────────────────
+  const doc = await fetchInventoryDoc(ITEM);
+  expect(doc, 'received inventory doc should exist').toBeTruthy();
+  const fields = (doc as { fields?: Record<string, { doubleValue?: number; integerValue?: string }> }).fields || {};
+  const itemValue = fields.itemValue?.doubleValue ?? Number(fields.itemValue?.integerValue);
+  expect(itemValue, 'itemValue (worth per unit) should be persisted').toBe(5);
+
+  // The typed custom vendor must have been added to the vendors collection.
+  const host = process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:8080';
+  const vres = await fetch(`http://${host}/v1/projects/demo-bmrc-logistics/databases/(default)/documents/vendors?pageSize=100`);
+  const vbody = (await vres.json()) as { documents?: { fields?: { name?: { stringValue?: string } } }[] };
+  const vendorNames = (vbody.documents || []).map(d => d.fields?.name?.stringValue);
+  expect(vendorNames).toContain(NEW_VENDOR);
+  expect(vendorNames).toEqual(expect.arrayContaining(['Bound Tree Medical', 'Amazon']));
 });
 
 // Member dashboard: real signed-in user + a member role override.
