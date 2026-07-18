@@ -8,8 +8,8 @@ import { auth, db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { useTheme } from 'next-themes';
 import {
-  Home, Package, CheckSquare, RefreshCw,
-  BarChart2, Warehouse, Users, AlertTriangle, User,
+  Home, Package, RefreshCw,
+  BarChart2, Warehouse, Users, AlertTriangle,
   LogOut, ShieldCheck, GraduationCap, Sun, Moon,
   ChevronsLeft, ChevronsRight, ScanBarcode, SlidersHorizontal,
   SquareKanban, Ambulance,
@@ -31,7 +31,7 @@ export interface NavSection { label?: string; items: NavItem[]; }
 export const COMMITTEE_NAV_SECTION: NavSection = {
   label: 'Committee',
   items: [
-    { key: 'committee-board', label: 'Committee Board', Icon: SquareKanban, path: '/committee-board' },
+    { key: 'committee-board', label: 'Committee & Tasks', Icon: SquareKanban, path: '/committee-board' },
   ],
 };
 
@@ -56,7 +56,6 @@ export const ADMIN_NAV: NavSection[] = [
       { key: 'restock',       label: 'Restock',          Icon: RefreshCw,   path: '/restock' },
       { key: 'stats',         label: 'Stats',            Icon: BarChart2,   path: '/stats' },
       { key: 'storage',       label: 'Storage',          Icon: Warehouse,   path: '/storage' },
-      { key: 'tasks',         label: 'Tasks & Buy List', Icon: CheckSquare, path: '/tasks' },
     ],
   },
   COMMITTEE_NAV_SECTION,
@@ -326,15 +325,6 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
               <span className={labelCls}>Tutorial</span>
             </button>
 
-            {/* Profile */}
-            <button
-              onClick={() => router.push('/profile')}
-              className={navItemCls(isItemActive('/profile'))}
-            >
-              <User size={19} className="flex-none" />
-              <span className={labelCls}>Profile</span>
-            </button>
-
             {/* Role override — real admins, plus anyone with an active override so
                 it can always be cleared (an override drops `isAdmin` to false). */}
             {(isRealAdmin || roleOverrideActive) && (
@@ -362,18 +352,24 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
 
             <div className="border-t border-divider my-1" />
 
-            {/* User row */}
-            <div className="flex items-center gap-[11px] h-10 px-[11px] whitespace-nowrap">
+            {/* User row — this IS the profile link (no separate Profile button). */}
+            <button
+              onClick={() => router.push('/profile')}
+              title="Profile"
+              className={`flex items-center gap-[11px] h-10 px-[11px] rounded-[10px] whitespace-nowrap w-full text-left transition-colors duration-150 ${
+                isItemActive('/profile') ? 'bg-primary-50 dark:bg-primary-900/20' : 'hover:bg-content2'
+              }`}
+            >
               <div className="w-7 h-7 rounded-full bg-primary text-white font-semibold text-xs flex items-center justify-center flex-none">
                 {userInitial}
               </div>
               <div className={`flex flex-col leading-tight min-w-0 ${labelCls}`}>
-                <span className="text-[12.5px] font-semibold text-foreground truncate">{userName}</span>
+                <span className={`text-[12.5px] font-semibold truncate ${isItemActive('/profile') ? 'text-primary' : 'text-foreground'}`}>{userName}</span>
                 <span className="text-[10.5px] text-foreground-400 font-medium capitalize">
                   {userData?.role ?? role ?? 'member'}
                 </span>
               </div>
-            </div>
+            </button>
 
             {/* Collapse */}
             <button

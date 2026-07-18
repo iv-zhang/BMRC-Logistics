@@ -2,7 +2,6 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Image from 'next/image';
 import {
   Card,
   CardBody,
@@ -284,15 +283,6 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
       <div className="max-w-4xl mx-auto space-y-4 md:space-y-8">
         {/* Header - Mobile Optimized */}
         <div className="mb-4 md:mb-6">
-          <div className="flex items-center gap-2 mb-2">
-            <Image
-              src="/images/NewLogoWhiteLong_NoHeartbeat.PNG"
-              alt="BMRC Logo"
-              width={120}
-              height={30}
-              className="h-8 md:h-12 w-auto"
-            />
-          </div>
           <h1 className="text-2xl md:text-3xl font-semibold">
             Dashboard
           </h1>
@@ -308,17 +298,13 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
             <div>
               <h2 className="text-xl md:text-2xl font-semibold mb-2">Keep Us Safe</h2>
               <p className="text-sm md:text-base opacity-90">Found expired items or untracked boxes? Report them now.</p>
-              <div className="flex flex-wrap gap-2 mt-3">
-                {expiringCount > 0 ? (
+              {expiringCount > 0 && (
+                <div className="flex flex-wrap gap-2 mt-3">
                   <Chip size="sm" color="danger" variant="flat" className="text-white border border-white/30 bg-white/20">
                     {expiringCount} expiring
                   </Chip>
-                ) : (
-                  <Chip size="sm" color="success" variant="flat" className="text-white border border-white/30 bg-white/20">
-                    All clear
-                  </Chip>
-                )}
-              </div>
+                </div>
+              )}
             </div>
             <Button
               size="lg"

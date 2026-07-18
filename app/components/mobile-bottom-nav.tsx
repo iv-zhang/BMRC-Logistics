@@ -87,6 +87,16 @@ export default function MobileBottomNav() {
           );
         })}
 
+        {/* Theme toggle — the only way to switch themes for members, who have no More sheet. */}
+        <button
+          onClick={() => setTheme(isDark ? 'light' : 'dark')}
+          aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+          className={tabBtnCls(false)}
+        >
+          {isDark ? <Sun size={22} /> : <Moon size={22} />}
+          <span className="text-[10px] font-medium">{isDark ? 'Light' : 'Dark'}</span>
+        </button>
+
         {/* Members: Report shortcut. Admins: More sheet. */}
         {isAdmin ? (
           <button onClick={() => setMoreOpen(true)} className={tabBtnCls(moreOpen || !primaryActive)}>

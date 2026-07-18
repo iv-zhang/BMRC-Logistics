@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { Chip, Button, Spinner } from '@heroui/react';
+import { Chip, Button, Spinner, Select, SelectItem } from '@heroui/react';
+import type { Selection } from '@heroui/react';
 import {
   Plus, Minus, Search, MapPin, Download, ChevronDown, X, RotateCcw,
   PackageOpen, LayoutList, Table2, ArrowRight, SlidersHorizontal,
@@ -69,7 +70,7 @@ export default function InventoryPage() {
 
   // Filters
   const [searchTerm, setSearchTerm] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState<string>('');
+  const [categoryFilters, setCategoryFilters] = useState<string[]>([]);
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [locationFilter, setLocationFilter] = useState<string>('');
 
@@ -382,7 +383,7 @@ export default function InventoryPage() {
         (i.batches || []).some(b => (b.lotNumber || '').toLowerCase().includes(t)),
       );
     }
-    if (categoryFilter) list = list.filter(i => i.category === categoryFilter);
+    if (categoryFilters.length > 0) list = list.filter(i => categoryFilters.includes(i.category));
     if (statusFilter) {
       list = list.filter(i => {
         const s = getItemStatus(i);
@@ -402,10 +403,14 @@ export default function InventoryPage() {
       );
     }
     return list;
-  }, [inventory, searchTerm, categoryFilter, statusFilter, locationFilter]);
+  }, [inventory, searchTerm, categoryFilters, statusFilter, locationFilter]);
 
   function resetFilters() {
-    setSearchTerm(''); setCategoryFilter(''); setStatusFilter(''); setLocationFilter('');
+    setSearchTerm(''); setCategoryFilters([]); setStatusFilter(''); setLocationFilter('');
+  }
+
+  function toggleCategoryFilter(cat: string) {
+    setCategoryFilters(prev => prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]);
   }
 
   function toggleTableRow(id: string) {
@@ -433,78 +438,57 @@ export default function InventoryPage() {
     { key: 'expiring',  label: 'Expiring Soon', count: statusCounts.expiring,               dot: 'bg-warning/60' },
   ] as const;
 
+  // ── Shared toolbar cluster (view toggle + Export + Intake) ─────────────────
+  const toolbarControls = (
+    <div className="flex items-center gap-2 flex-none">
+      <div className="flex bg-content1 border border-divider rounded-large p-1 gap-1">
+        {([
+          { mode: 'list' as const, icon: <LayoutList size={14} />, label: 'List' },
+          { mode: 'table' as const, icon: <Table2 size={14} />, label: 'Table' },
+        ]).map(({ mode, icon, label }) => (
+          <button
+            key={mode}
+            onClick={() => setViewMode(mode)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-medium text-sm font-semibold transition-colors duration-150 ${
+              viewMode === mode
+                ? 'bg-primary text-white'
+                : 'text-foreground-500 hover:bg-content2'
+            }`}
+          >
+            {icon} {label}
+          </button>
+        ))}
+      </div>
+
+      <Button size="sm" variant="flat" startContent={<Download size={14} />} onPress={exportCSV}>
+        Export
+      </Button>
+      {isAdmin && (
+        <Button
+          color="primary"
+          size="sm"
+          startContent={<Plus size={15} />}
+          onPress={() => setIntakeOpen(true)}
+        >
+          Intake Stock
+        </Button>
+      )}
+    </div>
+  );
+
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+    <div className="min-h-screen md:h-screen md:overflow-hidden bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex flex-col">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8 md:pb-3 md:h-full md:min-h-0 w-full flex flex-col">
 
         {/* ── Page header ────────────────────────────────────────────────── */}
-        <div className="flex items-end justify-between gap-4 mb-6 flex-wrap">
-          <div>
-            <h1 className="text-2xl font-semibold text-foreground mb-1.5">Inventory</h1>
-            <div className="flex items-center gap-2 flex-wrap mt-1">
-              <div className="flex items-center gap-2 bg-content1 border border-divider rounded-large px-3 py-1.5">
-                <span className="font-mono font-semibold tabular-nums text-foreground">{inventory.length}</span>
-                <span className="text-xs text-foreground-400">total</span>
-              </div>
-              <div className="flex items-center gap-2 bg-warning-50 dark:bg-warning-900/20 border border-warning/30 rounded-large px-3 py-1.5">
-                <span className="w-2 h-2 rounded-sm bg-warning flex-none" />
-                <span className="font-mono font-semibold tabular-nums text-warning">{statusCounts.low + statusCounts.out}</span>
-                <span className="text-xs text-warning/80 font-medium">low stock</span>
-              </div>
-              <div className="flex items-center gap-2 bg-danger-50 dark:bg-danger-900/20 border border-danger/30 rounded-large px-3 py-1.5">
-                <span className="w-2 h-2 rounded-sm bg-danger flex-none" />
-                <span className="font-mono font-semibold tabular-nums text-danger">{statusCounts.expired}</span>
-                <span className="text-xs text-danger/80 font-medium">expired</span>
-              </div>
-              <div className="flex items-center gap-2 bg-warning-50/60 dark:bg-warning-900/10 border border-warning/20 rounded-large px-3 py-1.5">
-                <span className="w-2 h-2 rounded-sm bg-warning/60 flex-none" />
-                <span className="font-mono font-semibold tabular-nums text-warning">{statusCounts.expiring}</span>
-                <span className="text-xs text-warning/70 font-medium">expiring soon</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-            {/* View toggle */}
-            <div className="flex bg-content1 border border-divider rounded-large p-1 gap-1">
-              {([
-                { mode: 'list' as const, icon: <LayoutList size={14} />, label: 'List' },
-                { mode: 'table' as const, icon: <Table2 size={14} />, label: 'Table' },
-              ]).map(({ mode, icon, label }) => (
-                <button
-                  key={mode}
-                  onClick={() => setViewMode(mode)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-medium text-sm font-semibold transition-colors duration-150 ${
-                    viewMode === mode
-                      ? 'bg-primary text-white'
-                      : 'text-foreground-500 hover:bg-content2'
-                  }`}
-                >
-                  {icon} {label}
-                </button>
-              ))}
-            </div>
-
-            <Button size="sm" variant="flat" startContent={<Download size={14} />} onPress={exportCSV}>
-              Export
-            </Button>
-            {isAdmin && (
-              <Button
-                color="primary"
-                size="sm"
-                startContent={<Plus size={15} />}
-                onPress={() => setIntakeOpen(true)}
-              >
-                Intake Stock
-              </Button>
-            )}
-          </div>
+        <div className="flex-none mb-6">
+          <h1 className="text-2xl font-semibold text-foreground">Inventory</h1>
         </div>
 
         {/* ══ LIST VIEW ══════════════════════════════════════════════════════ */}
         {viewMode === 'list' && (
-          <div>
+          <div className="md:flex-1 md:min-h-0 flex flex-col">
 
             {/* Mobile filter toggle — collapses the sidebar into a disclosure below md */}
             <button
@@ -513,22 +497,22 @@ export default function InventoryPage() {
             >
               <SlidersHorizontal size={16} className="text-foreground-400" />
               Filters
-              {[statusFilter, categoryFilter, locationFilter].filter(Boolean).length > 0 && (
+              {(statusFilter ? 1 : 0) + categoryFilters.length + (locationFilter ? 1 : 0) > 0 && (
                 <span className="font-mono text-xs px-2 py-0.5 rounded-full bg-primary-50 dark:bg-primary-900/20 text-primary tabular-nums">
-                  {[statusFilter, categoryFilter, locationFilter].filter(Boolean).length}
+                  {(statusFilter ? 1 : 0) + categoryFilters.length + (locationFilter ? 1 : 0)}
                 </span>
               )}
               <ChevronDown size={16} className={`ml-auto text-foreground-400 transition-transform duration-200 ${mobileFiltersOpen ? 'rotate-180' : ''}`} />
             </button>
 
-          <div className="flex flex-col md:flex-row gap-4 md:gap-6 items-stretch md:items-start">
+          <div className="flex flex-col md:flex-row gap-4 md:gap-6 items-stretch md:flex-1 md:min-h-0">
 
             {/* Sidebar ────────────────────────────────────────────────────── */}
-            <aside className={`w-full md:w-64 md:flex-none flex-col gap-4 ${mobileFiltersOpen ? 'flex' : 'hidden md:flex'}`}>
+            <aside className={`w-full md:w-64 md:flex-none md:h-full md:min-h-0 md:overflow-hidden flex-col gap-3 ${mobileFiltersOpen ? 'flex' : 'hidden md:flex'}`}>
 
               {/* Stock Status */}
-              <div className="bg-content1 border border-divider rounded-large p-4">
-                <p className="text-xs font-semibold uppercase tracking-widest text-foreground-400 mb-3">
+              <div className="bg-content1 border border-divider rounded-large p-3 flex-none">
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400 mb-2">
                   Stock Status
                 </p>
                 <div className="flex flex-col gap-1">
@@ -536,7 +520,7 @@ export default function InventoryPage() {
                     <button
                       key={key}
                       onClick={() => setStatusFilter(statusFilter === key ? '' : key)}
-                      className={`flex items-center justify-between px-3 py-2 rounded-medium text-sm font-semibold transition-colors duration-150 border ${
+                      className={`flex items-center justify-between px-2.5 py-1.5 rounded-medium text-[13px] font-semibold transition-colors duration-150 border ${
                         statusFilter === key
                           ? 'bg-primary-50 border-primary/30 text-primary dark:bg-primary-900/20 dark:border-primary/40'
                           : 'border-transparent hover:bg-content2 text-foreground-600 dark:text-foreground-300'
@@ -553,24 +537,36 @@ export default function InventoryPage() {
               </div>
 
               {/* Category */}
-              <div className="bg-content1 border border-divider rounded-large p-4">
-                <p className="text-xs font-semibold uppercase tracking-widest text-foreground-400 mb-3">
-                  Category
-                </p>
-                <div className="flex flex-col gap-0.5">
+              <div className="bg-content1 border border-divider rounded-large p-3 flex-none flex flex-col">
+                <div className="flex items-center justify-between mb-2 flex-none">
+                  <p className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400">
+                    Category
+                  </p>
+                  {categoryFilters.length > 0 && (
+                    <button
+                      onClick={() => setCategoryFilters([])}
+                      className="text-xs font-semibold text-primary"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                {/* Bounded scroll: the only exception to "the aside never scrolls" —
+                    an org with many categories must not push Location out of view. */}
+                <div className="flex flex-col gap-0.5 md:max-h-[42vh] md:overflow-y-auto">
                   {CATEGORIES.map(cat => {
                     const cfg = CAT_CFG[cat];
-                    const active = categoryFilter === cat;
+                    const active = categoryFilters.includes(cat);
                     return (
                       <button
                         key={cat}
-                        onClick={() => setCategoryFilter(active ? '' : cat)}
-                        className={`flex items-center justify-between px-2 py-1.5 rounded-medium text-sm transition-colors duration-150 ${
+                        onClick={() => toggleCategoryFilter(cat)}
+                        className={`flex items-center justify-between px-2 py-1 rounded-medium text-[13px] transition-colors duration-150 ${
                           active ? 'bg-content2 font-semibold' : 'hover:bg-content2 font-normal'
                         }`}
                       >
                         <span className="flex items-center gap-2">
-                          <span className={`w-[18px] h-[18px] rounded flex items-center justify-center text-[9px] font-semibold flex-none ${cfg.bg} ${cfg.text}`}>
+                          <span className={`w-4 h-4 rounded flex items-center justify-center text-[9px] font-semibold flex-none ${cfg.bg} ${cfg.text}`}>
                             {cfg.code}
                           </span>
                           <span className="text-foreground-700 dark:text-foreground-300">{cat}</span>
@@ -582,15 +578,15 @@ export default function InventoryPage() {
                 </div>
               </div>
 
-              {/* Location */}
-              <div className="bg-content1 border border-divider rounded-large p-4">
-                <p className="text-xs font-semibold uppercase tracking-widest text-foreground-400 mb-3">
+              {/* Location + reset */}
+              <div className="bg-content1 border border-divider rounded-large p-3 flex-none">
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400 mb-2">
                   Location
                 </p>
                 <select
                   value={locationFilter}
                   onChange={e => setLocationFilter(e.target.value)}
-                  className="w-full text-sm font-medium text-foreground-600 dark:text-foreground-300 bg-content1 border border-divider rounded-medium px-3 py-2 cursor-pointer outline-none"
+                  className="w-full text-[13px] font-medium text-foreground-600 dark:text-foreground-300 bg-content1 border border-divider rounded-medium px-3 py-1.5 cursor-pointer outline-none"
                 >
                   <option value="">All locations</option>
                   {LOCATION_OPTIONS.map(o => (
@@ -599,7 +595,7 @@ export default function InventoryPage() {
                 </select>
                 <button
                   onClick={resetFilters}
-                  className="mt-3 w-full flex items-center justify-center gap-1.5 text-xs font-semibold text-primary py-1"
+                  className="mt-2 w-full flex items-center justify-center gap-1.5 text-xs font-semibold text-primary py-1"
                 >
                   <RotateCcw size={11} /> Reset filters
                 </button>
@@ -607,23 +603,27 @@ export default function InventoryPage() {
             </aside>
 
             {/* Item list ──────────────────────────────────────────────────── */}
-            <main className="flex-1 min-w-0 flex flex-col gap-3">
-              {/* Search */}
-              <div className="flex items-center gap-3 bg-content1 border border-divider rounded-large px-4 py-1">
-                <Search size={16} className="text-foreground-400 flex-none" />
-                <input
-                  value={searchTerm}
-                  onChange={e => setSearchTerm(e.target.value)}
-                  placeholder="Search items, locations, lot numbers…"
-                  className="flex-1 text-sm bg-transparent outline-none py-2.5 text-foreground placeholder:text-foreground-400"
-                />
-                {searchTerm && (
-                  <button onClick={() => setSearchTerm('')} className="text-foreground-400 hover:text-foreground-600 transition-colors">
-                    <X size={15} />
-                  </button>
-                )}
+            <main className="flex-1 min-w-0 flex flex-col gap-3 md:min-h-0 md:h-full">
+              {/* Toolbar: search + view toggle + Export + Intake */}
+              <div className="flex-none flex items-center gap-2 flex-wrap">
+                <div className="flex-1 min-w-[220px] flex items-center gap-3 bg-content1 border border-divider rounded-large px-4 py-1">
+                  <Search size={16} className="text-foreground-400 flex-none" />
+                  <input
+                    value={searchTerm}
+                    onChange={e => setSearchTerm(e.target.value)}
+                    placeholder="Search items, locations, lot numbers…"
+                    className="flex-1 text-sm bg-transparent outline-none py-2.5 text-foreground placeholder:text-foreground-400"
+                  />
+                  {searchTerm && (
+                    <button onClick={() => setSearchTerm('')} className="text-foreground-400 hover:text-foreground-600 transition-colors">
+                      <X size={15} />
+                    </button>
+                  )}
+                </div>
+                {toolbarControls}
               </div>
 
+              <div className="md:flex-1 md:min-h-0 md:overflow-y-auto flex flex-col gap-3 pr-1">
               {filteredInventory.length === 0 ? (
                 <div className="bg-content1 border border-dashed border-divider rounded-large text-center py-16">
                   <PackageOpen size={32} className="mx-auto text-foreground-300 mb-2" />
@@ -738,6 +738,7 @@ export default function InventoryPage() {
                   );
                 })
               )}
+              </div>
             </main>
           </div>
           </div>
@@ -745,9 +746,9 @@ export default function InventoryPage() {
 
         {/* ══ TABLE VIEW ═════════════════════════════════════════════════════ */}
         {viewMode === 'table' && (
-          <div>
+          <div className="md:flex-1 md:min-h-0 flex flex-col">
             {/* Filter bar */}
-            <div className="bg-content1 border border-divider rounded-large p-3 mb-4 flex items-center gap-3 flex-wrap">
+            <div className="flex-none bg-content1 border border-divider rounded-large p-3 mb-4 flex items-center gap-3 flex-wrap">
               <div className="flex-1 min-w-[220px] flex items-center gap-2 bg-content2 border border-divider rounded-medium px-3 py-0.5">
                 <Search size={15} className="text-foreground-400 flex-none" />
                 <input
@@ -757,14 +758,20 @@ export default function InventoryPage() {
                   className="flex-1 text-sm bg-transparent outline-none py-2 text-foreground placeholder:text-foreground-400"
                 />
               </div>
-              <select
-                value={categoryFilter}
-                onChange={e => setCategoryFilter(e.target.value)}
-                className="text-sm font-medium text-foreground-600 dark:text-foreground-300 bg-content1 border border-divider rounded-medium px-3 py-2 cursor-pointer outline-none"
+              <Select
+                selectionMode="multiple"
+                size="sm"
+                placeholder="All categories"
+                aria-label="Filter by category"
+                selectedKeys={new Set(categoryFilters)}
+                onSelectionChange={(keys: Selection) => {
+                  if (keys === 'all') { setCategoryFilters([...CATEGORIES]); return; }
+                  setCategoryFilters(Array.from(keys as Set<string>));
+                }}
+                className="w-44"
               >
-                <option value="">All categories</option>
-                {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
+                {CATEGORIES.map(c => <SelectItem key={c}>{c}</SelectItem>)}
+              </Select>
               <select
                 value={locationFilter}
                 onChange={e => setLocationFilter(e.target.value)}
@@ -775,7 +782,7 @@ export default function InventoryPage() {
                   <option key={o.value} value={o.value}>{o.label}</option>
                 ))}
               </select>
-              <div className="flex gap-1.5 ml-auto flex-wrap">
+              <div className="flex gap-1.5 flex-wrap">
                 {statusPills.slice(1).map(({ key, label }) => (
                   <button
                     key={key}
@@ -790,10 +797,13 @@ export default function InventoryPage() {
                   </button>
                 ))}
               </div>
+              <div className="ml-auto">
+                {toolbarControls}
+              </div>
             </div>
 
-            {/* Table — scrolls horizontally on narrow screens */}
-            <div className="bg-content1 border border-divider rounded-large overflow-x-auto">
+            {/* Table — single scroll region: vertical on desktop, horizontal on narrow screens */}
+            <div className="bg-content1 border border-divider rounded-large overflow-auto md:flex-1 md:min-h-0">
               <div className="min-w-[760px]">
               {/* Header */}
               <div className="grid gap-4 px-5 py-3 bg-content2 border-b border-divider text-[11px] font-semibold uppercase tracking-wide text-foreground-400"
@@ -938,7 +948,7 @@ export default function InventoryPage() {
               </div>
             </div>
 
-            <div className="flex items-center justify-between mt-3 text-xs text-foreground-400">
+            <div className="flex-none flex items-center justify-between mt-3 text-xs text-foreground-400">
               <span>
                 Showing{' '}
                 <span className="font-semibold text-foreground-600">{filteredInventory.length}</span>

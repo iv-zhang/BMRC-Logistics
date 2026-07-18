@@ -117,6 +117,7 @@ export default function StatpackEditorModal({
   const [nameDraft, setNameDraft] = useState('');
   const [locDraft, setLocDraft] = useState('');
   const [saving, setSaving] = useState(false);
+  const listRef = useRef<HTMLDivElement | null>(null);
 
   // Seed the local draft ONCE per open. `pack` may be a live onSnapshot object
   // (it changes reference on every Firestore update); re-seeding on those changes
@@ -205,8 +206,10 @@ export default function StatpackEditorModal({
       customWarnings: [],
       ...(asset ? { serialNumber: `ASSET-${Math.floor(Math.random() * 900 + 100)}` } : {}),
     };
-    patchPack(p => { p.contents.push(base); });
-    setPocket(target === (pocket as Pocket) ? pocket : pocket); // keep view
+    patchPack(p => { p.contents.unshift(base); });
+    setExpanded(0);
+    setSwapOpen(null);
+    if (listRef.current) listRef.current.scrollTop = 0;
   };
 
   const doSave = async () => {
@@ -233,7 +236,7 @@ export default function StatpackEditorModal({
     >
       <div
         onMouseDown={(e) => e.stopPropagation()}
-        className="w-full max-w-[1140px] max-h-[92vh] bg-content1 border border-divider rounded-[18px] shadow-2xl flex flex-col overflow-visible"
+        className="w-full max-w-[1140px] h-[min(860px,92vh)] bg-content1 border border-divider rounded-[18px] shadow-2xl flex flex-col overflow-visible"
       >
         {/* ══════ HEADER ══════ */}
         <div className="flex items-center gap-4 px-5 py-3 border-b border-divider flex-none">
@@ -344,7 +347,7 @@ export default function StatpackEditorModal({
         {/* ══════ BODY ══════ */}
         <div className="flex items-stretch min-h-0 flex-1">
           {/* LEFT — bag layout + meta */}
-          <div className="w-[296px] flex-none border-r border-divider bg-content2 p-4 flex flex-col gap-3.5">
+          <div className="w-[296px] flex-none border-r border-divider bg-content2 rounded-bl-[18px] p-4 flex flex-col gap-3.5 min-h-0">
             <div className="flex items-center justify-between">
               <span className="text-[10.5px] font-semibold uppercase tracking-widest text-foreground-400">Bag layout</span>
               {pocket !== 'all' && (
@@ -431,7 +434,7 @@ export default function StatpackEditorModal({
             </div>
 
             {/* list */}
-            <div className="flex-1 overflow-y-auto px-[18px] pb-2" style={{ maxHeight: 512 }}>
+            <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto px-[18px] pb-2">
               {view.length === 0 ? (
                 <div className="text-center py-12 text-foreground-400">
                   <div className="text-[13px] font-semibold text-foreground-500">Nothing here</div>
@@ -522,6 +525,7 @@ function MetaRow({ label, value, valueClass = 'text-foreground' }: { label: stri
   );
 }
 
+// ── statpack activity log (left column) ────────────────────────────
 // ── item row ───────────────────────────────────────────────────────
 function ItemRow({
   it, expanded, swapOpen, onToggleExpand, onToggleSwap, patch, onRemove,
@@ -555,8 +559,8 @@ function ItemRow({
   return (
     <div className={`border ${borderClass} rounded-large ${expanded ? 'bg-content2/40' : 'bg-content1'} mb-2.5 overflow-hidden`}>
       {/* head */}
-      <div className="flex items-center gap-2.5 px-3 py-2.5">
-        <GripVertical size={15} className="text-foreground-300 flex-none cursor-grab" />
+      <div onClick={onToggleExpand} className="flex items-center gap-2.5 px-3 py-2.5 cursor-pointer select-none">
+        <GripVertical onClick={(e) => e.stopPropagation()} size={15} className="text-foreground-300 flex-none cursor-grab" />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap">
             <span className="text-[13.5px] font-semibold text-foreground">{itemName(it)}</span>
@@ -572,7 +576,7 @@ function ItemRow({
         </div>
 
         {/* par stepper */}
-        <div className="flex items-center gap-1.5 flex-none">
+        <div onClick={(e) => e.stopPropagation()} className="flex items-center gap-1.5 flex-none">
           <button onClick={() => patch(x => { x.requiredQuantity = Math.max(0, x.requiredQuantity - 1); })}
             className="w-7 h-7 rounded-lg bg-content2 hover:bg-content3 text-foreground-500 flex items-center justify-center transition-colors"><Minus size={13} /></button>
           <div className="text-center min-w-[40px]">
@@ -585,15 +589,10 @@ function ItemRow({
 
         {/* pocket quick select */}
         <select value={it.pocket || 'main'} onChange={(e) => setPocket(e.target.value as Pocket)}
+          onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}
           className="flex-none h-[34px] rounded-lg border border-divider bg-content1 text-xs font-semibold text-foreground-600 px-2 outline-none">
           {POCKETS.map(p => <option key={p.id} value={p.id}>{p.short}</option>)}
         </select>
-
-        {/* expand */}
-        <button onClick={onToggleExpand}
-          className={`w-8 h-8 rounded-lg border flex items-center justify-center flex-none transition-all ${expanded ? 'bg-primary border-primary text-white' : 'bg-content1 border-divider text-foreground-500 hover:bg-content2'}`}>
-          <ChevronDown size={15} className={`transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`} />
-        </button>
       </div>
 
       {/* expanded rules */}

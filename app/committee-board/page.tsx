@@ -39,6 +39,7 @@ import {
   X,
   LayoutGrid,
   UserRound,
+  CheckSquare,
 } from 'lucide-react';
 import {
   DndContext,
@@ -71,9 +72,11 @@ import { useUserRole } from '@/app/hooks/useUserRole';
 import { useTeamTasks } from '@/app/hooks/useTeamTasks';
 import { useAuditTaskCards, type AuditTaskCard } from '@/app/hooks/useAuditTaskCards';
 import { TASK_STATUS_CFG } from '@/app/components/task-status-badge';
+import TasksPanel from '@/app/components/tasks-panel';
 import type { TeamTask, TeamTaskStatus, TeamTaskOwner, TeamSubtask, User } from '@/app/types';
 
 const STATUS_ORDER: TeamTaskStatus[] = ['backlog', 'this_cycle', 'in_progress', 'blocked', 'done'];
+type BoardView = 'board' | 'tasks';
 
 /** Format a Date as yyyy-MM-dd in local time (toISOString would shift the day across timezones). */
 function toDateInputValue(d: Date): string {
@@ -294,6 +297,25 @@ export default function CommitteeBoardPage() {
     () => members.filter((m) => m.role === 'admin' || m.role === 'quartermaster'),
     [members]
   );
+
+  // Top-level view switcher: kanban Board vs. the merged Tasks & Buy List panel.
+  // Deep-linkable via ?view=tasks; read/write window.location.search directly
+  // (not useSearchParams — avoids the Suspense requirement under output: export).
+  const [view, setView] = useState<BoardView>('board');
+  useEffect(() => {
+    if (typeof window === 'undefined' || authLoading) return;
+    const sp = new URLSearchParams(window.location.search);
+    if (sp.get('view') === 'tasks' && isAdmin) setView('tasks');
+  }, [authLoading, isAdmin]);
+
+  const setViewSynced = (v: BoardView) => {
+    setView(v);
+    if (typeof window === 'undefined') return;
+    const sp = new URLSearchParams(window.location.search);
+    if (v === 'tasks') sp.set('view', 'tasks'); else sp.delete('view');
+    const qs = sp.toString();
+    router.replace(`/committee-board${qs ? `?${qs}` : ''}`);
+  };
 
   // Personal view toggle
   const [viewMode, setViewMode] = useState<'all' | 'mine'>('all');
@@ -530,108 +552,138 @@ export default function CommitteeBoardPage() {
               <SquareKanban className="text-primary" size={24} />
               <h1 className="text-2xl font-semibold text-foreground">Committee Board</h1>
             </div>
-            <div className="flex items-center gap-2 flex-wrap mt-1">
-              <div className="flex items-center gap-2 bg-content1 border border-divider rounded-large px-3 py-1.5">
-                <span className="font-mono font-semibold tabular-nums text-foreground">{openCount}</span>
-                <span className="text-xs text-foreground-400">open</span>
+            {view === 'board' && (
+              <div className="flex items-center gap-2 flex-wrap mt-1">
+                <div className="flex items-center gap-2 bg-content1 border border-divider rounded-large px-3 py-1.5">
+                  <span className="font-mono font-semibold tabular-nums text-foreground">{openCount}</span>
+                  <span className="text-xs text-foreground-400">open</span>
+                </div>
+                <div className="flex items-center gap-2 bg-danger-50 dark:bg-danger-900/20 border border-danger/30 rounded-large px-3 py-1.5">
+                  <span className="w-2 h-2 rounded-sm bg-danger flex-none" />
+                  <span className="font-mono font-semibold tabular-nums text-danger">{blockedCount}</span>
+                  <span className="text-xs text-danger/80 font-medium">blocked</span>
+                </div>
+                <div className="flex items-center gap-2 bg-success-50 dark:bg-success-900/20 border border-success/30 rounded-large px-3 py-1.5">
+                  <span className="w-2 h-2 rounded-sm bg-success flex-none" />
+                  <span className="font-mono font-semibold tabular-nums text-success">{doneCount}</span>
+                  <span className="text-xs text-success/80 font-medium">done</span>
+                </div>
               </div>
-              <div className="flex items-center gap-2 bg-danger-50 dark:bg-danger-900/20 border border-danger/30 rounded-large px-3 py-1.5">
-                <span className="w-2 h-2 rounded-sm bg-danger flex-none" />
-                <span className="font-mono font-semibold tabular-nums text-danger">{blockedCount}</span>
-                <span className="text-xs text-danger/80 font-medium">blocked</span>
-              </div>
-              <div className="flex items-center gap-2 bg-success-50 dark:bg-success-900/20 border border-success/30 rounded-large px-3 py-1.5">
-                <span className="w-2 h-2 rounded-sm bg-success flex-none" />
-                <span className="font-mono font-semibold tabular-nums text-success">{doneCount}</span>
-                <span className="text-xs text-success/80 font-medium">done</span>
-              </div>
-            </div>
+            )}
           </div>
           <div className="flex items-center gap-3 flex-wrap">
-            {/* View toggle */}
-            <div className="flex bg-content1 border border-divider rounded-large p-1 gap-1">
-              {([
-                { mode: 'all' as const, icon: <LayoutGrid size={14} />, label: 'All' },
-                { mode: 'mine' as const, icon: <UserRound size={14} />, label: 'Mine' },
-              ]).map(({ mode, icon, label }) => (
-                <button
-                  key={mode}
-                  onClick={() => setViewMode(mode)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-medium text-sm font-semibold transition-colors duration-150 ${
-                    viewMode === mode ? 'bg-primary text-white' : 'text-foreground-500 hover:bg-content2'
-                  }`}
-                >
-                  {icon} {label}
-                </button>
-              ))}
-            </div>
+            {/* Board vs. Tasks & Buy List — only admins/quartermasters had access to the
+                old /tasks page, so the tab (and the panel it opens) stays admin-only. */}
             {isAdmin && (
-              <Button color="primary" startContent={<Plus size={16} />} onPress={openAdd}>
-                Add Task
-              </Button>
+              <div className="flex bg-content1 border border-divider rounded-large p-1 gap-1">
+                {([
+                  { mode: 'board' as const, icon: <SquareKanban size={14} />, label: 'Board' },
+                  { mode: 'tasks' as const, icon: <CheckSquare size={14} />, label: 'Tasks & Buy List' },
+                ]).map(({ mode, icon, label }) => (
+                  <button
+                    key={mode}
+                    onClick={() => setViewSynced(mode)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-medium text-sm font-semibold transition-colors duration-150 ${
+                      view === mode ? 'bg-primary text-white' : 'text-foreground-500 hover:bg-content2'
+                    }`}
+                  >
+                    {icon} {label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {view === 'board' && (
+              <>
+                {/* All / Mine toggle */}
+                <div className="flex bg-content1 border border-divider rounded-large p-1 gap-1">
+                  {([
+                    { mode: 'all' as const, icon: <LayoutGrid size={14} />, label: 'All' },
+                    { mode: 'mine' as const, icon: <UserRound size={14} />, label: 'Mine' },
+                  ]).map(({ mode, icon, label }) => (
+                    <button
+                      key={mode}
+                      onClick={() => setViewMode(mode)}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-medium text-sm font-semibold transition-colors duration-150 ${
+                        viewMode === mode ? 'bg-primary text-white' : 'text-foreground-500 hover:bg-content2'
+                      }`}
+                    >
+                      {icon} {label}
+                    </button>
+                  ))}
+                </div>
+                {isAdmin && (
+                  <Button color="primary" startContent={<Plus size={16} />} onPress={openAdd}>
+                    Add Task
+                  </Button>
+                )}
+              </>
             )}
           </div>
         </div>
 
-        {/* Five status columns */}
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCorners}
-          onDragStart={handleDragStart}
-          onDragEnd={handleDragEnd}
-        >
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4 items-start">
-            {STATUS_ORDER.map((status) => {
-              const cfg = TASK_STATUS_CFG[status];
-              const cards = columns[status];
-              const auditInCol = viewMode === 'all' ? auditCards.filter((c) => c.status === status) : [];
-              const total = cards.length + auditInCol.length;
-              return (
-                <section key={status} className="min-w-0">
-                  <div className="flex items-center gap-2 mb-3 px-1">
-                    <cfg.Icon size={15} className={cfg.text} />
-                    <h2 className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400">
-                      {cfg.label}
-                    </h2>
-                    <span className="ml-auto font-mono text-xs font-semibold tabular-nums text-foreground-400">
-                      {total}
-                    </span>
+        {view === 'tasks' && isAdmin ? (
+          <TasksPanel />
+        ) : (
+          /* Five status columns */
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCorners}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+          >
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4 items-start">
+              {STATUS_ORDER.map((status) => {
+                const cfg = TASK_STATUS_CFG[status];
+                const cards = columns[status];
+                const auditInCol = viewMode === 'all' ? auditCards.filter((c) => c.status === status) : [];
+                const total = cards.length + auditInCol.length;
+                return (
+                  <section key={status} className="min-w-0">
+                    <div className="flex items-center gap-2 mb-3 px-1">
+                      <cfg.Icon size={15} className={cfg.text} />
+                      <h2 className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400">
+                        {cfg.label}
+                      </h2>
+                      <span className="ml-auto font-mono text-xs font-semibold tabular-nums text-foreground-400">
+                        {total}
+                      </span>
+                    </div>
+
+                    <DroppableColumn status={status}>
+                      {total === 0 && <p className="text-xs text-foreground-400 px-1">No tasks</p>}
+                      {auditInCol.map((card) => (
+                        <AuditCard key={card.id} card={card} onOpen={(href) => router.push(href)} />
+                      ))}
+                      {cards.map((task) => (
+                        <TaskCard
+                          key={task.id}
+                          task={task}
+                          isAdmin={isAdmin}
+                          userUid={user?.uid}
+                          onOpen={(t) => setDrawerId(t.id ?? null)}
+                          onEdit={openEdit}
+                          onDelete={handleDelete}
+                        />
+                      ))}
+                    </DroppableColumn>
+                  </section>
+                );
+              })}
+            </div>
+
+            <DragOverlay>
+              {activeTask ? (
+                <div className="bg-content1 border border-primary/40 rounded-large p-4 shadow-lg w-[260px] cursor-grabbing">
+                  <p className="text-sm font-semibold text-foreground">{activeTask.title}</p>
+                  <div className="flex items-center gap-1.5 text-xs text-foreground-500 mt-2">
+                    <UserIcon size={12} className="flex-none text-foreground-400" />
+                    <span className="truncate">{ownersLabel(activeTask.owners)}</span>
                   </div>
-
-                  <DroppableColumn status={status}>
-                    {total === 0 && <p className="text-xs text-foreground-400 px-1">No tasks</p>}
-                    {auditInCol.map((card) => (
-                      <AuditCard key={card.id} card={card} onOpen={(href) => router.push(href)} />
-                    ))}
-                    {cards.map((task) => (
-                      <TaskCard
-                        key={task.id}
-                        task={task}
-                        isAdmin={isAdmin}
-                        userUid={user?.uid}
-                        onOpen={(t) => setDrawerId(t.id ?? null)}
-                        onEdit={openEdit}
-                        onDelete={handleDelete}
-                      />
-                    ))}
-                  </DroppableColumn>
-                </section>
-              );
-            })}
-          </div>
-
-          <DragOverlay>
-            {activeTask ? (
-              <div className="bg-content1 border border-primary/40 rounded-large p-4 shadow-lg w-[260px] cursor-grabbing">
-                <p className="text-sm font-semibold text-foreground">{activeTask.title}</p>
-                <div className="flex items-center gap-1.5 text-xs text-foreground-500 mt-2">
-                  <UserIcon size={12} className="flex-none text-foreground-400" />
-                  <span className="truncate">{ownersLabel(activeTask.owners)}</span>
                 </div>
-              </div>
-            ) : null}
-          </DragOverlay>
-        </DndContext>
+              ) : null}
+            </DragOverlay>
+          </DndContext>
+        )}
       </main>
 
       {/* Detail drawer */}

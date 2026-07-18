@@ -53,6 +53,7 @@ import { auth, db } from '@/firebase';
 import type { Statpack, InventoryItem, User, StatpackPocket, StatpackCompartment } from '@/app/types';
 import StatpackCheckOffModal from '@/app/components/statpack-checkoff-modal';
 import StatpackHistory from '@/app/components/statpack-history';
+import StatpackLogHistory from '@/app/components/statpack-log-history';
 import StatpackEditorModal from '@/app/components/statpack-editor-modal';
 import { updateAssetAssignment, assignBarcode } from '@/app/lib/inventory';
 import {
@@ -71,6 +72,7 @@ import {
   Unlock,
   ScanBarcode,
   MoreVertical,
+  History,
   Trash,
   AlertTriangle,
   ChevronDown,
@@ -122,6 +124,8 @@ export default function AssetsPage() {
   // Statpack editor state (admin-only)
   const statpackDisclosure = useDisclosure();
   const [editingPack, setEditingPack] = useState<Statpack | null>(null);
+  // Statpack activity log (opened from the row's ⋮ menu)
+  const [logPack, setLogPack] = useState<{ id: string; name: string } | null>(null);
   const [editorSelectedPocket, setEditorSelectedPocket] = useState<StatpackPocket | 'all'>('all');
   const assetModalDisclosure = useDisclosure();
   const [editingAsset, setEditingAsset] = useState<any | null>(null);
@@ -968,7 +972,11 @@ export default function AssetsPage() {
                       <div key={asset.id} className="bg-content1">
                         <div
                           className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-content2 transition-colors"
-                          onClick={() => setExpandedAssetId(isExpanded ? null : asset.id)}
+                          onClick={() => {
+                            // Statpacks have nothing useful in the inline expansion — go straight to the editor.
+                            if (asset.type === 'statpack') { openStatpackEditorModal(asset); return; }
+                            setExpandedAssetId(isExpanded ? null : asset.id);
+                          }}
                         >
                           {userRole === 'admin' && (
                             <Checkbox
@@ -1011,16 +1019,19 @@ export default function AssetsPage() {
                             </div>
                           </div>
                           <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                            <Tooltip content="View details">
-                              <Button
-                                isIconOnly
-                                size="sm"
-                                variant="light"
-                                onPress={() => { setSelectedRowId(asset.id); setSelectedAsset(asset); setIsEditingDetails(false); detailsDisclosure.onOpen(); }}
-                              >
-                                <Eye size={16} />
-                              </Button>
-                            </Tooltip>
+                            {/* Statpack rows open the editor on row click — no eye button needed. */}
+                            {asset.type !== 'statpack' && (
+                              <Tooltip content="View details">
+                                <Button
+                                  isIconOnly
+                                  size="sm"
+                                  variant="light"
+                                  onPress={() => { setSelectedRowId(asset.id); setSelectedAsset(asset); setIsEditingDetails(false); detailsDisclosure.onOpen(); }}
+                                >
+                                  <Eye size={16} />
+                                </Button>
+                              </Tooltip>
+                            )}
                             <Dropdown>
                               <DropdownTrigger>
                                 <Button isIconOnly size="sm" variant="light">
@@ -1054,8 +1065,12 @@ export default function AssetsPage() {
                                   <DropdownItem key="noop-sp" className="hidden">.</DropdownItem>
                                 )}
                                 {asset.type === 'statpack' ? (
-                                  <DropdownItem key="edit" startContent={<Pencil size={14} />} onPress={() => openStatpackEditorModal(asset)}>
-                                    Edit Statpack
+                                  <DropdownItem
+                                    key="sp-log"
+                                    startContent={<History size={14} />}
+                                    onPress={() => setLogPack({ id: asset.id, name: asset.name })}
+                                  >
+                                    Activity Log
                                   </DropdownItem>
                                 ) : userRole === 'admin' ? (
                                   <DropdownItem key="edit" startContent={<Pencil size={14} />} onPress={() => { setEditingAsset({ ...(asset.data as any), id: asset.id }); assetModalDisclosure.onOpen(); }}>
@@ -1537,6 +1552,14 @@ export default function AssetsPage() {
           </ModalFooter>
         </ModalContent>
       </Modal>
+
+      {/* Statpack activity log — scrollable history; each row opens its full detail. */}
+      <StatpackLogHistory
+        isOpen={!!logPack}
+        onOpenChange={(open) => { if (!open) setLogPack(null); }}
+        statpackId={logPack?.id ?? null}
+        statpackName={logPack?.name}
+      />
 
       {/* Statpack Editor Modal (admin) — full-featured editor */}
       <StatpackEditorModal

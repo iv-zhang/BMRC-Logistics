@@ -138,3 +138,60 @@ test('dashboard is auth-gated (shows login)', async ({ page }) => {
   await shoot(page, '/dashboard', 'dashboard-login');
   await expect(page.getByText('Sign in to BMRC')).toBeVisible();
 });
+
+// Inventory is a fixed-height app shell on desktop: only the item list scrolls.
+// Shot at the VIEWPORT (not fullPage) — fullPage would defeat the h-screen layout.
+test('inventory desktop shell (signed in)', async ({ page }) => {
+  await signIn(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/inventory', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2500);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+  await page.screenshot({ path: join(SHOTS, 'inventory.png') });
+  await expect(page.getByRole('heading', { name: 'Inventory' })).toBeVisible();
+});
+
+// Clicking a statpack row on /assets opens the statpack editor modal directly.
+test('statpack editor modal opens from assets row', async ({ page }) => {
+  await signIn(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/assets', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2500);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+  await page.getByText('MRC1 Primary').first().click();
+  await page.waitForTimeout(1200);
+  await page.screenshot({ path: join(SHOTS, 'statpack-editor.png') });
+  await expect(page.getByText('Statpack Editor')).toBeVisible();
+});
+
+// The /tasks page is merged into /committee-board behind a Board / Tasks switcher.
+test('committee board hosts the merged tasks view', async ({ page }) => {
+  await signIn(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/committee-board?view=tasks', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2500);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+  await page.screenshot({ path: join(SHOTS, 'committee-tasks.png') });
+  // /tasks must still resolve (redirect), not 404.
+  await page.goto('/tasks', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(2000);
+  await expect(page).toHaveURL(/committee-board/);
+});
+
+// Member dashboard: real signed-in user + a member role override.
+test('member dashboard (signed in, member override)', async ({ page }) => {
+  await signIn(page);
+  await page.addInitScript(() => localStorage.setItem('bmrc_role_override', 'member'));
+  await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2500);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+  await page.screenshot({ path: join(SHOTS, 'member-dashboard.png'), fullPage: true });
+});

@@ -88,8 +88,12 @@ Key reusable components in `app/components/`:
 - Section cards have a `bg-content2` header stripe pattern with a scrollable body capped at `maxHeight: 256`.
 - Statpack tiles are in a horizontal scroll row (`overflow-x-auto`, `scrollbarWidth: 'thin'`).
 
-### Inventory Sidebar Scroll Rule
-The inventory sidebar (and any sidebar-filter layout) must NOT use `sticky` positioning, `max-h`, or `overflow-y-auto`. The sidebar scrolls with the page as a single unified scroll. `sticky` clips the bottom of a tall sidebar with no way to reach it; `overflow-y-auto` fixes the clip but creates a second scroll area. Both are wrong. The sidebar element is simply `<aside className="w-64 flex-none flex flex-col gap-4">`.
+### Inventory Scroll Rule
+On desktop (`md:` and up) `/inventory` is a **fixed-height app shell**: the page wrapper is `md:h-screen md:overflow-hidden`, and the item list (list view) / table body (table view) is the **only** scroll region. The filter sidebar, page title, and search/toolbar row stay pinned in view.
+
+Never solve sidebar overflow with `sticky` or by scrolling the `<aside>` itself — `sticky` clips the bottom of a tall sidebar with no way to reach it, and scrolling the aside creates a second competing scroll area. The correct fix is to keep the sidebar **short enough to fit one viewport** (it is deliberately dense: `p-3` cards, `text-[13px]` rows). The one bounded exception is the category list, which may scroll internally if the org has more categories than fit.
+
+Below `md`, the page reverts to a single unified page scroll with the filters in a collapsible disclosure — so every height/overflow class in this layout must be `md:`-prefixed.
 
 ### Statpack Checkout / Check-in / Audit Flow
 All three modes share one page: `app/statpacks/check-off/page.tsx` (static route). The checkout and check-in list pages (`/statpacks/checkout`, `/statpacks/checkin`) let the member pick a pack, then navigate to `/statpacks/check-off?id=<packId>&mode=<checkout|checkin>`. The admin detail page (`/statpacks/[id]`) links to `?mode=audit`.

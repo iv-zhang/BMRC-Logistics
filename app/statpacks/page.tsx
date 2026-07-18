@@ -25,7 +25,6 @@ import type { Statpack, StatpackPocket, StatpackItem } from '@/app/types';
 import StatpackCheckOffModal from '@/app/components/statpack-checkoff-modal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import { BagVisualizer } from '@/app/components/statpackvisualizer';
-import AdminAuditModal from '@/app/components/admin-audit-modal';
 import SortableStatpackContentList from '@/app/components/sortable-statpack-list';
 import AssetAttachModal from '@/app/components/asset-attach-modal';
 import AssetModal from '@/app/components/assetmodal';
@@ -55,8 +54,6 @@ export default function StatpacksListPage() {
   const [editingPack, setEditingPack] = useState<Statpack | null>(null);
   const checkoffDisclosure = useDisclosure();
   const [checkoffAction, setCheckoffAction] = useState<'checkin' | 'maintenance' | 'checkout'>('checkin');
-  const auditModalDisclosure = useDisclosure();
-  const [auditTarget, setAuditTarget] = useState<Statpack | null>(null);
   const importModalDisclosure = useDisclosure();
 
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -844,7 +841,7 @@ export default function StatpacksListPage() {
                     onCheckin={openCheckin}
                     onCheckout={openCheckout}
                     onMaintenance={openMaintenance}
-                    onAudit={(pack) => { setAuditTarget(pack); auditModalDisclosure.onOpen(); }}
+                    onAudit={(pack) => { if (pack.id) router.push(`/statpacks/check-off?id=${pack.id}&mode=audit`); }}
                     onDuplicate={handleDuplicate}
                     onScan={openScanner}
                     onGenerateQr={handleGenerateQr}
@@ -1104,15 +1101,6 @@ export default function StatpacksListPage() {
         </ModalContent>
       </Modal>
 
-      <AdminAuditModal
-        isOpen={auditModalDisclosure.isOpen}
-        onOpenChange={(open) => (open ? auditModalDisclosure.onOpen() : auditModalDisclosure.onClose())}
-        auditType="statpack"
-        targetStatpack={auditTarget}
-        userId={user?.uid || 'unknown'}
-        userName={user?.displayName || 'Unknown'}
-        onAuditComplete={() => auditModalDisclosure.onClose()}
-      />
       {/* Delete confirmation for statpack */}
       <Modal isOpen={!!deletingPack} onOpenChange={(open) => { if (!open) setDeletingPack(null); }} size="sm">
         <ModalContent>

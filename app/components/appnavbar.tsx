@@ -224,7 +224,7 @@ export default function AppNavbar() {
                 <DropdownItem key="restock" onClick={() => router.push('/restock')} startContent={<RefreshCw size={16} />}>Restock Items</DropdownItem>
                 <DropdownItem key="stats" onClick={() => router.push('/stats')} startContent={<BarChart2 size={16} />}>Stats</DropdownItem>
                 <DropdownItem key="storage" onClick={() => router.push('/storage')} startContent={<Warehouse size={16} />}>Storage Management</DropdownItem>
-                <DropdownItem key="tasks" onClick={() => router.push('/tasks')} startContent={<CheckSquare size={16} />}>Tasks & Buy List</DropdownItem>
+                <DropdownItem key="tasks" onClick={() => router.push('/committee-board?view=tasks')} startContent={<CheckSquare size={16} />}>Tasks & Buy List</DropdownItem>
               </DropdownMenu>
             </Dropdown>
           )}
@@ -348,7 +348,7 @@ export default function AppNavbar() {
             </Link>
           </NavbarMenuItem>
           <NavbarMenuItem className="py-1">
-            <Link href="/tasks" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/tasks') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/tasks')}>
+            <Link href="/committee-board?view=tasks" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActivePrefix('/tasks') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/committee-board?view=tasks')}>
               <CheckSquare size={18} /> Tasks & Buy List
             </Link>
           </NavbarMenuItem>
