@@ -1,7 +1,7 @@
 'use client';
 import React, { useEffect, useState } from 'react';
 import { Button, Autocomplete, AutocompleteItem } from '@heroui/react';
-import { Receipt, X, Plus, Trash2, AlertTriangle, Minus } from 'lucide-react';
+import { Receipt, X, Plus, Trash2, AlertTriangle } from 'lucide-react';
 import type { ItemCategory } from '@/app/types';
 import { logPurchase, purchaseTotal, type PurchaseActor, type PurchaseInput, type PurchaseLineInput } from '@/app/lib/purchases';
 import { addVendor, seedVendorsIfMissing, subscribeVendors, type Vendor } from '@/app/lib/vendors';
@@ -75,10 +75,18 @@ function makeBlankLine(kind: 'inventory' | 'asset'): LineFormState {
   };
 }
 
+/** A line the user has actually filled in — has a name (or linked SKU) and a quantity. */
+function isLineFilled(l: LineFormState): boolean {
+  return Boolean(l.mode === 'existing' ? l.linkedInventoryId : l.itemName.trim()) && Number(l.orderedQty) > 0;
+}
+
 function hasValidLine(lines: LineFormState[]): boolean {
-  return lines.some(
-    l => (l.mode === 'existing' ? l.linkedInventoryId : l.itemName.trim()) && Number(l.orderedQty) > 0
-  );
+  return lines.some(isLineFilled);
+}
+
+/** Every filled line must also carry a line cost — cost is required, not optional. */
+function everyLineHasCost(lines: LineFormState[]): boolean {
+  return lines.every(l => !isLineFilled(l) || Number(l.lineCost) > 0);
 }
 
 export default function PurchaseModal({
@@ -160,9 +168,12 @@ export default function PurchaseModal({
     discount: Number(discount) || 0,
   });
 
+  const reviewValue = lineCostSum > 0 ? lineCostSum : total;
+
   function validate(): string | null {
     if (!vendor.trim()) return 'Vendor is required.';
     if (!hasValidLine(lines)) return 'Add at least one line item with a name (or linked SKU) and a quantity.';
+    if (!everyLineHasCost(lines)) return 'Enter the line cost (total $ paid) for every item.';
     return null;
   }
 
@@ -177,6 +188,10 @@ export default function PurchaseModal({
     } else if (currentStep === 1) {
       if (!hasValidLine(lines)) {
         setError('Add at least one line item with a name (or linked SKU) and a quantity.');
+        return;
+      }
+      if (!everyLineHasCost(lines)) {
+        setError('Enter the line cost (total $ paid) for every item.');
         return;
       }
       setError('');
@@ -240,9 +255,6 @@ export default function PurchaseModal({
 
   const inputCls = 'border border-divider rounded-[10px] px-3 py-[10px] font-[inherit] text-[13.5px] outline-none bg-content1 text-foreground focus:border-primary w-full';
   const labelCls = 'text-xs font-bold text-foreground-500 mb-1.5 block';
-  const stepperMinusCls = 'w-[34px] h-[34px] rounded-[8px] bg-content3 text-foreground-500 flex items-center justify-center hover:bg-divider transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
-  const stepperPlusCls = 'w-[34px] h-[34px] rounded-[8px] bg-primary-50 dark:bg-primary-900/20 text-primary flex items-center justify-center hover:opacity-80 transition-opacity';
-  const stepperInputCls = 'flex-1 text-center font-mono text-lg font-semibold text-foreground border-none outline-none bg-transparent';
 
   const validLinesForReview = lines.filter(
     l => (l.mode === 'existing' ? l.linkedInventoryId : l.itemName.trim()) && Number(l.orderedQty) > 0
@@ -305,7 +317,7 @@ export default function PurchaseModal({
           {/* Step 1 — Order */}
           {currentStep === 0 && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-[14px]">
-              <div className="flex flex-col col-span-2 sm:col-span-1">
+              <div className="flex flex-col col-span-2">
                 <span className={labelCls}>Vendor</span>
                 <Autocomplete
                   aria-label="Vendor"
@@ -325,7 +337,7 @@ export default function PurchaseModal({
                   ))}
                 </Autocomplete>
               </div>
-              <label className="flex flex-col">
+              <label className="flex flex-col col-span-2">
                 <span className={labelCls}>Order Date</span>
                 <input
                   type="date"
@@ -334,7 +346,7 @@ export default function PurchaseModal({
                   className={inputCls}
                 />
               </label>
-              <label className="flex flex-col">
+              <label className="flex flex-col col-span-2">
                 <span className={labelCls}>PO #</span>
                 <input
                   value={poNumber}
@@ -343,7 +355,7 @@ export default function PurchaseModal({
                   className={`${inputCls} font-mono`}
                 />
               </label>
-              <label className="flex flex-col">
+              <label className="flex flex-col col-span-2">
                 <span className={labelCls}>Invoice Ref</span>
                 <input
                   value={invoiceRef}
@@ -456,40 +468,16 @@ export default function PurchaseModal({
                         />
                       </label>
 
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 items-end">
                         <div className="flex flex-col">
                           <span className={labelCls}>Ordered Qty</span>
-                          <div className="flex items-center gap-2 border border-divider rounded-[10px] p-[5px]">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const next = Math.max(1, (Number(line.orderedQty) || 1) - 1);
-                                updateLine(line.uid, { orderedQty: String(next) });
-                              }}
-                              className={stepperMinusCls}
-                              aria-label="Decrease ordered quantity"
-                            >
-                              <Minus size={15} />
-                            </button>
-                            <input
-                              type="number"
-                              min={1}
-                              value={line.orderedQty}
-                              onChange={e => updateLine(line.uid, { orderedQty: e.target.value })}
-                              className={stepperInputCls}
-                            />
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const next = Math.max(1, (Number(line.orderedQty) || 0) + 1);
-                                updateLine(line.uid, { orderedQty: String(next) });
-                              }}
-                              className={stepperPlusCls}
-                              aria-label="Increase ordered quantity"
-                            >
-                              <Plus size={15} />
-                            </button>
-                          </div>
+                          <input
+                            type="number"
+                            min={1}
+                            value={line.orderedQty}
+                            onChange={e => updateLine(line.uid, { orderedQty: e.target.value })}
+                            className={`${inputCls} font-mono`}
+                          />
                         </div>
                         <label className="flex flex-col">
                           <span className={labelCls}>Unit</span>
@@ -503,49 +491,27 @@ export default function PurchaseModal({
                         </label>
                         <div className="flex flex-col">
                           <span className={labelCls}>Units / Package</span>
-                          <div className="flex items-center gap-2 border border-divider rounded-[10px] p-[5px]">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const cur = Number(line.unitsPerPackage) || 0;
-                                updateLine(line.uid, { unitsPerPackage: cur <= 1 ? '' : String(cur - 1) });
-                              }}
-                              disabled={!line.unitsPerPackage}
-                              className={stepperMinusCls}
-                              aria-label="Decrease units per package"
-                            >
-                              <Minus size={15} />
-                            </button>
-                            <input
-                              type="number"
-                              min={1}
-                              value={line.unitsPerPackage}
-                              placeholder="—"
-                              onChange={e => updateLine(line.uid, { unitsPerPackage: e.target.value })}
-                              className={stepperInputCls}
-                            />
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const next = (Number(line.unitsPerPackage) || 0) + 1;
-                                updateLine(line.uid, { unitsPerPackage: String(next) });
-                              }}
-                              className={stepperPlusCls}
-                              aria-label="Increase units per package"
-                            >
-                              <Plus size={15} />
-                            </button>
-                          </div>
+                          <input
+                            type="number"
+                            min={1}
+                            value={line.unitsPerPackage}
+                            placeholder="—"
+                            onChange={e => updateLine(line.uid, { unitsPerPackage: e.target.value })}
+                            className={`${inputCls} font-mono`}
+                          />
                         </div>
                         <label className="flex flex-col">
-                          <span className={labelCls}>Line Cost $</span>
+                          <span className={labelCls}>
+                            Line Cost $
+                            <span className="font-normal normal-case text-foreground-400 ml-1.5">— total you paid for this line</span>
+                          </span>
                           <input
                             type="number"
                             min={0}
                             step="0.01"
                             value={line.lineCost}
                             onChange={e => updateLine(line.uid, { lineCost: e.target.value })}
-                            placeholder="Optional"
+                            placeholder="0.00"
                             className={`${inputCls} font-mono`}
                           />
                         </label>
@@ -676,9 +642,14 @@ export default function PurchaseModal({
                 </div>
 
                 <div className="bg-success-50 dark:bg-success-900/20 border border-success/30 rounded-xl px-4 py-3 flex items-center justify-between">
-                  <span className="text-sm font-semibold text-success">Total purchase value</span>
+                  <div className="flex flex-col">
+                    <span className="text-sm font-semibold text-success">Total purchase value</span>
+                    {lineCostSum === 0 && total > 0 && (
+                      <span className="text-xs text-foreground-400">based on order total (no per-line costs entered)</span>
+                    )}
+                  </div>
                   <span className="font-mono text-2xl font-semibold tabular-nums text-success">
-                    ${lineCostSum.toFixed(2)}
+                    ${reviewValue.toFixed(2)}
                   </span>
                 </div>
               </div>

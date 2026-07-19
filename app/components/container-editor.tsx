@@ -10,6 +10,7 @@ import {
   Button,
   Select,
   SelectItem,
+  Switch,
 } from '@heroui/react';
 import {
   addDoc,
@@ -31,6 +32,8 @@ interface Props {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   onSave: () => void;
+  /** Default shelf applied only when creating a new container (container === null). */
+  defaultShelfId?: string;
 }
 
 /** Propagate a container rename to every inventory item that cached the old name. */
@@ -53,10 +56,11 @@ async function propagateContainerRename(containerId: string, newName: string) {
   }
 }
 
-export default function ContainerEditor({ container, shelves, isOpen, onOpenChange, onSave }: Props) {
+export default function ContainerEditor({ container, shelves, isOpen, onOpenChange, onSave, defaultShelfId }: Props) {
   const [name, setName] = useState('');
   const [shelfId, setShelfId] = useState<string | undefined>(undefined);
   const [barcode, setBarcode] = useState<string | undefined>(undefined);
+  const [isSealed, setIsSealed] = useState(false);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -64,12 +68,14 @@ export default function ContainerEditor({ container, shelves, isOpen, onOpenChan
       setName(container.name || '');
       setShelfId(container.shelfId || undefined);
       setBarcode(container.barcode ?? undefined);
+      setIsSealed(container.isSealed === true);
     } else {
       setName('');
-      setShelfId(undefined);
+      setShelfId(defaultShelfId || undefined);
       setBarcode(undefined);
+      setIsSealed(false);
     }
-  }, [container, isOpen]);
+  }, [container, isOpen, defaultShelfId]);
 
   const handleSave = async () => {
     if (!name.trim()) {
@@ -85,6 +91,7 @@ export default function ContainerEditor({ container, shelves, isOpen, onOpenChan
           name: trimmedName,
           shelfId: shelfId || null,
           barcode: barcode || null,
+          isSealed,
           updatedAt: serverTimestamp(),
         } as any);
 
@@ -96,6 +103,7 @@ export default function ContainerEditor({ container, shelves, isOpen, onOpenChan
           name: name.trim(),
           shelfId: shelfId || null,
           barcode: barcode || null,
+          isSealed,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         } as any);
@@ -136,6 +144,11 @@ export default function ContainerEditor({ container, shelves, isOpen, onOpenChan
             <div>
               <label className="text-xs text-gray-600">Barcode</label>
               <Input value={barcode ?? ''} onValueChange={(v) => setBarcode(v || undefined)} />
+            </div>
+
+            <div className="flex items-center justify-between">
+              <label className="text-xs text-gray-600">Sealed box</label>
+              <Switch size="sm" isSelected={isSealed} onValueChange={setIsSealed} aria-label="Sealed box" />
             </div>
           </div>
         </ModalBody>

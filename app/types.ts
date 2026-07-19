@@ -210,6 +210,8 @@ export interface InventoryItem {
   reorderThreshold: number;
   /** Maximum desired stock level. Progress bar shows current/maxUnits. Overstocking is allowed. */
   maxUnits?: number;
+  /** Units currently staged on the FRONT restock shelf (the deployed pool). The item-level box/loose/batch counts are the back-room RESERVE. Refilling the shelf pulls from reserve and increments this. */
+  shelfQuantity?: number;
   // Par levels per location (optional): { locationId: minimumQuantity }
   parByLocation?: Record<string, number>;
   
@@ -477,6 +479,8 @@ export interface Statpack {
   /** Last admin edit of expected contents; drives the "contents changed since last audit" indicator */
   contentsUpdatedAt?: Date;
   currentEvent?: string;
+  /** Exchange bags this pack draws from; recorded as swaps at check-in. */
+  exchangeBagIds?: string[];
   /** Pack-level sharps container safety check, stamped on each check-off */
   sharpsContainer?: {
     status: 'ok' | 'full' | 'na';
@@ -504,6 +508,39 @@ export interface Statpack {
     status: 'pending' | 'in-progress' | 'completed';
     completedAt?: Date;
   }>;
+}
+
+// --- EXCHANGE BAGS (two-bin / kanban swap system) ---
+/** One SKU line within a multi-SKU Exchange Bag. */
+export interface ExchangeBagLine {
+  itemId: string;
+  itemName: string;
+  qtyPerBag: number;
+}
+
+/**
+ * Pre-stocked multi-SKU bag staged for grab-and-go exchange (e.g. a bandaid
+ * bag, glove kit, paper-PCR stack). Crews take a FULL bag and drop the EMPTY;
+ * empties are refilled from back-room reserve (`consumeReserveUnits`) and
+ * re-staged. See `app/lib/exchange-bags.ts`.
+ */
+export interface ExchangeBag {
+  id: string;
+  name: string;
+  /** `restock_categories` doc it belongs to, if any. */
+  categoryId?: string;
+  shelfId?: string;
+  /** Multi-SKU contents of one bag. */
+  lines: ExchangeBagLine[];
+  /** Full bags staged on the shelf. */
+  fullCount: number;
+  /** Empties awaiting refill. */
+  emptyCount: number;
+  /** Desired full-bag count. */
+  parBags?: number;
+  createdAt?: Date | FieldValue;
+  updatedAt?: Date | FieldValue;
+  updatedBy?: string;
 }
 
 // --- LOGGING & ISSUES ---
@@ -911,6 +948,16 @@ export interface TeamTask {
   completedAt?: Date | FieldValue | null;
   completedBy?: string;
   completedByName?: string;
+  /** optional, carried from migrated plain tasks */
+  priority?: 'low' | 'medium' | 'high' | 'urgent';
+  /** optional, carried from migrated plain tasks */
+  category?: string;
+  /** optional, carried from migrated plain tasks */
+  quantity?: number;
+  /** optional, carried from migrated plain tasks */
+  unit?: string;
+  /** optional, carried from migrated plain tasks */
+  notes?: string;
 }
 
 export interface IssueReport {

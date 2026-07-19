@@ -47,6 +47,19 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [selectedTab, setSelectedTab] = useState<string>('organization');
+
+  // Deep-link the active tab via ?tab= (e.g. /settings?tab=sites from the
+  // retired /storage route). Read once on mount; keep the URL in sync on change.
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get('tab');
+    if (t) setSelectedTab(t);
+  }, []);
+  const onTabChange = (key: React.Key) => {
+    const k = String(key);
+    setSelectedTab(k);
+    window.history.replaceState(null, '', `/settings?tab=${k}`);
+  };
 
   // Seed the editable draft once, the first time the live config resolves.
   useEffect(() => {
@@ -163,14 +176,14 @@ export default function SettingsPage() {
         </div>
 
         {/* Tabs */}
-        <Tabs aria-label="Organization settings">
+        <Tabs aria-label="Organization settings" selectedKey={selectedTab} onSelectionChange={onTabChange}>
           <Tab key="organization" title="Organization">
             <div className="mt-4">
               <OrgTab org={draft.org} onChange={(org) => updateDraft({ org })} />
             </div>
           </Tab>
 
-          <Tab key="sites" title="Sites & Rooms">
+          <Tab key="sites" title="Sites & Storage">
             <div className="mt-4">
               <SitesRoomsTab locations={draft.locations} onChange={(locations) => updateDraft({ locations })} />
             </div>

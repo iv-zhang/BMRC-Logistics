@@ -32,9 +32,7 @@ import {
   Users,
   BarChart3,
   User,
-  LogOut,
   AlertTriangle,
-  ShieldCheck,
   Package,
   BarChart2,
   Warehouse,
@@ -49,7 +47,6 @@ import {
 
 import { useTheme } from 'next-themes';
 
-import IssueReportForm from './IssueReportForm';
 import TutorialOverlay from './tutorial-overlay';
 
 export default function AppNavbar() {
@@ -57,7 +54,6 @@ export default function AppNavbar() {
   const router = useRouter();
   const { user, role, loading: roleLoading } = useUserRole();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [isReportOpen, setIsReportOpen] = useState(false);
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
   useEffect(() => { setMounted(true); }, []);
@@ -290,10 +286,6 @@ export default function AppNavbar() {
               {isAdmin ? (
                 <DropdownItem key="reports" onClick={() => router.push('/reports')} startContent={<BarChart3 className="w-4 h-4" />} className="p-2.5 text-sm font-medium text-left hover:bg-black/5 dark:hover:bg-white/10 transition-colors">Reports</DropdownItem>
               ) : null}
-              <DropdownItem key="role-override" onClick={() => { try { const current = localStorage.getItem('bmrc_role_override'); if (current) { localStorage.removeItem('bmrc_role_override'); } else { const target = (role === 'admin' || role === 'quartermaster') ? 'member' : 'admin'; localStorage.setItem('bmrc_role_override', target); } window.dispatchEvent(new Event('bmrc-role-changed')); } catch (e) { console.error('role override failed', e); } }} startContent={<ShieldCheck className="w-4 h-4" />} className="p-2.5 text-sm font-medium text-left hover:bg-black/5 dark:hover:bg-white/10 transition-colors">
-                {roleOverrideActive ? `Clear Test Role (${roleOverrideActive})` : `Toggle Test Role`}
-              </DropdownItem>
-              <DropdownItem key="logout" onClick={handleSignOut} startContent={<LogOut className="w-4 h-4" />} className="p-2.5 text-sm font-medium text-left text-danger hover:bg-black/5 dark:hover:bg-white/10 transition-colors" color="danger">Log Out</DropdownItem>
             </DropdownMenu>
           </Dropdown>
         </NavbarItem>
@@ -378,14 +370,7 @@ export default function AppNavbar() {
             <User size={18} /> Profile
           </Link>
         </NavbarMenuItem>
-        <NavbarMenuItem className="py-1">
-          <button className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-danger transition-colors hover:bg-danger-50 dark:hover:bg-danger-900/20" onClick={() => { setIsMenuOpen(false); handleSignOut(); }}>
-            <LogOut size={18} /> Log Out
-          </button>
-        </NavbarMenuItem>
       </NavbarMenu>
-
-      <IssueReportForm isOpen={isReportOpen} onOpenChange={setIsReportOpen} pagePath={pathname} />
     </Navbar>
   );
 }

@@ -237,8 +237,8 @@ test('log purchase then receive it (inventory, signed in)', async ({ page }) => 
   await page.getByRole('button', { name: 'New item' }).first().click();
   await page.getByPlaceholder('e.g. Nitrile Gloves').fill(ITEM);
   await page.getByPlaceholder('e.g. GLV-7782-M').fill('E2E-SKU-001');
-  await page.getByPlaceholder('—').fill('10');        // units/package stepper input
-  await page.getByPlaceholder('Optional').fill('50'); // line cost → $5.00/unit
+  await page.getByPlaceholder('—').fill('10');     // units/package input
+  await page.getByPlaceholder('0.00').fill('50');  // line cost (now required) → $5.00/unit
   await page.screenshot({ path: join(SHOTS, 'purchase-line-items.png') });
   await page.getByRole('button', { name: 'Continue' }).click();
 

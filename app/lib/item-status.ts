@@ -49,6 +49,9 @@ export function expiringCutoff(now = new Date()): Date {
  * Compute on-hand stock for an item. Batch-level bag tracking (bagCount /
  * itemsPerBag / looseItems) is the source of truth when present; otherwise
  * fall back to item-level box counts.
+ *
+ * Two-pool model: this total = back-room RESERVE pool (front-shelf stock is
+ * tracked separately in `InventoryItem.shelfQuantity`).
  */
 export function computeBagStock(item: InventoryItem, now = new Date()): BagStock {
   const batches = item.batches || [];

@@ -2,10 +2,10 @@
 
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { Button, Spinner, Input } from '@heroui/react';
+import { Button, Spinner, Input, Switch } from '@heroui/react';
 import {
   ArrowLeft, ArrowRight, MapPin, ChevronDown,
-  Check, Plus, Minus, Shield, AlertTriangle, X,
+  Check, Plus, Minus, Shield, AlertTriangle, X, Repeat,
 } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import {
@@ -16,7 +16,8 @@ import { auth, db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { logStatpackCheckOff } from '@/app/lib/inventory';
 import { THRESHOLDS } from '@/app/config/org-config';
-import type { Statpack, StatpackItem, StatpackPocket, InventoryItem } from '@/app/types';
+import { swapBag } from '@/app/lib/exchange-bags';
+import type { Statpack, StatpackItem, StatpackPocket, InventoryItem, ExchangeBag } from '@/app/types';
 
 // ─── types & constants ───────────────────────────────────────────────────────
 
@@ -564,6 +565,10 @@ export default function StatpackCheckOffPage() {
   // Check-in review step
   const [showReview, setShowReview] = useState(false);
 
+  // Linked exchange bags (check-in only) — swaps recordable at check-in.
+  const [linkedBags, setLinkedBags] = useState<ExchangeBag[]>([]);
+  const [swappedBagIds, setSwappedBagIds] = useState<Record<string, boolean>>({});
+
   // Read id and mode from URL query params (avoids useSearchParams Suspense requirement)
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -635,6 +640,7 @@ export default function StatpackCheckOffPage() {
           updatedAt: data.updatedAt instanceof Timestamp ? data.updatedAt.toDate() : new Date(),
           assetValue: data.assetValue,
           assetSerial: data.assetSerial,
+          exchangeBagIds: Array.isArray(data.exchangeBagIds) ? data.exchangeBagIds : undefined,
         };
 
         setPack(spPack);
@@ -659,6 +665,38 @@ export default function StatpackCheckOffPage() {
       }
     })();
   }, [packId, router]);
+
+  // Fetch linked exchange bags for check-in mode only.
+  useEffect(() => {
+    if (mode !== 'checkin' || !pack?.exchangeBagIds?.length) { setLinkedBags([]); return; }
+    (async () => {
+      try {
+        const ids = pack.exchangeBagIds as string[];
+        const bags: ExchangeBag[] = [];
+        for (let i = 0; i < ids.length; i += 10) {
+          const chunk = ids.slice(i, i + 10);
+          const q = query(collection(db, 'exchange_bags'), where(documentId(), 'in', chunk));
+          const s = await getDocs(q);
+          s.forEach(d => {
+            const data = d.data();
+            bags.push({
+              id: d.id,
+              name: data.name || 'Untitled bag',
+              categoryId: data.categoryId,
+              shelfId: data.shelfId,
+              lines: Array.isArray(data.lines) ? data.lines : [],
+              fullCount: typeof data.fullCount === 'number' ? data.fullCount : 0,
+              emptyCount: typeof data.emptyCount === 'number' ? data.emptyCount : 0,
+              parBags: data.parBags,
+            });
+          });
+        }
+        setLinkedBags(bags);
+      } catch (e) {
+        console.error('Failed to load linked exchange bags', e);
+      }
+    })();
+  }, [mode, pack?.exchangeBagIds]);
 
   const showToast = useCallback((msg: string, ok: boolean) => {
     setToast({ msg, ok });
@@ -857,6 +895,22 @@ export default function StatpackCheckOffPage() {
     setSubmitting(true);
     try {
       await logStatpackCheckOff(built.payload as any);
+
+      // Best-effort: record any exchange bag swaps toggled during check-in.
+      // A swap failure never blocks the check-in itself — the next audit
+      // or admin correction catches it up.
+      if (mode === 'checkin') {
+        const toSwap = linkedBags.filter(b => swappedBagIds[b.id]);
+        for (const bag of toSwap) {
+          try {
+            await swapBag(bag, { id: user?.uid, name: user?.displayName || user?.email || 'Unknown' });
+          } catch (e) {
+            console.error('Failed to record exchange bag swap', bag.name, e);
+            showToast(`Check-in saved, but couldn't record swap for ${bag.name}`, false);
+          }
+        }
+      }
+
       const msg = mode === 'checkout'
         ? 'Checkout complete — you are accountable for this bag'
         : mode === 'checkin'
@@ -869,7 +923,7 @@ export default function StatpackCheckOffPage() {
     } finally {
       setSubmitting(false);
     }
-  }, [buildPayload, mode, pack, showToast, router]);
+  }, [buildPayload, mode, pack, showToast, router, linkedBags, swappedBagIds, user]);
 
   const handleComplete = useCallback(() => {
     if (!pack || !user) return;
@@ -1256,6 +1310,27 @@ export default function StatpackCheckOffPage() {
                   {sharps ? sharps.toUpperCase() : 'Not checked'}
                 </span>
               </div>
+
+              {linkedBags.length > 0 && (
+                <ReviewSection title="Exchange bags" empty="">
+                  {linkedBags.map(bag => (
+                    <div key={bag.id} className="flex items-center justify-between bg-content2 rounded-large px-4 py-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Repeat size={13} className="text-foreground-400 flex-none" />
+                        <span className="text-sm font-medium text-foreground truncate">{bag.name}</span>
+                      </div>
+                      <Switch
+                        size="sm"
+                        aria-label={`Swapped ${bag.name}`}
+                        isSelected={!!swappedBagIds[bag.id]}
+                        onValueChange={(val) => setSwappedBagIds(prev => ({ ...prev, [bag.id]: val }))}
+                      >
+                        Swapped this bag
+                      </Switch>
+                    </div>
+                  ))}
+                </ReviewSection>
+              )}
             </div>
 
             <div className="px-5 py-4 border-t border-divider flex gap-3">

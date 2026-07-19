@@ -13,15 +13,16 @@ import {
   Spinner,
   useDisclosure,
 } from '@heroui/react';
-import { Package, MapPin, Pencil, Save, X, Clock } from 'lucide-react';
+import { Package, MapPin, Pencil, Save, X, Clock, Repeat } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { doc, onSnapshot, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
-import type { Statpack, User } from '@/app/types';
+import type { Statpack, User, ExchangeBag } from '@/app/types';
 import StatpackEditorModal from '@/app/components/statpack-editor-modal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import StatpackHistory from '@/app/components/statpack-history';
 import { computeStatpackAssetValue } from '@/app/lib/inventory';
+import { subscribeExchangeBags } from '@/app/lib/exchange-bags';
 
 export default function StatpackDetailClient() {
   const router = useRouter();
@@ -41,6 +42,9 @@ export default function StatpackDetailClient() {
 
   const [isEditingSummary, setIsEditingSummary] = useState(false);
   const [summaryForm, setSummaryForm] = useState({ name: '', status: '', currentLocation: '', assetValue: '' });
+
+  const [exchangeBags, setExchangeBags] = useState<ExchangeBag[]>([]);
+  const [savingBagLinks, setSavingBagLinks] = useState(false);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (currentUser) => {
@@ -81,6 +85,27 @@ export default function StatpackDetailClient() {
     );
     return () => unsub();
   }, [statpackId]);
+
+  useEffect(() => {
+    const unsub = subscribeExchangeBags(setExchangeBags);
+    return () => unsub();
+  }, []);
+
+  const saveExchangeBagLinks = async (keys: string[]) => {
+    if (!pack) return;
+    setSavingBagLinks(true);
+    try {
+      await updateDoc(doc(db, 'statpacks', pack.id as string), {
+        exchangeBagIds: keys,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (err) {
+      console.error('Failed to save exchange bag links:', err);
+      alert('Failed to save exchange bag links');
+    } finally {
+      setSavingBagLinks(false);
+    }
+  };
 
   const beginSummaryEdit = () => {
     if (!pack) return;
@@ -263,6 +288,31 @@ export default function StatpackDetailClient() {
                   <Button startContent={<X size={16} />} variant="light" onPress={cancelSummaryEdit}>Cancel</Button>
                 </div>
               </div>
+            )}
+
+            {userRole === 'admin' && (
+              <>
+                <Divider />
+                <div>
+                  <h3 className="font-semibold mb-2 flex items-center gap-2"><Repeat size={16} /> Linked Exchange Bags</h3>
+                  <p className="text-xs text-foreground-500 mb-2">
+                    Bags this pack draws from; swaps can be recorded during check-in.
+                  </p>
+                  <Select
+                    aria-label="Linked exchange bags"
+                    placeholder="No exchange bags linked"
+                    selectionMode="multiple"
+                    selectedKeys={pack.exchangeBagIds ?? []}
+                    isDisabled={savingBagLinks}
+                    onSelectionChange={(keys) => saveExchangeBagLinks(Array.from(keys as Set<string>))}
+                    className="max-w-md"
+                  >
+                    {exchangeBags.map((bag) => (
+                      <SelectItem key={bag.id}>{bag.name}</SelectItem>
+                    ))}
+                  </Select>
+                </div>
+              </>
             )}
 
             <Divider />

@@ -3,19 +3,18 @@ import React, { useEffect, useState } from 'react';
 import Image from 'next/image';
 import { usePathname, useRouter } from 'next/navigation';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
-import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { onAuthStateChanged } from 'firebase/auth';
 import { auth, db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { useTheme } from 'next-themes';
 import {
   Home, Package, RefreshCw,
-  BarChart2, Warehouse, Users, AlertTriangle,
-  LogOut, ShieldCheck, GraduationCap,
+  BarChart2, Users, AlertTriangle,
+  GraduationCap,
   ChevronsLeft, ChevronsRight, ScanBarcode, SlidersHorizontal,
   SquareKanban, Ambulance,
 } from 'lucide-react';
 import TutorialOverlay from './tutorial-overlay';
-import IssueReportForm from './IssueReportForm';
 
 export interface AppSidebarProps {
   navHidden: boolean;
@@ -55,7 +54,6 @@ export const ADMIN_NAV: NavSection[] = [
       { key: 'audit',         label: 'Supply Audit',     Icon: ScanBarcode, path: '/audit' },
       { key: 'restock',       label: 'Restock',          Icon: RefreshCw,   path: '/restock' },
       { key: 'stats',         label: 'Stats',            Icon: BarChart2,   path: '/stats' },
-      { key: 'storage',       label: 'Storage',          Icon: Warehouse,   path: '/storage' },
     ],
   },
   COMMITTEE_NAV_SECTION,
@@ -85,7 +83,6 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
   const [mounted, setMounted] = useState(false);
   const [navHover, setNavHover] = useState(false);
   const [showTutorial, setShowTutorial] = useState(false);
-  const [isReportOpen, setIsReportOpen] = useState(false);
   const [roleOverrideActive, setRoleOverrideActive] = useState<string | null>(null);
 
   useEffect(() => setMounted(true), []);
@@ -154,29 +151,6 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
     }
   }, [userData]);
 
-  const handleSignOut = async () => {
-    try {
-      await signOut(auth);
-      router.push('/');
-    } catch (e) {
-      console.error('Sign out error:', e);
-    }
-  };
-
-  const handleRoleOverride = () => {
-    try {
-      const current = localStorage.getItem('bmrc_role_override');
-      if (current) {
-        localStorage.removeItem('bmrc_role_override');
-      } else {
-        localStorage.setItem('bmrc_role_override', isAdmin ? 'member' : 'admin');
-      }
-      window.dispatchEvent(new Event('bmrc-role-changed'));
-    } catch (e) {
-      console.error('role override failed', e);
-    }
-  };
-
   const isItemActive = (path: string) =>
     pathname === path || pathname.startsWith(path + '/');
 
@@ -206,9 +180,6 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
   const tutorialNode = showTutorial && user ? (
     <TutorialOverlay userId={user.uid} onComplete={() => setShowTutorial(false)} />
   ) : null;
-  const reportNode = (
-    <IssueReportForm isOpen={isReportOpen} onOpenChange={setIsReportOpen} pagePath={pathname ?? ''} />
-  );
 
   if (navHidden) {
     return (
@@ -222,7 +193,6 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
           <ChevronsRight size={18} />
         </button>
         {tutorialNode}
-        {reportNode}
       </>
     );
   }
@@ -289,17 +259,6 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
                 ))}
               </React.Fragment>
             ))}
-
-            {/* Member: Report Issue button */}
-            {!isAdmin && (
-              <button
-                onClick={() => setIsReportOpen(true)}
-                className={navItemCls(false) + ' mt-1'}
-              >
-                <AlertTriangle size={19} className="flex-none" />
-                <span className={labelCls}>Report Issue</span>
-              </button>
-            )}
           </nav>
 
           {/* Bottom controls */}
@@ -312,31 +271,6 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
             >
               <GraduationCap size={19} className="flex-none" />
               <span className={labelCls}>Tutorial</span>
-            </button>
-
-            {/* Role override — real admins, plus anyone with an active override so
-                it can always be cleared (an override drops `isAdmin` to false). */}
-            {(isRealAdmin || roleOverrideActive) && (
-              <button
-                onClick={handleRoleOverride}
-                className="flex items-center gap-[13px] h-9 px-[11px] rounded-[10px] whitespace-nowrap text-[12px] w-full text-left text-foreground-400 font-medium hover:bg-content2 transition-colors duration-150"
-              >
-                <ShieldCheck size={17} className="flex-none" />
-                <span className={`truncate ${labelCls}`}>
-                  {roleOverrideActive
-                    ? `Clear test role (${roleOverrideActive})`
-                    : 'Toggle test role'}
-                </span>
-              </button>
-            )}
-
-            {/* Sign out */}
-            <button
-              onClick={handleSignOut}
-              className="flex items-center gap-[13px] h-9 px-[11px] rounded-[10px] whitespace-nowrap text-[13px] w-full text-left text-danger/70 font-medium hover:bg-danger-50 dark:hover:bg-danger-900/20 hover:text-danger transition-colors duration-150"
-            >
-              <LogOut size={19} className="flex-none" />
-              <span className={labelCls}>Sign out</span>
             </button>
 
             <div className="border-t border-divider my-1" />
@@ -373,7 +307,6 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
       </aside>
 
       {tutorialNode}
-      {reportNode}
     </>
   );
 }

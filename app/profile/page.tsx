@@ -2,20 +2,25 @@
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, Chip, Spinner } from '@heroui/react';
-import { ArrowLeft, Mail, UserRound, Sun, Moon } from 'lucide-react';
-import { onAuthStateChanged } from 'firebase/auth';
+import { ArrowLeft, Mail, UserRound, Sun, Moon, ShieldCheck, LogOut as LogOutIcon, Bug } from 'lucide-react';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { useTheme } from 'next-themes';
 import { auth, db } from '@/firebase';
 import { ROLES } from '@/app/config/org-config';
+import { useUserRole } from '@/app/hooks/useUserRole';
+import IssueReportForm from '@/app/components/IssueReportForm';
 import type { User } from '@/app/types';
 
 export default function ProfilePage() {
   const router = useRouter();
+  const { role } = useUserRole();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
   const { setTheme, resolvedTheme } = useTheme();
+  const [roleOverrideActive, setRoleOverrideActive] = useState<string | null>(null);
+  const [isReportOpen, setIsReportOpen] = useState(false);
 
   useEffect(() => setMounted(true), []);
 
@@ -50,6 +55,25 @@ export default function ProfilePage() {
 
     return () => unsubscribe();
   }, [router]);
+
+  // Role override state sync
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    setRoleOverrideActive(localStorage.getItem('bmrc_role_override'));
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'bmrc_role_override') setRoleOverrideActive(e.newValue);
+    };
+    const onCustom = () => {
+      const stored = localStorage.getItem('bmrc_role_override');
+      setRoleOverrideActive(stored);
+    };
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('bmrc-role-changed', onCustom as EventListener);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('bmrc-role-changed', onCustom as EventListener);
+    };
+  }, []);
 
   if (loading) {
     return (
@@ -86,6 +110,35 @@ export default function ProfilePage() {
     }
   };
 
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+      router.push('/');
+    } catch (e) {
+      console.error('Sign out error:', e);
+    }
+  };
+
+  const handleRoleOverride = () => {
+    try {
+      const current = localStorage.getItem('bmrc_role_override');
+      if (current) {
+        localStorage.removeItem('bmrc_role_override');
+      } else {
+        const target = (role === 'admin' || role === 'quartermaster') ? 'member' : 'admin';
+        localStorage.setItem('bmrc_role_override', target);
+      }
+      window.dispatchEvent(new Event('bmrc-role-changed'));
+    } catch (e) {
+      console.error('role override failed', e);
+    }
+  };
+
+  // Show the Test Role control based on the REAL account role (user.role from the
+  // Firestore doc, unaffected by the override) OR whenever an override is active —
+  // otherwise toggling to a member test-role hides the very button needed to exit it.
+  const canManageTestRole =
+    user.role === 'admin' || user.role === 'quartermaster' || !!roleOverrideActive;
   const roleDef = ROLES.find((r) => r.id === user.role);
   const roleLabel = roleDef?.label ?? (user.role.charAt(0).toUpperCase() + user.role.slice(1));
 
@@ -172,8 +225,54 @@ export default function ProfilePage() {
               )}
             </div>
           </div>
+
+          <div className="bg-content1 border border-divider rounded-large p-5 mt-4">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-3">Account</div>
+            <div className="flex flex-col gap-3">
+              {canManageTestRole && (
+                <Button
+                  className="w-full justify-start"
+                  variant="flat"
+                  startContent={<ShieldCheck size={16} />}
+                  onPress={handleRoleOverride}
+                >
+                  {roleOverrideActive ? `Clear Test Role (${roleOverrideActive})` : 'Toggle Test Role'}
+                </Button>
+              )}
+              <Button
+                className="w-full justify-start"
+                color="danger"
+                variant="flat"
+                startContent={<LogOutIcon size={16} />}
+                onPress={handleSignOut}
+              >
+                Sign Out
+              </Button>
+            </div>
+          </div>
+
+          <div className="bg-content1 border border-divider rounded-large p-5 mt-4">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-3">Support</div>
+            <div className="flex flex-col gap-3">
+              <Button
+                className="w-full justify-start"
+                variant="flat"
+                startContent={<Bug size={16} />}
+                onPress={() => setIsReportOpen(true)}
+              >
+                Report a Bug
+              </Button>
+            </div>
+          </div>
         </div>
       </div>
+
+      <IssueReportForm
+        isOpen={isReportOpen}
+        onOpenChange={setIsReportOpen}
+        lockType="bug"
+        pagePath="/profile"
+      />
     </div>
   );
 }

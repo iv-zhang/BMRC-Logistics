@@ -840,7 +840,7 @@ function MobileDashboard({
     { label: 'Check-out', Icon: ArrowRightLeft, tint: 'primary', to: '/statpacks/checkout' },
     { label: 'Restock',   Icon: Plus,           tint: 'primary', to: '/restock' },
     { label: 'Scan',      Icon: ScanLine,       tint: 'primary', to: '/audit' },
-    { label: 'Reports',   Icon: FileText,       tint: 'warning', to: '/issue-reports' },
+    { label: 'Issue Inbox', Icon: FileText,     tint: 'warning', to: '/issue-reports' },
   ] as const;
 
   const tintCls: Record<'primary' | 'warning', string> = {

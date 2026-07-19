@@ -8,22 +8,87 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { collection, getDocs, query, where, Timestamp } from 'firebase/firestore';
+import { collection, getDocs, Timestamp } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { Button, Card, CardBody, Spinner } from '@heroui/react';
-import { RefreshCw, TrendingUp, BarChart3, ClipboardList, Boxes } from 'lucide-react';
+import { RefreshCw, TrendingUp, BarChart3, ClipboardList, Boxes, X, User, Package } from 'lucide-react';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { formatDuration } from '@/app/lib/logs';
 import {
   computeStatpackStats,
+  computeUsageOverTime,
+  computeItemUsageDetail,
+  bucketDatesByRange,
+  filterLogsByRange,
+  isWithinRange,
   toStatpackLogWithId,
   toStatpackSummary,
   type StatpackLogWithId,
   type StatpackSummaryDoc,
   type StatpackStatsResult,
+  type DateRange,
+  type ItemUsageDetail,
 } from '@/app/lib/statpack-stats';
 
 type Tab = 'statpacks' | 'restock';
+
+// ── Time range presets ───────────────────────────────────────────────────────
+type RangePreset = 'all' | 'ytd' | 'year' | '90d' | '30d' | '7d' | 'custom';
+
+const RANGE_PRESETS: { key: RangePreset; label: string }[] = [
+  { key: 'all', label: 'All time' },
+  { key: 'ytd', label: 'YTD' },
+  { key: 'year', label: 'Past year' },
+  { key: '90d', label: '90 days' },
+  { key: '30d', label: '30 days' },
+  { key: '7d', label: '7 days' },
+  { key: 'custom', label: 'Custom' },
+];
+
+function presetToRange(preset: RangePreset, customStart: string, customEnd: string, now: Date = new Date()): DateRange {
+  const daysAgo = (n: number) => new Date(now.getTime() - n * 24 * 60 * 60 * 1000);
+  switch (preset) {
+    case 'all':
+      return { start: null, end: null };
+    case 'ytd':
+      return { start: new Date(now.getFullYear(), 0, 1), end: now };
+    case 'year':
+      return { start: daysAgo(365), end: now };
+    case '90d':
+      return { start: daysAgo(90), end: now };
+    case '30d':
+      return { start: daysAgo(30), end: now };
+    case '7d':
+      return { start: daysAgo(7), end: now };
+    case 'custom': {
+      const start = customStart ? new Date(`${customStart}T00:00:00`) : null;
+      const end = customEnd ? new Date(`${customEnd}T23:59:59.999`) : null;
+      return { start, end };
+    }
+  }
+}
+
+function rangeLabel(preset: RangePreset, customStart: string, customEnd: string): string {
+  switch (preset) {
+    case 'all':
+      return 'All time';
+    case 'ytd':
+      return 'Year to date';
+    case 'year':
+      return 'Past year';
+    case '90d':
+      return 'Past 90 days';
+    case '30d':
+      return 'Past 30 days';
+    case '7d':
+      return 'Past 7 days';
+    case 'custom':
+      if (customStart && customEnd) return `${customStart} – ${customEnd}`;
+      if (customStart) return `Since ${customStart}`;
+      if (customEnd) return `Through ${customEnd}`;
+      return 'Custom range';
+  }
+}
 
 // ── Restock types + helpers (ported from the old /restock-stats page) ────────
 type RestockReport = {
@@ -80,12 +145,25 @@ export default function StatsPage() {
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
 
+  // Time range control
+  const [rangePreset, setRangePreset] = useState<RangePreset>('90d');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+  const range = useMemo(
+    () => presetToRange(rangePreset, customStart, customEnd),
+    [rangePreset, customStart, customEnd]
+  );
+  const activeRangeLabel = rangeLabel(rangePreset, customStart, customEnd);
+
   // Statpack data
   const [logs, setLogs] = useState<StatpackLogWithId[]>([]);
   const [packs, setPacks] = useState<StatpackSummaryDoc[]>([]);
   // Restock data
   const [reports, setReports] = useState<RestockReport[]>([]);
   const [actions, setActions] = useState<RestockAction[]>([]);
+
+  // Item usage drill-down
+  const [selectedItem, setSelectedItem] = useState<string | null>(null);
 
   // Initial tab from ?tab= (deep links from the old routes / dashboard).
   useEffect(() => {
@@ -104,13 +182,11 @@ export default function StatsPage() {
     const load = async () => {
       setLoading(true);
       try {
-        const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
-        const sinceTs = Timestamp.fromDate(since);
         const [logsSnap, packsSnap, rSnap, aSnap] = await Promise.all([
           getDocs(collection(db, 'statpack_logs')),
           getDocs(collection(db, 'statpacks')),
-          getDocs(query(collection(db, 'restock_reports'), where('createdAt', '>=', sinceTs))),
-          getDocs(query(collection(db, 'restock_actions'), where('createdAt', '>=', sinceTs))),
+          getDocs(collection(db, 'restock_reports')),
+          getDocs(collection(db, 'restock_actions')),
         ]);
         if (cancelled) return;
         setLogs(logsSnap.docs.map((d) => toStatpackLogWithId(d.id, d.data())));
@@ -129,18 +205,35 @@ export default function StatsPage() {
     };
   }, [isAdmin, refreshKey]);
 
-  const statpackStats = useMemo(
-    () => (logs.length ? computeStatpackStats(logs, packs) : EMPTY_STATPACK_STATS),
-    [logs, packs]
+  const rangedLogs = useMemo(() => filterLogsByRange(logs, range), [logs, range]);
+
+  const statpackStats = useMemo(() => {
+    if (!rangedLogs.length) return EMPTY_STATPACK_STATS;
+    const stats = computeStatpackStats(rangedLogs, packs);
+    return { ...stats, usageOverTime: computeUsageOverTime(rangedLogs, range) };
+  }, [rangedLogs, packs, range]);
+
+  const itemUsageDetail: ItemUsageDetail | null = useMemo(() => {
+    if (!selectedItem) return null;
+    return computeItemUsageDetail(rangedLogs, packs, selectedItem);
+  }, [selectedItem, rangedLogs, packs]);
+
+  const reportsInRange = useMemo(
+    () => (!range.start && !range.end ? reports : reports.filter((r) => isWithinRange(toDate(r.createdAt), range))),
+    [reports, range]
+  );
+  const actionsInRange = useMemo(
+    () => (!range.start && !range.end ? actions : actions.filter((a) => isWithinRange(toDate(a.createdAt), range))),
+    [actions, range]
   );
 
   const restockStats = useMemo(() => {
-    const totalReports = reports.length;
-    const openReports = reports.filter((r) => !r.resolved).length;
-    const totalActions = actions.length;
+    const totalReports = reportsInRange.length;
+    const openReports = reportsInRange.filter((r) => !r.resolved).length;
+    const totalActions = actionsInRange.length;
 
     const resolveTimes: number[] = [];
-    reports.forEach((r) => {
+    reportsInRange.forEach((r) => {
       const c = toDate(r.createdAt);
       const res = toDate(r.resolvedAt);
       if (c && res) resolveTimes.push((res.getTime() - c.getTime()) / (1000 * 60 * 60));
@@ -148,7 +241,7 @@ export default function StatsPage() {
     const avgResolveHours = resolveTimes.length ? resolveTimes.reduce((a, b) => a + b, 0) / resolveTimes.length : null;
 
     const perBox: Record<string, { name: string; count: number }> = {};
-    reports.forEach((r) => {
+    reportsInRange.forEach((r) => {
       const id = r.restockBoxId || 'unknown';
       if (!perBox[id]) perBox[id] = { name: r.restockBoxName || id, count: 0 };
       perBox[id].count++;
@@ -159,7 +252,7 @@ export default function StatsPage() {
       .slice(0, 10);
 
     const perItem: Record<string, { name: string; reported: number }> = {};
-    reports.forEach((r) => {
+    reportsInRange.forEach((r) => {
       (r.items || []).forEach((it) => {
         const key = it.itemId || it.name || 'unknown';
         if (!perItem[key]) perItem[key] = { name: it.name || key, reported: 0 };
@@ -171,24 +264,14 @@ export default function StatsPage() {
       .sort((a, b) => b.reported - a.reported)
       .slice(0, 10);
 
-    const trend: { day: string; count: number }[] = [];
-    const dayCounts: Record<string, number> = {};
-    for (let i = 13; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      dayCounts[d.toISOString().slice(0, 10)] = 0;
-    }
-    reports.forEach((r) => {
-      const c = toDate(r.createdAt);
-      if (!c) return;
-      const key = c.toISOString().slice(0, 10);
-      if (key in dayCounts) dayCounts[key]++;
-    });
-    Object.entries(dayCounts).forEach(([day, count]) => trend.push({ day, count }));
+    const trend = bucketDatesByRange(
+      reportsInRange.map((r) => toDate(r.createdAt)),
+      range
+    );
     const maxTrend = Math.max(1, ...trend.map((t) => t.count));
 
     return { totalReports, openReports, totalActions, avgResolveHours, topBoxes, topItems, trend, maxTrend };
-  }, [reports, actions]);
+  }, [reportsInRange, actionsInRange, range]);
 
   if (authLoading) {
     return (
@@ -215,14 +298,14 @@ export default function StatsPage() {
 
   const subtitle =
     tab === 'statpacks'
-      ? `Usage-rate tracking & paper trail across every pack · ${statpackStats.perPack.length} pack${statpackStats.perPack.length === 1 ? '' : 's'} with activity`
-      : 'Operational metrics for restocking decisions · Last 90 days';
+      ? `Usage-rate tracking & paper trail across every pack · ${statpackStats.perPack.length} pack${statpackStats.perPack.length === 1 ? '' : 's'} with activity · ${activeRangeLabel}`
+      : `Operational metrics for restocking decisions · ${activeRangeLabel}`;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
       <div className="max-w-7xl mx-auto px-6 py-8">
         {/* Page header */}
-        <div className="flex items-end justify-between gap-4 mb-6 flex-wrap">
+        <div className="flex items-end justify-between gap-4 mb-4 flex-wrap">
           <div>
             <h1 className="text-2xl font-semibold text-foreground mb-1.5">Statistics</h1>
             <div className="flex items-center gap-3 text-sm text-foreground-500 flex-wrap">
@@ -253,22 +336,70 @@ export default function StatsPage() {
           </div>
         </div>
 
+        {/* Time range control */}
+        <div className="flex items-center gap-2 flex-wrap mb-6">
+          <div className="flex bg-content1 border border-divider rounded-large p-1 gap-1 flex-wrap">
+            {RANGE_PRESETS.map((p) => (
+              <button
+                key={p.key}
+                onClick={() => setRangePreset(p.key)}
+                className={`px-2.5 py-1.5 rounded-medium text-xs font-semibold transition-colors duration-150 ${
+                  rangePreset === p.key ? 'bg-primary text-white' : 'text-foreground-500 hover:bg-content2'
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          {rangePreset === 'custom' && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <input
+                type="date"
+                value={customStart}
+                onChange={(e) => setCustomStart(e.target.value)}
+                className="text-xs font-semibold px-2 py-1.5 rounded-lg border border-divider outline-none bg-content1 text-foreground"
+              />
+              <span className="text-xs text-foreground-400">to</span>
+              <input
+                type="date"
+                value={customEnd}
+                onChange={(e) => setCustomEnd(e.target.value)}
+                className="text-xs font-semibold px-2 py-1.5 rounded-lg border border-divider outline-none bg-content1 text-foreground"
+              />
+            </div>
+          )}
+        </div>
+
         {loading ? (
           <div className="flex items-center justify-center py-24">
             <Spinner size="lg" color="primary" />
           </div>
         ) : tab === 'statpacks' ? (
-          <StatpackStatsView stats={statpackStats} />
+          <StatpackStatsView stats={statpackStats} onSelectItem={setSelectedItem} />
         ) : (
-          <RestockStatsView stats={restockStats} />
+          <RestockStatsView stats={restockStats} rangeLabelText={activeRangeLabel} />
         )}
       </div>
+
+      {selectedItem && (
+        <ItemUsageDrawer
+          detail={itemUsageDetail}
+          rangeLabel={activeRangeLabel}
+          onClose={() => setSelectedItem(null)}
+        />
+      )}
     </div>
   );
 }
 
 // ── Statpack view ────────────────────────────────────────────────────────────
-function StatpackStatsView({ stats }: { stats: StatpackStatsResult }) {
+function StatpackStatsView({
+  stats,
+  onSelectItem,
+}: {
+  stats: StatpackStatsResult;
+  onSelectItem: (itemName: string) => void;
+}) {
   const { summary, perPack, mostUsedItems, usageOverTime } = stats;
   const maxUsedItem = Math.max(1, ...mostUsedItems.map((i) => i.usedCount));
   const maxWeekCheckouts = Math.max(1, ...usageOverTime.map((b) => b.checkouts));
@@ -324,7 +455,11 @@ function StatpackStatsView({ stats }: { stats: StatpackStatsResult }) {
           ) : (
             <div className="p-4 space-y-2.5">
               {mostUsedItems.map((item) => (
-                <div key={item.itemName} className="flex items-center gap-3">
+                <button
+                  key={item.itemName}
+                  onClick={() => onSelectItem(item.itemName)}
+                  className="w-full flex items-center gap-3 -mx-1 px-1 py-0.5 rounded-medium cursor-pointer hover:bg-content2 transition-colors duration-150 text-left"
+                >
                   <span className="text-xs text-foreground-600 w-32 md:w-40 truncate flex-none" title={item.itemName}>
                     {item.itemName}
                   </span>
@@ -332,7 +467,7 @@ function StatpackStatsView({ stats }: { stats: StatpackStatsResult }) {
                     <div className="h-full rounded-full bg-primary transition-all duration-300" style={{ width: `${(item.usedCount / maxUsedItem) * 100}%` }} />
                   </div>
                   <span className="font-mono text-xs font-semibold tabular-nums text-foreground-500 w-8 text-right flex-none">{item.usedCount}</span>
-                </div>
+                </button>
               ))}
             </div>
           )}
@@ -340,7 +475,7 @@ function StatpackStatsView({ stats }: { stats: StatpackStatsResult }) {
 
         <div className="bg-content1 border border-divider rounded-large overflow-hidden">
           <div className="px-4 py-3 bg-content2 border-b border-divider text-[11px] font-semibold uppercase tracking-wide text-foreground-400 flex items-center gap-2">
-            <BarChart3 size={12} /> Checkouts Per Week (12 weeks)
+            <BarChart3 size={12} /> Checkouts Over Time
           </div>
           <div className="p-4 space-y-1.5">
             {usageOverTime.map((b) => (
@@ -404,6 +539,7 @@ function StatpackStatsView({ stats }: { stats: StatpackStatsResult }) {
 // ── Restock view ─────────────────────────────────────────────────────────────
 function RestockStatsView({
   stats,
+  rangeLabelText,
 }: {
   stats: {
     totalReports: number;
@@ -412,15 +548,16 @@ function RestockStatsView({
     avgResolveHours: number | null;
     topBoxes: { id: string; name: string; count: number }[];
     topItems: { id: string; name: string; reported: number }[];
-    trend: { day: string; count: number }[];
+    trend: { label: string; bucketStart: Date; count: number }[];
     maxTrend: number;
   };
+  rangeLabelText: string;
 }) {
   return (
     <>
       {/* Stat counters */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-        <Kpi label="Total Reports" value={stats.totalReports} caption="Last 90 days" />
+        <Kpi label="Total Reports" value={stats.totalReports} caption={rangeLabelText} />
         <Kpi label="Open Reports" value={stats.openReports} caption="Unresolved" valueClass={stats.openReports > 0 ? 'text-warning' : 'text-success'} />
         <Kpi label="Restock Actions" value={stats.totalActions} caption="Manual restocks" valueClass="text-primary" />
         <Kpi
@@ -470,14 +607,12 @@ function RestockStatsView({
 
         <div className="bg-content1 border border-divider rounded-large overflow-hidden">
           <div className="px-4 py-3 bg-content2 border-b border-divider text-[11px] font-semibold uppercase tracking-wide text-foreground-400 flex items-center gap-2">
-            <BarChart3 size={12} /> 14-Day Trend
+            <BarChart3 size={12} /> Reports Over Time
           </div>
           <div className="p-4 space-y-1.5">
             {stats.trend.map((t) => (
-              <div key={t.day} className="flex items-center gap-3">
-                <span className="text-xs text-foreground-400 tabular-nums w-20 flex-none">
-                  {new Date(`${t.day}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                </span>
+              <div key={t.bucketStart.toISOString()} className="flex items-center gap-3">
+                <span className="text-xs text-foreground-400 tabular-nums w-16 flex-none">{t.label}</span>
                 <div className="flex-1 h-1.5 rounded-full bg-content3 overflow-hidden">
                   <div className="h-full rounded-full bg-primary transition-all duration-300" style={{ width: `${(t.count / stats.maxTrend) * 100}%` }} />
                 </div>
@@ -509,5 +644,135 @@ function Kpi({
       <div className={`font-mono text-[28px] font-semibold tabular-nums leading-tight ${valueClass}`}>{value}</div>
       <div className="text-xs text-foreground-400 mt-1">{caption}</div>
     </div>
+  );
+}
+
+// ── Item usage drill-down drawer ────────────────────────────────────────────
+function ItemUsageDrawer({
+  detail,
+  rangeLabel,
+  onClose,
+}: {
+  detail: ItemUsageDetail | null;
+  rangeLabel: string;
+  onClose: () => void;
+}) {
+  const maxMember = Math.max(1, ...(detail?.byMember.map((m) => m.used) ?? [0]));
+  const maxPack = Math.max(1, ...(detail?.byPack.map((p) => p.used) ?? [0]));
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="fixed top-0 right-0 bottom-0 z-50 w-[480px] max-w-[94vw] bg-content1 shadow-2xl flex flex-col">
+        {/* Header */}
+        <div className="px-6 py-5 border-b border-divider">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-10 h-10 rounded-[10px] bg-primary-50 dark:bg-primary-900/20 text-primary flex items-center justify-center flex-none">
+                <Package size={18} />
+              </div>
+              <div className="min-w-0">
+                <div className="font-semibold text-lg text-foreground leading-tight truncate">
+                  {detail?.itemName ?? '—'}
+                </div>
+                <div className="text-xs text-foreground-500 mt-0.5">
+                  Used {detail?.eventCount ?? 0} time{(detail?.eventCount ?? 0) === 1 ? '' : 's'} · {detail?.totalUsed ?? 0} units total · {rangeLabel}
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={onClose}
+              className="w-8 h-8 rounded-medium bg-content2 hover:bg-content3 text-foreground-400 flex items-center justify-center transition-colors flex-none"
+              aria-label="Close"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+          {!detail || detail.events.length === 0 ? (
+            <div className="text-xs text-foreground-400 text-center py-8">No usage recorded in this range.</div>
+          ) : (
+            <>
+              {/* By member */}
+              <div>
+                <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-2.5">
+                  <User size={12} /> By Member
+                </div>
+                <div className="space-y-2">
+                  {detail.byMember.map((m) => (
+                    <div key={m.name} className="flex items-center gap-3">
+                      <span className="text-xs text-foreground-600 w-28 truncate flex-none" title={m.name}>
+                        {m.name}
+                      </span>
+                      <div className="flex-1 h-1.5 rounded-full bg-content3 overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-primary transition-all duration-300"
+                          style={{ width: `${(m.used / maxMember) * 100}%` }}
+                        />
+                      </div>
+                      <span className="font-mono text-xs font-semibold tabular-nums text-foreground-500 w-16 text-right flex-none">
+                        {m.used} <span className="text-foreground-400 font-normal">/ {m.times}x</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* By pack */}
+              <div>
+                <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-2.5">
+                  <Package size={12} /> By Pack
+                </div>
+                <div className="space-y-2">
+                  {detail.byPack.map((p) => (
+                    <div key={p.name} className="flex items-center gap-3">
+                      <span className="text-xs text-foreground-600 w-28 truncate flex-none" title={p.name}>
+                        {p.name}
+                      </span>
+                      <div className="flex-1 h-1.5 rounded-full bg-content3 overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-primary transition-all duration-300"
+                          style={{ width: `${(p.used / maxPack) * 100}%` }}
+                        />
+                      </div>
+                      <span className="font-mono text-xs font-semibold tabular-nums text-foreground-500 w-16 text-right flex-none">
+                        {p.used} <span className="text-foreground-400 font-normal">/ {p.times}x</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Recent events */}
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-2.5">
+                  Recent Events
+                </div>
+                <div className="space-y-2">
+                  {detail.events.slice(0, 30).map((e, i) => (
+                    <div key={i} className="bg-content2 rounded-large p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold text-foreground truncate">{e.packName}</span>
+                        <span className="text-xs text-foreground-400 tabular-nums flex-none">
+                          {e.date ? e.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}
+                        </span>
+                      </div>
+                      <div className="text-xs text-foreground-500 mt-1">
+                        Used <span className="font-mono font-semibold text-foreground-600 tabular-nums">{e.usedQty}</span>
+                        {' · '}checked out by {e.checkoutUser ?? '—'}
+                        {' · '}checked in by {e.checkinUser}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </>
   );
 }

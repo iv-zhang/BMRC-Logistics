@@ -1,15 +1,12 @@
 'use client';
 import React, { useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { signOut } from 'firebase/auth';
-import { auth } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import {
   Home, Boxes, Package, CheckSquare, MoreHorizontal,
-  AlertTriangle, User, X, LogOut, SquareKanban, ShieldCheck,
+  User, X, SquareKanban,
 } from 'lucide-react';
 import { ADMIN_NAV, type LucideIcon } from './app-sidebar';
-import IssueReportForm from './IssueReportForm';
 
 interface Tab { key: string; label: string; Icon: LucideIcon; path: string; }
 
@@ -29,7 +26,6 @@ export default function MobileBottomNav() {
   const router = useRouter();
   const { role, user, userData, isRoleOverridden } = useUserRole();
   const [moreOpen, setMoreOpen] = useState(false);
-  const [reportOpen, setReportOpen] = useState(false);
 
   const isAdmin = role === 'admin' || role === 'quartermaster';
   // Real (non-overridden) role — an override can drop `role` to 'member', so this
@@ -46,16 +42,6 @@ export default function MobileBottomNav() {
 
   const go = (path: string) => { setMoreOpen(false); router.push(path); };
 
-  const handleSignOut = async () => {
-    try { await signOut(auth); router.push('/'); } catch (e) { console.error('Sign out error:', e); }
-  };
-
-  const handleExitTestRole = () => {
-    try {
-      localStorage.removeItem('bmrc_role_override');
-      window.dispatchEvent(new Event('bmrc-role-changed'));
-    } catch (e) { console.error('exit test role failed', e); }
-  };
 
   const userInitial = (userData?.fullName?.[0] ?? user?.email?.[0] ?? 'U').toUpperCase();
   const userName = userData?.fullName || user?.email?.split('@')[0] || 'User';
@@ -88,22 +74,10 @@ export default function MobileBottomNav() {
             <span className={`text-[10px] ${moreOpen || !primaryActive ? 'font-semibold' : 'font-medium'}`}>More</span>
           </button>
         ) : (
-          <>
-            {isRealAdmin && isRoleOverridden && (
-              <button onClick={() => { handleExitTestRole(); go('/dashboard'); }} className={tabBtnCls(false)}>
-                <ShieldCheck size={22} />
-                <span className="text-[10px] font-medium">Exit Test</span>
-              </button>
-            )}
-            <button onClick={() => setReportOpen(true)} className={tabBtnCls(false)}>
-              <AlertTriangle size={22} />
-              <span className="text-[10px] font-medium">Report</span>
-            </button>
-            <button onClick={() => go('/profile')} className={tabBtnCls(isActive('/profile'))}>
-              <User size={22} />
-              <span className={`text-[10px] ${isActive('/profile') ? 'font-semibold' : 'font-medium'}`}>Profile</span>
-            </button>
-          </>
+          <button onClick={() => go('/profile')} className={tabBtnCls(isActive('/profile'))}>
+            <User size={22} />
+            <span className={`text-[10px] ${isActive('/profile') ? 'font-semibold' : 'font-medium'}`}>Profile</span>
+          </button>
         )}
       </nav>
 
@@ -171,19 +145,11 @@ export default function MobileBottomNav() {
                 >
                   <User size={19} className="flex-none" /> Profile
                 </button>
-                <button
-                  onClick={handleSignOut}
-                  className="flex items-center gap-3 w-full text-left h-11 px-2.5 rounded-[11px] text-[13.5px] text-danger/80 font-medium active:bg-danger-50 dark:active:bg-danger-900/20 transition-colors"
-                >
-                  <LogOut size={19} className="flex-none" /> Sign out
-                </button>
               </div>
             </div>
           </div>
         </div>
       )}
-
-      <IssueReportForm isOpen={reportOpen} onOpenChange={setReportOpen} pagePath={pathname} />
     </>
   );
 }

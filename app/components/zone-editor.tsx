@@ -31,6 +31,8 @@ interface Props {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   onSave: () => void;
+  /** Defaults applied only when creating a new zone (zone === null). */
+  prefill?: { locationType?: string; room?: string };
 }
 
 const LEVEL_OPTIONS: { key: 'upper' | 'lower'; label: string }[] = [
@@ -58,7 +60,7 @@ async function propagateZoneRename(zoneId: string, newName: string) {
   }
 }
 
-export default function ZoneEditor({ zone, isOpen, onOpenChange, onSave }: Props) {
+export default function ZoneEditor({ zone, isOpen, onOpenChange, onSave, prefill }: Props) {
   const [name, setName] = useState('');
   const [locationType, setLocationType] = useState<string>('HQ');
   const [room, setRoom] = useState<string | undefined>(undefined);
@@ -78,12 +80,12 @@ export default function ZoneEditor({ zone, isOpen, onOpenChange, onSave }: Props
       setDescription(zone.description || '');
     } else {
       setName('');
-      setLocationType('HQ');
-      setRoom(undefined);
+      setLocationType(prefill?.locationType || 'HQ');
+      setRoom(prefill?.room || undefined);
       setLevel(undefined);
       setDescription('');
     }
-  }, [zone, isOpen]);
+  }, [zone, isOpen, prefill?.locationType, prefill?.room]);
 
   const handleSave = async () => {
     if (!name.trim()) {
@@ -131,7 +133,7 @@ export default function ZoneEditor({ zone, isOpen, onOpenChange, onSave }: Props
     <Modal isOpen={isOpen} onOpenChange={onOpenChange} size="sm">
       <ModalContent className="max-w-md w-[95%]">
         <ModalHeader>
-          <div className="text-lg font-semibold">{zone ? 'Edit Zone' : 'Add Zone'}</div>
+          <div className="text-lg font-semibold">{zone ? 'Edit Storage Unit' : 'Add Storage Unit'}</div>
         </ModalHeader>
         <ModalBody>
           <div className="space-y-3">

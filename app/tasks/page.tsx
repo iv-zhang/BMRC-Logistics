@@ -4,13 +4,13 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Spinner } from '@heroui/react';
 
-// Tasks & Buy List was merged into the Committee Board as a view switcher.
+// Tasks & Buy List was merged into the Committee Board (Board + Buy List views).
 // This route stays alive (old links/bookmarks) and forwards to the new home.
 export default function TasksRedirectPage() {
   const router = useRouter();
 
   useEffect(() => {
-    router.replace('/committee-board?view=tasks');
+    router.replace('/committee-board');
   }, [router]);
 
   return (

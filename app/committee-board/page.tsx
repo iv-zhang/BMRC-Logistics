@@ -21,6 +21,7 @@ import {
   DropdownTrigger,
   DropdownMenu,
   DropdownItem,
+  Chip,
 } from '@heroui/react';
 import {
   SquareKanban,
@@ -39,7 +40,7 @@ import {
   X,
   LayoutGrid,
   UserRound,
-  CheckSquare,
+  ShoppingCart,
 } from 'lucide-react';
 import {
   DndContext,
@@ -72,11 +73,18 @@ import { useUserRole } from '@/app/hooks/useUserRole';
 import { useTeamTasks } from '@/app/hooks/useTeamTasks';
 import { useAuditTaskCards, type AuditTaskCard } from '@/app/hooks/useAuditTaskCards';
 import { TASK_STATUS_CFG } from '@/app/components/task-status-badge';
-import TasksPanel from '@/app/components/tasks-panel';
+import BuyListPanel from '@/app/components/buy-list-panel';
 import type { TeamTask, TeamTaskStatus, TeamTaskOwner, TeamSubtask, User } from '@/app/types';
 
 const STATUS_ORDER: TeamTaskStatus[] = ['backlog', 'this_cycle', 'in_progress', 'blocked', 'done'];
-type BoardView = 'board' | 'tasks';
+type BoardView = 'board' | 'buylist';
+
+const PRIORITY_CHIP_COLOR: Record<string, 'default' | 'primary' | 'warning' | 'danger'> = {
+  low: 'default',
+  medium: 'primary',
+  high: 'warning',
+  urgent: 'danger',
+};
 
 /** Format a Date as yyyy-MM-dd in local time (toISOString would shift the day across timezones). */
 function toDateInputValue(d: Date): string {
@@ -206,6 +214,21 @@ function TaskCard({ task, isAdmin, userUid, onOpen, onEdit, onDelete }: TaskCard
         <span className="line-clamp-2">Done means: {task.definitionOfDone}</span>
       </div>
 
+      {(task.priority || task.category) && (
+        <div className="flex items-center gap-1.5 flex-wrap mt-2">
+          {task.priority && (
+            <Chip size="sm" variant="flat" color={PRIORITY_CHIP_COLOR[task.priority] ?? 'default'} classNames={{ base: 'h-5', content: 'text-[10px] font-semibold px-1.5' }}>
+              {task.priority}
+            </Chip>
+          )}
+          {task.category && (
+            <Chip size="sm" variant="flat" color="secondary" classNames={{ base: 'h-5', content: 'text-[10px] font-semibold px-1.5' }}>
+              {task.category}
+            </Chip>
+          )}
+        </div>
+      )}
+
       {(subtasks.length > 0 || updateCount > 0) && (
         <div className="flex items-center gap-2 mt-2.5">
           {subtasks.length > 0 && (
@@ -298,27 +321,32 @@ export default function CommitteeBoardPage() {
     [members]
   );
 
-  // Top-level view switcher: kanban Board vs. the merged Tasks & Buy List panel.
-  // Deep-linkable via ?view=tasks; read/write window.location.search directly
+  // Top-level view switcher: kanban Board vs. the standalone Buy List panel.
+  // Deep-linkable via ?view=buylist (legacy ?view=tasks is aliased to it so old
+  // links/bookmarks keep working); read/write window.location.search directly
   // (not useSearchParams — avoids the Suspense requirement under output: export).
   const [view, setView] = useState<BoardView>('board');
   useEffect(() => {
     if (typeof window === 'undefined' || authLoading) return;
     const sp = new URLSearchParams(window.location.search);
-    if (sp.get('view') === 'tasks' && isAdmin) setView('tasks');
+    const v = sp.get('view');
+    if ((v === 'buylist' || v === 'tasks') && isAdmin) setView('buylist');
   }, [authLoading, isAdmin]);
 
   const setViewSynced = (v: BoardView) => {
     setView(v);
     if (typeof window === 'undefined') return;
     const sp = new URLSearchParams(window.location.search);
-    if (v === 'tasks') sp.set('view', 'tasks'); else sp.delete('view');
+    if (v === 'buylist') sp.set('view', 'buylist'); else sp.delete('view');
     const qs = sp.toString();
     router.replace(`/committee-board${qs ? `?${qs}` : ''}`);
   };
 
-  // Personal view toggle
+  // Personal view toggle — filters the kanban in Board view, filters BuyListPanel in Buy List view
   const [viewMode, setViewMode] = useState<'all' | 'mine'>('all');
+
+  // Controlled add-item modal for the Buy List view (Board view uses editModal below)
+  const [buyAddOpen, setBuyAddOpen] = useState(false);
 
   // Drag state
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -572,13 +600,14 @@ export default function CommitteeBoardPage() {
             )}
           </div>
           <div className="flex items-center gap-3 flex-wrap">
-            {/* Board vs. Tasks & Buy List — only admins/quartermasters had access to the
-                old /tasks page, so the tab (and the panel it opens) stays admin-only. */}
+            {/* Board vs. Buy List — only admins/quartermasters had access to the
+                old /tasks page, so the tab (and the panel it opens) stays admin-only.
+                This control cluster keeps a stable order/position across both views. */}
             {isAdmin && (
               <div className="flex bg-content1 border border-divider rounded-large p-1 gap-1">
                 {([
                   { mode: 'board' as const, icon: <SquareKanban size={14} />, label: 'Board' },
-                  { mode: 'tasks' as const, icon: <CheckSquare size={14} />, label: 'Tasks & Buy List' },
+                  { mode: 'buylist' as const, icon: <ShoppingCart size={14} />, label: 'Buy List' },
                 ]).map(({ mode, icon, label }) => (
                   <button
                     key={mode}
@@ -592,37 +621,44 @@ export default function CommitteeBoardPage() {
                 ))}
               </div>
             )}
-            {view === 'board' && (
-              <>
-                {/* All / Mine toggle */}
-                <div className="flex bg-content1 border border-divider rounded-large p-1 gap-1">
-                  {([
-                    { mode: 'all' as const, icon: <LayoutGrid size={14} />, label: 'All' },
-                    { mode: 'mine' as const, icon: <UserRound size={14} />, label: 'Mine' },
-                  ]).map(({ mode, icon, label }) => (
-                    <button
-                      key={mode}
-                      onClick={() => setViewMode(mode)}
-                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-medium text-sm font-semibold transition-colors duration-150 ${
-                        viewMode === mode ? 'bg-primary text-white' : 'text-foreground-500 hover:bg-content2'
-                      }`}
-                    >
-                      {icon} {label}
-                    </button>
-                  ))}
-                </div>
-                {isAdmin && (
-                  <Button color="primary" startContent={<Plus size={16} />} onPress={openAdd}>
-                    Add Task
-                  </Button>
-                )}
-              </>
+
+            {/* All / Mine toggle — filters the kanban in Board view, filters BuyListPanel in Buy List view */}
+            <div className="flex bg-content1 border border-divider rounded-large p-1 gap-1">
+              {([
+                { mode: 'all' as const, icon: <LayoutGrid size={14} />, label: 'All' },
+                { mode: 'mine' as const, icon: <UserRound size={14} />, label: 'Mine' },
+              ]).map(({ mode, icon, label }) => (
+                <button
+                  key={mode}
+                  onClick={() => setViewMode(mode)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-medium text-sm font-semibold transition-colors duration-150 ${
+                    viewMode === mode ? 'bg-primary text-white' : 'text-foreground-500 hover:bg-content2'
+                  }`}
+                >
+                  {icon} {label}
+                </button>
+              ))}
+            </div>
+
+            {isAdmin && (
+              <Button
+                color="primary"
+                startContent={<Plus size={16} />}
+                onPress={() => (view === 'board' ? openAdd() : setBuyAddOpen(true))}
+              >
+                {view === 'board' ? 'Add Task' : 'Add Item'}
+              </Button>
             )}
           </div>
         </div>
 
-        {view === 'tasks' && isAdmin ? (
-          <TasksPanel />
+        {view === 'buylist' && isAdmin ? (
+          <BuyListPanel
+            showHeader={false}
+            viewMode={viewMode}
+            addOpen={buyAddOpen}
+            onAddOpenChange={setBuyAddOpen}
+          />
         ) : (
           /* Five status columns */
           <DndContext

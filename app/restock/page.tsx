@@ -1,509 +1,1119 @@
-"use client";
+'use client';
 
-import React, { useEffect, useState } from 'react';
-import { Card, CardBody, CardHeader, Button, Input, Select, SelectItem, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Spinner } from '@heroui/react';
-import { Edit2, Trash2 } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import {
+  Button, Input, Spinner, Chip, Modal, ModalContent, ModalHeader, ModalBody,
+  ModalFooter, Checkbox, Card, CardBody, useDisclosure,
+} from '@heroui/react';
+import {
+  RefreshCw, Plus, Trash2, Edit2, Info, X, Warehouse, Layers, Boxes,
+  AlertTriangle, PackageCheck, ChevronDown, ChevronRight, Repeat, Package,
+} from 'lucide-react';
+import {
+  collection, onSnapshot, query, orderBy, doc, addDoc, updateDoc, deleteDoc,
+  serverTimestamp, arrayUnion, arrayRemove, Timestamp,
+} from 'firebase/firestore';
 import { db } from '@/firebase';
-import { collection, doc, onSnapshot, addDoc, setDoc, runTransaction, deleteDoc, serverTimestamp, query, orderBy, where, getDoc, getDocs, limit } from 'firebase/firestore';
+import { useUserRole } from '@/app/hooks/useUserRole';
+import { useStorageLocations } from '@/app/hooks/useStorageLocations';
+import {
+  computeBagStock, getItemStatus, statusBarColor, type ItemStatus,
+} from '@/app/lib/item-status';
+import { reserveUnits, shelfUnits } from '@/app/lib/stock-pools';
+import { refillShelf } from '@/app/lib/restock-actions';
+import { subscribeExchangeBags, refillBag, swapBag } from '@/app/lib/exchange-bags';
+import ExchangeBagEditor from '@/app/components/exchange-bag-editor';
+import type { InventoryItem, Shelf, StorageZone, Container, ExchangeBag } from '@/app/types';
 
-const LOCATIONS = ['HQ', 'Shed'];
-const LOCATION_MAP: Record<string, string[]> = { HQ: ['Receiving', 'Storage'], Shed: ['A', 'B'] };
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+/** Accountability record of the last time a member marked an item restocked
+ *  from this category's view. Display-only — never feeds stock math. */
+interface ItemRestockInfo {
+  at?: Date;
+  byName?: string;
+}
+
+interface RestockCategory {
+  id: string;
+  name: string;
+  /** Real storage shelves (by id) that fall under this category. */
+  shelfIds: string[];
+  /** Per-item accountability stamps, keyed by inventory item id. */
+  itemRestocks?: Record<string, ItemRestockInfo>;
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
+const LEGACY_NOTICE_KEY = 'bmrc_restock_legacy_notice_dismissed';
+
+// ── Hydration helpers (Timestamp → Date), same pattern as sites-rooms-tab ───────
+// computeBagStock/getItemStatus expect real Dates; Firestore returns Timestamps.
+function toDateVal(v: unknown): Date | undefined {
+  if (!v) return undefined;
+  if (v instanceof Date) return v;
+  if (v instanceof Timestamp) return v.toDate();
+  const anyV = v as { toDate?: () => Date };
+  if (typeof anyV.toDate === 'function') return anyV.toDate();
+  const d = new Date(v as string);
+  return isNaN(d.getTime()) ? undefined : d;
+}
+
+function hydrateItem(raw: Record<string, unknown>): InventoryItem {
+  const rawBatches = raw.batches;
+  const batches = Array.isArray(rawBatches)
+    ? rawBatches.map((b: Record<string, unknown>) => ({
+        ...b,
+        expirationDate: toDateVal(b?.expirationDate),
+        openDate: toDateVal(b?.openDate),
+        openedAt: toDateVal(b?.openedAt),
+        receivedAt: toDateVal(b?.receivedAt),
+      }))
+    : rawBatches;
+  return { ...raw, batches, lastAuditDate: toDateVal(raw.lastAuditDate) } as unknown as InventoryItem;
+}
+
+function hydrateCategory(id: string, raw: Record<string, unknown>): RestockCategory {
+  const rawRestocks = (raw.itemRestocks as Record<string, Record<string, unknown>> | undefined) || {};
+  const itemRestocks: Record<string, ItemRestockInfo> = {};
+  for (const [itemId, v] of Object.entries(rawRestocks)) {
+    itemRestocks[itemId] = { at: toDateVal(v?.at), byName: (v?.byName as string) || undefined };
+  }
+  return {
+    id,
+    name: (raw.name as string) || 'Untitled category',
+    shelfIds: Array.isArray(raw.shelfIds) ? (raw.shelfIds as string[]) : [],
+    itemRestocks,
+    createdAt: toDateVal(raw.createdAt),
+    updatedAt: toDateVal(raw.updatedAt),
+  };
+}
+
+function fmtWhen(d?: Date): string {
+  if (!d) return 'Never restocked';
+  return `Restocked ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} at ${d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+}
+
+const STATUS_CHIP: Record<ItemStatus, { color: 'success' | 'warning' | 'danger'; label: string }> = {
+  ok: { color: 'success', label: 'OK' },
+  low: { color: 'warning', label: 'Low Stock' },
+  out: { color: 'danger', label: 'Out of Stock' },
+  expired: { color: 'danger', label: 'Expired' },
+  expiring: { color: 'warning', label: 'Exp. Soon' },
+};
+
+function isBelowPar(item: InventoryItem): boolean {
+  const available = computeBagStock(item).availableItems;
+  return item.reorderThreshold > 0 && available <= item.reorderThreshold;
+}
+
+// ── Item row ─────────────────────────────────────────────────────────────────
+
+function RestockItemRow({
+  item, restockInfo, onRefill, onEditLevels,
+}: {
+  item: InventoryItem;
+  restockInfo?: ItemRestockInfo;
+  onRefill: (item: InventoryItem) => void;
+  onEditLevels: (item: InventoryItem) => void;
+}) {
+  const status = getItemStatus(item);
+  const reserve = reserveUnits(item);
+  const shelf = shelfUnits(item);
+  const par = item.reorderThreshold;
+  const max = item.maxUnits;
+  // Restock need is measured against the FRONT shelf pool — reserve is the
+  // back room supply that refills feed FROM, not what the shelf needs.
+  const restockNeeded = Math.max(0, (max ?? par) - shelf);
+  const belowPar = isBelowPar(item);
+  const chip = STATUS_CHIP[status];
+  const capLabel = max ?? (par || '—');
+
+  return (
+    <div
+      className={`flex flex-wrap sm:flex-nowrap items-center gap-3 px-3 py-2 rounded-medium transition-colors duration-150 ${
+        belowPar ? 'bg-warning-50 dark:bg-warning-950/20' : 'hover:bg-content2'
+      }`}
+    >
+      <span className={`w-2 h-2 rounded-full flex-none ${statusBarColor(status)}`} />
+      <div className="flex-1 min-w-[55%] sm:min-w-0">
+        <p className="text-sm text-foreground truncate">{item.name}</p>
+        <p className="text-xs text-foreground-400 truncate">{fmtWhen(restockInfo?.at)}</p>
+      </div>
+      <span className="font-mono text-xs tabular-nums flex-none text-foreground-500">
+        Reserve {reserve}
+      </span>
+      <span className={`font-mono text-xs tabular-nums flex-none ${restockNeeded > 0 ? 'text-warning' : 'text-foreground-500'}`}>
+        Shelf {shelf} / {capLabel}
+      </span>
+      {restockNeeded > 0 && (
+        <Chip size="sm" variant="flat" color="warning" className="flex-none">Restock {restockNeeded}</Chip>
+      )}
+      <Chip size="sm" variant="flat" color={chip.color} className="flex-none">{chip.label}</Chip>
+      <Button
+        isIconOnly
+        size="sm"
+        variant="light"
+        className="flex-none"
+        aria-label="Set stocking levels"
+        onPress={() => onEditLevels(item)}
+      >
+        <Edit2 size={13} />
+      </Button>
+      <Button
+        size="sm"
+        variant={restockNeeded > 0 ? 'flat' : 'light'}
+        color={restockNeeded > 0 ? 'warning' : 'default'}
+        className="flex-none w-full sm:w-auto"
+        startContent={<PackageCheck size={13} />}
+        onPress={() => onRefill(item)}
+      >
+        Refill
+      </Button>
+    </div>
+  );
+}
+
+// ── Shelf group (shelf → boxes → items) ─────────────────────────────────────────
+
+function ShelfGroup({
+  shelf, zone, containers, directItems, itemsForContainer, restocks, onRefillItem, onMarkAllBelowPar, onEditLevels,
+}: {
+  shelf: Shelf;
+  zone?: StorageZone;
+  containers: Container[];
+  directItems: InventoryItem[];
+  itemsForContainer: (containerId: string) => InventoryItem[];
+  restocks: Record<string, ItemRestockInfo>;
+  onRefillItem: (shelf: Shelf, item: InventoryItem) => void;
+  onMarkAllBelowPar: (shelf: Shelf, items: InventoryItem[]) => void;
+  onEditLevels: (item: InventoryItem) => void;
+}) {
+  const belowParItems = useMemo(() => {
+    const all = [...directItems, ...containers.flatMap((c) => itemsForContainer(c.id))];
+    return all.filter(isBelowPar);
+  }, [directItems, containers, itemsForContainer]);
+
+  const zoneLabel = zone ? [zone.locationType, zone.room, zone.name].filter(Boolean).join(' › ') : null;
+  const isEmpty = directItems.length === 0 && containers.every((c) => itemsForContainer(c.id).length === 0);
+
+  return (
+    <div className="border border-divider rounded-large bg-content2/40 p-3 flex flex-col gap-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2 min-w-0">
+          <Layers size={14} className="text-foreground-400 flex-none" />
+          <span className="text-sm font-semibold text-foreground truncate">{shelf.name}</span>
+          {zoneLabel && <span className="text-xs text-foreground-400 truncate">{zoneLabel}</span>}
+        </div>
+        {belowParItems.length > 0 && (
+          <Button
+            size="sm"
+            variant="flat"
+            color="warning"
+            startContent={<PackageCheck size={13} />}
+            onPress={() => onMarkAllBelowPar(shelf, belowParItems)}
+          >
+            Restock all below par ({belowParItems.length})
+          </Button>
+        )}
+      </div>
+
+      {directItems.length > 0 && (
+        <div className="flex flex-col gap-1">
+          {directItems.map((it) => (
+            <RestockItemRow key={it.id} item={it} restockInfo={restocks[it.id]} onRefill={(i) => onRefillItem(shelf, i)} onEditLevels={onEditLevels} />
+          ))}
+        </div>
+      )}
+
+      {containers.map((c) => {
+        const cItems = itemsForContainer(c.id);
+        return (
+          <div key={c.id} className="pl-4 border-l border-divider ml-1 flex flex-col gap-1">
+            <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest text-foreground-400">
+              <Boxes size={12} /> {c.name}
+            </div>
+            {cItems.length === 0 ? (
+              <p className="text-xs text-foreground-400 pl-1">No items assigned to this box.</p>
+            ) : (
+              cItems.map((it) => (
+                <RestockItemRow key={it.id} item={it} restockInfo={restocks[it.id]} onRefill={(i) => onRefillItem(shelf, i)} onEditLevels={onEditLevels} />
+              ))
+            )}
+          </div>
+        );
+      })}
+
+      {isEmpty && <p className="text-xs text-foreground-400">No items or boxes on this shelf.</p>}
+    </div>
+  );
+}
+
+// ── Shelf picker modal ("select which shelves fall under this category") ───────
+
+function ShelfPickerModal({
+  isOpen, onOpenChange, category, zones, getShelvesForZone, onToggleShelf,
+}: {
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+  category: RestockCategory | null;
+  zones: StorageZone[];
+  getShelvesForZone: (zoneId: string) => Shelf[];
+  onToggleShelf: (category: RestockCategory, shelfId: string) => void;
+}) {
+  if (!category) return null;
+  const zonesWithShelves = zones
+    .map((z) => ({ zone: z, shelves: getShelvesForZone(z.id) }))
+    .filter((g) => g.shelves.length > 0);
+
+  return (
+    <Modal isOpen={isOpen} onOpenChange={onOpenChange} size="lg" scrollBehavior="inside">
+      <ModalContent>
+        <ModalHeader>
+          <div className="flex flex-col">
+            <span>Select shelves</span>
+            <span className="text-xs font-normal text-foreground-400">{category.name}</span>
+          </div>
+        </ModalHeader>
+        <ModalBody>
+          {zonesWithShelves.length === 0 ? (
+            <p className="text-sm text-foreground-400 text-center py-6">
+              No storage shelves yet. Add storage units &amp; shelves in Settings → Sites &amp; Storage.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {zonesWithShelves.map(({ zone, shelves }) => (
+                <div key={zone.id} className="bg-content2 rounded-large p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Warehouse size={14} className="text-primary flex-none" />
+                    <span className="text-sm font-semibold text-foreground truncate">{zone.name}</span>
+                    <span className="text-xs text-foreground-400 truncate">
+                      {[zone.locationType, zone.room].filter(Boolean).join(' › ')}
+                    </span>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    {shelves.map((shelf) => (
+                      <label
+                        key={shelf.id}
+                        className="flex items-center gap-2 px-2 py-1.5 rounded-medium hover:bg-content1 cursor-pointer transition-colors duration-150"
+                      >
+                        <Checkbox
+                          size="sm"
+                          isSelected={category.shelfIds.includes(shelf.id)}
+                          onValueChange={() => onToggleShelf(category, shelf.id)}
+                        />
+                        <Layers size={12} className="text-foreground-400 flex-none" />
+                        <span className="text-sm text-foreground">{shelf.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </ModalBody>
+        <ModalFooter>
+          <Button color="primary" onPress={() => onOpenChange(false)}>Done</Button>
+        </ModalFooter>
+      </ModalContent>
+    </Modal>
+  );
+}
+
+// ── Rename category modal ───────────────────────────────────────────────────────
+
+function RenameCategoryModal({
+  isOpen, onOpenChange, category, onSave,
+}: {
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+  category: RestockCategory | null;
+  onSave: (id: string, name: string) => Promise<void>;
+}) {
+  const [name, setName] = useState('');
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { if (isOpen) setName(category?.name || ''); }, [isOpen, category]);
+  if (!category) return null;
+
+  return (
+    <Modal isOpen={isOpen} onOpenChange={onOpenChange} placement="center" size="sm">
+      <ModalContent>
+        <ModalHeader>Rename category</ModalHeader>
+        <ModalBody>
+          <Input label="Category name" value={name} onValueChange={setName} autoFocus />
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="bordered" onPress={() => onOpenChange(false)}>Cancel</Button>
+          <Button
+            color="primary"
+            isLoading={saving}
+            isDisabled={!name.trim()}
+            onPress={async () => {
+              setSaving(true);
+              try { await onSave(category.id, name.trim()); onOpenChange(false); } finally { setSaving(false); }
+            }}
+          >
+            Save
+          </Button>
+        </ModalFooter>
+      </ModalContent>
+    </Modal>
+  );
+}
+
+// ── Refill (reserve → shelf) modal ──────────────────────────────────────────────
+
+interface RefillTarget {
+  item: InventoryItem;
+  cat: RestockCategory;
+  shelf: Shelf;
+}
+
+function RefillModal({
+  isOpen, onOpenChange, target, onConfirm,
+}: {
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+  target: RefillTarget | null;
+  onConfirm: (target: RefillTarget, qty: number) => Promise<void>;
+}) {
+  const [qty, setQty] = useState('');
+  const [saving, setSaving] = useState(false);
+  const reserve = target ? reserveUnits(target.item) : 0;
+  const shelf = target ? shelfUnits(target.item) : 0;
+  const par = target?.item.reorderThreshold ?? 0;
+  const max = target?.item.maxUnits;
+
+  useEffect(() => {
+    if (isOpen && target) {
+      const suggested = Math.max(0, (max ?? par) - shelf);
+      setQty(String(Math.min(suggested, reserve)));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, target]);
+
+  if (!target) return null;
+  const qtyNum = Number(qty) || 0;
+  const invalid = qtyNum <= 0 || qtyNum > reserve;
+
+  return (
+    <Modal isOpen={isOpen} onOpenChange={onOpenChange} placement="center" size="sm">
+      <ModalContent>
+        <ModalHeader>
+          <div className="flex flex-col">
+            <span>Refill shelf</span>
+            <span className="text-xs font-normal text-foreground-400">{target.item.name}</span>
+          </div>
+        </ModalHeader>
+        <ModalBody>
+          <div className="flex flex-col gap-3">
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              <div className="bg-content2 rounded-medium px-3 py-2">
+                <p className="text-xs text-foreground-400">Reserve</p>
+                <p className="font-mono tabular-nums text-foreground">{reserve}</p>
+              </div>
+              <div className="bg-content2 rounded-medium px-3 py-2">
+                <p className="text-xs text-foreground-400">On shelf</p>
+                <p className="font-mono tabular-nums text-foreground">{shelf}</p>
+              </div>
+              <div className="bg-content2 rounded-medium px-3 py-2">
+                <p className="text-xs text-foreground-400">Par</p>
+                <p className="font-mono tabular-nums text-foreground">{par || '—'}</p>
+              </div>
+              <div className="bg-content2 rounded-medium px-3 py-2">
+                <p className="text-xs text-foreground-400">Max</p>
+                <p className="font-mono tabular-nums text-foreground">{max ?? '—'}</p>
+              </div>
+            </div>
+            <Input
+              label="Units to move to shelf"
+              type="number"
+              value={qty}
+              onValueChange={setQty}
+              description={`Pulls from reserve (${reserve} available)`}
+              isInvalid={invalid}
+              errorMessage={
+                qtyNum > reserve ? 'Not enough reserve stock' : qtyNum <= 0 ? 'Enter a quantity' : undefined
+              }
+              autoFocus
+            />
+          </div>
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="bordered" onPress={() => onOpenChange(false)}>Cancel</Button>
+          <Button
+            color="primary"
+            isLoading={saving}
+            isDisabled={invalid}
+            onPress={async () => {
+              setSaving(true);
+              try {
+                await onConfirm(target, qtyNum);
+                onOpenChange(false);
+              } finally { setSaving(false); }
+            }}
+          >
+            Refill
+          </Button>
+        </ModalFooter>
+      </ModalContent>
+    </Modal>
+  );
+}
+
+// ── Set stocking levels modal ───────────────────────────────────────────────────
+
+function SetLevelsModal({
+  isOpen, onOpenChange, item, onSave,
+}: {
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+  item: InventoryItem | null;
+  onSave: (item: InventoryItem, par: number, max: number | null) => Promise<void>;
+}) {
+  const [par, setPar] = useState('');
+  const [max, setMax] = useState('');
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (isOpen) {
+      setPar(item?.reorderThreshold != null ? String(item.reorderThreshold) : '');
+      setMax(item?.maxUnits != null ? String(item.maxUnits) : '');
+    }
+  }, [isOpen, item]);
+  if (!item) return null;
+
+  return (
+    <Modal isOpen={isOpen} onOpenChange={onOpenChange} placement="center" size="sm">
+      <ModalContent>
+        <ModalHeader>
+          <div className="flex flex-col">
+            <span>Set stocking levels</span>
+            <span className="text-xs font-normal text-foreground-400">{item.name}</span>
+          </div>
+        </ModalHeader>
+        <ModalBody>
+          <div className="flex flex-col gap-3">
+            <Input
+              label="Par level"
+              type="number"
+              value={par}
+              onValueChange={setPar}
+              autoFocus
+            />
+            <Input
+              label="Max units"
+              type="number"
+              value={max}
+              onValueChange={setMax}
+            />
+          </div>
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="bordered" onPress={() => onOpenChange(false)}>Cancel</Button>
+          <Button
+            color="primary"
+            isLoading={saving}
+            onPress={async () => {
+              setSaving(true);
+              try {
+                const parNum = Number(par);
+                const maxNum = max.trim() === '' ? null : Number(max);
+                await onSave(item, parNum, maxNum);
+                onOpenChange(false);
+              } finally { setSaving(false); }
+            }}
+          >
+            Save
+          </Button>
+        </ModalFooter>
+      </ModalContent>
+    </Modal>
+  );
+}
+
+// ── Exchange Bags (two-bin / kanban swap system) ────────────────────────────
+// Pre-stocked multi-SKU bags: crews grab a FULL bag and drop the EMPTY;
+// empties are refilled from back-room reserve (`refillBag`) and re-staged.
+
+function ExchangeBagRow({
+  bag, onRefill, onSwap, onEdit,
+}: {
+  bag: ExchangeBag;
+  onRefill: (bag: ExchangeBag) => void;
+  onSwap: (bag: ExchangeBag) => void;
+  onEdit: (bag: ExchangeBag) => void;
+}) {
+  const contentsLabel = bag.lines.length > 0
+    ? bag.lines.map((l) => `${l.qtyPerBag}× ${l.itemName}`).join(', ')
+    : 'No contents defined';
+  const belowPar = (bag.parBags ?? 0) > 0 && bag.fullCount < (bag.parBags ?? 0);
+
+  return (
+    <div className={`flex flex-wrap sm:flex-nowrap items-center gap-3 px-3 py-2 rounded-medium transition-colors duration-150 ${
+      belowPar ? 'bg-warning-50 dark:bg-warning-950/20' : 'hover:bg-content2'
+    }`}>
+      <Package size={14} className="text-foreground-400 flex-none" />
+      <div className="flex-1 min-w-[55%] sm:min-w-0">
+        <p className="text-sm text-foreground truncate">{bag.name}</p>
+        <p className="text-xs text-foreground-400 truncate">{contentsLabel}</p>
+      </div>
+      <Chip size="sm" variant="flat" color="success" className="flex-none font-mono">Full {bag.fullCount}</Chip>
+      <Chip size="sm" variant="flat" color="warning" className="flex-none font-mono">Empty {bag.emptyCount}</Chip>
+      {bag.parBags != null && (
+        <Chip size="sm" variant="flat" color="default" className="flex-none font-mono">Par {bag.parBags}</Chip>
+      )}
+      <Button isIconOnly size="sm" variant="light" className="flex-none" aria-label="Edit bag" onPress={() => onEdit(bag)}>
+        <Edit2 size={13} />
+      </Button>
+      <Button
+        size="sm"
+        variant="flat"
+        color="primary"
+        className="flex-none"
+        startContent={<Repeat size={13} />}
+        isDisabled={bag.fullCount <= 0}
+        onPress={() => onSwap(bag)}
+      >
+        Swap
+      </Button>
+      <Button
+        size="sm"
+        variant={bag.emptyCount > 0 ? 'flat' : 'light'}
+        color={bag.emptyCount > 0 ? 'warning' : 'default'}
+        className="flex-none"
+        startContent={<PackageCheck size={13} />}
+        isDisabled={bag.emptyCount <= 0}
+        onPress={() => onRefill(bag)}
+      >
+        Refill
+      </Button>
+    </div>
+  );
+}
+
+function ExchangeBagsSection({
+  bags, onRefill, onSwap, onEdit, onNew,
+}: {
+  bags: ExchangeBag[];
+  onRefill: (bag: ExchangeBag) => void;
+  onSwap: (bag: ExchangeBag) => void;
+  onEdit: (bag: ExchangeBag) => void;
+  onNew: () => void;
+}) {
+  return (
+    <Card className="mb-6">
+      <CardBody className="gap-3">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2">
+            <Repeat size={16} className="text-primary" />
+            <h2 className="text-base font-semibold text-foreground">Exchange Bags</h2>
+            <span className="text-xs text-foreground-400">Grab full, drop empty — refill from reserve</span>
+          </div>
+          <Button size="sm" color="primary" variant="flat" startContent={<Plus size={14} />} onPress={onNew}>
+            New Exchange Bag
+          </Button>
+        </div>
+        {bags.length === 0 ? (
+          <p className="text-sm text-foreground-400">No exchange bags yet. Create one to start the two-bin swap system.</p>
+        ) : (
+          <div className="flex flex-col gap-1">
+            {bags.map((bag) => (
+              <ExchangeBagRow key={bag.id} bag={bag} onRefill={onRefill} onSwap={onSwap} onEdit={onEdit} />
+            ))}
+          </div>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
+// ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function RestockPage() {
-  const [shelves, setShelves] = useState<any[]>([]);
-  const [inventoryOptions, setInventoryOptions] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const router = useRouter();
+  const { loading: authLoading, role, userData, user } = useUserRole();
+  const isAdmin = role === 'admin' || role === 'quartermaster';
 
-  const [name, setName] = useState('');
-  const [selectedItemId, setSelectedItemId] = useState('');
-  const [location, setLocation] = useState(LOCATIONS[0]);
-  const [locationDetail, setLocationDetail] = useState(LOCATION_MAP[LOCATIONS[0]][0]);
-  const [frontRoom, setFrontRoom] = useState('');
-  const [frontShelf, setFrontShelf] = useState('');
-  const [frontLevel, setFrontLevel] = useState('');
-  const [pendingCount, setPendingCount] = useState<number>(0);
+  const { zones, getShelvesForZone, getContainersForShelf, getShelfById, getZoneById, loading: locLoading } = useStorageLocations();
 
-  const [inventoryLoaded, setInventoryLoaded] = useState(false);
+  const [categories, setCategories] = useState<RestockCategory[]>([]);
+  const [items, setItems] = useState<InventoryItem[]>([]);
+  const [catsLoading, setCatsLoading] = useState(true);
+  const [itemsLoading, setItemsLoading] = useState(true);
   const [opLoading, setOpLoading] = useState(false);
-  const [restockOpen, setRestockOpen] = useState(false);
-  const [editOpen, setEditOpen] = useState(false);
-  const [activeShelf, setActiveShelf] = useState<any>(null);
-  const [expandedShelfId, setExpandedShelfId] = useState<string | null>(null);
-  const [shelfLogs, setShelfLogs] = useState<any[]>([]);
-  const [shelfEvents, setShelfEvents] = useState<any[]>([]);
-  const [shelfReports, setShelfReports] = useState<any[]>([]);
-  const [restockQty, setRestockQty] = useState<number>(1);
-  const [note, setNote] = useState('');
-  const [restockDebug, setRestockDebug] = useState<string | null>(null);
-  const [availableBatches, setAvailableBatches] = useState<any[]>([]);
-  const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
+  const [exchangeBags, setExchangeBags] = useState<ExchangeBag[]>([]);
+
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [legacyNoticeDismissed, setLegacyNoticeDismissed] = useState(true);
 
   useEffect(() => {
-    const q = query(collection(db, 'restock_shelves'), orderBy('createdAt', 'desc'));
-    const unsub = onSnapshot(q, snap => {
-      const arr: any[] = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
-      setShelves(arr);
-      setLoading(false);
-    });
-
-    const iq = collection(db, 'inventory');
-    const unsub2 = onSnapshot(iq, snap => {
-      setInventoryOptions(snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })));
-      setInventoryLoaded(true);
-    });
-
-    return () => { unsub(); unsub2(); };
+    if (typeof window !== 'undefined') {
+      setLegacyNoticeDismissed(localStorage.getItem(LEGACY_NOTICE_KEY) === '1');
+    }
   }, []);
 
-  function formatDate(ts: any) {
-    if (!ts) return 'Never';
-    if (typeof ts?.toDate === 'function') return ts.toDate().toLocaleString();
-    try {
-      return new Date(ts).toLocaleString();
-    } catch {
-      return String(ts);
-    }
-  }
+  useEffect(() => {
+    const unsubCats = onSnapshot(
+      query(collection(db, 'restock_categories'), orderBy('name')),
+      (snap) => {
+        setCategories(snap.docs.map((d) => hydrateCategory(d.id, d.data())));
+        setCatsLoading(false);
+      },
+      (e) => { console.error('[restock] categories listener', e); setCatsLoading(false); }
+    );
+    const unsubItems = onSnapshot(
+      collection(db, 'inventory'),
+      (snap) => {
+        setItems(snap.docs.map((d) => hydrateItem({ id: d.id, ...d.data() })));
+        setItemsLoading(false);
+      },
+      (e) => { console.error('[restock] inventory listener', e); setItemsLoading(false); }
+    );
+    const unsubBags = subscribeExchangeBags(setExchangeBags);
+    return () => { unsubCats(); unsubItems(); unsubBags(); };
+  }, []);
 
-  async function createShelf() {
+  const loading = authLoading || locLoading || catsLoading || itemsLoading;
+
+  const itemsForContainer = (containerId: string) =>
+    items.filter((it) => it.storageLocation?.containerId === containerId);
+  const itemsDirectOnShelf = (shelfId: string) =>
+    items.filter((it) => it.storageLocation?.shelfId === shelfId && !it.storageLocation?.containerId);
+
+  const itemsById = useMemo(() => {
+    const map: Record<string, InventoryItem> = {};
+    for (const it of items) map[it.id] = it;
+    return map;
+  }, [items]);
+
+  // ── Toast ───────────────────────────────────────────────────────────────────
+  const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 2600);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const actorName = userData?.fullName || 'Unknown';
+
+  // ── Category CRUD ────────────────────────────────────────────────────────────
+  const createCategory = async () => {
+    const name = newCategoryName.trim();
+    if (!name) return;
     setOpLoading(true);
     try {
-      await addDoc(collection(db, 'restock_shelves'), {
-        name,
-        itemId: selectedItemId || null,
-        location,
-        locationDetail: locationDetail || null,
-        frontRoom: frontRoom || null,
-        frontShelf: frontShelf || null,
-        frontLevel: frontLevel ? Number(frontLevel) : null,
-        pendingCount: Number(pendingCount) || 0,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
+      await addDoc(collection(db, 'restock_categories'), {
+        name, shelfIds: [], createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
       });
-      setName(''); setSelectedItemId(''); setLocation(LOCATIONS[0]); setLocationDetail(LOCATION_MAP[LOCATIONS[0]][0]); setFrontRoom(''); setFrontShelf(''); setFrontLevel(''); setPendingCount(0);
+      setNewCategoryName('');
     } catch (e) {
       console.error(e);
+      setToast({ ok: false, msg: 'Failed to create category' });
     }
     setOpLoading(false);
-  }
+  };
 
-  function openRestock(shelf: any) {
-    setActiveShelf(shelf);
-    setRestockQty(1);
-    setNote('');
-    // fetch available batches for this shelf's item (if any)
-    (async () => {
-      setAvailableBatches([]);
-      setSelectedBatchId(null);
-      try {
-        let invId = shelf.itemId || null;
-        if (!invId && shelf.itemName) {
-          const iq = query(collection(db, 'inventory'), where('name', '==', shelf.itemName), limit(1));
-          const found = await getDocs(iq);
-          if (!found.empty) invId = found.docs[0].id;
-        }
-        if (invId) {
-          const invSnap = await getDoc(doc(db, 'inventory', invId));
-          if (invSnap.exists()) {
-            const inv = invSnap.data() as any;
-            const batches = Array.isArray(inv.batches) ? inv.batches.map((b: any) => ({ ...(b||{}), id: b.id || b.batchId || null })) : [];
-            // default select earliest exp
-            batches.sort((a: any,b: any) => { const ta = a.expirationDate?new Date(a.expirationDate).getTime():Infinity; const tb = b.expirationDate?new Date(b.expirationDate).getTime():Infinity; return ta - tb; });
-            setAvailableBatches(batches);
-            if (batches.length > 0) setSelectedBatchId(batches[0].id || null);
-          }
-        }
-      } catch (e) { console.error('Error loading batches for restock', e); }
-      setRestockOpen(true);
-    })();
-  }
-
-  function toggleShelfLog(shelf: any) {
-    if (expandedShelfId === shelf.id) {
-      setExpandedShelfId(null);
-      setShelfLogs([]);
-      setShelfEvents([]);
-      setShelfReports([]);
-      setActiveShelf(null);
-      return;
-    }
-    setExpandedShelfId(shelf.id);
-    setActiveShelf(shelf);
-  }
-
-  useEffect(() => {
-    if (!expandedShelfId) {
-      setShelfLogs([]);
-      setShelfEvents([]);
-      setShelfReports([]);
-      return;
-    }
-
-    const evQ = query(collection(db, 'restock_shelf_events'), where('shelfId', '==', expandedShelfId));
-    const repQ = query(collection(db, 'restock_reports'), where('shelfId', '==', expandedShelfId));
-
-    const unsubE = onSnapshot(evQ, snap => {
-      const evs = snap.docs.map(d => ({ id: d.id, ...(d.data() as any), type: 'event' }));
-      setShelfEvents(evs);
-      const merged = [...evs, ...shelfReports];
-      merged.sort((a,b) => (b.createdAt?.toMillis?.() || Date.parse(b.createdAt || '')) - (a.createdAt?.toMillis?.() || Date.parse(a.createdAt || '')));
-      setShelfLogs(merged);
-    });
-
-    const unsubR = onSnapshot(repQ, snap => {
-      const reps = snap.docs.map(d => ({ id: d.id, ...(d.data() as any), type: 'report' }));
-      setShelfReports(reps);
-      const merged = [...shelfEvents, ...reps];
-      merged.sort((a,b) => (b.createdAt?.toMillis?.() || Date.parse(b.createdAt || '')) - (a.createdAt?.toMillis?.() || Date.parse(a.createdAt || '')));
-      setShelfLogs(merged);
-    });
-
-    return () => { unsubE(); unsubR(); };
-  }, [expandedShelfId]);
-
-  async function confirmRestock() {
-    if (!activeShelf) return;
-    setOpLoading(true);
-    const qty = Number(restockQty) || 0;
-    const shelfRef = doc(db, 'restock_shelves', activeShelf.id);
-
-    if (qty <= 0) { setOpLoading(false); return; }
-
+  const renameCategory = async (id: string, name: string) => {
     try {
-      const attemptMsg = `Attempting restock: shelf=${activeShelf.id} qty=${qty} note=${note}`;
-      console.debug(attemptMsg);
-      // fetch pre-transaction snapshot for debugging and attempt to resolve an inventory id by name
-      let resolvedItemId: string | null = null;
-      try {
-        const preShelfSnap = await getDoc(shelfRef);
-        const preShelf = preShelfSnap.exists() ? preShelfSnap.data() : null;
-        let preInv: any = null;
-        if (preShelf?.itemId) {
-          resolvedItemId = preShelf.itemId;
-          const preInvSnap = await getDoc(doc(db, 'inventory', preShelf.itemId));
-          preInv = preInvSnap.exists() ? preInvSnap.data() : null;
-        } else if (preShelf?.itemName) {
-          // try to find inventory by matching name
-          try {
-            const iq = query(collection(db, 'inventory'), where('name', '==', preShelf.itemName), limit(1));
-            const found = await getDocs(iq);
-            if (!found.empty) {
-              const d = found.docs[0];
-              resolvedItemId = d.id;
-              preInv = d.data();
-            }
-          } catch (qe) { console.error('Error querying inventory by name', qe); }
-        }
-        const preMsg = `Pre-transaction shelf: ${JSON.stringify(preShelf)}, pre-inv: ${JSON.stringify(preInv)}, resolvedItemId: ${resolvedItemId}`;
-        console.debug(preMsg);
-        setRestockDebug(attemptMsg + ' | ' + preMsg);
-      } catch (e) { console.error('Error fetching pre-transaction docs', e); }
+      await updateDoc(doc(db, 'restock_categories', id), { name, updatedAt: serverTimestamp() });
+    } catch (e) {
+      console.error(e);
+      setToast({ ok: false, msg: 'Failed to rename category' });
+    }
+  };
 
-      let batchAdjustmentsLocal: Array<{ batchId?: string | null; delta: number }> = [];
-      await runTransaction(db, async (tx) => {
-        // Read first: shelf and (if present) inventory
-        const shelfSnap = await tx.get(shelfRef);
-        if (!shelfSnap.exists()) throw new Error('Shelf not found');
-        const shelfData = shelfSnap.data() as any;
-        const itemId = shelfData.itemId || resolvedItemId || null;
+  const deleteCategory = async (cat: RestockCategory) => {
+    if (!confirm(`Delete category "${cat.name}"? This does not affect the shelves or items themselves.`)) return;
+    try {
+      await deleteDoc(doc(db, 'restock_categories', cat.id));
+    } catch (e) {
+      console.error(e);
+      setToast({ ok: false, msg: 'Failed to delete category' });
+    }
+  };
 
-        let invRef: any = null;
-        let newQty: number | null = null;
-        let inv: any = null;
-        if (itemId) {
-          invRef = doc(db, 'inventory', itemId);
-          const invSnap = await tx.get(invRef);
-          if (!invSnap.exists()) throw new Error('Inventory not found');
-            inv = invSnap.data() as any;
-            const invQty = Number(inv.totalStockQuantity ?? inv.quantity ?? 0);
-            if (isNaN(invQty)) throw new Error('Inventory quantity invalid');
-
-            // If inventory uses batches, consume from earliest-expiring batches first.
-            let batchAdjustments: Array<{ batchId?: string | null; delta: number }> = [];
-            if (Array.isArray(inv.batches) && inv.batches.length > 0) {
-              const batches = (inv.batches || []).map((b: any, idx: number) => ({ ...(b || {}), __idx: idx, id: b.id || b.batchId || null }));
-              batches.sort((a: any, b: any) => {
-                const ta = a.expirationDate ? new Date(a.expirationDate).getTime() : Infinity;
-                const tb = b.expirationDate ? new Date(b.expirationDate).getTime() : Infinity;
-                return ta - tb;
-              });
-
-              let remaining = qty;
-              // If user selected a specific batch, only consume from that batch
-              if (selectedBatchId) {
-                const target = batches.find((bb: any) => (bb.id || bb.batchId) === selectedBatchId);
-                if (!target) throw new Error('Selected batch not found');
-                const stock = Number(target.stock ?? 0);
-                if (stock < qty) throw new Error(`Selected batch only has ${stock} units`);
-                const origIdx = target.__idx;
-                inv.batches[origIdx] = { ...(inv.batches[origIdx] || {}), stock: Math.max(0, stock - qty) };
-                batchAdjustments.push({ batchId: inv.batches[origIdx]?.id || inv.batches[origIdx]?.batchId || null, delta: -qty });
-              } else {
-                for (const b of batches) {
-                  const stock = Number(b.stock ?? 0);
-                  if (stock <= 0) continue;
-                  const take = Math.min(remaining, stock);
-                  // update the original inv.batches slot
-                  const origIdx = b.__idx;
-                  inv.batches[origIdx] = { ...(inv.batches[origIdx] || {}), stock: Math.max(0, stock - take) };
-                  batchAdjustments.push({ batchId: inv.batches[origIdx]?.id || inv.batches[origIdx]?.batchId || null, delta: -take });
-                  remaining -= take;
-                  if (remaining <= 0) break;
-                }
-                if (remaining > 0) throw new Error(`Not enough inventory in batches: need ${qty}, available ${qty - remaining}`);
-              }
-              // After adjusting batch stocks, recompute total quantity from batches
-              const totalFromBatches = (inv.batches || []).reduce((acc: number, bb: any) => acc + Number(bb?.stock ?? 0), 0);
-              newQty = totalFromBatches;
-              // attach batchAdjustments for event recording
-              batchAdjustmentsLocal = batchAdjustments;
-            } else {
-              if (invQty < qty) throw new Error(`Not enough inventory: have ${invQty}, need ${qty}`);
-              newQty = invQty - qty;
-            }
-        }
-
-        // All reads done — now perform writes
-        const shelfUpdates: any = { pendingCount: Math.max(0, (shelfData.pendingCount || 0) - qty), updatedAt: serverTimestamp() };
-        if (!shelfData.itemId && resolvedItemId) shelfUpdates.itemId = resolvedItemId;
-        tx.update(shelfRef, shelfUpdates);
-        if (invRef && newQty !== null) {
-          console.debug('Transaction will update inventory', { itemId, qty, newQty });
-          if (inv && Array.isArray(inv.batches) && inv.batches.length > 0) {
-            // Sync both fields: unopenedBoxes stays as-is (handled by consumeBox), totalStockQuantity = batch sum
-            tx.update(invRef, { totalStockQuantity: newQty, batches: inv.batches, updatedAt: serverTimestamp() });
-          } else {
-            tx.update(invRef, { totalStockQuantity: newQty, updatedAt: serverTimestamp() });
-          }
-        }
-
-        const eventsRef = collection(db, 'restock_shelf_events');
-        tx.set(doc(eventsRef), {
-          shelfId: shelfSnap.id,
-          itemId: itemId || null,
-          delta: -qty,
-          note: note || null,
-          batchAdjustments: batchAdjustmentsLocal.length ? batchAdjustmentsLocal : undefined,
-          createdAt: serverTimestamp()
-        } as any);
-
-        // record lastRestockedAt on shelf for quick UI reads
-        tx.update(shelfRef, { lastRestockedAt: serverTimestamp(), updatedAt: serverTimestamp() });
+  const toggleShelf = async (cat: RestockCategory, shelfId: string) => {
+    try {
+      const has = cat.shelfIds.includes(shelfId);
+      await updateDoc(doc(db, 'restock_categories', cat.id), {
+        shelfIds: has ? arrayRemove(shelfId) : arrayUnion(shelfId),
+        updatedAt: serverTimestamp(),
       });
-      // after transaction, fetch and log updated inventory value for debugging
-      try {
-        const postId = resolvedItemId || activeShelf?.itemId;
-        if (postId) {
-          const postInvSnap = await getDoc(doc(db, 'inventory', postId));
-          const info = postInvSnap.exists() ? JSON.stringify(postInvSnap.data()) : 'null';
-          const postMsg = `Post-transaction inventory for ${postId}: ${info}`;
-          console.debug(postMsg);
-          setRestockDebug(postMsg);
-        }
-      } catch (e) { console.error('Error fetching post-transaction inventory', e); setRestockDebug('Error fetching post-transaction inventory: ' + String(e)); }
-      setAvailableBatches([]);
-      setSelectedBatchId(null);
-      setRestockOpen(false);
-    } catch (err) {
-      console.error(err);
-      const em = (err as any)?.message || 'Restock failed';
-      setRestockDebug('Error: ' + em);
-      alert(em);
+    } catch (e) {
+      console.error(e);
+      setToast({ ok: false, msg: 'Failed to update shelves' });
+    }
+  };
+
+  // ── Refill (reserve → shelf) — actually decrements inventory; see
+  // app/lib/restock-actions.ts / app/lib/stock-pools.ts for the two-pool model ──
+  const doRefillItem = async (target: RefillTarget, qty: number) => {
+    setOpLoading(true);
+    try {
+      const { consumed } = await refillShelf({
+        item: target.item,
+        qty,
+        categoryId: target.cat.id,
+        shelfId: target.shelf.id,
+        actor: { id: user?.uid, name: actorName },
+      });
+      setToast({ ok: true, msg: `Refilled ${consumed} to shelf` });
+    } catch (e) {
+      console.error(e);
+      setToast({ ok: false, msg: e instanceof Error ? e.message : 'Failed to refill shelf' });
     }
     setOpLoading(false);
+  };
+
+  const markShelfRestocked = async (cat: RestockCategory, shelf: Shelf, belowParItems: InventoryItem[]) => {
+    if (belowParItems.length === 0) return;
+    setOpLoading(true);
+    let refilledCount = 0;
+    let skippedCount = 0;
+    for (const it of belowParItems) {
+      const qty = Math.max(0, (it.maxUnits ?? it.reorderThreshold) - shelfUnits(it));
+      if (qty <= 0) { skippedCount++; continue; }
+      try {
+        await refillShelf({
+          item: it,
+          qty,
+          categoryId: cat.id,
+          shelfId: shelf.id,
+          actor: { id: user?.uid, name: actorName },
+        });
+        refilledCount++;
+      } catch (e) {
+        // Best-effort: an item with no reserve stock is skipped, not fatal —
+        // the next admin audit or shipment will catch it up.
+        console.error(e);
+        skippedCount++;
+      }
+    }
+    setToast({
+      ok: refilledCount > 0,
+      msg: refilledCount === 0
+        ? `No reserve stock available to refill on ${shelf.name}`
+        : `Refilled ${refilledCount} item${refilledCount === 1 ? '' : 's'} on ${shelf.name}${skippedCount ? ` (${skippedCount} skipped)` : ''}`,
+    });
+    setOpLoading(false);
+  };
+
+  // ── Shelf picker + rename modal state ───────────────────────────────────────
+  const shelfPickerDisc = useDisclosure();
+  const [pickerCategory, setPickerCategory] = useState<RestockCategory | null>(null);
+  const openShelfPicker = (cat: RestockCategory) => { setPickerCategory(cat); shelfPickerDisc.onOpen(); };
+  // keep the modal's category in sync with live snapshot updates while open
+  useEffect(() => {
+    if (!pickerCategory) return;
+    const fresh = categories.find((c) => c.id === pickerCategory.id);
+    if (fresh) setPickerCategory(fresh);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categories]);
+
+  const renameDisc = useDisclosure();
+  const [renameCategoryTarget, setRenameCategoryTarget] = useState<RestockCategory | null>(null);
+  const openRename = (cat: RestockCategory) => { setRenameCategoryTarget(cat); renameDisc.onOpen(); };
+
+  // ── Refill (reserve → shelf) modal state ────────────────────────────────────
+  const refillDisc = useDisclosure();
+  const [refillTarget, setRefillTarget] = useState<RefillTarget | null>(null);
+  const openRefill = (cat: RestockCategory, shelf: Shelf, item: InventoryItem) => {
+    setRefillTarget({ cat, shelf, item });
+    refillDisc.onOpen();
+  };
+  // keep the modal's item in sync with live snapshot updates while open
+  useEffect(() => {
+    if (!refillTarget) return;
+    const fresh = items.find((it) => it.id === refillTarget.item.id);
+    if (fresh) setRefillTarget((prev) => (prev ? { ...prev, item: fresh } : prev));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
+
+  // ── Stocking levels (par / max) modal state ─────────────────────────────────
+  const levelsDisc = useDisclosure();
+  const [levelsTarget, setLevelsTarget] = useState<InventoryItem | null>(null);
+  const openLevels = (item: InventoryItem) => { setLevelsTarget(item); levelsDisc.onOpen(); };
+  const saveLevels = async (item: InventoryItem, par: number, max: number | null) => {
+    try {
+      await updateDoc(doc(db, 'inventory', item.id), {
+        reorderThreshold: Number.isFinite(par) ? par : 0,
+        ...(max != null ? { maxUnits: max } : {}),
+      });
+      setToast({ ok: true, msg: `Updated levels for ${item.name}` });
+    } catch (e) { console.error(e); setToast({ ok: false, msg: 'Failed to update levels' }); }
+  };
+
+  // ── Exchange Bags (two-bin swap system) ─────────────────────────────────────
+  const exchangeBagEditorDisc = useDisclosure();
+  const [exchangeBagTarget, setExchangeBagTarget] = useState<ExchangeBag | null>(null);
+  const openNewExchangeBag = () => { setExchangeBagTarget(null); exchangeBagEditorDisc.onOpen(); };
+  const openEditExchangeBag = (bag: ExchangeBag) => { setExchangeBagTarget(bag); exchangeBagEditorDisc.onOpen(); };
+
+  const doRefillBag = async (bag: ExchangeBag) => {
+    setOpLoading(true);
+    try {
+      await refillBag(bag, itemsById, { id: user?.uid, name: actorName });
+      setToast({ ok: true, msg: `Refilled ${bag.name}` });
+    } catch (e) {
+      console.error(e);
+      setToast({ ok: false, msg: e instanceof Error ? e.message : 'Failed to refill bag' });
+    }
+    setOpLoading(false);
+  };
+
+  const doSwapBag = async (bag: ExchangeBag) => {
+    setOpLoading(true);
+    try {
+      await swapBag(bag, { id: user?.uid, name: actorName });
+      setToast({ ok: true, msg: `Swapped ${bag.name}` });
+    } catch (e) {
+      console.error(e);
+      setToast({ ok: false, msg: e instanceof Error ? e.message : 'Failed to swap bag' });
+    }
+    setOpLoading(false);
+  };
+
+  const toggleExpanded = (id: string) => setExpandedIds((prev) => {
+    const n = new Set(prev);
+    if (n.has(id)) n.delete(id); else n.add(id);
+    return n;
+  });
+
+  const dismissLegacyNotice = () => {
+    setLegacyNoticeDismissed(true);
+    if (typeof window !== 'undefined') localStorage.setItem(LEGACY_NOTICE_KEY, '1');
+  };
+
+  // ── Header stats ─────────────────────────────────────────────────────────────
+  const totalShelvesTracked = useMemo(
+    () => new Set(categories.flatMap((c) => c.shelfIds)).size,
+    [categories]
+  );
+  const totalBelowPar = useMemo(() => {
+    let n = 0;
+    for (const cat of categories) {
+      for (const shelfId of cat.shelfIds) {
+        n += itemsDirectOnShelf(shelfId).filter(isBelowPar).length;
+        for (const c of getContainersForShelf(shelfId)) {
+          n += itemsForContainer(c.id).filter(isBelowPar).length;
+        }
+      }
+    }
+    return n;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categories, items]);
+
+  // ── Auth gate ────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (authLoading) return;
+    if (!userData) return;
+  }, [authLoading, userData]);
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center">
+        <Spinner size="lg" color="primary" />
+      </div>
+    );
   }
 
-  async function deleteShelf(id: string) {
-    if (!confirm('Delete shelf?')) return;
-    setOpLoading(true);
-    try { await deleteDoc(doc(db, 'restock_shelves', id)); } catch (e) { console.error(e); }
-    setOpLoading(false);
+  if (!isAdmin) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
+        <div className="max-w-3xl mx-auto">
+          <Card>
+            <CardBody className="text-center">
+              <h2 className="text-xl font-semibold">Access Denied</h2>
+              <p className="mt-2 text-sm text-foreground-500">You do not have permission to view the Restock area.</p>
+              <div className="mt-4">
+                <Button onPress={() => router.push('/dashboard')}>Back to Dashboard</Button>
+              </div>
+            </CardBody>
+          </Card>
+        </div>
+      </div>
+    );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
-      <div className="max-w-7xl mx-auto space-y-8">
-        <div>
-          <h1 className="text-2xl font-semibold mb-3">Restock</h1>
-          <Card className="p-4 mb-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <Input label="Shelf Name" value={name} onValueChange={setName} />
-              <Select label="Inventory Item (optional)" selectedKeys={selectedItemId ? [selectedItemId] : []} onSelectionChange={(keys: any) => { const v = Array.from(keys)[0] as string | undefined; setSelectedItemId(v || ''); }}>
-                <SelectItem key="none" textValue="-- none --">-- none --</SelectItem>
-                {inventoryOptions.map((i: any) => {
-                  const label = i.name + (typeof i.quantity !== 'undefined' ? ' (qty ' + i.quantity + ')' : '');
-                  return <SelectItem key={i.id} textValue={label}>{label}</SelectItem>;
-                }) as any}
-              </Select>
-              <div className="grid grid-cols-2 gap-2">
-                <Select label="Location" selectedKeys={[location]} onSelectionChange={(keys: any) => { const v = Array.from(keys)[0] as string; setLocation(v); setLocationDetail(LOCATION_MAP[v]?.[0] || ''); }}>
-                  {LOCATIONS.map(l => <SelectItem key={l} textValue={l}>{l}</SelectItem>)}
-                </Select>
-                <Select label="Location Detail" selectedKeys={[locationDetail]} onSelectionChange={(keys: any) => { const v = Array.from(keys)[0] as string; setLocationDetail(v); }}>
-                  {(LOCATION_MAP[location] || []).map(d => <SelectItem key={d} textValue={d}>{d}</SelectItem>)}
-                </Select>
-              </div>
-            </div>
-            <div className="mt-3 flex items-center gap-3">
-              <Input type="number" label="Initial Pending" value={String(pendingCount)} onValueChange={(v: any) => setPendingCount(Number(v) || 0)} className="max-w-[140px]" />
-              <div className="flex-1" />
-              <Button color="primary" onPress={createShelf} isLoading={opLoading}>Create Shelf</Button>
-            </div>
-            <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 bg-amber-50 dark:bg-amber-900/10 p-3 rounded-lg border border-amber-100">
-              <Input label="Front Room" placeholder="e.g., Reception, Main Hall" value={frontRoom} onValueChange={setFrontRoom} description="Which room in the front" />
-              <Input label="Front Shelf" placeholder="e.g., Wall Shelf A" value={frontShelf} onValueChange={setFrontShelf} description="Which shelf/rack" />
-              <Input label="Level" type="number" placeholder="e.g., 1 (top)" value={frontLevel} onValueChange={setFrontLevel} description="Shelf level" />
-            </div>
-          </Card>
-        </div>
-
-        {restockDebug ? (
-          <div className="max-w-7xl mx-auto">
-            <div className="mt-2 p-3 bg-yellow-50 text-sm text-yellow-800 rounded">
-              <div className="flex items-start justify-between gap-4">
-                <div>{restockDebug}</div>
-                <button className="text-xs text-yellow-700 underline" onClick={() => setRestockDebug(null)}>Dismiss</button>
-              </div>
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+        <div className="flex items-end justify-between gap-4 mb-6 flex-wrap">
+          <div>
+            <h1 className="text-2xl font-semibold text-foreground mb-1.5 flex items-center gap-2">
+              <RefreshCw className="text-primary" size={22} /> Restock
+            </h1>
+            <div className="flex items-center gap-3 text-sm text-foreground-500 flex-wrap">
+              <span><span className="font-semibold text-foreground tabular-nums">{categories.length}</span> categories</span>
+              <span className="w-1 h-1 rounded-full bg-divider" />
+              <span><span className="font-semibold text-foreground tabular-nums">{totalShelvesTracked}</span> shelves tracked</span>
+              <span className="w-1 h-1 rounded-full bg-divider" />
+              <span><span className="font-semibold text-warning tabular-nums">{totalBelowPar}</span> below par</span>
             </div>
           </div>
-        ) : null}
+        </div>
 
-        <Card>
-          <CardHeader><h2 className="text-lg font-semibold">Created Shelves</h2></CardHeader>
-          <CardBody>
-            <div className="grid gap-3">
-              {loading ? (
-                <div className="flex justify-center py-6"><Spinner /></div>
-              ) : shelves.length === 0 ? (
-                <div className="text-sm text-foreground-500">No shelves yet</div>
-                ) : (
-                shelves.map((s: any) => (
-                  <div key={s.id}>
-                    <div className="p-3 bg-content1 rounded-md grid grid-cols-[1fr_auto] items-center cursor-pointer" onClick={() => toggleShelfLog(s)}>
-                    <div>
-                      <div className="text-lg font-semibold">{s.name}</div>
-                      <div className="text-sm text-foreground-500 mt-1">
-                        {s.location}{s.locationDetail ? ' — ' + s.locationDetail : ''}
-                        {(s.frontRoom || s.frontShelf || s.frontLevel) && (
-                          <span className="ml-2 text-indigo-500">
-                            [{[s.frontRoom, s.frontShelf, s.frontLevel ? `Level ${s.frontLevel}` : ''].filter(Boolean).join(', ')}]
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2 mt-2">
-                        <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-primary-50 text-primary">Last: {formatDate(s.lastRestockedAt)}</span>
-                        {s.itemId ? <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-content2 text-foreground-500">Item: {inventoryOptions.find((i:any)=>i.id===s.itemId)?.name || s.itemName || (inventoryLoaded ? 'Unknown Item' : '…')}</span> : null}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                      <Button color="primary" className="shadow-md" onPress={() => openRestock(s)}>Restock</Button>
-                      <Button variant="ghost" onPress={() => { setActiveShelf(s); setEditOpen(true); }} aria-label="Edit shelf"><Edit2 size={16} /></Button>
-                      <Button variant="ghost" color="danger" onPress={() => deleteShelf(s.id)} aria-label="Delete shelf"><Trash2 size={16} /></Button>
-                    </div>
+        {!legacyNoticeDismissed && (
+          <div className="flex items-start gap-2.5 bg-primary-50 dark:bg-primary-900/20 border border-primary/20 rounded-large px-4 py-3 mb-4">
+            <Info size={16} className="text-primary flex-none mt-0.5" />
+            <p className="text-sm text-foreground-600 flex-1">
+              Restock now works off your storage shelves. Old restock shelves are no longer shown here — recreate them as categories.
+            </p>
+            <button onClick={dismissLegacyNotice} className="text-foreground-400 hover:text-foreground-600 flex-none" aria-label="Dismiss">
+              <X size={15} />
+            </button>
+          </div>
+        )}
 
-                    </div>
+        <div className="bg-content1 border border-divider rounded-large p-4 mb-6 flex flex-col sm:flex-row gap-3">
+          <Input
+            placeholder="New category name (e.g. Trauma Bag Restock)"
+            value={newCategoryName}
+            onValueChange={setNewCategoryName}
+            className="flex-1"
+            onKeyDown={(e) => { if (e.key === 'Enter') createCategory(); }}
+          />
+          <Button
+            color="primary"
+            startContent={<Plus size={15} />}
+            isLoading={opLoading}
+            isDisabled={!newCategoryName.trim()}
+            onPress={createCategory}
+            className="flex-none"
+          >
+            Create category
+          </Button>
+        </div>
 
-                                    {expandedShelfId === s.id ? (
-                      <div className="mt-2 p-3 bg-content2 rounded">
-                        {shelfLogs.length === 0 ? (
-                          <div className="text-sm text-foreground-500">No activity recorded for this shelf.</div>
-                        ) : (
-                          <ul className="space-y-3">
-                            {shelfLogs.map((l: any) => (
-                              <li key={l.id} className="p-3 bg-content1 rounded">
-                                <div className="flex justify-between">
-                                  <div className="font-medium text-sm">{l.type === 'event' ? 'Restock' : 'Report'}</div>
-                                  <div className="text-xs text-foreground-400">{formatDate(l.createdAt)}</div>
-                                </div>
-                                <div className="text-sm text-foreground-500 mt-1">{l.note || l.message || JSON.stringify(l)}</div>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
-                    ) : null}
+        <ExchangeBagsSection
+          bags={exchangeBags}
+          onRefill={doRefillBag}
+          onSwap={doSwapBag}
+          onEdit={openEditExchangeBag}
+          onNew={openNewExchangeBag}
+        />
+
+        {loading ? (
+          <div className="flex justify-center py-12"><Spinner size="lg" color="primary" /></div>
+        ) : categories.length === 0 ? (
+          <div className="bg-content1 border border-divider rounded-large p-8 text-center">
+            <p className="text-sm text-foreground-500">No restock categories yet. Create one above, then select which shelves belong to it.</p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-4">
+            {categories.map((cat) => {
+              const validShelves = cat.shelfIds.map((id) => getShelfById(id)).filter((s): s is Shelf => !!s);
+              const danglingCount = cat.shelfIds.length - validShelves.length;
+              const isOpen = expandedIds.has(cat.id);
+              return (
+                <div key={cat.id} className="bg-content1 border border-divider rounded-large">
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    className="w-full flex items-center justify-between gap-2 px-4 py-3 text-left hover:bg-content2 transition-colors duration-150 rounded-large"
+                    onClick={() => toggleExpanded(cat.id)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpanded(cat.id); } }}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      {isOpen ? <ChevronDown size={16} className="text-foreground-400 flex-none" /> : <ChevronRight size={16} className="text-foreground-400 flex-none" />}
+                      <span className="text-base font-semibold text-foreground truncate">{cat.name}</span>
+                      <span className="text-xs font-mono tabular-nums text-foreground-400 px-2 py-0.5 rounded-full bg-content2 flex-none">
+                        {validShelves.length} shelf{validShelves.length === 1 ? '' : 'ves'}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-none" onClick={(e) => e.stopPropagation()}>
+                      <Button size="sm" variant="flat" color="primary" onPress={() => openShelfPicker(cat)}>Select shelves</Button>
+                      <Button isIconOnly size="sm" variant="light" onPress={() => openRename(cat)} aria-label="Rename category"><Edit2 size={15} /></Button>
+                      <Button isIconOnly size="sm" variant="light" color="danger" onPress={() => deleteCategory(cat)} aria-label="Delete category"><Trash2 size={15} /></Button>
+                    </div>
                   </div>
-                ))
-              )}
-            </div>
-          </CardBody>
-        </Card>
-      </div>
 
-      <Modal isOpen={restockOpen} onOpenChange={setRestockOpen} placement="center" size="sm">
-        <ModalContent>
-          <>
-            <ModalHeader>Confirm Restock</ModalHeader>
-            <ModalBody>
-                <div className="space-y-3">
-                    <div className="text-sm">Shelf: {activeShelf?.name}</div>
-                    {availableBatches.length > 0 ? (
-                      <Select label="Batch to use" selectedKeys={selectedBatchId ? [selectedBatchId] : []} onSelectionChange={(keys: any) => { const v = Array.from(keys)[0] as string | undefined; setSelectedBatchId(v || null); }}>
-                        <SelectItem key="__auto" textValue="Auto choose">-- auto choose (earliest-first) --</SelectItem>
-                        {availableBatches.map((b: any) => {
-                          const exp = b.expirationDate ? new Date(b.expirationDate).toLocaleDateString() : 'no exp';
-                          const label = `${b.lotNumber || b.id || 'batch'} — exp: ${exp}`;
-                          const val = b.id || '';
-                          return <SelectItem key={val} textValue={label}>{label}</SelectItem>;
-                        }) as any}
-                      </Select>
-                    ) : null}
-                    <Input label="Quantity" type="number" value={String(restockQty)} onValueChange={(v: any) => setRestockQty(Number(v) || 0)} />
-                    <Input label="Note (optional)" value={note} onValueChange={setNote} />
+                  {isOpen && (
+                    <div className="px-4 pb-4 flex flex-col gap-3">
+                      {danglingCount > 0 && (
+                        <div className="flex items-center gap-1.5 text-xs text-warning">
+                          <AlertTriangle size={12} /> {danglingCount} shelf{danglingCount === 1 ? '' : 'es'} referenced here {danglingCount === 1 ? 'was' : 'were'} deleted from Storage Management.
+                        </div>
+                      )}
+                      {validShelves.length === 0 ? (
+                        <p className="text-sm text-foreground-400">No shelves selected yet. Click &quot;Select shelves&quot; to add some.</p>
+                      ) : (
+                        validShelves.map((shelf) => (
+                          <ShelfGroup
+                            key={shelf.id}
+                            shelf={shelf}
+                            zone={shelf.zoneId ? getZoneById(shelf.zoneId) : undefined}
+                            containers={getContainersForShelf(shelf.id)}
+                            directItems={itemsDirectOnShelf(shelf.id)}
+                            itemsForContainer={itemsForContainer}
+                            restocks={cat.itemRestocks || {}}
+                            onRefillItem={(shelf, item) => openRefill(cat, shelf, item)}
+                            onMarkAllBelowPar={(shelf, itemsBelowPar) => markShelfRestocked(cat, shelf, itemsBelowPar)}
+                            onEditLevels={openLevels}
+                          />
+                        ))
+                      )}
+                    </div>
+                  )}
                 </div>
-              </ModalBody>
-            <ModalFooter>
-              <Button variant="light" onPress={() => { setRestockOpen(false); setAvailableBatches([]); setSelectedBatchId(null); }}>Cancel</Button>
-              <Button color="primary" onPress={confirmRestock} isLoading={opLoading}>Confirm</Button>
-            </ModalFooter>
-        </>
-      </ModalContent>
-      </Modal>
+              );
+            })}
+          </div>
+        )}
+      </main>
 
-      <Modal isOpen={editOpen} onOpenChange={setEditOpen} placement="center" size="sm">
-        <ModalContent>
-          <>
-            <ModalHeader>Edit Shelf</ModalHeader>
-            <ModalBody>
-                <div className="space-y-3">
-                  <Input label="Shelf Name" value={activeShelf?.name || ''} onValueChange={(v: any) => setActiveShelf((s: any) => ({ ...s, name: v }))} />
-                  <Select label="Inventory Item (optional)" selectedKeys={activeShelf?.itemId ? [activeShelf.itemId] : []} onSelectionChange={(keys: any) => { const v = Array.from(keys)[0] as string | undefined; setActiveShelf((s: any) => ({ ...s, itemId: v || null })); }}>
-                    <SelectItem key="none" textValue="-- none --">-- none --</SelectItem>
-                    {inventoryOptions.map((i: any) => <SelectItem key={i.id} textValue={i.name}>{i.name}</SelectItem>) as any}
-                  </Select>
-                  <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-                    <Select label="Location" selectedKeys={[activeShelf?.location || LOCATIONS[0]]} onSelectionChange={(keys: any) => { const v = Array.from(keys)[0] as string; setActiveShelf((s: any) => ({ ...s, location: v })); }}>
-                      {LOCATIONS.map(l => <SelectItem key={l} textValue={l}>{l}</SelectItem>)}
-                    </Select>
-                    <Select label="Location Detail" selectedKeys={[activeShelf?.locationDetail || (LOCATION_MAP[activeShelf?.location || LOCATIONS[0]]?.[0] || '')]} onSelectionChange={(keys: any) => { const v = Array.from(keys)[0] as string; setActiveShelf((s: any) => ({ ...s, locationDetail: v })); }}>
-                      {(LOCATION_MAP[activeShelf?.location || location] || []).map(d => <SelectItem key={d} textValue={d}>{d}</SelectItem>)}
-                    </Select>
-                  </div>
-                  <div className="grid grid-cols-3 gap-3 bg-amber-50 dark:bg-amber-900/10 p-3 rounded-lg border border-amber-100">
-                    <Input label="Front Room" placeholder="e.g., Reception" value={activeShelf?.frontRoom || ''} onValueChange={(v: any) => setActiveShelf((s: any) => ({ ...s, frontRoom: v }))} />
-                    <Input label="Front Shelf" placeholder="e.g., Wall Shelf A" value={activeShelf?.frontShelf || ''} onValueChange={(v: any) => setActiveShelf((s: any) => ({ ...s, frontShelf: v }))} />
-                    <Input label="Level" type="number" placeholder="e.g., 1" value={activeShelf?.frontLevel?.toString() || ''} onValueChange={(v: any) => setActiveShelf((s: any) => ({ ...s, frontLevel: v ? Number(v) : null }))} />
-                  </div>
-                </div>
-              </ModalBody>
-            <ModalFooter>
-              <Button variant="light" onPress={() => setEditOpen(false)}>Cancel</Button>
-              <Button color="primary" onPress={async () => {
-                if (!activeShelf?.id) return;
-                setOpLoading(true);
-                try {
-                  await setDoc(doc(db, 'restock_shelves', activeShelf.id), { ...activeShelf, updatedAt: serverTimestamp() }, { merge: true });
-                  setEditOpen(false);
-                } catch (e) { console.error(e); }
-                setOpLoading(false);
-              }} isLoading={opLoading}>Save</Button>
-            </ModalFooter>
-        </>
-      </ModalContent>
-      </Modal>
+      <ShelfPickerModal
+        isOpen={shelfPickerDisc.isOpen}
+        onOpenChange={shelfPickerDisc.onOpenChange}
+        category={pickerCategory}
+        zones={zones}
+        getShelvesForZone={getShelvesForZone}
+        onToggleShelf={toggleShelf}
+      />
 
-      
+      <RenameCategoryModal
+        isOpen={renameDisc.isOpen}
+        onOpenChange={renameDisc.onOpenChange}
+        category={renameCategoryTarget}
+        onSave={renameCategory}
+      />
 
+      <SetLevelsModal
+        isOpen={levelsDisc.isOpen}
+        onOpenChange={levelsDisc.onOpenChange}
+        item={levelsTarget}
+        onSave={saveLevels}
+      />
+
+      <RefillModal
+        isOpen={refillDisc.isOpen}
+        onOpenChange={refillDisc.onOpenChange}
+        target={refillTarget}
+        onConfirm={doRefillItem}
+      />
+
+      <ExchangeBagEditor
+        isOpen={exchangeBagEditorDisc.isOpen}
+        onOpenChange={exchangeBagEditorDisc.onOpenChange}
+        bag={exchangeBagTarget}
+        items={items}
+        categories={categories}
+        actor={{ id: user?.uid, name: actorName }}
+      />
+
+      {opLoading && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] bg-content1 border border-divider rounded-large px-4 py-2 shadow-lg flex items-center gap-2 text-sm text-foreground-600">
+          <Spinner size="sm" color="primary" /> Saving…
+        </div>
+      )}
+
+      {toast && (
+        <div className={`fixed z-[60] bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-lg text-sm font-semibold text-white max-w-[92vw] ${toast.ok ? 'bg-success' : 'bg-danger'}`}>
+          <span>{toast.msg}</span>
+        </div>
+      )}
     </div>
   );
 }

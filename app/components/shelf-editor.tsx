@@ -31,6 +31,8 @@ interface Props {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   onSave: () => void;
+  /** Default zone applied only when creating a new shelf (shelf === null). */
+  defaultZoneId?: string;
 }
 
 /** Propagate a shelf rename to every inventory item that cached the old name. */
@@ -76,7 +78,7 @@ async function propagateShelfZoneChange(shelfId: string, newZoneId: string | nul
   }
 }
 
-export default function ShelfEditor({ shelf, zones, isOpen, onOpenChange, onSave }: Props) {
+export default function ShelfEditor({ shelf, zones, isOpen, onOpenChange, onSave, defaultZoneId }: Props) {
   const [name, setName] = useState('');
   const [zoneId, setZoneId] = useState<string | undefined>(undefined);
   const [capacity, setCapacity] = useState<number | undefined>(undefined);
@@ -93,12 +95,12 @@ export default function ShelfEditor({ shelf, zones, isOpen, onOpenChange, onSave
       setNumberOfLevels(shelf.numberOfLevels ?? undefined);
     } else {
       setName('');
-      setZoneId(undefined);
+      setZoneId(defaultZoneId || undefined);
       setCapacity(undefined);
       setBarcode(undefined);
       setNumberOfLevels(undefined);
     }
-  }, [shelf, isOpen]);
+  }, [shelf, isOpen, defaultZoneId]);
 
   const handleSave = async () => {
     if (!name.trim()) {

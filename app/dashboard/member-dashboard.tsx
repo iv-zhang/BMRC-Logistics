@@ -401,9 +401,9 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
                 >
                   <CardBody className="flex flex-col items-center justify-center py-4 md:py-8 gap-2 md:gap-3">
                     <ScanLine size={36} className="md:w-12 md:h-12" />
-                    <h3 className="text-sm md:text-xl font-semibold">Scan Report</h3>
+                    <h3 className="text-sm md:text-xl font-semibold">Issue Inbox</h3>
                     <p className="text-xs md:text-sm text-center opacity-90 hidden md:block">
-                      Report items
+                      Review reports
                     </p>
                   </CardBody>
                 </Card>

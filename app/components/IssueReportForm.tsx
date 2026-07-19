@@ -29,6 +29,8 @@ interface IssueReportFormProps {
   targetCollection?: string;
   targetDocId?: string;
   onSuccess?: () => void;
+  /** When set, locks the form to this issue type and hides the type picker. */
+  lockType?: 'bug' | 'feedback' | 'improvement' | 'question';
 }
 
 export default function IssueReportForm({
@@ -39,6 +41,7 @@ export default function IssueReportForm({
   targetCollection,
   targetDocId,
   onSuccess,
+  lockType,
 }: IssueReportFormProps) {
   const { user } = useUserRole();
   const [isAnonymous, setIsAnonymous] = useState(false);
@@ -46,7 +49,7 @@ export default function IssueReportForm({
   const [error, setError] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
-    type: 'bug' as IssueReport['type'],
+    type: (lockType ?? 'bug') as IssueReport['type'],
     priority: 'medium' as IssueReport['priority'],
     title: '',
     description: '',
@@ -94,7 +97,7 @@ export default function IssueReportForm({
 
       // Reset form
       setFormData({
-        type: 'bug',
+        type: lockType ?? 'bug',
         priority: 'medium',
         title: '',
         description: '',
@@ -137,32 +140,34 @@ export default function IssueReportForm({
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-3">
-                <Select
-                  label="Issue Type"
-                  placeholder="Select type"
-                  size="sm"
-                  selectedKeys={[formData.type]}
-                  onSelectionChange={(keys) =>
-                    setFormData((prev) => ({
-                      ...prev,
-                      type: Array.from(keys)[0] as IssueReport['type'],
-                    }))
-                  }
-                >
-                  <SelectItem key="bug">
-                    Bug Report
-                  </SelectItem>
-                  <SelectItem key="feedback">
-                    Feedback
-                  </SelectItem>
-                  <SelectItem key="improvement">
-                    Improvement
-                  </SelectItem>
-                  <SelectItem key="question">
-                    Question
-                  </SelectItem>
-                </Select>
+              <div className={lockType ? 'grid grid-cols-1 gap-3' : 'grid grid-cols-2 gap-3'}>
+                {!lockType && (
+                  <Select
+                    label="Issue Type"
+                    placeholder="Select type"
+                    size="sm"
+                    selectedKeys={[formData.type]}
+                    onSelectionChange={(keys) =>
+                      setFormData((prev) => ({
+                        ...prev,
+                        type: Array.from(keys)[0] as IssueReport['type'],
+                      }))
+                    }
+                  >
+                    <SelectItem key="bug">
+                      Bug Report
+                    </SelectItem>
+                    <SelectItem key="feedback">
+                      Feedback
+                    </SelectItem>
+                    <SelectItem key="improvement">
+                      Improvement
+                    </SelectItem>
+                    <SelectItem key="question">
+                      Question
+                    </SelectItem>
+                  </Select>
+                )}
 
                 <Select
                   label="Priority"
