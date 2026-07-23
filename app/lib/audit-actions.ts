@@ -180,6 +180,18 @@ export interface ShipmentInput {
   /** Set when this shipment is receiving a logged purchase-order line — stamped onto the batch */
   purchase?: PurchaseInfo;
   purchaseOrderId?: string;
+  /** Barcode/QR scanned to identify this shipment's item, for ledger attribution only. */
+  scannedBarcode?: string;
+  /**
+   * Fresh per-submission token (e.g. `crypto.randomUUID()`) generated once
+   * the user confirms a shipment. When present, the HR-8 duplicate-intake
+   * guard below keys off THIS instead of qty+lot+time: repeated identical
+   * scans in a row (e.g. several cases of the same SKU arriving together)
+   * are legitimate and must not be blocked — only the SAME key reappearing
+   * (a literal resubmit, e.g. a network retry) is a duplicate. Callers that
+   * don't pass a key keep the old qty+lot+5min heuristic.
+   */
+  idempotencyKey?: string;
 }
 
 /**
@@ -213,26 +225,40 @@ export async function addShipment(
   const units = input.qty * input.perUnit;
 
   // HR-8: two members (or a double-tap) logging one delivery double-counts
-  // on-hand with no idempotency check. Refuse a matching intake logged in the
-  // last ~5 minutes (same item + lot + quantity) before writing anything.
-  const DUP_WINDOW_MS = 5 * 60 * 1000;
+  // on-hand with no idempotency check. Refuse a matching intake before
+  // writing anything. When the caller passes an `idempotencyKey` (every
+  // scan-to-receive submit generates a fresh one), key the guard off THAT —
+  // several identical scans in a row (same SKU, same lot, same qty) are a
+  // legitimate multi-case delivery and must not be blocked; only the exact
+  // same key reappearing is a true resubmit. Callers with no key fall back
+  // to the original qty+lot+5min heuristic.
   const recentIntakes = await getDocs(query(
     collection(db, 'inventory_logs'),
     where('itemId', '==', item.id),
     where('action', '==', 'intake'),
   ));
   const nowMs = Date.now();
-  const isDuplicate = recentIntakes.docs.some((d) => {
-    const data = d.data() as Record<string, unknown>;
-    if (data.quantity !== units) return false;
-    const loggedLot = (data.lotNumber ?? null) as string | null;
-    if (loggedLot !== (input.lotNumber || null)) return false;
-    const ts = data.timestamp as { toMillis?: () => number } | null | undefined;
-    // A pending serverTimestamp reads back null on an immediate re-log — treat
-    // that (and any timestamp inside the window) as a recent duplicate.
-    const tsMs = ts && typeof ts.toMillis === 'function' ? ts.toMillis() : nowMs;
-    return nowMs - tsMs <= DUP_WINDOW_MS;
-  });
+  let isDuplicate = false;
+  if (input.idempotencyKey) {
+    isDuplicate = recentIntakes.docs.some((d) => {
+      const data = d.data() as Record<string, unknown>;
+      const details = (data.details ?? {}) as Record<string, unknown>;
+      return details.idempotencyKey === input.idempotencyKey;
+    });
+  } else {
+    const DUP_WINDOW_MS = 5 * 60 * 1000;
+    isDuplicate = recentIntakes.docs.some((d) => {
+      const data = d.data() as Record<string, unknown>;
+      if (data.quantity !== units) return false;
+      const loggedLot = (data.lotNumber ?? null) as string | null;
+      if (loggedLot !== (input.lotNumber || null)) return false;
+      const ts = data.timestamp as { toMillis?: () => number } | null | undefined;
+      // A pending serverTimestamp reads back null on an immediate re-log —
+      // treat that (and any timestamp inside the window) as a recent duplicate.
+      const tsMs = ts && typeof ts.toMillis === 'function' ? ts.toMillis() : nowMs;
+      return nowMs - tsMs <= DUP_WINDOW_MS;
+    });
+  }
   if (isDuplicate) {
     throw new Error('Duplicate shipment detected — this delivery appears already logged');
   }
@@ -301,6 +327,8 @@ export async function addShipment(
       bagTracked,
       expirationDate: input.expirationMonth || undefined,
       note: input.notes || undefined,
+      scannedBarcode: input.scannedBarcode || undefined,
+      idempotencyKey: input.idempotencyKey || undefined,
     }),
   }));
 
@@ -316,6 +344,9 @@ export async function addShipment(
       lotNumber: input.lotNumber || undefined,
       expirationDate: input.expirationMonth || undefined,
       supplier: input.supplier || undefined,
+    }),
+    details: removeUndefined({
+      scannedBarcode: input.scannedBarcode || undefined,
     }),
   });
 }

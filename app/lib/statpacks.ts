@@ -1,6 +1,6 @@
 'use client';
 
-import { collection, doc, getDoc, setDoc, serverTimestamp, query, where, getDocs } from 'firebase/firestore';
+import { collection, doc, getDoc, setDoc, serverTimestamp, query, where, getDocs, writeBatch } from 'firebase/firestore';
 import { db } from '@/firebase';
 import type { Statpack } from '@/app/types';
 import { computeStatpackAssetValue } from '@/app/lib/inventory';
@@ -94,6 +94,49 @@ export async function duplicateStatpack(statpackId: string): Promise<string> {
     console.error('Failed to duplicate statpack:', error);
     throw error;
   }
+}
+
+/**
+ * Persist an edited statpack's contents/config (the StatpackEditorModal save
+ * path). Both call sites that used to do a raw `updateDoc(doc(db,'statpacks',id),
+ * {...draft})` with no sanitization and no logging should route through here
+ * instead:
+ *  - strips `undefined` values (Firestore rejects them — the raw updateDoc
+ *    call sites did not do this),
+ *  - stamps `contentsUpdatedAt` (declared on the type, previously written
+ *    nowhere), which drives the "contents changed since last audit" indicator,
+ *  - emits a `statpack_logs` row with `action: 'content_edit'` (declared on
+ *    `StatpackLog['action']`, previously never emitted) so the edit shows up
+ *    in the pack's activity log.
+ *
+ * `draft` must carry its Firestore id (`draft.id`).
+ */
+export async function saveStatpackContents(
+  draft: Statpack,
+  actor: { uid?: string; name?: string },
+): Promise<void> {
+  if (!draft.id) throw new Error('Cannot save statpack contents without an id');
+
+  const { id, ...rest } = draft;
+  const payload = removeUndefined({
+    ...rest,
+    contentsUpdatedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }) as Record<string, unknown>;
+
+  const logPayload = removeUndefined({
+    statpackId: id,
+    statpackName: draft.name,
+    action: 'content_edit',
+    userId: actor.uid || 'unknown',
+    userName: actor.name || 'Unknown',
+    timestamp: serverTimestamp(),
+  }) as Record<string, unknown>;
+
+  const batch = writeBatch(db);
+  batch.update(doc(db, 'statpacks', id), payload);
+  batch.set(doc(collection(db, 'statpack_logs')), logPayload);
+  await batch.commit();
 }
 
 /**

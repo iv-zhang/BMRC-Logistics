@@ -388,6 +388,8 @@ export interface ThresholdConfig {
   o2PsiWarning: number;
   /** Days between required statpack audits (biweekly cadence) */
   statpackAuditIntervalDays: number;
+  /** Days between required front restock-shelf checks (weekly cadence) */
+  shelfCheckIntervalDays: number;
   /** Days a glucometer control test stays valid before a fresh passing test is required */
   glucometerControlTestIntervalDays: number;
   /** Days between required AED checks (battery/pads) before it reads out-of-date */
@@ -402,6 +404,7 @@ export const THRESHOLDS: ThresholdConfig = {
   o2PsiMin: 1800,
   o2PsiWarning: 500,
   statpackAuditIntervalDays: 14,
+  shelfCheckIntervalDays: 7,
   glucometerControlTestIntervalDays: 30,
   aedCheckIntervalDays: 30,
 };
@@ -459,6 +462,15 @@ export const ITEM_CATEGORIES = [
 ] as const;
 
 /**
+ * Controlled parent list for structured item naming. An item's `name` is derived
+ * as `${family}, ${variantLabel}` so sizes/variations of one product sort and
+ * group together. Admin-editable at /settings — these are only the seed values.
+ */
+export const ITEM_FAMILIES = [
+  'Bandaids', 'Nitrile Gloves', 'OPAs',
+] as const;
+
+/**
  * Flat list of filterable inventory locations/areas, derived from LOCATIONS.
  * Rooms of multi-room sites are listed as "Site · Room"; single-room sites by
  * name. Use this for every location filter dropdown so pages stay in sync.
@@ -510,6 +522,7 @@ export type OrgConfigDoc = {
   assetCategories: AssetCategoryDef[];
   statpackTypes: StatpackTypeDef[];
   itemCategories: string[];
+  itemFamilies: string[];
   thresholds: ThresholdConfig;
 };
 
@@ -520,6 +533,7 @@ export const DEFAULT_ORG_CONFIG: OrgConfigDoc = {
   assetCategories: ASSET_CATEGORIES_CONFIG,
   statpackTypes: STATPACK_TYPES,
   itemCategories: [...ITEM_CATEGORIES],
+  itemFamilies: [...ITEM_FAMILIES],
   thresholds: THRESHOLDS,
 };
 

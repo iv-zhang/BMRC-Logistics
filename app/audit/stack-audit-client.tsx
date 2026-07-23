@@ -1,6 +1,6 @@
 "use client";
 import React, { useEffect, useMemo, useState } from 'react';
-import { Spinner, Button, Input, Card, CardBody, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Textarea } from '@heroui/react';
+import { Spinner, Button, Input, Card, CardBody, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Textarea, Select, SelectItem } from '@heroui/react';
 import { Plus, Camera, Box } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import {
@@ -25,6 +25,8 @@ import BarcodeScanner from '@/app/components/barcode-scanner';
 import CountControl from '@/app/components/count-control';
 import ConditionToggle from '@/app/components/condition-toggle';
 import { Timestamp } from 'firebase/firestore';
+import { useOrgConfig } from '@/app/hooks/useOrgConfig';
+import { deriveItemName } from '@/app/lib/item-naming';
 
 type Props = { zone: string; zoneLabel?: string; onClose?: () => void };
 
@@ -484,21 +486,49 @@ export default function StackAuditClient({ zone, zoneLabel, onClose }: Props) {
 }
 
 function QuickCapture({ onAdd }: { onAdd: (p: any) => void }) {
-  const [name, setName] = useState('');
+  const { itemFamilies } = useOrgConfig();
+  const [family, setFamily] = useState('');
+  const [variantLabel, setVariantLabel] = useState('');
   const [qty, setQty] = useState<number>(1);
   const [exp, setExp] = useState('');
   const [barcode, setBarcode] = useState('');
   const [photo, setPhoto] = useState<File | null>(null);
+  const derivedName = deriveItemName(family, variantLabel);
 
   const submit = () => {
-    if (!name) { alert('Name required'); return; }
-    onAdd({ name, unopenedBoxes: Number(qty || 0), totalStockQuantity: Number(qty || 0), expirationDate: exp || undefined, photoName: photo?.name, barcode: barcode || undefined });
-    setName(''); setQty(1); setExp(''); setPhoto(null);
+    if (!family) { alert('Family required'); return; }
+    onAdd({
+      name: derivedName,
+      family,
+      variantLabel: variantLabel || undefined,
+      unopenedBoxes: Number(qty || 0),
+      totalStockQuantity: Number(qty || 0),
+      expirationDate: exp || undefined,
+      photoName: photo?.name,
+      barcode: barcode || undefined,
+    });
+    setFamily(''); setVariantLabel(''); setQty(1); setExp(''); setPhoto(null);
   };
 
   return (
     <div className="space-y-2">
-      <Input label="Name" value={name} onValueChange={setName} />
+      <Select
+        label="Family"
+        variant="bordered"
+        size="sm"
+        selectedKeys={family ? [family] : []}
+        onSelectionChange={(keys) => setFamily(String(Array.from(keys)[0] ?? ''))}
+        className="overflow-visible"
+        popoverProps={{ classNames: { content: 'w-fit' } }}
+      >
+        {itemFamilies.map((fam) => (
+          <SelectItem key={fam}>{fam}</SelectItem>
+        ))}
+      </Select>
+      <Input label="Variant (optional)" placeholder="e.g. Small, M, 28 Fr" value={variantLabel} onValueChange={setVariantLabel} />
+      <p className="text-xs text-foreground-400">
+        Name: <span className="font-semibold text-foreground-600">{derivedName || '—'}</span>
+      </p>
       <Input label="Scan Barcode (optional)" placeholder="Scan GS1 barcode" value={barcode} onValueChange={(v) => {
         setBarcode(v);
         const parsed = parseGs1Barcode(v || '');

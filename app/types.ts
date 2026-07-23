@@ -198,10 +198,26 @@ export interface InventoryBatch {
 
 export interface InventoryItem {
   id: string;
+  /**
+   * DERIVED, never typed by hand: `${family}, ${variantLabel}` (family alone if
+   * there is no variant). Persisted so the ~78 existing read sites and
+   * Firestore `orderBy('name')` keep working — sorting by name naturally
+   * groups parent-first, variant-last. Regenerate via `deriveItemName`.
+   */
   name: string;
+  /** Controlled parent list from `orgConfig.itemFamilies` (e.g. "Nitrile Gloves"). */
+  family?: string;
+  /**
+   * Free-text descriptor (e.g. "Small", "M", "28 Fr"). Named `variantLabel`, not
+   * `variant`, because the legacy `InventoryVariant[]`/`hasVariants` fields below
+   * are an unrelated (dead, write-stripped) stock-bearing concept.
+   */
+  variantLabel?: string;
+  /** Set by the naming backfill when `name` could not be split confidently; drives the admin review queue. */
+  namingReviewNeeded?: boolean;
   category: ItemCategory;
   description?: string;
-  
+
   // Stock Levels - Box-Based Tracking
   unopenedBoxes: number; // Number of unopened boxes
   itemsPerBox?: number;  // Optional: how many items in one box
@@ -212,6 +228,14 @@ export interface InventoryItem {
   maxUnits?: number;
   /** Units currently staged on the FRONT restock shelf (the deployed pool). The item-level box/loose/batch counts are the back-room RESERVE. Refilling the shelf pulls from reserve and increments this. */
   shelfQuantity?: number;
+  /**
+   * When the front shelf was last physically counted. Front-shelf consumption is
+   * deliberately NOT event-tracked (members won't log it reliably); instead a
+   * weekly check re-anchors `shelfQuantity` to what is actually there.
+   */
+  lastShelfCheckAt?: Date;
+  /** Display name of whoever performed the last front-shelf check. */
+  lastShelfCheckBy?: string;
   // Par levels per location (optional): { locationId: minimumQuantity }
   parByLocation?: Record<string, number>;
   
@@ -479,8 +503,17 @@ export interface Statpack {
   /** Last admin edit of expected contents; drives the "contents changed since last audit" indicator */
   contentsUpdatedAt?: Date;
   currentEvent?: string;
-  /** Exchange bags this pack draws from; recorded as swaps at check-in. */
+  /**
+   * @deprecated Legacy flat list of linked exchange bag ids. Superseded by
+   * `exchangeBagAssignments` (pocket-aware). Never read this directly — use
+   * `resolveBagAssignments(pack)` (app/lib/exchange-bags.ts), which shims a
+   * legacy array into `{ bagId, pocket: 'main', qtyPerPack: 1 }` entries.
+   * Kept declared (not removed) so old docs still type-check; no migration
+   * script writes this away.
+   */
   exchangeBagIds?: string[];
+  /** Pocket-aware exchange bag assignments. Source of truth going forward. */
+  exchangeBagAssignments?: ExchangeBagAssignment[];
   /** Pack-level sharps container safety check, stamped on each check-off */
   sharpsContainer?: {
     status: 'ok' | 'full' | 'na';
@@ -529,6 +562,14 @@ export interface ExchangeBag {
   name: string;
   /** `restock_categories` doc it belongs to, if any. */
   categoryId?: string;
+  /**
+   * Structured zone → shelf → level → container ref — the SOURCE OF TRUTH for
+   * where this bag design is staged. See the location-model invariant in
+   * CLAUDE.md: `shelfId` below is a denormalized mirror written FROM
+   * `storageLocation.shelfId`, never the reverse.
+   */
+  storageLocation?: StorageLocationRef;
+  /** Denormalized mirror of `storageLocation?.shelfId` — never write directly. */
   shelfId?: string;
   /** Multi-SKU contents of one bag. */
   lines: ExchangeBagLine[];
@@ -538,9 +579,24 @@ export interface ExchangeBag {
   emptyCount: number;
   /** Desired full-bag count. */
   parBags?: number;
+  /**
+   * When true, this bag design ships with a tamper-evident seal and the
+   * statpack check-off flow uses the binary seal reflex (intact → done,
+   * broken → replace) instead of counting contents.
+   */
+  sealRequired?: boolean;
+  /** Optional seal number prefix printed on the label / used for reference (e.g. "BB-"). */
+  sealPrefix?: string;
   createdAt?: Date | FieldValue;
   updatedAt?: Date | FieldValue;
   updatedBy?: string;
+}
+
+/** Pocket-level assignment linking an Exchange Bag design to a statpack. */
+export interface ExchangeBagAssignment {
+  bagId: string;
+  pocket: StatpackPocket;
+  qtyPerPack: number;
 }
 
 // --- LOGGING & ISSUES ---
@@ -631,6 +687,8 @@ export interface StatpackLog {
       oxygenReadings?: Record<string, string>;
       issueReports?: Record<string, StatpackItemIssue>;
       verifiedCount?: number;
+      /** Exchange bag seal reflex results captured on this check-off, keyed by bagId. */
+      bagChecks?: Record<string, { sealIntact: boolean; resolution?: 'swapped' | 'replaced'; notes?: string }>;
   };
   
   // Legacy/Simple tracking

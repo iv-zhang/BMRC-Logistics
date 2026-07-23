@@ -395,6 +395,13 @@ export async function logStatpackCheckOff(params: {
   oxygenReadings?: Record<string, string>;
   // Pack-level sharps container safety check
   sharpsCheck?: { status: 'ok' | 'full' | 'na'; notes?: string };
+  /**
+   * Exchange bag seal reflex results, keyed by bagId. An intact seal needs no
+   * resolution; a broken seal is resolved by swapping for a fresh sealed bag
+   * (drives `swapBag`, outside this transaction) or by logging that contents
+   * were used & replaced in place (notes only, no stock change).
+   */
+  bagChecks?: Record<string, { sealIntact: boolean; resolution?: 'swapped' | 'replaced'; notes?: string }>;
   notes?: string;
 }) {
   const {
@@ -410,6 +417,7 @@ export async function logStatpackCheckOff(params: {
     sealChecks,
     oxygenReadings,
     sharpsCheck,
+    bagChecks,
     notes,
   } = params;
 
@@ -502,6 +510,17 @@ export async function logStatpackCheckOff(params: {
       if (v !== undefined && v !== null) sanitizedOxy[k] = v as string;
     });
     if (Object.keys(sanitizedOxy).length > 0) issues.oxygenReadings = sanitizedOxy;
+  }
+  if (bagChecks && Object.keys(bagChecks).length > 0) {
+    const sanitizedBags: Record<string, { sealIntact: boolean; resolution?: 'swapped' | 'replaced'; notes?: string }> = {};
+    Object.entries(bagChecks).forEach(([bagId, val]) => {
+      if (!val) return;
+      const obj: { sealIntact: boolean; resolution?: 'swapped' | 'replaced'; notes?: string } = { sealIntact: Boolean(val.sealIntact) };
+      if (val.resolution) obj.resolution = val.resolution;
+      if (val.notes) obj.notes = val.notes;
+      sanitizedBags[bagId] = obj;
+    });
+    if (Object.keys(sanitizedBags).length > 0) issues.bagChecks = sanitizedBags;
   }
   if (Object.keys(issues).length > 0) {
     (logData as any).issues = issues;
@@ -2278,7 +2297,16 @@ export async function performStatpackManualAudit(params: {
  * Assign an external barcode tag to an asset or asset instance.
  * Supports both "Block" and "Warn & allow override" duplicate policies.
  * Records assignment in barcodeHistory and creates inventory log entry.
- * 
+ *
+ * Duplicate detection and lookup go through the `barcode_index` collection
+ * (doc id = the normalized/uppercased code, `{ code, itemId, kind,
+ * instanceId?, assignedAt, assignedBy }`) instead of scanning the entire
+ * `inventory` collection — this used to be an O(collection) read on every
+ * assignment. The index doc is written in the SAME transaction as the item
+ * update, and the old code's index doc is deleted on reassign so a stale
+ * pointer never lingers. `app/lib/scan-resolve.ts` reads this same
+ * collection to resolve a scanned code back to an item.
+ *
  * @param params.itemId - Firestore doc ID of the inventory item
  * @param params.barcode - The external barcode value from the purchased tag
  * @param params.user - User performing the assignment
@@ -2303,77 +2331,23 @@ export async function assignBarcode(params: {
 }> {
   const { itemId, barcode, user, serial, options } = params;
   const normalizedBarcode = barcode.trim();
-  
+
   if (!normalizedBarcode) {
     return { success: false, message: 'Barcode cannot be empty' };
   }
 
+  const indexKey = normalizedBarcode.toUpperCase();
+  const indexRef = doc(db, 'barcode_index', indexKey);
   const itemRef = doc(db, 'inventory', itemId);
 
   try {
-    // Step 1: Check for duplicates across all inventory items
-    const duplicateCheck = await runTransaction(db, async (tx) => {
-      // Query for items with this assignedBarcode at top level
-      const inventorySnap = await getDocs(
-        query(collection(db, 'inventory'), where('assignedBarcode', '==', normalizedBarcode))
-      );
-      
-      for (const docSnap of inventorySnap.docs) {
-        if (docSnap.id !== itemId) {
-          const data = docSnap.data() as InventoryItem;
-          return {
-            isDuplicate: true,
-            duplicateItem: { id: docSnap.id, name: data.name },
-          };
-        }
-      }
-
-      // Also check instance-level barcodes by scanning all inventory items with assets
-      const allInventorySnap = await getDocs(collection(db, 'inventory'));
-      for (const docSnap of allInventorySnap.docs) {
-        const data = docSnap.data() as InventoryItem;
-        if (Array.isArray(data.assets)) {
-          for (const instance of data.assets) {
-            if (instance.assignedBarcode === normalizedBarcode) {
-              // Skip if it's the same item and serial we're updating
-              if (docSnap.id === itemId && serial && instance.serial === serial) {
-                continue;
-              }
-              return {
-                isDuplicate: true,
-                duplicateItem: {
-                  id: docSnap.id,
-                  name: data.name,
-                  serial: instance.serial,
-                },
-              };
-            }
-          }
-        }
-      }
-
-      return { isDuplicate: false };
-    });
-
-    // Step 2: If duplicate found and not allowed, return warning
-    if (duplicateCheck.isDuplicate && !options?.allowDuplicate) {
-      return {
-        success: false,
-        message: `Barcode already assigned to ${duplicateCheck.duplicateItem?.name}${
-          duplicateCheck.duplicateItem?.serial ? ` (Serial: ${duplicateCheck.duplicateItem.serial})` : ''
-        }`,
-        isDuplicate: true,
-        duplicateItem: duplicateCheck.duplicateItem,
-      };
-    }
-
-    // Step 3: Perform assignment in transaction
-    const result = await runTransaction(db, async (tx) => {
-      const snap = await tx.get(itemRef);
+    const outcome = await runTransaction(db, async (tx) => {
+      // All reads must precede all writes in a Firestore transaction.
+      const [indexSnap, snap] = await Promise.all([tx.get(indexRef), tx.get(itemRef)]);
       if (!snap.exists()) {
         throw new Error(`Asset ${itemId} not found`);
       }
-      
+
       const item = snap.data() as InventoryItem;
       const normalizedSerial = serial?.trim();
       const hasInstances = Array.isArray(item.assets) && item.assets.length > 0;
@@ -2382,6 +2356,34 @@ export async function assignBarcode(params: {
         throw new Error('This asset has multiple instances; please specify a serial number.');
       }
 
+      // Step 1: Duplicate check via the index. A hit that already points at
+      // THIS item/instance is a re-scan, not a duplicate.
+      let isDuplicate = false;
+      let duplicateItem: { id: string; name: string; serial?: string } | undefined;
+      if (indexSnap.exists()) {
+        const idx = indexSnap.data() as {
+          itemId?: string;
+          instanceId?: string;
+          kind?: 'item' | 'asset-instance';
+        };
+        const sameTarget =
+          idx.itemId === itemId &&
+          (hasInstances && normalizedSerial ? idx.instanceId === normalizedSerial : !idx.instanceId);
+        if (!sameTarget && idx.itemId) {
+          isDuplicate = true;
+          const dupSnap = await tx.get(doc(db, 'inventory', idx.itemId));
+          if (dupSnap.exists()) {
+            const dupData = dupSnap.data() as InventoryItem;
+            duplicateItem = { id: idx.itemId, name: dupData.name, serial: idx.instanceId };
+          }
+        }
+      }
+
+      if (isDuplicate && !options?.allowDuplicate) {
+        return { blocked: true as const, isDuplicate: true as const, duplicateItem };
+      }
+
+      // Step 2: Perform the assignment.
       let action: 'assign' | 'reassign' = 'assign';
       let previousBarcode: string | undefined;
       const historyEntry = {
@@ -2393,6 +2395,14 @@ export async function assignBarcode(params: {
         assignedAt: new Date(),
         assignedBy: { id: user.id, name: user.fullName },
       };
+      const indexEntry = removeUndefined({
+        code: normalizedBarcode,
+        itemId,
+        kind: (hasInstances && normalizedSerial ? 'asset-instance' : 'item') as 'item' | 'asset-instance',
+        instanceId: hasInstances && normalizedSerial ? normalizedSerial : undefined,
+        assignedAt: serverTimestamp(),
+        assignedBy: { id: user.id, name: user.fullName ?? null },
+      });
 
       // Handle instance-level assignment
       if (normalizedSerial && hasInstances) {
@@ -2404,7 +2414,7 @@ export async function assignBarcode(params: {
           a.barcode === normalizedSerial ||
           a.qr === normalizedSerial
         );
-        
+
         if (idx === -1) {
           throw new Error(`Serial ${normalizedSerial} not found on this asset.`);
         }
@@ -2428,13 +2438,6 @@ export async function assignBarcode(params: {
           assets: updatedAssets,
           updatedAt: serverTimestamp(),
         });
-
-        return {
-          action,
-          itemName: item.name,
-          resolvedSerial: normalizedSerial,
-          previousBarcode,
-        };
       } else {
         // Top-level assignment (no instances or single asset)
         previousBarcode = item.assignedBarcode ?? undefined;
@@ -2448,38 +2451,60 @@ export async function assignBarcode(params: {
           ],
           updatedAt: serverTimestamp(),
         });
-
-        return {
-          action,
-          itemName: item.name,
-          resolvedSerial: item.assetSerial,
-          previousBarcode,
-        };
       }
+
+      // Write the new index entry, and clear the old one on reassign (only
+      // when the code actually changed — same code re-registered is a no-op).
+      tx.set(indexRef, indexEntry);
+      if (previousBarcode && previousBarcode.trim().toUpperCase() !== indexKey) {
+        tx.delete(doc(db, 'barcode_index', previousBarcode.trim().toUpperCase()));
+      }
+
+      return {
+        blocked: false as const,
+        isDuplicate,
+        duplicateItem,
+        action,
+        itemName: item.name,
+        resolvedSerial: hasInstances && normalizedSerial ? normalizedSerial : item.assetSerial,
+        previousBarcode,
+      };
     });
 
-    // Step 4: Create inventory log
+    // If blocked by a duplicate (and not overridden), nothing was written — return the warning.
+    if (outcome.blocked) {
+      return {
+        success: false,
+        message: `Barcode already assigned to ${outcome.duplicateItem?.name}${
+          outcome.duplicateItem?.serial ? ` (Serial: ${outcome.duplicateItem.serial})` : ''
+        }`,
+        isDuplicate: true,
+        duplicateItem: outcome.duplicateItem,
+      };
+    }
+
+    // Step 3: Create inventory log
     const logEntry: any = {
       itemId,
-      itemName: result.itemName,
-      action: result.action === 'reassign' ? 'barcode_reassign' : 'barcode_assign',
-      serialNumber: result.resolvedSerial,
+      itemName: outcome.itemName,
+      action: outcome.action === 'reassign' ? 'barcode_reassign' : 'barcode_assign',
+      serialNumber: outcome.resolvedSerial,
       userId: user.id,
       userName: user.fullName || 'Unknown',
       timestamp: serverTimestamp(),
       details: {
         newBarcode: normalizedBarcode,
-        previousBarcode: result.previousBarcode,
+        previousBarcode: outcome.previousBarcode,
       },
-      notes: result.action === 'reassign'
-        ? `Reassigned barcode from ${result.previousBarcode} to ${normalizedBarcode}`
+      notes: outcome.action === 'reassign'
+        ? `Reassigned barcode from ${outcome.previousBarcode} to ${normalizedBarcode}`
         : `Assigned barcode ${normalizedBarcode}`,
     };
     await addDoc(collection(db, 'inventory_logs'), deepRemoveUndefined(logEntry) as any);
 
-    // Step 5: Create audit event
+    // Step 4: Create audit event
     await recordAuditEvent({
-      eventType: result.action === 'reassign' ? 'barcode_reassign' : 'barcode_assign',
+      eventType: outcome.action === 'reassign' ? 'barcode_reassign' : 'barcode_assign',
       source: 'inventory',
       sourceId: itemId,
       actor: {
@@ -2489,18 +2514,18 @@ export async function assignBarcode(params: {
       targets: [{ collection: 'inventory', docId: itemId }],
       details: {
         barcode: normalizedBarcode,
-        serial: result.resolvedSerial,
-        previousBarcode: result.previousBarcode,
+        serial: outcome.resolvedSerial,
+        previousBarcode: outcome.previousBarcode,
       },
     });
 
     return {
       success: true,
-      message: result.action === 'reassign'
-        ? `Barcode reassigned successfully${duplicateCheck.isDuplicate ? ' (duplicate allowed)' : ''}`
-        : `Barcode assigned successfully${duplicateCheck.isDuplicate ? ' (duplicate allowed)' : ''}`,
-      action: result.action,
-      isDuplicate: duplicateCheck.isDuplicate,
+      message: outcome.action === 'reassign'
+        ? `Barcode reassigned successfully${outcome.isDuplicate ? ' (duplicate allowed)' : ''}`
+        : `Barcode assigned successfully${outcome.isDuplicate ? ' (duplicate allowed)' : ''}`,
+      action: outcome.action,
+      isDuplicate: outcome.isDuplicate,
     };
   } catch (error: any) {
     console.error('assignBarcode failed:', error);

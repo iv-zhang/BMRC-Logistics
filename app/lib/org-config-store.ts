@@ -69,6 +69,7 @@ export function applyOrgConfigDoc(data: Partial<OrgConfigDoc> | undefined): void
     assetCategories: pickArray(data.assetCategories, d.assetCategories),
     statpackTypes: pickArray(data.statpackTypes, d.statpackTypes),
     itemCategories: pickArray(data.itemCategories, d.itemCategories),
+    itemFamilies: pickArray(data.itemFamilies, d.itemFamilies),
     thresholds: { ...d.thresholds, ...(data.thresholds ?? {}) },
   };
 }
@@ -91,6 +92,10 @@ export function getLocationsRuntime(): LocationDef[] {
 
 export function getItemCategoriesRuntime(): string[] {
   return getRuntimeConfig().itemCategories;
+}
+
+export function getItemFamiliesRuntime(): string[] {
+  return getRuntimeConfig().itemFamilies;
 }
 
 export function getAssetCategoriesRuntime(): AssetCategoryDef[] {

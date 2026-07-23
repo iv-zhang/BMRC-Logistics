@@ -3,11 +3,13 @@
 import React, { useEffect, useState } from 'react';
 import {
   Modal, ModalContent, ModalHeader, ModalBody, ModalFooter,
-  Button, Input, Select, SelectItem, Autocomplete, AutocompleteItem,
+  Button, Input, Select, SelectItem, Autocomplete, AutocompleteItem, Switch,
 } from '@heroui/react';
-import { Plus, Trash2 } from 'lucide-react';
+import { Plus, Trash2, Shield } from 'lucide-react';
 import { saveExchangeBag } from '@/app/lib/exchange-bags';
-import type { ExchangeBag, ExchangeBagLine, InventoryItem } from '@/app/types';
+import StorageLocationPicker from '@/app/components/storage-location-picker';
+import type { UseStorageLocationsReturn } from '@/app/hooks/useStorageLocations';
+import type { ExchangeBag, ExchangeBagLine, InventoryItem, StorageLocationRef } from '@/app/types';
 
 interface LineDraft {
   uid: string;
@@ -27,10 +29,12 @@ interface ExchangeBagEditorProps {
   categories: { id: string; name: string; shelfIds?: string[] }[];
   actor: { id?: string; name?: string };
   onSaved?: () => void;
+  /** Pre-fetched storage location data to avoid a duplicate onSnapshot listener. */
+  storageData?: UseStorageLocationsReturn;
 }
 
 export default function ExchangeBagEditor({
-  isOpen, onOpenChange, bag, items, categories, actor, onSaved,
+  isOpen, onOpenChange, bag, items, categories, actor, onSaved, storageData,
 }: ExchangeBagEditorProps) {
   const [name, setName] = useState('');
   const [categoryId, setCategoryId] = useState('');
@@ -38,6 +42,13 @@ export default function ExchangeBagEditor({
   const [fullCount, setFullCount] = useState('');
   const [emptyCount, setEmptyCount] = useState('');
   const [lines, setLines] = useState<LineDraft[]>([makeBlankLine()]);
+  const [storageLocation, setStorageLocation] = useState<StorageLocationRef | undefined>(undefined);
+  // Sealing is the default, not an opt-in: a full bag goes out sealed, and an
+  // intact seal is what passively proves it's full. Must stay in agreement with
+  // `bagRequiresSeal` in app/statpacks/check-off/page.tsx, which treats anything
+  // other than an explicit `false` as seal-required.
+  const [sealRequired, setSealRequired] = useState(true);
+  const [sealPrefix, setSealPrefix] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -53,6 +64,9 @@ export default function ExchangeBagEditor({
         ? bag.lines.map((l) => ({ uid: crypto.randomUUID(), itemId: l.itemId, qtyPerBag: String(l.qtyPerBag) }))
         : [makeBlankLine()]
     );
+    setStorageLocation(bag?.storageLocation);
+    setSealRequired(bag?.sealRequired ?? true);
+    setSealPrefix(bag?.sealPrefix ?? '');
     setError('');
   }, [isOpen, bag]);
 
@@ -87,7 +101,10 @@ export default function ExchangeBagEditor({
           id: bag?.id,
           name: trimmedName,
           categoryId: categoryId || undefined,
+          storageLocation,
           parBags: parBags.trim() === '' ? undefined : Number(parBags),
+          sealRequired,
+          sealPrefix: sealPrefix.trim() === '' ? undefined : sealPrefix.trim(),
           lines: bagLines,
           fullCount: Number.isFinite(Number(fullCount)) ? Math.max(0, Math.floor(Number(fullCount))) : 0,
           emptyCount: Number.isFinite(Number(emptyCount)) ? Math.max(0, Math.floor(Number(emptyCount))) : 0,
@@ -134,6 +151,38 @@ export default function ExchangeBagEditor({
                 value={parBags}
                 onValueChange={setParBags}
               />
+            </div>
+
+            <div className="bg-content2 rounded-large p-3">
+              <StorageLocationPicker
+                value={storageLocation}
+                onChange={setStorageLocation}
+                storageData={storageData}
+                label="Bag location"
+                size="sm"
+              />
+            </div>
+
+            <div className="bg-content2 rounded-large p-3 flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <Shield size={13} className="text-foreground-400" />
+                  <span className="text-sm font-semibold text-foreground">Seal required</span>
+                </div>
+                <Switch size="sm" isSelected={sealRequired} onValueChange={setSealRequired} aria-label="Seal required" />
+              </div>
+              <p className="text-xs text-foreground-400">
+                A full bag ships sealed — broken seal means replace, no counting contents.
+              </p>
+              {sealRequired && (
+                <Input
+                  label="Seal prefix (optional)"
+                  placeholder="e.g. BB-"
+                  size="sm"
+                  value={sealPrefix}
+                  onValueChange={setSealPrefix}
+                />
+              )}
             </div>
 
             <div className="flex flex-col gap-2">

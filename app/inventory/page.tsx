@@ -2,11 +2,16 @@
 
 import { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { Chip, Button, Spinner, Select, SelectItem } from '@heroui/react';
+import {
+  Chip, Button, Spinner, Select, SelectItem,
+  Modal, ModalContent, ModalHeader, ModalBody, ModalFooter,
+  Radio, RadioGroup,
+} from '@heroui/react';
 import type { Selection } from '@heroui/react';
 import {
   Plus, Minus, Search, MapPin, Download, ChevronDown, X, RotateCcw,
   PackageOpen, LayoutList, Table2, ArrowRight, SlidersHorizontal, Truck, Receipt,
+  Check, Trash2, Copy, AlertTriangle, ScanBarcode,
 } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import {
@@ -20,6 +25,7 @@ import ConsumeBoxModal from '@/app/components/consume-box-modal';
 import MedicationCabinetModal from '@/app/components/medication-cabinet-modal';
 import PurchaseModal from '@/app/components/purchase-modal';
 import ReceiveDrawer from '@/app/components/receive-drawer';
+import AssignBarcodeModal from '@/app/components/assign-barcode-modal';
 import { getOldestValidBatch, isBatchExpired } from '@/app/utils/batchHelpers';
 import { preparePayload, safeParseDate } from '@/app/utils/inventoryNormalization';
 import { ITEM_CATEGORIES, getInventoryAreaOptions } from '@/app/config/org-config';
@@ -29,6 +35,11 @@ import {
   computeBagStock, displayLocation, getItemStatus, formatExp, expTextColor,
   statusQtyColor, statusBarColor, isOnTheWay, incomingQty, type ItemStatus,
 } from '@/app/lib/item-status';
+import {
+  findDuplicateCandidates, previewInventoryMerge, mergeInventoryItems,
+  checkInventoryItemReferences, deleteInventoryItem, updateInventoryItemWithLog,
+  type MergePreview,
+} from '@/app/lib/inventory-merge';
 import type {
   InventoryItem, InventoryBatch, ItemCategory, User, BatchStatus, MedicationInfo,
 } from '@/app/types';
@@ -90,6 +101,27 @@ export default function InventoryPage() {
   const [consumeBoxItem, setConsumeBoxItem] = useState<InventoryItem | null>(null);
   const [medCabinetOpen, setMedCabinetOpen] = useState(false);
   const [medCabinetItem, setMedCabinetItem] = useState<InventoryItem | null>(null);
+  const [assignBarcodeItem, setAssignBarcodeItem] = useState<InventoryItem | null>(null);
+  const [assignBarcodeOpen, setAssignBarcodeOpen] = useState(false);
+
+  // ── Merge / delete (multi-select) ───────────────────────────────────────────
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [dupBannerDismissed, setDupBannerDismissed] = useState(false);
+  const [dupReviewOpen, setDupReviewOpen] = useState(false);
+
+  const [mergeModalOpen, setMergeModalOpen] = useState(false);
+  const [mergeCandidateIds, setMergeCandidateIds] = useState<string[]>([]);
+  const [mergeSurvivorId, setMergeSurvivorId] = useState<string>('');
+  const [mergePreview, setMergePreview] = useState<MergePreview | null>(null);
+  const [mergeError, setMergeError] = useState<string>('');
+  const [mergeLoading, setMergeLoading] = useState(false);
+  const [mergePreviewLoading, setMergePreviewLoading] = useState(false);
+
+  interface DeleteCheck { id: string; name: string; total: number; refCounts: Record<string, number>; error?: string }
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteChecks, setDeleteChecks] = useState<DeleteCheck[]>([]);
+  const [deleteChecking, setDeleteChecking] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
 
   // ── Drawer history ─────────────────────────────────────────────────────────
   const [drawerHistory, setDrawerHistory] = useState<Array<{
@@ -125,7 +157,9 @@ export default function InventoryPage() {
     if (!user) return;
     const q = query(collection(db, 'inventory'), orderBy('name'));
     return onSnapshot(q, (snap) => {
-      const items: InventoryItem[] = snap.docs.map((d) => {
+      // Archived (merged-away) losers stay in Firestore for audit history but
+      // must not clutter normal browsing/duplicate-detection.
+      const items: InventoryItem[] = snap.docs.filter((d) => !d.data().isArchived).map((d) => {
         const raw = d.data();
         const item: InventoryItem = {
           id: d.id,
@@ -258,7 +292,10 @@ export default function InventoryPage() {
     setOpLoading(true);
     try {
       const payload = preparePayload({ ...data, updatedAt: serverTimestamp(), updatedBy: user.uid });
-      await updateDoc(doc(db, 'inventory', id), payload);
+      const actorForLog = { uid: user.uid, name: user.displayName || user.email || 'Unknown' };
+      // Routes the write through the shared helper so edits also land an
+      // `inventory_logs` row (previously only the auditEvents entry below).
+      await updateInventoryItemWithLog({ itemId: id, itemName: data.name, data: payload, actor: actorForLog });
       await recordAuditEvent({
         eventType: 'item_updated',
         sourceId: id,
@@ -373,7 +410,107 @@ export default function InventoryPage() {
     a.click(); URL.revokeObjectURL(url);
   }
 
+  // ── Merge / delete (duplicate cleanup) ──────────────────────────────────────
+  const actorForMerge = user ? { uid: user.uid, name: user.displayName || user.email || 'Unknown', email: user.email } : null;
+
+  function toggleSelect(id: string) {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function openMergeModal(ids: string[]) {
+    const uniq = Array.from(new Set(ids));
+    if (uniq.length < 2) return;
+    setMergeCandidateIds(uniq);
+    setMergeSurvivorId(uniq[0]);
+    setMergeError('');
+    setMergePreview(null);
+    setDupReviewOpen(false);
+    setMergeModalOpen(true);
+  }
+
+  // Load the merge preview whenever the modal opens or the chosen survivor changes.
+  useEffect(() => {
+    if (!mergeModalOpen || !mergeSurvivorId || mergeCandidateIds.length < 2) return;
+    let cancelled = false;
+    setMergePreviewLoading(true);
+    setMergeError('');
+    const loserIds = mergeCandidateIds.filter(id => id !== mergeSurvivorId);
+    previewInventoryMerge(mergeSurvivorId, loserIds)
+      .then(preview => { if (!cancelled) setMergePreview(preview); })
+      .catch(e => { if (!cancelled) { setMergeError(e instanceof Error ? e.message : String(e)); setMergePreview(null); } })
+      .finally(() => { if (!cancelled) setMergePreviewLoading(false); });
+    return () => { cancelled = true; };
+  }, [mergeModalOpen, mergeSurvivorId, mergeCandidateIds]);
+
+  async function handleConfirmMerge() {
+    if (!actorForMerge || !mergeSurvivorId) return;
+    const loserIds = mergeCandidateIds.filter(id => id !== mergeSurvivorId);
+    if (loserIds.length === 0) return;
+    setMergeLoading(true);
+    try {
+      await mergeInventoryItems({ survivorId: mergeSurvivorId, loserIds, actor: actorForMerge });
+      setMergeModalOpen(false);
+      setMergeCandidateIds([]);
+      setMergeSurvivorId('');
+      setMergePreview(null);
+      setSelectedIds(new Set());
+    } catch (e) {
+      setMergeError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMergeLoading(false);
+    }
+  }
+
+  async function openDeleteConfirm(ids: string[]) {
+    const uniq = Array.from(new Set(ids));
+    if (uniq.length === 0) return;
+    setDeleteConfirmOpen(true);
+    setDeleteChecking(true);
+    setDeleteChecks(uniq.map(id => ({ id, name: inventory.find(i => i.id === id)?.name || id, total: -1, refCounts: {} })));
+    try {
+      const results = await Promise.all(uniq.map(async (id) => {
+        const name = inventory.find(i => i.id === id)?.name || id;
+        try {
+          const { refCounts, total } = await checkInventoryItemReferences(id);
+          return { id, name, total, refCounts };
+        } catch (e) {
+          return { id, name, total: -1, refCounts: {}, error: e instanceof Error ? e.message : String(e) };
+        }
+      }));
+      setDeleteChecks(results);
+    } finally {
+      setDeleteChecking(false);
+    }
+  }
+
+  async function handleConfirmDelete() {
+    if (!actorForMerge) return;
+    const deletable = deleteChecks.filter(c => c.total === 0);
+    if (deletable.length === 0) return;
+    setDeleteLoading(true);
+    try {
+      for (const c of deletable) {
+        try {
+          await deleteInventoryItem({ itemId: c.id, actor: actorForMerge });
+        } catch (e) {
+          console.error(`Failed to delete ${c.name}`, e);
+        }
+      }
+      setDeleteConfirmOpen(false);
+      setDeleteChecks([]);
+      setSelectedIds(new Set());
+    } finally {
+      setDeleteLoading(false);
+    }
+  }
+
   // ── Computed ───────────────────────────────────────────────────────────────
+  const duplicateGroups = useMemo(() => findDuplicateCandidates(inventory), [inventory]);
+
   const statusCounts = useMemo(() => {
     const c = { ok: 0, low: 0, out: 0, expired: 0, expiring: 0 };
     for (const item of inventory) c[getItemStatus(item)]++;
@@ -381,6 +518,8 @@ export default function InventoryPage() {
   }, [inventory]);
 
   const onTheWayCount = useMemo(() => inventory.filter(isOnTheWay).length, [inventory]);
+
+  const namingReviewCount = useMemo(() => inventory.filter(i => !!i.namingReviewNeeded).length, [inventory]);
 
   const catCounts = useMemo(() => {
     const m: Record<string, number> = {};
@@ -408,6 +547,7 @@ export default function InventoryPage() {
         if (statusFilter === 'expired') return s === 'expired';
         if (statusFilter === 'expiring') return s === 'expiring';
         if (statusFilter === 'on_the_way') return isOnTheWay(i);
+        if (statusFilter === 'naming_review') return !!i.namingReviewNeeded;
         return true;
       });
     }
@@ -457,6 +597,7 @@ export default function InventoryPage() {
     { key: 'expired',    label: 'Expired',       count: statusCounts.expired,                dot: 'bg-danger',         icon: false },
     { key: 'expiring',   label: 'Expiring Soon', count: statusCounts.expiring,               dot: 'bg-warning/60',     icon: false },
     { key: 'on_the_way', label: 'On the way',    count: onTheWayCount,                       dot: 'bg-primary',        icon: true },
+    { key: 'naming_review', label: 'Naming Review', count: namingReviewCount,                dot: 'bg-warning',        icon: false },
   ] as const;
 
   // ── Shared toolbar cluster (view toggle + Export + Log Purchase) ───────────
@@ -506,6 +647,63 @@ export default function InventoryPage() {
         <div className="flex-none mb-6">
           <h1 className="text-2xl font-semibold text-foreground">Inventory</h1>
         </div>
+
+        {/* ── Possible duplicates banner ────────────────────────────────── */}
+        {duplicateGroups.length > 0 && !dupBannerDismissed && (
+          <div className="flex-none flex items-center gap-3 bg-warning-50 dark:bg-warning-900/20 border border-warning/30 rounded-large px-4 py-2.5 mb-4 flex-wrap">
+            <AlertTriangle size={16} className="text-warning flex-none" />
+            <span className="text-sm font-semibold text-warning">
+              <span className="font-mono tabular-nums">{duplicateGroups.length}</span> possible duplicate group{duplicateGroups.length !== 1 ? 's' : ''} found
+            </span>
+            <div className="flex items-center gap-2 ml-auto">
+              <Button size="sm" variant="flat" color="warning" onPress={() => setDupReviewOpen(true)}>
+                Review
+              </Button>
+              <button
+                onClick={() => setDupBannerDismissed(true)}
+                aria-label="Dismiss"
+                className="w-7 h-7 rounded-medium flex items-center justify-center text-warning/70 hover:bg-warning-100 dark:hover:bg-warning-900/30 transition-colors"
+              >
+                <X size={15} />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Selection bar ─────────────────────────────────────────────── */}
+        {selectedIds.size > 0 && (
+          <div className="flex-none flex items-center gap-3 bg-primary-50 dark:bg-primary-900/20 border border-primary/30 rounded-large px-4 py-2.5 mb-4 flex-wrap">
+            <span className="text-sm font-semibold text-primary">
+              <span className="font-mono tabular-nums">{selectedIds.size}</span> selected
+            </span>
+            <div className="flex items-center gap-2 ml-auto">
+              <Button size="sm" variant="flat" onPress={() => setSelectedIds(new Set())}>
+                Clear
+              </Button>
+              <Button
+                size="sm"
+                color="primary"
+                variant="flat"
+                startContent={<Copy size={14} />}
+                isDisabled={selectedIds.size < 2}
+                onPress={() => openMergeModal(Array.from(selectedIds))}
+              >
+                Merge selected
+              </Button>
+              {isAdmin && (
+                <Button
+                  size="sm"
+                  color="danger"
+                  variant="flat"
+                  startContent={<Trash2 size={14} />}
+                  onPress={() => openDeleteConfirm(Array.from(selectedIds))}
+                >
+                  Delete selected
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* ══ LIST VIEW ══════════════════════════════════════════════════════ */}
         {viewMode === 'list' && (
@@ -673,11 +871,22 @@ export default function InventoryPage() {
                     ? 'bg-primary-50/40 dark:bg-primary-950/20 border-primary/25 dark:border-primary/15'
                     : getCardTint(status);
 
+                  const isSelected = selectedIds.has(item.id);
                   return (
-                    <div
-                      key={item.id}
+                    <div key={item.id} className="flex items-start gap-2">
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); toggleSelect(item.id); }}
+                        aria-label={isSelected ? 'Deselect item' : 'Select item'}
+                        className={`flex-none mt-4 w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-colors duration-150 ${
+                          isSelected ? 'bg-primary border-primary' : 'bg-content1 border-divider hover:border-primary/50'
+                        }`}
+                      >
+                        {isSelected && <Check size={13} strokeWidth={3.5} className="text-white" />}
+                      </button>
+                      <div
                       onClick={() => setDetailItem(item)}
-                      className={`flex flex-wrap sm:flex-nowrap gap-3 sm:gap-4 items-center border rounded-[14px] px-4 py-4 cursor-pointer transition-all duration-150 hover:-translate-y-px hover:shadow-[0_6px_22px_rgba(16,24,40,0.09)] dark:hover:shadow-[0_6px_22px_rgba(0,0,0,0.35)] ${cardTint}`}
+                      className={`flex-1 min-w-0 flex flex-wrap sm:flex-nowrap gap-3 sm:gap-4 items-center border rounded-[14px] px-4 py-4 cursor-pointer transition-all duration-150 hover:-translate-y-px hover:shadow-[0_6px_22px_rgba(16,24,40,0.09)] dark:hover:shadow-[0_6px_22px_rgba(0,0,0,0.35)] ${cardTint}`}
                     >
                       {/* Category badge */}
                       <div className={`w-[50px] h-[50px] rounded-[13px] flex items-center justify-center font-mono font-semibold text-[15px] flex-none ${cfg.bg} ${cfg.text}`}>
@@ -775,6 +984,7 @@ export default function InventoryPage() {
                           </span>
                         </div>
                       )}
+                      </div>
                     </div>
                   );
                 })
@@ -848,7 +1058,8 @@ export default function InventoryPage() {
               <div className="min-w-[760px]">
               {/* Header */}
               <div className="grid gap-4 px-5 py-3 bg-content2 border-b border-divider text-[11px] font-semibold uppercase tracking-wide text-foreground-400"
-                style={{ gridTemplateColumns: '2.3fr 1.3fr 1.2fr 100px 1.4fr 104px' }}>
+                style={{ gridTemplateColumns: '32px 2.3fr 1.3fr 1.2fr 100px 1.4fr 104px' }}>
+                <span />
                 <span>Item</span>
                 <span>Location</span>
                 <span>Lot · Expires</span>
@@ -868,6 +1079,7 @@ export default function InventoryPage() {
                   const qtyColor = statusQtyColor(status);
                   const onTheWay = isOnTheWay(item);
                   const isPlaceholder = item.orderStatus === 'on_order';
+                  const isSelected = selectedIds.has(item.id);
                   const sortedBatches = [...(item.batches || [])].sort(
                     (a, b) => (a.expirationDate?.getTime() ?? Infinity) - (b.expirationDate?.getTime() ?? Infinity),
                   );
@@ -878,8 +1090,21 @@ export default function InventoryPage() {
                       <div
                         onClick={() => setDetailItem(item)}
                         className="grid gap-4 px-5 py-3 cursor-pointer hover:bg-content2 transition-colors duration-150"
-                        style={{ gridTemplateColumns: '2.3fr 1.3fr 1.2fr 100px 1.4fr 104px' }}
+                        style={{ gridTemplateColumns: '32px 2.3fr 1.3fr 1.2fr 100px 1.4fr 104px' }}
                       >
+                        {/* Select */}
+                        <div className="self-center" onClick={e => e.stopPropagation()}>
+                          <button
+                            type="button"
+                            onClick={() => toggleSelect(item.id)}
+                            aria-label={isSelected ? 'Deselect item' : 'Select item'}
+                            className={`w-5 h-5 rounded-[6px] border-2 flex items-center justify-center transition-colors duration-150 ${
+                              isSelected ? 'bg-primary border-primary' : 'bg-content1 border-divider hover:border-primary/50'
+                            }`}
+                          >
+                            {isSelected && <Check size={11} strokeWidth={3.5} className="text-white" />}
+                          </button>
+                        </div>
                         {/* Item */}
                         <div className="flex items-center gap-3 min-w-0">
                           <div className={`w-9 h-9 rounded-[9px] flex items-center justify-center font-mono font-semibold text-[11px] flex-none ${cfg.bg} ${cfg.text}`}>
@@ -1252,6 +1477,17 @@ export default function InventoryPage() {
                   )}
                 </div>
 
+                {/* Assign barcode / print label — any inventory item */}
+                <Button
+                  variant="flat"
+                  color="primary"
+                  fullWidth
+                  startContent={<ScanBarcode size={15} />}
+                  onPress={() => { setDetailItem(null); setAssignBarcodeItem(item); setAssignBarcodeOpen(true); }}
+                >
+                  Assign barcode / print label
+                </Button>
+
                 {/* Med cabinet link */}
                 {item.isMedication && (
                   <Button
@@ -1329,6 +1565,211 @@ export default function InventoryPage() {
         actor={actor}
         onReceived={() => setReceiveItem(null)}
       />
+      <AssignBarcodeModal
+        isOpen={assignBarcodeOpen}
+        onClose={() => { setAssignBarcodeOpen(false); setAssignBarcodeItem(null); }}
+        item={assignBarcodeItem}
+        user={user ? { id: user.uid, fullName: user.displayName || user.email || 'Unknown' } : null}
+      />
+
+      {/* ── Duplicate review modal ────────────────────────────────────────── */}
+      <Modal isOpen={dupReviewOpen} onOpenChange={setDupReviewOpen} size="2xl" scrollBehavior="inside">
+        <ModalContent>
+          <>
+            <ModalHeader>Possible duplicates</ModalHeader>
+            <ModalBody className="pb-6">
+              {duplicateGroups.length === 0 ? (
+                <p className="text-sm text-foreground-400">No duplicate groups found.</p>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  {duplicateGroups.map(group => (
+                    <div key={group.key} className="border border-divider rounded-large p-3">
+                      <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+                        <Chip size="sm" variant="flat" color={group.reason === 'fuzzy' ? 'warning' : 'primary'}>
+                          {group.reason === 'sku' ? 'Same SKU'
+                            : group.reason === 'barcode' ? 'Same barcode'
+                            : group.reason === 'name' ? 'Same name'
+                            : 'Similar name'}
+                        </Chip>
+                        <Button
+                          size="sm"
+                          color="primary"
+                          variant="flat"
+                          startContent={<Copy size={13} />}
+                          onPress={() => openMergeModal(group.items.map(i => i.id))}
+                        >
+                          Merge these {group.items.length}
+                        </Button>
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        {group.items.map(it => (
+                          <div key={it.id} className="flex items-center justify-between text-sm">
+                            <span className="text-foreground">{it.name}</span>
+                            <span className="text-xs font-mono tabular-nums text-foreground-400">
+                              {computeBagStock(it).totalItems} on hand
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </ModalBody>
+          </>
+        </ModalContent>
+      </Modal>
+
+      {/* ── Merge modal ────────────────────────────────────────────────────── */}
+      <Modal isOpen={mergeModalOpen} onOpenChange={setMergeModalOpen} size="2xl" scrollBehavior="inside">
+        <ModalContent>
+          <>
+            <ModalHeader>Merge duplicate items</ModalHeader>
+            <ModalBody className="pb-2 gap-4">
+              <p className="text-sm text-foreground-500">
+                Choose the item that survives. Its stock absorbs the others&apos; (same tracking mode only), and any
+                statpack, exchange bag, buy list, task, or purchase line pointing at a merged item is repointed to the
+                survivor. The merged items are archived, never deleted.
+              </p>
+              <RadioGroup value={mergeSurvivorId} onValueChange={setMergeSurvivorId} label="Survivor">
+                {mergeCandidateIds.map(id => {
+                  const it = inventory.find(i => i.id === id);
+                  if (!it) return null;
+                  const bag = computeBagStock(it);
+                  return (
+                    <Radio key={id} value={id} description={`${bag.totalItems} on hand · ${it.category}`}>
+                      {it.name}
+                    </Radio>
+                  );
+                })}
+              </RadioGroup>
+
+              {mergePreviewLoading && (
+                <div className="flex items-center gap-2 text-sm text-foreground-400">
+                  <Spinner size="sm" color="primary" /> Checking references…
+                </div>
+              )}
+
+              {mergeError && (
+                <div className="bg-danger-50 dark:bg-danger-950/20 border border-danger/30 rounded-large p-3 text-sm text-danger">
+                  {mergeError}
+                </div>
+              )}
+
+              {mergePreview && !mergeError && (
+                <div className="bg-content2 rounded-large p-4 flex flex-col gap-4">
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1.5">
+                      Stock summary — {mergePreview.mode}
+                    </div>
+                    <div className="flex flex-col gap-1 text-sm">
+                      {mergePreview.stockBefore.map(s => (
+                        <div key={s.id} className="flex items-center justify-between">
+                          <span className={s.id === mergePreview.survivorId ? 'font-semibold text-foreground' : 'text-foreground-500'}>
+                            {s.name}{s.id === mergePreview.survivorId ? ' (survivor)' : ''}
+                          </span>
+                          <span className="font-mono tabular-nums text-foreground-500">{s.total}</span>
+                        </div>
+                      ))}
+                      <div className="flex items-center justify-between border-t border-divider pt-1.5 mt-0.5">
+                        <span className="font-semibold text-foreground">Total after merge</span>
+                        <span className="font-mono font-semibold tabular-nums text-success">{mergePreview.stockAfterSurvivor}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1.5">
+                      References to repoint
+                    </div>
+                    {mergePreview.repointedTotal === 0 ? (
+                      <p className="text-xs text-foreground-400">No other records reference the merged item(s).</p>
+                    ) : (
+                      <div className="flex flex-wrap gap-1.5">
+                        {Object.entries(mergePreview.repointedCounts).filter(([, n]) => n > 0).map(([k, n]) => (
+                          <Chip key={k} size="sm" variant="flat" color="primary">{n} {k}</Chip>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </ModalBody>
+            <ModalFooter>
+              <Button variant="light" onPress={() => setMergeModalOpen(false)}>Cancel</Button>
+              <Button
+                color="primary"
+                isDisabled={!mergePreview || !!mergeError || mergeLoading || mergePreviewLoading}
+                isLoading={mergeLoading}
+                onPress={handleConfirmMerge}
+              >
+                Confirm merge
+              </Button>
+            </ModalFooter>
+          </>
+        </ModalContent>
+      </Modal>
+
+      {/* ── Delete confirmation modal ──────────────────────────────────────── */}
+      <Modal isOpen={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen} size="lg" scrollBehavior="inside">
+        <ModalContent>
+          <>
+            <ModalHeader>Delete items</ModalHeader>
+            <ModalBody className="pb-2">
+              {deleteChecking ? (
+                <div className="flex items-center gap-2 text-sm text-foreground-400">
+                  <Spinner size="sm" color="primary" /> Checking references…
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {deleteChecks.map(c => (
+                    <div
+                      key={c.id}
+                      className={`border rounded-large p-3 ${
+                        c.total === 0
+                          ? 'border-success/30 bg-success-50/60 dark:bg-success-950/20'
+                          : 'border-danger/30 bg-danger-50/60 dark:bg-danger-950/20'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-semibold text-foreground">{c.name}</span>
+                        {c.total === 0 ? (
+                          <Chip size="sm" variant="flat" color="success">Deletable</Chip>
+                        ) : (
+                          <Chip size="sm" variant="flat" color="danger">Blocked</Chip>
+                        )}
+                      </div>
+                      {c.total > 0 && (
+                        <>
+                          <div className="flex flex-wrap gap-1.5 mt-2">
+                            {Object.entries(c.refCounts).filter(([, n]) => n > 0).map(([k, n]) => (
+                              <Chip key={k} size="sm" variant="flat" color="warning">{n} {k}</Chip>
+                            ))}
+                          </div>
+                          <p className="text-xs text-foreground-500 mt-1.5">
+                            Still referenced elsewhere — merge into another item instead of deleting.
+                          </p>
+                        </>
+                      )}
+                      {c.error && <p className="text-xs text-danger mt-1.5">{c.error}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </ModalBody>
+            <ModalFooter>
+              <Button variant="light" onPress={() => setDeleteConfirmOpen(false)}>Cancel</Button>
+              <Button
+                color="danger"
+                isDisabled={deleteChecking || deleteLoading || deleteChecks.filter(c => c.total === 0).length === 0}
+                isLoading={deleteLoading}
+                onPress={handleConfirmDelete}
+              >
+                Delete {deleteChecks.filter(c => c.total === 0).length} item(s)
+              </Button>
+            </ModalFooter>
+          </>
+        </ModalContent>
+      </Modal>
 
       {opLoading && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] bg-content1 border border-divider rounded-large px-4 py-2 shadow-lg flex items-center gap-2 text-sm text-foreground-600">

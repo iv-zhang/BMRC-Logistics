@@ -35,6 +35,7 @@ export interface OrgConfigResult {
   roles: RoleDef[];
   verificationFields: Record<string, VerificationFieldDef>;
   itemCategories: readonly string[];
+  itemFamilies: readonly string[];
   /** True until the first Firestore snapshot resolves (defaults are used meanwhile). */
   loading: boolean;
   // Convenience lookups
@@ -63,6 +64,7 @@ function buildResult(cfg: OrgConfigDoc, loading: boolean): OrgConfigResult {
     roles: ROLES,
     verificationFields: VERIFICATION_FIELDS,
     itemCategories: cfg.itemCategories,
+    itemFamilies: cfg.itemFamilies,
     loading,
     // Helper fns read the same runtime store the subscription updates, so they
     // stay in sync with the live config.

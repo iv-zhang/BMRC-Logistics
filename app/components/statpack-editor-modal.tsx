@@ -14,12 +14,20 @@
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Autocomplete, AutocompleteItem } from '@heroui/react';
+import { collection, onSnapshot } from 'firebase/firestore';
+import { db } from '@/firebase';
 import {
   Plus, Minus, Link2, Search, MapPin, ChevronDown, Pencil, X, Check,
-  Trash2, Shield, AlertTriangle, GripVertical, RefreshCw, Save, Package,
+  Trash2, Shield, AlertTriangle, GripVertical, Save, Package, PackagePlus,
 } from 'lucide-react';
-import type { Statpack, StatpackItem, StatpackPocket, StatpackWarning, InventoryItem } from '@/app/types';
+import type {
+  Statpack, StatpackItem, StatpackPocket, StatpackWarning, InventoryItem,
+  ExchangeBag, ExchangeBagAssignment, InventoryBatch,
+} from '@/app/types';
 import { getCatCfg } from '@/app/components/category-badge';
+import { subscribeExchangeBags, resolveBagAssignments } from '@/app/lib/exchange-bags';
+import { batchHasStock } from '@/app/lib/item-status';
 
 type Pocket = StatpackPocket;
 type Filter = 'all' | 'assets' | 'contents';
@@ -51,17 +59,14 @@ function statusMeta(s: string): { dot: string; text: string; soft: string } {
 }
 
 const LOCATION_PRESETS = ['Vehicle 1', 'Vehicle 2', 'HQ · Back Room', 'HQ · Front', 'CPR Closet', 'Event Trailer'];
-const SWAP_CHOICES: { name: string; category: string }[] = [
-  { name: 'Combat Gauze (QuikClot)', category: 'Trauma' },
-  { name: 'Israeli Bandage 6"', category: 'Trauma' },
-  { name: 'Nasopharyngeal Airway', category: 'Airway' },
-  { name: 'Nitrile Gloves — L', category: 'PPE' },
-  { name: 'Oral Glucose 15g', category: 'Meds' },
-];
 
 // ── item-level derived helpers ─────────────────────────────────────
 const isAsset = (it: StatpackItem) => !!(it.serialNumber || it.assetInstanceId);
 const isOxygen = (it: StatpackItem) => !!it.itemDetails?.isOxygen;
+// A "placeholder" line has no real inventory-backed itemId/batchId — a genuinely
+// off-book item added via the escape hatch in the add-item popover, distinct from
+// (and visibly flagged apart from) the default inventory-linked add path.
+const isPlaceholder = (it: StatpackItem) => it.batchId === 'placeholder' || it.itemId.startsWith('placeholder-');
 const itemName = (it: StatpackItem) => it.itemDetails?.name || it.variantName || it.itemId || 'Item';
 const itemCategory = (it: StatpackItem) => (it.itemDetails?.category as string) || 'Other';
 const itemValue = (it: StatpackItem) => it.itemValue ?? it.itemDetails?.assetValue ?? 0;
@@ -88,7 +93,47 @@ function expLabel(d: unknown): string {
   return new Date(y, mo - 1, 1).toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
 }
 
-type Popover = null | 'name' | 'status' | 'location';
+// ── inventory hydration (Timestamp → Date), same pattern as app/restock/page.tsx ──
+function toDateVal(v: unknown): Date | undefined {
+  if (!v) return undefined;
+  if (v instanceof Date) return v;
+  const anyV = v as { toDate?: () => Date };
+  if (typeof anyV.toDate === 'function') return anyV.toDate();
+  const d = new Date(v as string);
+  return isNaN(d.getTime()) ? undefined : d;
+}
+function hydrateInventoryLite(raw: Record<string, unknown>): InventoryItem {
+  const rawBatches = raw.batches;
+  const batches = Array.isArray(rawBatches)
+    ? rawBatches.map((b: unknown) => {
+        const bb = b as Record<string, unknown>;
+        return { ...bb, expirationDate: toDateVal(bb?.expirationDate), openDate: toDateVal(bb?.openDate) };
+      })
+    : rawBatches;
+  return { ...raw, batches } as unknown as InventoryItem;
+}
+
+/**
+ * Pick a real batch to link a new content line to: the earliest-expiring
+ * non-expired batch that still has stock (per `batchHasStock`). Returns null
+ * when the item has nothing linkable — the caller must refuse to add the
+ * line rather than fabricate a batchId (see the addItem fix in Workstream D).
+ */
+function resolveBatchForItem(item: InventoryItem): InventoryBatch | null {
+  const now = new Date();
+  const candidates = (item.batches || []).filter(
+    (b) => batchHasStock(b) && (!b.expirationDate || b.expirationDate >= now),
+  );
+  if (candidates.length === 0) return null;
+  return [...candidates].sort((a, b) => {
+    const at = a.expirationDate ? a.expirationDate.getTime() : Infinity;
+    const bt = b.expirationDate ? b.expirationDate.getTime() : Infinity;
+    return at - bt;
+  })[0];
+}
+
+type Popover = null | 'name' | 'status' | 'location' | 'additem';
+type RightTab = 'contents' | 'bags';
 
 export default function StatpackEditorModal({
   pack,
@@ -112,11 +157,14 @@ export default function StatpackEditorModal({
   const [pocket, setPocket] = useState<Pocket | 'all'>('all');
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<number | null>(null);
-  const [swapOpen, setSwapOpen] = useState<number | null>(null);
   const [popover, setPopover] = useState<Popover>(null);
   const [nameDraft, setNameDraft] = useState('');
   const [locDraft, setLocDraft] = useState('');
   const [saving, setSaving] = useState(false);
+  const [rightTab, setRightTab] = useState<RightTab>('contents');
+  const [addItemError, setAddItemError] = useState('');
+  const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
+  const [exchangeBags, setExchangeBags] = useState<ExchangeBag[]>([]);
   const listRef = useRef<HTMLDivElement | null>(null);
 
   // Seed the local draft ONCE per open. `pack` may be a live onSnapshot object
@@ -127,21 +175,39 @@ export default function StatpackEditorModal({
   useEffect(() => {
     if (!isOpen) { seededRef.current = false; return; }
     if (!seededRef.current && pack) {
-      setDraft(JSON.parse(JSON.stringify(pack)) as Statpack);
+      const seeded = JSON.parse(JSON.stringify(pack)) as Statpack;
+      // Normalize the legacy flat `exchangeBagIds` into pocket-aware assignments
+      // once, at seed time, via the shared resolver — never read either raw
+      // field directly elsewhere in this component.
+      seeded.exchangeBagAssignments = resolveBagAssignments(seeded);
+      setDraft(seeded);
       setFilter('all'); setPocket('all'); setSearch('');
-      setExpanded(null); setSwapOpen(null); setPopover(null);
+      setExpanded(null); setPopover(null); setRightTab('contents'); setAddItemError('');
       seededRef.current = true;
     }
   }, [isOpen, pack]);
 
-  // dismiss popovers / swap menus on outside click
+  // Inventory + exchange bag subscriptions — only while the editor is open.
+  useEffect(() => {
+    if (!isOpen) return;
+    const unsub = onSnapshot(collection(db, 'inventory'), (snap) => {
+      setInventoryItems(snap.docs.map((d) => hydrateInventoryLite({ id: d.id, ...d.data() } as Record<string, unknown>)));
+    });
+    return () => unsub();
+  }, [isOpen]);
+  useEffect(() => {
+    if (!isOpen) return;
+    const unsub = subscribeExchangeBags(setExchangeBags);
+    return () => unsub();
+  }, [isOpen]);
+
+  // dismiss popovers on outside click
   useEffect(() => {
     if (!isOpen) return;
     const onDown = (e: MouseEvent) => {
       const t = e.target as HTMLElement;
       if (t.closest && t.closest('[data-keepopen]')) return;
       setPopover(null);
-      setSwapOpen(null);
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
@@ -151,6 +217,14 @@ export default function StatpackEditorModal({
     setDraft(prev => { if (!prev) return prev; const next = structuredClone(prev); fn(next); return next; });
   const patchItem = (idx: number, fn: (it: StatpackItem) => void) =>
     setDraft(prev => { if (!prev) return prev; const next = structuredClone(prev); const it = next.contents[idx]; if (it) fn(it); return next; });
+  const patchBagAssignment = (idx: number, fn: (a: ExchangeBagAssignment) => void) =>
+    patchPack(p => {
+      const list = [...(p.exchangeBagAssignments ?? [])];
+      const item = { ...list[idx] };
+      fn(item);
+      list[idx] = item;
+      p.exchangeBagAssignments = list;
+    });
 
   const items = useMemo<StatpackItem[]>(() => draft?.contents ?? [], [draft]);
 
@@ -189,28 +263,74 @@ export default function StatpackEditorModal({
     return { count: its.length, assets: its.filter(isAsset).length };
   };
 
-  const addItem = (asset: boolean) => {
+  // Add a REAL inventory-backed content line: sets a real itemId, and for
+  // consumables resolves a real batchId from the item's own batches (never a
+  // fabricated `manual-<ts>`/`manual` pair — that made it impossible to add a
+  // content line that actually points at real stock). Assets (isAsset) aren't
+  // batch-tracked, so they get `batchId: ''` — the same convention used by real
+  // seed/asset-linked statpack entries elsewhere in the app.
+  const addRealItem = (itemId: string) => {
+    const item = inventoryItems.find(i => i.id === itemId);
+    if (!item) return;
+    setAddItemError('');
     const target: Pocket = pocket !== 'all' ? pocket : 'main';
-    const details = { name: asset ? 'New asset' : 'New item', category: asset ? 'Vitals' : 'Other' } as unknown as InventoryItem;
+    const asset = !!item.isAsset;
+    let batch: InventoryBatch | null = null;
+    if (!asset) {
+      batch = resolveBatchForItem(item);
+      if (!batch) {
+        setAddItemError(`"${item.name}" has no in-stock, unexpired batch to link. Add stock first, or use the placeholder line below.`);
+        return;
+      }
+    }
     const base: StatpackItem = {
-      itemId: `manual-${Date.now()}`,
-      batchId: 'manual',
+      itemId: item.id,
+      batchId: asset ? '' : batch!.id,
       requiredQuantity: 1,
       // New expected items start at 0 on-hand: the pack physically lacks the item
       // until someone stocks it, so the next check-off surfaces it as short.
       currentQuantity: 0,
       pocket: target,
-      itemValue: 0,
-      itemDetails: details,
+      itemValue: item.assetValue ?? 0,
+      itemDetails: item,
       verificationRules: asset ? { requireSerial: true } : {},
       customWarnings: [],
-      ...(asset ? { serialNumber: `ASSET-${Math.floor(Math.random() * 900 + 100)}` } : {}),
+      ...(asset && item.assetSerial ? { serialNumber: item.assetSerial } : {}),
+      ...(batch?.expirationDate ? { expirationDate: batch.expirationDate } : {}),
+      ...(batch?.lotNumber ? { lotNumber: batch.lotNumber } : {}),
     };
     patchPack(p => { p.contents.unshift(base); });
     setExpanded(0);
-    setSwapOpen(null);
+    setPopover(null);
     if (listRef.current) listRef.current.scrollTop = 0;
   };
+
+  // Escape hatch for genuinely off-book items with no inventory record.
+  // Visibly distinct (amber, "placeholder" labeled) — not the default path.
+  const addPlaceholderItem = () => {
+    const target: Pocket = pocket !== 'all' ? pocket : 'main';
+    const base: StatpackItem = {
+      itemId: `placeholder-${Date.now()}`,
+      batchId: 'placeholder',
+      requiredQuantity: 1,
+      currentQuantity: 0,
+      pocket: target,
+      itemValue: 0,
+      itemDetails: { name: 'Off-book placeholder', category: 'Other' } as unknown as InventoryItem,
+      verificationRules: {},
+      customWarnings: [],
+    };
+    patchPack(p => { p.contents.unshift(base); });
+    setExpanded(0);
+    setPopover(null);
+    if (listRef.current) listRef.current.scrollTop = 0;
+  };
+
+  const bagAssignments = draft.exchangeBagAssignments ?? [];
+  const addBagAssignment = () =>
+    patchPack(p => { p.exchangeBagAssignments = [...(p.exchangeBagAssignments ?? []), { bagId: '', pocket: 'main', qtyPerPack: 1 }]; });
+  const removeBagAssignment = (idx: number) =>
+    patchPack(p => { p.exchangeBagAssignments = (p.exchangeBagAssignments ?? []).filter((_, i) => i !== idx); });
 
   const doSave = async () => {
     if (!draft) return;
@@ -225,6 +345,10 @@ export default function StatpackEditorModal({
   };
 
   const filterChip = (active: boolean) =>
+    `flex items-center gap-1.5 text-xs font-semibold rounded-medium px-3 py-1.5 transition-colors duration-150 ${
+      active ? 'bg-primary text-white' : 'text-foreground-500 hover:bg-content2'
+    }`;
+  const rightTabBtn = (active: boolean) =>
     `flex items-center gap-1.5 text-xs font-semibold rounded-medium px-3 py-1.5 transition-colors duration-150 ${
       active ? 'bg-primary text-white' : 'text-foreground-500 hover:bg-content2'
     }`;
@@ -395,64 +519,126 @@ export default function StatpackEditorModal({
             </div>
           </div>
 
-          {/* RIGHT — contents */}
+          {/* RIGHT — contents / exchange bags */}
           <div className="flex-1 min-w-0 flex flex-col">
-            {/* toolbar */}
-            <div className="px-[18px] pt-3.5 pb-3 flex flex-col gap-2.5 flex-none">
-              <div className="flex items-center gap-2.5 flex-wrap">
-                <div className="flex items-center gap-2">
-                  <span className="text-[15px] font-semibold text-foreground">Contents</span>
-                  {pocket !== 'all' && (
-                    <span className="text-[10.5px] font-semibold text-primary bg-primary-50 dark:bg-primary-900/20 rounded-md px-2 py-0.5">
-                      {POCKET_LABEL[pocket]}
-                    </span>
-                  )}
-                </div>
-                <div className="flex gap-1 bg-content2 p-0.5 rounded-medium">
-                  <button className={filterChip(filter === 'all')} onClick={() => setFilter('all')}>All <span className="font-mono opacity-60">{items.length}</span></button>
-                  <button className={filterChip(filter === 'assets')} onClick={() => setFilter('assets')}>Assets <span className="font-mono opacity-60">{derived.assets}</span></button>
-                  <button className={filterChip(filter === 'contents')} onClick={() => setFilter('contents')}>Consumables <span className="font-mono opacity-60">{derived.consumables}</span></button>
-                </div>
-                <div className="ml-auto flex gap-2">
-                  <button onClick={() => addItem(false)} className="flex items-center gap-1.5 text-xs font-semibold text-white bg-primary rounded-medium px-3 py-2 hover:opacity-90 transition-opacity">
-                    <Plus size={13} strokeWidth={2.6} /> Add item
-                  </button>
-                  <button onClick={() => addItem(true)} className="flex items-center gap-1.5 text-xs font-semibold text-foreground-600 bg-content1 border border-divider rounded-medium px-3 py-2 hover:bg-content2 transition-colors">
-                    <Link2 size={13} /> Attach asset
-                  </button>
-                </div>
-              </div>
-              <div className="flex items-center gap-2.5 bg-content2 border border-divider rounded-large px-3">
-                <Search size={15} className="text-foreground-400 flex-none" />
-                <input
-                  value={search} onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search contents, categories, serials…"
-                  className="flex-1 bg-transparent outline-none text-[12.5px] text-foreground placeholder:text-foreground-400 py-2.5"
-                />
-                {search && <button onClick={() => setSearch('')} className="text-foreground-400 hover:text-foreground-600"><X size={15} /></button>}
+            {/* tab switcher */}
+            <div className="px-[18px] pt-3.5 flex-none">
+              <div className="flex items-center gap-1 bg-content2 p-1 rounded-medium w-fit">
+                <button className={rightTabBtn(rightTab === 'contents')} onClick={() => setRightTab('contents')}>
+                  <Package size={13} /> Contents <span className="font-mono opacity-60">{items.length}</span>
+                </button>
+                <button className={rightTabBtn(rightTab === 'bags')} onClick={() => setRightTab('bags')}>
+                  <PackagePlus size={13} /> Exchange Bags
+                  {bagAssignments.length > 0 && <span className="font-mono opacity-60">{bagAssignments.length}</span>}
+                </button>
               </div>
             </div>
 
-            {/* list */}
-            <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto px-[18px] pb-2">
-              {view.length === 0 ? (
-                <div className="text-center py-12 text-foreground-400">
-                  <div className="text-[13px] font-semibold text-foreground-500">Nothing here</div>
-                  <div className="text-xs mt-1">No items match this filter or pocket.</div>
+            {rightTab === 'contents' ? (
+              <>
+                {/* toolbar */}
+                <div className="px-[18px] pt-3 pb-3 flex flex-col gap-2.5 flex-none">
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    <div className="flex items-center gap-2">
+                      {pocket !== 'all' && (
+                        <span className="text-[10.5px] font-semibold text-primary bg-primary-50 dark:bg-primary-900/20 rounded-md px-2 py-0.5">
+                          {POCKET_LABEL[pocket]}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex gap-1 bg-content2 p-0.5 rounded-medium">
+                      <button className={filterChip(filter === 'all')} onClick={() => setFilter('all')}>All <span className="font-mono opacity-60">{items.length}</span></button>
+                      <button className={filterChip(filter === 'assets')} onClick={() => setFilter('assets')}>Assets <span className="font-mono opacity-60">{derived.assets}</span></button>
+                      <button className={filterChip(filter === 'contents')} onClick={() => setFilter('contents')}>Consumables <span className="font-mono opacity-60">{derived.consumables}</span></button>
+                    </div>
+                    <div className="ml-auto relative" data-keepopen="">
+                      <button
+                        onClick={() => { setAddItemError(''); setPopover(popover === 'additem' ? null : 'additem'); }}
+                        className="flex items-center gap-1.5 text-xs font-semibold text-white bg-primary rounded-medium px-3 py-2 hover:opacity-90 transition-opacity"
+                      >
+                        <Plus size={13} strokeWidth={2.6} /> Add item
+                      </button>
+                      {popover === 'additem' && (
+                        <div data-keepopen="" className="absolute top-[calc(100%+8px)] right-0 z-40 w-80 bg-content1 border border-divider rounded-large shadow-xl p-3.5">
+                          <span className="block text-[10px] font-semibold uppercase tracking-widest text-foreground-400 mb-1.5">Add real inventory item</span>
+                          <Autocomplete
+                            aria-label="Inventory item"
+                            placeholder="Search inventory…"
+                            size="sm"
+                            defaultItems={inventoryItems}
+                            onSelectionChange={(key) => { if (key) addRealItem(String(key)); }}
+                          >
+                            {(it) => <AutocompleteItem key={it.id} textValue={it.name}>{it.name}</AutocompleteItem>}
+                          </Autocomplete>
+                          {addItemError && <p className="text-[11px] text-danger mt-1.5">{addItemError}</p>}
+                          <div className="h-px bg-divider my-3" />
+                          <button
+                            onClick={addPlaceholderItem}
+                            className="w-full flex items-center gap-1.5 text-[11.5px] font-semibold text-warning bg-warning-50 dark:bg-warning-900/20 border border-dashed border-warning/50 rounded-medium px-2.5 py-1.5 hover:bg-warning-100 dark:hover:bg-warning-900/30 transition-colors"
+                          >
+                            <AlertTriangle size={12} /> Add placeholder line (off-book item)
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2.5 bg-content2 border border-divider rounded-large px-3">
+                    <Search size={15} className="text-foreground-400 flex-none" />
+                    <input
+                      value={search} onChange={(e) => setSearch(e.target.value)}
+                      placeholder="Search contents, categories, serials…"
+                      className="flex-1 bg-transparent outline-none text-[12.5px] text-foreground placeholder:text-foreground-400 py-2.5"
+                    />
+                    {search && <button onClick={() => setSearch('')} className="text-foreground-400 hover:text-foreground-600"><X size={15} /></button>}
+                  </div>
                 </div>
-              ) : view.map(({ it, idx }) => (
-                <ItemRow
-                  key={idx}
-                  it={it}
-                  expanded={expanded === idx}
-                  swapOpen={swapOpen === idx}
-                  onToggleExpand={() => { setExpanded(expanded === idx ? null : idx); setSwapOpen(null); }}
-                  onToggleSwap={() => setSwapOpen(swapOpen === idx ? null : idx)}
-                  patch={(fn) => patchItem(idx, fn)}
-                  onRemove={() => { patchPack(p => { p.contents.splice(idx, 1); }); setExpanded(null); }}
-                />
-              ))}
-            </div>
+
+                {/* list */}
+                <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto px-[18px] pb-2">
+                  {view.length === 0 ? (
+                    <div className="text-center py-12 text-foreground-400">
+                      <div className="text-[13px] font-semibold text-foreground-500">Nothing here</div>
+                      <div className="text-xs mt-1">No items match this filter or pocket.</div>
+                    </div>
+                  ) : view.map(({ it, idx }) => (
+                    <ItemRow
+                      key={idx}
+                      it={it}
+                      expanded={expanded === idx}
+                      onToggleExpand={() => setExpanded(expanded === idx ? null : idx)}
+                      patch={(fn) => patchItem(idx, fn)}
+                      onRemove={() => { patchPack(p => { p.contents.splice(idx, 1); }); setExpanded(null); }}
+                    />
+                  ))}
+                </div>
+              </>
+            ) : (
+              /* Exchange bag assignments — pocket-aware, out of contents[] */
+              <div className="flex-1 min-h-0 overflow-y-auto px-[18px] py-3.5">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400">Bag assignments</span>
+                  <button onClick={addBagAssignment} className="flex items-center gap-1.5 text-xs font-semibold text-white bg-primary rounded-medium px-3 py-1.5 hover:opacity-90 transition-opacity">
+                    <Plus size={13} strokeWidth={2.6} /> Assign bag
+                  </button>
+                </div>
+                {bagAssignments.length === 0 ? (
+                  <div className="text-center py-12 text-foreground-400">
+                    <div className="text-[13px] font-semibold text-foreground-500">No exchange bags assigned</div>
+                    <div className="text-xs mt-1">Assign a bag to a pocket so crews grab it during checkout.</div>
+                  </div>
+                ) : bagAssignments.map((a, idx) => (
+                  <BagAssignmentRow
+                    key={idx}
+                    assignment={a}
+                    bags={exchangeBags}
+                    onBag={(bagId) => patchBagAssignment(idx, x => { x.bagId = bagId; })}
+                    onPocket={(p) => patchBagAssignment(idx, x => { x.pocket = p; })}
+                    onQty={(n) => patchBagAssignment(idx, x => { x.qtyPerPack = n; })}
+                    onRemove={() => removeBagAssignment(idx)}
+                  />
+                ))}
+              </div>
+            )}
 
             {/* footer */}
             <div className="border-t border-divider px-[18px] py-3 flex items-center gap-2.5 flex-none">
@@ -528,19 +714,18 @@ function MetaRow({ label, value, valueClass = 'text-foreground' }: { label: stri
 // ── statpack activity log (left column) ────────────────────────────
 // ── item row ───────────────────────────────────────────────────────
 function ItemRow({
-  it, expanded, swapOpen, onToggleExpand, onToggleSwap, patch, onRemove,
+  it, expanded, onToggleExpand, patch, onRemove,
 }: {
   it: StatpackItem;
   expanded: boolean;
-  swapOpen: boolean;
   onToggleExpand: () => void;
-  onToggleSwap: () => void;
   patch: (fn: (it: StatpackItem) => void) => void;
   onRemove: () => void;
 }) {
   const cat = getCatCfg(itemCategory(it));
   const asset = isAsset(it);
   const oxygen = isOxygen(it);
+  const placeholder = isPlaceholder(it);
   const es = expState(it.expirationDate);
   const short = it.currentQuantity < it.requiredQuantity;
   const rules = it.verificationRules || {};
@@ -571,6 +756,7 @@ function ItemRow({
             {es === 'soon' && <span className="text-[9.5px] font-semibold px-1.5 py-0.5 rounded bg-warning-50 dark:bg-warning-900/20 text-warning">Expiring {expLabel(it.expirationDate)}</span>}
             {short && <span className="text-[9.5px] font-semibold px-1.5 py-0.5 rounded bg-warning-50 dark:bg-warning-900/20 text-warning">Short {Math.max(0, it.requiredQuantity - it.currentQuantity)}</span>}
             {hasRules && <span className="text-[9.5px] font-semibold px-1.5 py-0.5 rounded bg-primary-50 dark:bg-primary-900/20 text-primary inline-flex items-center gap-1"><Shield size={9} />Rules</span>}
+            {placeholder && <span className="text-[9.5px] font-semibold px-1.5 py-0.5 rounded bg-warning-50 dark:bg-warning-900/20 text-warning inline-flex items-center gap-1"><AlertTriangle size={9} />Placeholder — not inventory-linked</span>}
           </div>
           <div className="text-[11.5px] font-medium text-foreground-500 mt-0.5 truncate">{sub}</div>
         </div>
@@ -684,30 +870,11 @@ function ItemRow({
           </div>
 
           {/* footer actions */}
-          <div className="relative flex items-center gap-2 mt-3 pt-3 border-t border-divider">
-            <button data-keepopen="" onClick={onToggleSwap}
-              className="flex items-center gap-1.5 text-xs font-semibold text-foreground-600 bg-content1 border border-divider rounded-medium px-3 py-2 hover:bg-content2 transition-colors">
-              <RefreshCw size={13} /> {asset ? 'Swap asset' : 'Replace item'}
-            </button>
+          <div className="flex items-center gap-2 mt-3 pt-3 border-t border-divider">
             <button onClick={onRemove}
               className="flex items-center gap-1.5 text-xs font-semibold text-danger bg-danger-50 dark:bg-danger-900/20 rounded-medium px-3 py-2 hover:opacity-80 transition-opacity">
               <Trash2 size={13} /> Remove
             </button>
-            {swapOpen && (
-              <div data-keepopen="" className="absolute bottom-11 left-0 z-40 w-72 bg-content1 border border-divider rounded-large shadow-xl p-2">
-                <div className="text-[10px] font-semibold uppercase tracking-widest text-foreground-400 px-1.5 pt-1 pb-1.5">Replace with</div>
-                {SWAP_CHOICES.map((c) => {
-                  const cc = getCatCfg(c.category);
-                  return (
-                    <button key={c.name} onClick={() => { patch(x => { x.itemDetails = { ...(x.itemDetails || {} as InventoryItem), name: c.name, category: c.category as InventoryItem['category'] }; }); onToggleSwap(); }}
-                      className="w-full flex items-center justify-between gap-2 rounded-medium px-2 py-2 hover:bg-content2 transition-colors text-left">
-                      <span className="text-[12.5px] font-semibold text-foreground">{c.name}</span>
-                      <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${cc.bg} ${cc.text}`}>{c.category}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
           </div>
         </div>
       )}
@@ -776,6 +943,53 @@ function WarningRow({ w, onSev, onMsg, onAck, onRemove }: {
       <button onClick={onAck} title="Requires acknowledgment"
         className={`h-8 rounded-lg border text-[11px] font-semibold px-2.5 flex-none transition-colors ${w.requiresAcknowledgment ? 'border-primary bg-primary-50 dark:bg-primary-900/20 text-primary' : 'border-divider bg-content1 text-foreground-400'}`}>Ack</button>
       <button onClick={onRemove} className="w-[30px] h-8 rounded-lg bg-danger-50 dark:bg-danger-900/20 text-danger flex items-center justify-center flex-none"><X size={13} /></button>
+    </div>
+  );
+}
+
+// ── exchange bag assignment row (pocket-aware; bags stay out of contents[]) ──
+function BagAssignmentRow({
+  assignment, bags, onBag, onPocket, onQty, onRemove,
+}: {
+  assignment: ExchangeBagAssignment;
+  bags: ExchangeBag[];
+  onBag: (bagId: string) => void;
+  onPocket: (p: Pocket) => void;
+  onQty: (n: number) => void;
+  onRemove: () => void;
+}) {
+  const bag = bags.find((b) => b.id === assignment.bagId);
+  return (
+    <div className="flex items-center gap-2 bg-content1 border border-divider rounded-large p-2.5 mb-2">
+      <PackagePlus size={14} className="text-primary flex-none" />
+      <Autocomplete
+        aria-label="Exchange bag"
+        placeholder="Select bag…"
+        className="flex-1 min-w-0"
+        size="sm"
+        selectedKey={assignment.bagId || null}
+        onSelectionChange={(key) => onBag(key ? String(key) : '')}
+        defaultItems={bags}
+      >
+        {(b) => <AutocompleteItem key={b.id} textValue={b.name}>{b.name}</AutocompleteItem>}
+      </Autocomplete>
+      <select value={assignment.pocket} onChange={(e) => onPocket(e.target.value as Pocket)}
+        className="flex-none h-9 rounded-medium border border-divider bg-content1 text-xs font-semibold text-foreground-600 px-2 outline-none">
+        {POCKETS.map(p => <option key={p.id} value={p.id}>{p.short}</option>)}
+      </select>
+      <div className="flex items-center gap-1 flex-none">
+        <button onClick={() => onQty(Math.max(1, assignment.qtyPerPack - 1))}
+          className="w-7 h-7 rounded-lg bg-content2 hover:bg-content3 text-foreground-500 flex items-center justify-center transition-colors"><Minus size={12} /></button>
+        <span className="font-mono text-sm font-semibold tabular-nums w-6 text-center">{assignment.qtyPerPack}</span>
+        <button onClick={() => onQty(assignment.qtyPerPack + 1)}
+          className="w-7 h-7 rounded-lg bg-primary-50 dark:bg-primary-900/20 text-primary flex items-center justify-center hover:bg-primary-100 dark:hover:bg-primary-800/30 transition-colors"><Plus size={12} /></button>
+      </div>
+      {bag && bag.lines?.length > 0 && (
+        <span className="hidden lg:inline text-[10px] font-medium text-foreground-400 flex-none">
+          {bag.lines.length} SKU{bag.lines.length !== 1 ? 's' : ''}
+        </span>
+      )}
+      <button onClick={onRemove} className="w-8 h-8 rounded-lg bg-danger-50 dark:bg-danger-900/20 text-danger flex items-center justify-center flex-none flex-shrink-0"><Trash2 size={13} /></button>
     </div>
   );
 }

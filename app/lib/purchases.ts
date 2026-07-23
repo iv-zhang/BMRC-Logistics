@@ -29,6 +29,8 @@ import {
 import { db } from '@/firebase';
 import { removeUndefined } from '@/app/lib/audit';
 import { addShipment, type AuditActor } from '@/app/lib/audit-actions';
+import { deriveItemName, parseLegacyName } from '@/app/lib/item-naming';
+import { getItemFamiliesRuntime } from '@/app/lib/org-config-store';
 import type { InventoryItem, Purchase, PurchaseInfo, PurchaseLine } from '@/app/types';
 
 export interface PurchaseActor {
@@ -141,8 +143,24 @@ export async function logPurchase(input: PurchaseInput, actor: PurchaseActor): P
         lineInput.lineCost && lineInput.orderedQty
           ? lineInput.lineCost / (lineInput.orderedQty * (lineInput.unitsPerPackage || 1))
           : undefined;
+      // The purchase-modal free-text `itemName` was never structured naming —
+      // best-effort split it into family/variant here so the placeholder doc
+      // is born with the new naming fields. Not confident → keep the raw
+      // typed name and flag it for the admin naming-review queue instead of
+      // guessing wrong.
+      const parsedName = parseLegacyName(lineInput.itemName.trim(), getItemFamiliesRuntime());
+      const namingFields = parsedName.confident
+        ? {
+            name: deriveItemName(parsedName.family, parsedName.variantLabel),
+            family: parsedName.family,
+            variantLabel: parsedName.variantLabel,
+          }
+        : {
+            name: lineInput.itemName.trim(),
+            namingReviewNeeded: true,
+          };
       batch.set(newItemRef, removeUndefined({
-        name: lineInput.itemName.trim(),
+        ...namingFields,
         category: lineInput.category || 'Other',
         isAsset: lineInput.kind === 'asset',
         unopenedBoxes: 0,

@@ -22,6 +22,20 @@ this file:
 
 All paths below are relative to the repo root (`<unit>/`).
 
+## When to run this
+
+**This driver is expensive** (emulators + dev server + Playwright, many tokens per
+run). Do **not** run it as routine post-change verification. Run it only:
+
+- immediately before a commit, or
+- when the user explicitly asks to see the app driven / screenshotted.
+
+For everyday verification use `npx tsc --noEmit`, `npm run lint` on touched files,
+then `npm run build` + `npm run test`. Keep adding smoke cases to `smoke.spec.ts`
+for new surfaces as you build them — just don't execute the driver until the
+pre-commit run. If you haven't run it, report the work as built-and-typechecked
+but **not runtime-verified**.
+
 ## Prerequisites
 
 Already satisfied on this machine; the exact tools/versions used:

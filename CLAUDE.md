@@ -23,6 +23,16 @@ Firebase environment variables are required in `.env.local` (`NEXT_PUBLIC_FIREBA
 
 **Never commit or push unless the user explicitly asks.** Make and verify changes in the working tree and report what changed; leave `git commit`/`git push` for an explicit instruction. This overrides any default "commit when done" behavior.
 
+**Verification is tiered — do not run the expensive tier by default.** The emulator smoke driver (`run-bmrc-logistics` skill) boots Firebase emulators, a dev server, and Playwright; it burns a large number of tokens per run. Run it **only immediately before a commit**, or when the user explicitly asks to see the app driven.
+
+| When | Run |
+|---|---|
+| After any change (default) | `npx tsc --noEmit`, `npm run lint` on touched files |
+| Before reporting a feature done | `npm run build`, `npm run test` |
+| Immediately before a commit, or on request | the `run-bmrc-logistics` emulator smoke driver |
+
+When the expensive tier has not been run, **say so explicitly** — report the change as built-and-typechecked but not runtime-verified rather than implying it was driven end-to-end. Write smoke cases for new surfaces as you go so the pre-commit run actually covers them; just don't execute the driver until then.
+
 ## Architecture
 
 ### Framework & Stack
@@ -111,7 +121,7 @@ Audit mode logs `action: 'audit'` (never `'checkout'`) via `logStatpackCheckOff`
 - Entered expirations (`newExpirationDate`) persist onto contents; expiration is validated against today (a past month is not "satisfied"); O₂ PSI + regulator and AED checks are captured. Checkout enforces **fix-or-acknowledge** on expired/short items. Sharps container is a pack-level check (`Statpack.sharpsContainer`). A "Report" creates a tracked `issue_reports` doc (target `statpacks/<id>`).
 - Usage/turnover analytics derive from `statpack_logs` on `/statpacks/stats` (`app/lib/statpack-stats.ts`).
 
-The shared check-off **page** is the single verification flow for members and admins. `app/components/statpack-checkoff-modal.tsx` is retired except two flows that still need a `maintenance` mode the page lacks (`statpacks/page.tsx` `openMaintenance`, and the pocket-by-pocket asset audit in `assets/page.tsx`); `seal-check-modal.tsx`/`asset-verify-step.tsx` were deleted as dead code.
+The shared check-off **page** is the single verification flow for members and admins. `app/components/statpack-checkoff-modal.tsx` is retired except one flow that still needs a `maintenance` mode the page lacks (`statpacks/page.tsx` `openMaintenance`); `seal-check-modal.tsx`/`asset-verify-step.tsx` were deleted as dead code. The pocket-by-pocket asset audit in `assets/page.tsx` was removed — `openStatpackAudit` had zero call sites, so the pocket-picker modal, its `maintenance`-mode checkoff modal, and `AssetAttachModal` were all unreachable.
 
 ### Audit Workbench (`/audit`)
 The audit page is deliberately **orderless** — members act on whatever is physically in front of them, in any order. There is no linear item-by-item wizard. Tapping any item card (or scanning a barcode) opens `app/components/audit-action-drawer.tsx` with five actions: **Count** (boxes/units + condition, submits via `submitAuditEntries`), **Move** (structured zone→shelf→level→container or quick area), **Shipment** (new sealed batch / box increment), **Report** (missing/broken/expired → issue report + `auditCondition` stamp), and **Fixed** (refill/change-out/repair record, clears the condition flag). The write helpers live in `app/lib/audit-actions.ts`; every action writes the inventory change + an `inventory_logs` row + an `auditEvents` ledger entry so usage metrics stay derivable. Shipment semantics: bag-tracked items get a sealed batch (batches are their stock source of truth); box-tracked items get an atomic `unopenedBoxes` increment plus a zero-stock metadata batch when lot/expiry was recorded.
@@ -125,6 +135,13 @@ The audit page is deliberately **orderless** — members act on whatever is phys
 - `InventoryItem.isTrainer` marks non-deployable training gear (trainer AEDs, manikins); it is still an asset but filtered out of deployable views.
 - `determineIsAsset` (`app/lib/inventory.ts`) treats an item as an asset on any asset signal (serial, status, category, `assets[]`, `maintenance_logs`, `isOxygen`), not only `assetValue ≥ threshold`.
 - Expiry checks in `getItemStatus` / `generateAuditSnapshot` ignore zero-stock (tombstone) batches, so a depleted lot's date can't mark an item permanently expired.
+
+### Two-pool stock model (back reserve / front shelf)
+Every consumable `InventoryItem` splits into two pools:
+- **Back reserve** — the item's batch/box counts (`batches[]` bag-tracking, or `unopenedBoxes`/`looseUnits`). This is what `computeBagStock().availableItems` returns and is the ONLY pool that drives `getItemStatus` (ok/low/out/expired/expiring) and reordering decisions. An item with a full front shelf but an empty back room still correctly reads `out` — the shelf is never a substitute for reserve in that math, on purpose (see the comment at `getItemStatus` in `app/lib/item-status.ts`).
+- **Front shelf** — `InventoryItem.shelfQuantity`, the deployed pool members actually grab from day to day. It is deliberately **not event-tracked**: general members won't reliably log every unit they take off the shelf, so instead of instrumenting consumption, roughly weekly someone physically counts the shelf and the count **re-anchors** `shelfQuantity` to reality (`lastShelfCheckAt`/`lastShelfCheckBy` stamp the check; `isShelfCheckCurrent()` in `app/lib/item-status.ts` checks that stamp against `THRESHOLDS.shelfCheckIntervalDays`, default 7).
+- `refillShelf()` (`app/lib/restock-actions.ts`, pool math in `app/lib/stock-pools.ts`) is a **transfer**, never a stock creation: it moves units from reserve to shelf via `consumeReserveUnits` (FEFO, loose-before-breaking-bags/boxes, clamped to what reserve actually has) and either increments `shelfQuantity` (plain refill) or, when `observedShelfQty` is passed, SETS it to `observedShelfQty + consumed` (the weekly re-anchor). A check can also happen with no transfer at all (`qty: 0` + `observedShelfQty` set) to record a count without touching reserve. See `app/restock/page.tsx` (`RefillModal`, `ShelfSweepModal`) for the UI.
+- **This is a different axis from the deferred class-use vs. field/event stock-pool gap** listed under "Known open design gaps" below — do not conflate the two. That gap is about *which reserve* a draw comes from (class training vs. field deployment); the front-shelf/back-reserve split here is about *deployed-but-uncounted* vs. *counted-and-available* stock within a single reserve.
 
 ### Firestore Collections (what the code actually reads/writes — see MODEL.md for shapes)
 `inventory` (central collection — consumables, assets, oxygen, and medications are all `inventory` docs discriminated by flags; there is **no** separate `assets` collection), `inventory_logs`, `inventory_alerts`, `auditEvents` (audit ledger — camelCase, written by `app/lib/audit.ts`), `statpacks`, `statpack_logs`, `vehicles` (individual fleet vehicles — roster + live checkout state), `vehicle_logs` (one doc per shift, written with the vehicle doc in one transaction by `app/lib/vehicles.ts`), `restock_shelves`, `restock_shelf_events`, `restock_actions`, `restock_reports`, `storage_zones`, `shelves`, `containers`, `box_logs`, `medication_logs`, `buyList` (camelCase — **not** `buy_list`), `tasks`, `issue_reports`, `users`, `org_settings`, `laf_records`, `reconciliation_exceptions`

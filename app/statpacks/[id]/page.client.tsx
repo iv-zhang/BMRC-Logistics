@@ -17,12 +17,19 @@ import { Package, MapPin, Pencil, Save, X, Clock, Repeat } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { doc, onSnapshot, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
-import type { Statpack, User, ExchangeBag } from '@/app/types';
+import type { Statpack, User, ExchangeBag, ExchangeBagAssignment, StatpackPocket } from '@/app/types';
 import StatpackEditorModal from '@/app/components/statpack-editor-modal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import StatpackHistory from '@/app/components/statpack-history';
 import { computeStatpackAssetValue } from '@/app/lib/inventory';
-import { subscribeExchangeBags } from '@/app/lib/exchange-bags';
+import { subscribeExchangeBags, resolveBagAssignments } from '@/app/lib/exchange-bags';
+
+const POCKET_OPTIONS: { id: StatpackPocket; name: string }[] = [
+  { id: 'main', name: 'Main Compartment' },
+  { id: 'front_aux', name: 'Front Aux Pouch' },
+  { id: 'side_left', name: 'Left Side Pocket' },
+  { id: 'side_right', name: 'Right Side Pocket' },
+];
 
 export default function StatpackDetailClient() {
   const router = useRouter();
@@ -91,20 +98,38 @@ export default function StatpackDetailClient() {
     return () => unsub();
   }, []);
 
-  const saveExchangeBagLinks = async (keys: string[]) => {
+  // Source of truth for display is always the read-time shim — never the raw
+  // `exchangeBagAssignments`/`exchangeBagIds` fields directly.
+  const bagAssignments = pack ? resolveBagAssignments(pack) : [];
+
+  const saveExchangeBagAssignments = async (next: ExchangeBagAssignment[]) => {
     if (!pack) return;
     setSavingBagLinks(true);
     try {
       await updateDoc(doc(db, 'statpacks', pack.id as string), {
-        exchangeBagIds: keys,
+        exchangeBagAssignments: next,
         updatedAt: serverTimestamp(),
       });
     } catch (err) {
-      console.error('Failed to save exchange bag links:', err);
-      alert('Failed to save exchange bag links');
+      console.error('Failed to save exchange bag assignments:', err);
+      alert('Failed to save exchange bag assignments');
     } finally {
       setSavingBagLinks(false);
     }
+  };
+
+  const handleBagSelectionChange = (keys: Set<string>) => {
+    const keyArr = Array.from(keys);
+    const next: ExchangeBagAssignment[] = keyArr.map((bagId) => {
+      const existing = bagAssignments.find((a) => a.bagId === bagId);
+      return existing ?? { bagId, pocket: 'main' as StatpackPocket, qtyPerPack: 1 };
+    });
+    saveExchangeBagAssignments(next);
+  };
+
+  const handleBagPocketChange = (bagId: string, pocket: StatpackPocket) => {
+    const next = bagAssignments.map((a) => (a.bagId === bagId ? { ...a, pocket } : a));
+    saveExchangeBagAssignments(next);
   };
 
   const beginSummaryEdit = () => {
@@ -296,21 +321,48 @@ export default function StatpackDetailClient() {
                 <div>
                   <h3 className="font-semibold mb-2 flex items-center gap-2"><Repeat size={16} /> Linked Exchange Bags</h3>
                   <p className="text-xs text-foreground-500 mb-2">
-                    Bags this pack draws from; swaps can be recorded during check-in.
+                    Bags this pack draws from, assigned to a pocket; the seal check runs at check-off.
                   </p>
                   <Select
                     aria-label="Linked exchange bags"
                     placeholder="No exchange bags linked"
                     selectionMode="multiple"
-                    selectedKeys={pack.exchangeBagIds ?? []}
+                    selectedKeys={bagAssignments.map((a) => a.bagId)}
                     isDisabled={savingBagLinks}
-                    onSelectionChange={(keys) => saveExchangeBagLinks(Array.from(keys as Set<string>))}
+                    onSelectionChange={(keys) => handleBagSelectionChange(keys as Set<string>)}
                     className="max-w-md"
                   >
                     {exchangeBags.map((bag) => (
                       <SelectItem key={bag.id}>{bag.name}</SelectItem>
                     ))}
                   </Select>
+
+                  {bagAssignments.length > 0 && (
+                    <div className="flex flex-col gap-2 mt-3 max-w-md">
+                      {bagAssignments.map((a) => {
+                        const bag = exchangeBags.find((b) => b.id === a.bagId);
+                        return (
+                          <div key={a.bagId} className="flex items-center gap-3 bg-content2 rounded-large px-3 py-2">
+                            <span className="text-sm font-medium text-foreground flex-1 min-w-0 truncate">
+                              {bag?.name ?? a.bagId}
+                            </span>
+                            <Select
+                              aria-label={`Pocket for ${bag?.name ?? a.bagId}`}
+                              size="sm"
+                              selectedKeys={[a.pocket]}
+                              isDisabled={savingBagLinks}
+                              onChange={(e) => handleBagPocketChange(a.bagId, e.target.value as StatpackPocket)}
+                              className="w-48 flex-none"
+                            >
+                              {POCKET_OPTIONS.map((p) => (
+                                <SelectItem key={p.id}>{p.name}</SelectItem>
+                              ))}
+                            </Select>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               </>
             )}

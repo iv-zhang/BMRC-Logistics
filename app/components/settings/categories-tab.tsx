@@ -70,6 +70,70 @@ export function ItemCategoriesTab({ itemCategories, onChange }: ItemCategoriesTa
 }
 
 // ---------------------------------------------------------------------------
+// Item Families — itemFamilies: string[] (structured naming: family, variant)
+// ---------------------------------------------------------------------------
+
+interface ItemFamiliesTabProps {
+  itemFamilies: string[];
+  onChange: (next: string[]) => void;
+}
+
+export function ItemFamiliesTab({ itemFamilies, onChange }: ItemFamiliesTabProps) {
+  const updateAt = (idx: number, value: string) => {
+    const next = [...itemFamilies];
+    next[idx] = value;
+    onChange(next);
+  };
+
+  const removeAt = (idx: number) => {
+    onChange(itemFamilies.filter((_, i) => i !== idx));
+  };
+
+  const add = () => onChange([...itemFamilies, 'New Family']);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-start gap-2.5 bg-warning-50 dark:bg-warning-950/20 border border-warning/20 rounded-large px-4 py-3">
+        <Info size={16} className="text-warning flex-none mt-0.5" />
+        <p className="text-sm text-foreground-600">
+          Unlike categories, renaming a family here REGENERATES the derived name (family + variant) on every item that uses it — this relabels already-saved records, not just new ones.
+        </p>
+      </div>
+
+      <div className="bg-content1 border border-divider rounded-large p-5">
+        <h2 className="text-base font-semibold text-foreground mb-1">Item Families</h2>
+        <p className="text-sm text-foreground-500 mb-4">
+          The controlled parent list for structured item names (e.g. &quot;Bandaids&quot;, &quot;Nitrile Gloves&quot;). An item&apos;s name is derived as &quot;Family, Variant&quot; — never typed by hand.
+        </p>
+        <div className="flex flex-col gap-2">
+          {itemFamilies.map((fam, idx) => (
+            <div key={idx} className="flex items-center gap-2">
+              <Input size="sm" value={fam} onValueChange={(v) => updateAt(idx, v)} className="flex-1 max-w-sm" />
+              <Button
+                isIconOnly
+                size="sm"
+                variant="light"
+                color="danger"
+                onPress={() => removeAt(idx)}
+                aria-label="Remove family"
+              >
+                <Trash2 size={14} />
+              </Button>
+            </div>
+          ))}
+          {itemFamilies.length === 0 && (
+            <p className="text-xs text-foreground-400">No item families yet.</p>
+          )}
+        </div>
+        <Button size="sm" color="primary" variant="flat" startContent={<Plus size={14} />} className="mt-3" onPress={add}>
+          Add family
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Asset Categories — assetCategories: AssetCategoryDef[]
 // ---------------------------------------------------------------------------
 

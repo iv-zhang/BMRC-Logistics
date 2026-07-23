@@ -9,9 +9,10 @@ import { saveOrgConfig, resetOrgConfigToDefaults } from '@/app/lib/org-config-st
 import { DEFAULT_ORG_CONFIG, type OrgConfigDoc } from '@/app/config/org-config';
 import { OrgTab, ThresholdsTab } from '@/app/components/settings/org-and-thresholds-tab';
 import { SitesRoomsTab } from '@/app/components/settings/sites-rooms-tab';
-import { ItemCategoriesTab, AssetCategoriesTab } from '@/app/components/settings/categories-tab';
+import { ItemCategoriesTab, ItemFamiliesTab, AssetCategoriesTab } from '@/app/components/settings/categories-tab';
 import { StatpackTypesTab, VehiclesTab } from '@/app/components/settings/statpacks-vehicles-tab';
 import { validateOrgConfig } from '@/app/components/settings/settings-utils';
+import { propagateFamilyRename } from '@/app/lib/item-naming';
 
 function cloneConfig(cfg: {
   org: OrgConfigDoc['org'];
@@ -20,6 +21,7 @@ function cloneConfig(cfg: {
   assetCategories: OrgConfigDoc['assetCategories'];
   statpackTypes: OrgConfigDoc['statpackTypes'];
   itemCategories: readonly string[];
+  itemFamilies: readonly string[];
   thresholds: OrgConfigDoc['thresholds'];
 }): OrgConfigDoc {
   const plain: OrgConfigDoc = {
@@ -29,6 +31,7 @@ function cloneConfig(cfg: {
     assetCategories: cfg.assetCategories,
     statpackTypes: cfg.statpackTypes,
     itemCategories: [...cfg.itemCategories],
+    itemFamilies: [...cfg.itemFamilies],
     thresholds: cfg.thresholds,
   };
   return typeof structuredClone === 'function' ? structuredClone(plain) : JSON.parse(JSON.stringify(plain));
@@ -96,9 +99,39 @@ export default function SettingsPage() {
     if (!draft || errors.length > 0) return;
     setSaving(true);
     try {
+      // Detect same-position family renames BEFORE saving, so the propagation
+      // targets the old string that's about to be overwritten.
+      const renames: { oldFamily: string; newFamily: string }[] = [];
+      if (saved) {
+        const prevFamilies = saved.itemFamilies;
+        const nextFamilies = draft.itemFamilies;
+        for (let i = 0; i < Math.min(prevFamilies.length, nextFamilies.length); i++) {
+          const prev = prevFamilies[i]?.trim();
+          const next = nextFamilies[i]?.trim();
+          if (prev && next && prev !== next) renames.push({ oldFamily: prev, newFamily: next });
+        }
+      }
+
       await saveOrgConfig(draft, actor);
       setSaved(draft);
       setToast({ ok: true, msg: 'Settings saved.' });
+
+      // Best-effort: propagate renamed families onto already-saved inventory
+      // items. Never let a propagation failure undo or mask the config save.
+      if (renames.length > 0) {
+        try {
+          let total = 0;
+          for (const { oldFamily, newFamily } of renames) {
+            total += await propagateFamilyRename(oldFamily, newFamily, { id: actor.uid, name: actor.name });
+          }
+          if (total > 0) {
+            setToast({ ok: true, msg: `Settings saved. Renamed family on ${total} item${total === 1 ? '' : 's'}.` });
+          }
+        } catch (e) {
+          console.error('Failed to propagate family rename', e);
+          setToast({ ok: false, msg: 'Settings saved, but some items may still show the old family name.' });
+        }
+      }
     } catch (e) {
       console.error('Failed to save org settings', e);
       setToast({ ok: false, msg: 'Failed to save settings.' });
@@ -194,6 +227,15 @@ export default function SettingsPage() {
               <ItemCategoriesTab
                 itemCategories={draft.itemCategories}
                 onChange={(itemCategories) => updateDraft({ itemCategories })}
+              />
+            </div>
+          </Tab>
+
+          <Tab key="item-families" title="Item Families">
+            <div className="mt-4">
+              <ItemFamiliesTab
+                itemFamilies={draft.itemFamilies}
+                onChange={(itemFamilies) => updateDraft({ itemFamilies })}
               />
             </div>
           </Tab>

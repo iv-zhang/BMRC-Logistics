@@ -28,6 +28,7 @@ import { test, expect } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { createDoc, getDocById, listCollection } from '../../../e2e/emu-rest';
 
 const SHOTS = join(dirname(fileURLToPath(import.meta.url)), 'screenshots');
 mkdirSync(SHOTS, { recursive: true });
@@ -279,6 +280,117 @@ test('log purchase then receive it (inventory, signed in)', async ({ page }) => 
   const vendorNames = (vbody.documents || []).map(d => d.fields?.name?.stringValue);
   expect(vendorNames).toContain(NEW_VENDOR);
   expect(vendorNames).toEqual(expect.arrayContaining(['Bound Tree Medical', 'Amazon']));
+});
+
+// ─── Exchange bags + inventory dedupe ────────────────────────────────────────
+// Fixtures are seeded straight into the emulator over REST (createDoc) rather
+// than driven through creation UI, so a test's arrange step never depends on
+// the feature it is verifying.
+
+/** Seed one exchange bag design, located on the first seeded shelf. */
+async function seedBag(name: string, extra: Record<string, unknown> = {}) {
+  const shelves = await listCollection('shelves');
+  const shelf = shelves[0];
+  const zones = await listCollection('storage_zones');
+  const zone = zones.find((z) => z.id === shelf?.zoneId) || zones[0];
+  const id = await createDoc('exchange_bags', {
+    name,
+    lines: [{ itemId: 'seed-item', itemName: 'assorted bandaids', qtyPerBag: 20 }],
+    fullCount: 3,
+    emptyCount: 1,
+    parBags: 4,
+    sealRequired: true,
+    ...(shelf
+      ? {
+          shelfId: shelf.id,
+          storageLocation: {
+            zoneId: zone?.id ?? '', zoneName: zone?.name ?? '',
+            shelfId: shelf.id, shelfName: shelf.name ?? '',
+          },
+        }
+      : {}),
+    ...extra,
+  });
+  return { id, shelfName: shelf?.name as string | undefined };
+}
+
+// A located bag must render under its shelf on /restock, with its BOM/counts.
+test('exchange bag renders on restock under its shelf', async ({ page }) => {
+  const BAG = `E2E Bandaid Bag ${Date.now()}`;
+  await seedBag(BAG);
+  await signIn(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/restock', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(3000);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+  await page.screenshot({ path: join(SHOTS, 'restock-exchange-bags.png'), fullPage: true });
+  await expect(page.getByText(BAG).first()).toBeVisible({ timeout: 10_000 });
+});
+
+// The statpack editor must expose an Exchange Bags tab that lists seeded bags —
+// this is the "assign exchange bags to statpacks from the assets page" path.
+test('statpack editor exposes exchange bags assignment', async ({ page }) => {
+  const BAG = `E2E Assignable Bag ${Date.now()}`;
+  await seedBag(BAG);
+  await signIn(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/assets', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2500);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+  await page.getByText('MRC1 Primary').first().click();
+  await page.waitForTimeout(1500);
+  await expect(page.getByText('Statpack Editor')).toBeVisible();
+  await page.getByText('Exchange Bags', { exact: false }).first().click();
+  await page.waitForTimeout(800);
+  await page.screenshot({ path: join(SHOTS, 'statpack-exchange-bags-tab.png') });
+});
+
+// Merge: two box-tracked near-duplicates with the SAME itemsPerBox must merge —
+// stock sums onto the survivor and the loser is archived (never deleted).
+test('inventory merges duplicate items and archives the loser', async ({ page }) => {
+  const stamp = Date.now();
+  const KEEP = `E2E Bandaids ${stamp}`;
+  const DUPE = `E2E Bandaids Small ${stamp}`;
+  const base = { category: 'First Aid', unit: 'each', itemsPerBox: 10, looseUnits: 0, isAsset: false };
+  await createDoc('inventory', { ...base, name: KEEP, unopenedBoxes: 2, totalStockQuantity: 20 });
+  const dupeId = await createDoc('inventory', { ...base, name: DUPE, unopenedBoxes: 3, totalStockQuantity: 30 });
+
+  await signIn(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/inventory', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(3000);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+
+  // Narrow to the two fixtures so selection can't pick up seeded items.
+  const search = page.getByPlaceholder(/search/i).first();
+  await search.fill(`E2E Bandaids ${stamp}`);
+  await page.waitForTimeout(1200);
+  await page.screenshot({ path: join(SHOTS, 'inventory-duplicates.png') });
+
+  // Select both rows, then merge via the selection bar.
+  const boxes = page.locator('input[type="checkbox"]');
+  const n = await boxes.count();
+  for (let i = 0; i < n; i++) await boxes.nth(i).check({ force: true }).catch(() => {});
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: join(SHOTS, 'inventory-selection-bar.png') });
+  await page.getByRole('button', { name: /Merge/i }).first().click();
+  await page.waitForTimeout(1200);
+  await page.screenshot({ path: join(SHOTS, 'inventory-merge-modal.png') });
+  // Confirm in the merge modal (survivor defaults to the first selected).
+  await page.getByRole('button', { name: /^(Merge|Confirm)/i }).last().click();
+  await page.waitForTimeout(3000);
+  await page.screenshot({ path: join(SHOTS, 'inventory-after-merge.png') });
+
+  const loser = await getDocById('inventory', dupeId);
+  expect(loser, 'loser doc must still exist (archived, not deleted)').toBeTruthy();
+  expect(loser?.isArchived, 'loser must be archived').toBe(true);
+  expect(loser?.mergedIntoId, 'loser must point at the survivor').toBeTruthy();
 });
 
 // Member dashboard: real signed-in user + a member role override.

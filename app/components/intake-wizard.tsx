@@ -3,6 +3,8 @@ import React, { useState, useEffect } from 'react';
 import { Button } from '@heroui/react';
 import { Package, X, ScanBarcode, CheckCircle, Minus, Plus } from 'lucide-react';
 import type { ItemCategory, InventoryBatch, BatchStatus } from '@/app/types';
+import { useOrgConfig } from '@/app/hooks/useOrgConfig';
+import { deriveItemName } from '@/app/lib/item-naming';
 
 interface IntakeWizardProps {
   isOpen: boolean;
@@ -17,7 +19,8 @@ const CATEGORIES: ItemCategory[] = [
 
 const DEFAULT_FORM = {
   barcode: '',
-  name: '',
+  family: '',
+  variantLabel: '',
   category: 'PPE' as ItemCategory,
   manufacturer: '',
   location: '',
@@ -29,9 +32,13 @@ const DEFAULT_FORM = {
 };
 
 export default function IntakeWizard({ isOpen, onClose }: IntakeWizardProps) {
+  const { itemFamilies } = useOrgConfig();
   const [currentStep, setCurrentStep] = useState(0);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ ...DEFAULT_FORM });
+
+  // `name` is DERIVED, never typed by hand — see app/lib/item-naming.ts.
+  const derivedName = deriveItemName(form.family, form.variantLabel);
 
   // Reset state when modal opens
   useEffect(() => {
@@ -76,12 +83,30 @@ export default function IntakeWizard({ isOpen, onClose }: IntakeWizardProps) {
         supplier: form.manufacturer || undefined,
       };
 
-      const q = query(collection(db, 'inventory'), where('name', '==', form.name.trim()));
-      const snap = await getDocs(q);
+      // Prefer matching on family + variantLabel (structured naming); fall
+      // back to the legacy name-equality query when no family is set.
+      const family = form.family.trim();
+      const variantLabel = form.variantLabel.trim();
+      let existingDoc: import('firebase/firestore').QueryDocumentSnapshot | undefined;
+      if (family) {
+        if (variantLabel) {
+          const qref = query(
+            collection(db, 'inventory'),
+            where('family', '==', family),
+            where('variantLabel', '==', variantLabel),
+          );
+          existingDoc = (await getDocs(qref)).docs[0];
+        } else {
+          const qref = query(collection(db, 'inventory'), where('family', '==', family));
+          existingDoc = (await getDocs(qref)).docs.find((d) => !d.data().variantLabel);
+        }
+      } else {
+        const qref = query(collection(db, 'inventory'), where('name', '==', derivedName));
+        existingDoc = (await getDocs(qref)).docs[0];
+      }
 
       let itemId: string;
-      if (!snap.empty) {
-        const existingDoc = snap.docs[0];
+      if (existingDoc) {
         itemId = existingDoc.id;
         await updateDoc(doc(db, 'inventory', existingDoc.id), {
           batches: arrayUnion({ ...newBatch, id: crypto.randomUUID() }),
@@ -89,7 +114,9 @@ export default function IntakeWizard({ isOpen, onClose }: IntakeWizardProps) {
         });
       } else {
         const newDoc = await addDoc(collection(db, 'inventory'), {
-          name: form.name.trim(),
+          name: derivedName,
+          family: family || null,
+          variantLabel: variantLabel || null,
           category: form.category,
           barcode: form.barcode || null,
           location: form.location || 'HQ',
@@ -105,7 +132,7 @@ export default function IntakeWizard({ isOpen, onClose }: IntakeWizardProps) {
 
       await addDoc(collection(db, 'inventory_logs'), {
         itemId,
-        itemName: form.name.trim(),
+        itemName: derivedName,
         action: 'intake',
         quantity: form.qty * form.perUnit,
         supplier: form.manufacturer || null,
@@ -198,16 +225,36 @@ export default function IntakeWizard({ isOpen, onClose }: IntakeWizardProps) {
                 </div>
               </div>
 
-              {/* Product name */}
+              {/* Family */}
               <label className="flex flex-col">
-                <span className={labelCls}>Product Name</span>
+                <span className={labelCls}>Family</span>
+                <select
+                  value={form.family}
+                  onChange={e => set('family', e.target.value)}
+                  className={inputCls}
+                >
+                  <option value="" disabled>Select a family…</option>
+                  {(form.family && !itemFamilies.includes(form.family) ? [form.family, ...itemFamilies] : itemFamilies).map(
+                    (fam) => <option key={fam} value={fam}>{fam}</option>,
+                  )}
+                </select>
+              </label>
+
+              {/* Variant */}
+              <label className="flex flex-col">
+                <span className={labelCls}>Variant (optional)</span>
                 <input
-                  value={form.name}
-                  onChange={e => set('name', e.target.value)}
-                  placeholder="e.g. Nitrile Gloves"
+                  value={form.variantLabel}
+                  onChange={e => set('variantLabel', e.target.value)}
+                  placeholder="e.g. Small, M, 28 Fr"
                   className={inputCls}
                 />
               </label>
+
+              {/* Derived name preview */}
+              <p className="col-span-2 text-xs text-foreground-400 -mt-1.5">
+                Name: <span className="font-semibold text-foreground-600">{derivedName || '—'}</span>
+              </p>
 
               {/* Category */}
               <label className="flex flex-col">
@@ -342,7 +389,7 @@ export default function IntakeWizard({ isOpen, onClose }: IntakeWizardProps) {
             <div className="flex flex-col gap-4">
               {/* Summary card */}
               <div className="bg-content2 rounded-[14px] px-5 py-4">
-                <div className="font-semibold text-[16px] text-foreground mb-0.5">{form.name || '(unnamed item)'}</div>
+                <div className="font-semibold text-[16px] text-foreground mb-0.5">{derivedName || '(unnamed item)'}</div>
                 <div className="text-xs text-foreground-400 font-medium">{form.category}{form.manufacturer ? ` · ${form.manufacturer}` : ''}</div>
                 {form.barcode && (
                   <div className="font-mono text-xs text-foreground-400 mt-1">{form.barcode}</div>

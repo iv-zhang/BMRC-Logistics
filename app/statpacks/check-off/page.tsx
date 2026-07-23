@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { Button, Spinner, Input, Switch } from '@heroui/react';
+import { Button, Spinner, Input } from '@heroui/react';
 import {
   ArrowLeft, ArrowRight, MapPin, ChevronDown,
   Check, Plus, Minus, Shield, AlertTriangle, X, Repeat,
@@ -16,8 +16,8 @@ import { auth, db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { logStatpackCheckOff } from '@/app/lib/inventory';
 import { THRESHOLDS } from '@/app/config/org-config';
-import { swapBag } from '@/app/lib/exchange-bags';
-import type { Statpack, StatpackItem, StatpackPocket, InventoryItem, ExchangeBag } from '@/app/types';
+import { swapBag, hydrateBag, resolveBagAssignments } from '@/app/lib/exchange-bags';
+import type { Statpack, StatpackItem, StatpackPocket, InventoryItem, ExchangeBag, ExchangeBagAssignment } from '@/app/types';
 
 // ─── types & constants ───────────────────────────────────────────────────────
 
@@ -138,6 +138,32 @@ function isItemReady(
 
 function isResolved(res: Resolution | undefined): boolean {
   return !!res && (res.kind === 'reported' || res.kind === 'acknowledged');
+}
+
+// ─── Exchange bag seal reflex ───────────────────────────────────────────────
+// Binary reflex, not a counter: an intact seal passively proves the bag is
+// full — nothing else is asked. A broken seal needs exactly one resolution:
+// swapped for a fresh sealed bag, or used & replaced contents in place.
+
+interface BagCheckState {
+  /** null = not yet answered */
+  sealIntact: boolean | null;
+  resolution?: 'swapped' | 'replaced';
+  notes?: string;
+}
+
+function bagRequiresSeal(bag: ExchangeBag): boolean {
+  return bag.sealRequired !== false;
+}
+
+function isBagResolved(chk: BagCheckState | undefined): boolean {
+  return chk?.sealIntact === true || (chk?.sealIntact === false && !!chk.resolution);
+}
+
+function isBagBlocking(mode: Mode, bag: ExchangeBag, chk: BagCheckState | undefined): boolean {
+  if (mode !== 'checkout') return false;
+  if (!bagRequiresSeal(bag)) return false;
+  return chk?.sealIntact === false && !chk.resolution;
 }
 
 function daysUntil(d: Date, today: Date) {
@@ -530,6 +556,155 @@ function ItemRow({
   );
 }
 
+// ─── BagCard ─────────────────────────────────────────────────────────────────
+// Renders inside its assigned pocket group, alongside the item rows. The seal
+// reflex is the whole control: "Seal intact?" Yes ends it; No reveals exactly
+// two resolutions. No counting of bag contents ever happens here.
+
+interface BagCardProps {
+  bag: ExchangeBag;
+  qtyPerPack: number;
+  check: BagCheckState | undefined;
+  blocking: boolean;
+  onSealIntact: (intact: boolean) => void;
+  onResolution: (resolution: 'swapped' | 'replaced') => void;
+  onNotes: (notes: string) => void;
+}
+
+function BagCard({ bag, qtyPerPack, check, blocking, onSealIntact, onResolution, onNotes }: BagCardProps) {
+  const requiresSeal = bagRequiresSeal(bag);
+  const sealIntact = check?.sealIntact ?? null;
+  const resolved = isBagResolved(check);
+  const V = sealIntact === true;
+  const bom = bag.lines.length > 0
+    ? bag.lines.map(l => `${l.qtyPerBag} ${l.itemName}`).join(', ')
+    : 'No contents set';
+
+  const rowBase = V
+    ? 'bg-primary border-primary'
+    : blocking
+    ? 'bg-danger-50 dark:bg-danger-950/20 border-danger/40'
+    : sealIntact === false
+    ? 'bg-warning-50/60 dark:bg-warning-950/20 border-warning/30'
+    : 'bg-content2 border-divider';
+
+  return (
+    <div className={`border rounded-xl px-3 py-3 transition-all duration-150 ${rowBase}`}>
+      <div className="flex items-center gap-3">
+        <div className={`w-9 h-9 rounded-[9px] flex items-center justify-center flex-none ${
+          V ? 'bg-white/20 text-white' : 'bg-content3 text-foreground-400'
+        }`}>
+          <Repeat size={15} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className={`text-sm font-semibold ${V ? 'text-white' : 'text-foreground'}`}>{bag.name}</span>
+            {qtyPerPack > 1 && (
+              <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                V ? 'bg-white/20 text-white' : 'bg-primary-50 dark:bg-primary-900/20 text-primary'
+              }`}>
+                ×{qtyPerPack}
+              </span>
+            )}
+          </div>
+          <span className={`text-xs font-medium truncate block ${V ? 'text-white/70' : 'text-foreground-500'}`}>
+            Contains: {bom}
+          </span>
+        </div>
+      </div>
+
+      {requiresSeal ? (
+        <div className="mt-3">
+          <div className="flex items-center gap-1.5 mb-2">
+            <Shield size={11} className={V ? 'text-white' : 'text-foreground-400'} />
+            <span className={`text-[10px] font-semibold uppercase tracking-widest ${V ? 'text-white' : 'text-foreground-400'}`}>
+              Seal intact?
+            </span>
+          </div>
+          <div className={`flex rounded-large p-1 gap-1 ${V ? 'bg-white/10' : 'bg-content3'}`}>
+            <button
+              onClick={() => onSealIntact(true)}
+              className={`flex-1 px-3 py-1.5 rounded-medium text-xs font-semibold transition-colors duration-150 ${
+                sealIntact === true
+                  ? 'bg-success text-white'
+                  : V ? 'text-white/80 hover:bg-white/10' : 'text-foreground-500 hover:bg-content2'
+              }`}
+            >
+              Yes, sealed
+            </button>
+            <button
+              onClick={() => onSealIntact(false)}
+              className={`flex-1 px-3 py-1.5 rounded-medium text-xs font-semibold transition-colors duration-150 ${
+                sealIntact === false
+                  ? 'bg-danger text-white'
+                  : V ? 'text-white/80 hover:bg-white/10' : 'text-foreground-500 hover:bg-content2'
+              }`}
+            >
+              Seal broken
+            </button>
+          </div>
+
+          {sealIntact === false && (
+            <div className="mt-2.5 flex flex-col gap-2">
+              <div className="flex gap-2 flex-wrap">
+                <button
+                  onClick={() => onResolution('swapped')}
+                  className={`flex-1 text-[11px] font-semibold px-2.5 py-2 rounded-lg border transition-colors ${
+                    check?.resolution === 'swapped'
+                      ? 'bg-primary border-primary text-white'
+                      : 'border-divider text-foreground-600 hover:bg-content3'
+                  }`}
+                >
+                  Swapped for a fresh sealed bag
+                </button>
+                <button
+                  onClick={() => onResolution('replaced')}
+                  className={`flex-1 text-[11px] font-semibold px-2.5 py-2 rounded-lg border transition-colors ${
+                    check?.resolution === 'replaced'
+                      ? 'bg-primary border-primary text-white'
+                      : 'border-divider text-foreground-600 hover:bg-content3'
+                  }`}
+                >
+                  Used &amp; replaced contents in place
+                </button>
+              </div>
+
+              {check?.resolution === 'replaced' && (
+                <Input
+                  size="sm"
+                  placeholder="What was used? (logged only, no stock change)"
+                  aria-label="Notes on contents used"
+                  value={check?.notes ?? ''}
+                  onValueChange={onNotes}
+                  classNames={{
+                    inputWrapper: 'h-9 min-h-9 bg-content1 border border-divider data-[hover=true]:bg-content1',
+                    input: 'text-xs',
+                  }}
+                />
+              )}
+
+              {blocking && (
+                <span className="text-xs font-semibold text-danger">
+                  Choose a resolution before deploying with this bag
+                </span>
+              )}
+              {!blocking && resolved && (
+                <span className="text-xs font-semibold text-foreground-500">
+                  {check?.resolution === 'swapped' ? 'Recorded — swap will be logged' : 'Recorded — logged only, no stock change'}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className={`mt-3 text-xs font-medium ${V ? 'text-white/70' : 'text-foreground-400'}`}>
+          No seal tracked for this bag
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Page ────────────────────────────────────────────────────────────────────
 
 export default function StatpackCheckOffPage() {
@@ -565,9 +740,12 @@ export default function StatpackCheckOffPage() {
   // Check-in review step
   const [showReview, setShowReview] = useState(false);
 
-  // Linked exchange bags (check-in only) — swaps recordable at check-in.
+  // Linked exchange bags — loaded in all three modes; the seal reflex is
+  // recorded per bag regardless of mode (checkout blocks on it, checkin/audit
+  // just record it).
   const [linkedBags, setLinkedBags] = useState<ExchangeBag[]>([]);
-  const [swappedBagIds, setSwappedBagIds] = useState<Record<string, boolean>>({});
+  const [bagAssignments, setBagAssignments] = useState<ExchangeBagAssignment[]>([]);
+  const [bagChecks, setBagChecks] = useState<Record<string, BagCheckState>>({});
 
   // Read id and mode from URL query params (avoids useSearchParams Suspense requirement)
   useEffect(() => {
@@ -641,6 +819,7 @@ export default function StatpackCheckOffPage() {
           assetValue: data.assetValue,
           assetSerial: data.assetSerial,
           exchangeBagIds: Array.isArray(data.exchangeBagIds) ? data.exchangeBagIds : undefined,
+          exchangeBagAssignments: Array.isArray(data.exchangeBagAssignments) ? data.exchangeBagAssignments : undefined,
         };
 
         setPack(spPack);
@@ -666,37 +845,31 @@ export default function StatpackCheckOffPage() {
     })();
   }, [packId, router]);
 
-  // Fetch linked exchange bags for check-in mode only.
+  // Fetch linked exchange bags — loaded in all three modes (checkout/checkin/
+  // audit), not just check-in. `resolveBagAssignments` shims legacy flat
+  // `exchangeBagIds` into pocket-aware assignments so both old and new pack
+  // docs work here.
   useEffect(() => {
-    if (mode !== 'checkin' || !pack?.exchangeBagIds?.length) { setLinkedBags([]); return; }
+    if (!pack) { setLinkedBags([]); setBagAssignments([]); return; }
+    const assignments = resolveBagAssignments(pack);
+    setBagAssignments(assignments);
+    if (assignments.length === 0) { setLinkedBags([]); return; }
     (async () => {
       try {
-        const ids = pack.exchangeBagIds as string[];
+        const ids = [...new Set(assignments.map(a => a.bagId))];
         const bags: ExchangeBag[] = [];
         for (let i = 0; i < ids.length; i += 10) {
           const chunk = ids.slice(i, i + 10);
           const q = query(collection(db, 'exchange_bags'), where(documentId(), 'in', chunk));
           const s = await getDocs(q);
-          s.forEach(d => {
-            const data = d.data();
-            bags.push({
-              id: d.id,
-              name: data.name || 'Untitled bag',
-              categoryId: data.categoryId,
-              shelfId: data.shelfId,
-              lines: Array.isArray(data.lines) ? data.lines : [],
-              fullCount: typeof data.fullCount === 'number' ? data.fullCount : 0,
-              emptyCount: typeof data.emptyCount === 'number' ? data.emptyCount : 0,
-              parBags: data.parBags,
-            });
-          });
+          s.forEach(d => bags.push(hydrateBag(d.id, d.data())));
         }
         setLinkedBags(bags);
       } catch (e) {
         console.error('Failed to load linked exchange bags', e);
       }
     })();
-  }, [mode, pack?.exchangeBagIds]);
+  }, [pack]);
 
   const showToast = useCallback((msg: string, ok: boolean) => {
     setToast({ msg, ok });
@@ -710,13 +883,24 @@ export default function StatpackCheckOffPage() {
     itemCounts[it.itemId] ?? (typeof it.currentQuantity === 'number' ? it.currentQuantity : it.requiredQuantity),
     [itemCounts]);
 
+  const bagsByPocket = useMemo(() => {
+    const map: Record<string, { bag: ExchangeBag; qtyPerPack: number }[]> = {};
+    bagAssignments.forEach(a => {
+      const bag = linkedBags.find(b => b.id === a.bagId);
+      if (!bag) return;
+      (map[a.pocket] ??= []).push({ bag, qtyPerPack: a.qtyPerPack });
+    });
+    return map;
+  }, [bagAssignments, linkedBags]);
+
   const pocketGroups = useMemo(() => {
     if (!pack) return [];
     return POCKETS.map(pk => ({
       ...pk,
       items: pack.contents.filter(it => it.pocket === pk.id),
-    })).filter(pk => pk.items.length > 0);
-  }, [pack]);
+      bags: bagsByPocket[pk.id] ?? [],
+    })).filter(pk => pk.items.length > 0 || pk.bags.length > 0);
+  }, [pack, bagsByPocket]);
 
   const verifiedCount = useMemo(() =>
     allItems.filter(it => isItemReady(it, deriveRules(it), verifiedSet, itemChecks[it.itemId] ?? {}, today)).length,
@@ -757,8 +941,18 @@ export default function StatpackCheckOffPage() {
       }
     });
     if (sharps === 'full' && !sharpsAck.trim()) list.push('Sharps container full: acknowledge or empty');
+
+    // On checkout, a broken seal with no resolution blocks deployment.
+    if (mode === 'checkout') {
+      bagAssignments.forEach(a => {
+        const bag = linkedBags.find(b => b.id === a.bagId);
+        if (bag && isBagBlocking(mode, bag, bagChecks[a.bagId])) {
+          list.push(`${bag.name}: resolve broken seal before deploying`);
+        }
+      });
+    }
     return list;
-  }, [allItems, itemChecks, countOf, resolution, sharps, sharpsAck, today]);
+  }, [allItems, itemChecks, countOf, resolution, sharps, sharpsAck, today, mode, bagAssignments, linkedBags, bagChecks]);
 
   const statusInfo = useMemo(() => {
     const s = pack?.status ?? 'Ready';
@@ -789,6 +983,23 @@ export default function StatpackCheckOffPage() {
 
   const updateCheck = useCallback((itemId: string, key: keyof ItemChecks, val: string | boolean) => {
     setItemChecks(prev => ({ ...prev, [itemId]: { ...(prev[itemId] ?? {}), [key]: val } }));
+  }, []);
+
+  const setBagSealIntact = useCallback((bagId: string, intact: boolean) => {
+    setBagChecks(prev => ({
+      ...prev,
+      [bagId]: intact
+        ? { sealIntact: true }
+        : { sealIntact: false, resolution: prev[bagId]?.resolution, notes: prev[bagId]?.notes },
+    }));
+  }, []);
+
+  const setBagResolution = useCallback((bagId: string, res: 'swapped' | 'replaced') => {
+    setBagChecks(prev => ({ ...prev, [bagId]: { ...(prev[bagId] ?? { sealIntact: false }), sealIntact: false, resolution: res } }));
+  }, []);
+
+  const setBagNotes = useCallback((bagId: string, notes: string) => {
+    setBagChecks(prev => ({ ...prev, [bagId]: { ...(prev[bagId] ?? { sealIntact: false }), notes } }));
   }, []);
 
   // Only satisfies no-rule items — never implies an item with unmet required checks is ready.
@@ -872,6 +1083,16 @@ export default function StatpackCheckOffPage() {
       ? { status: sharps, notes: sharps === 'full' && sharpsAck.trim() ? sharpsAck.trim() : undefined }
       : undefined;
 
+    // Only send bags the member actually answered (sealIntact !== null).
+    const bagChecksPayload: Record<string, { sealIntact: boolean; resolution?: 'swapped' | 'replaced'; notes?: string }> = {};
+    Object.entries(bagChecks).forEach(([bagId, chk]) => {
+      if (chk.sealIntact === null || chk.sealIntact === undefined) return;
+      const entry: { sealIntact: boolean; resolution?: 'swapped' | 'replaced'; notes?: string } = { sealIntact: chk.sealIntact };
+      if (chk.resolution) entry.resolution = chk.resolution;
+      if (chk.notes && chk.notes.trim()) entry.notes = chk.notes.trim();
+      bagChecksPayload[bagId] = entry;
+    });
+
     return {
       payload: {
         statpackId: pack.id,
@@ -883,10 +1104,11 @@ export default function StatpackCheckOffPage() {
         sealChecks: Object.keys(sealChecks).length > 0 ? sealChecks : undefined,
         oxygenReadings: Object.keys(oxygenReadings).length > 0 ? oxygenReadings : undefined,
         sharpsCheck,
+        bagChecks: Object.keys(bagChecksPayload).length > 0 ? bagChecksPayload : undefined,
       },
       summary,
     };
-  }, [pack, user, allItems, itemChecks, countOf, resolution, sealState, sharps, sharpsAck, isAdmin, mode, today]);
+  }, [pack, user, allItems, itemChecks, countOf, resolution, sealState, sharps, sharpsAck, isAdmin, mode, today, bagChecks]);
 
   const doSubmit = useCallback(async () => {
     const built = buildPayload();
@@ -896,34 +1118,40 @@ export default function StatpackCheckOffPage() {
     try {
       await logStatpackCheckOff(built.payload as any);
 
-      // Best-effort: record any exchange bag swaps toggled during check-in.
-      // A swap failure never blocks the check-in itself — the next audit
-      // or admin correction catches it up.
-      if (mode === 'checkin') {
-        const toSwap = linkedBags.filter(b => swappedBagIds[b.id]);
-        for (const bag of toSwap) {
-          try {
-            await swapBag(bag, { id: user?.uid, name: user?.displayName || user?.email || 'Unknown' });
-          } catch (e) {
-            console.error('Failed to record exchange bag swap', bag.name, e);
-            showToast(`Check-in saved, but couldn't record swap for ${bag.name}`, false);
-          }
+      // Drive exchange bag swaps from `bagChecks` (resolution === 'swapped'),
+      // not a separate toggle. Kept outside the main transaction — it writes
+      // a different collection — but failures are surfaced, not swallowed.
+      const swapFailures: string[] = [];
+      for (const [bagId, chk] of Object.entries(bagChecks)) {
+        if (chk.resolution !== 'swapped') continue;
+        const bag = linkedBags.find(b => b.id === bagId);
+        if (!bag) continue;
+        try {
+          await swapBag(bag, { id: user?.uid, name: user?.displayName || user?.email || 'Unknown' });
+        } catch (e) {
+          console.error('Failed to record exchange bag swap', bag.name, e);
+          swapFailures.push(bag.name);
         }
       }
 
-      const msg = mode === 'checkout'
+      let msg = mode === 'checkout'
         ? 'Checkout complete — you are accountable for this bag'
         : mode === 'checkin'
         ? 'Check-in confirmed. Thank you.'
         : `Audit submitted for ${pack?.name ?? ''}`;
-      showToast(msg, true);
+      let ok = true;
+      if (swapFailures.length > 0) {
+        msg = `${msg} — but couldn't record bag swap for ${swapFailures.join(', ')}`;
+        ok = false;
+      }
+      showToast(msg, ok);
       setTimeout(() => router.push('/dashboard'), 1500);
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Submission failed', false);
     } finally {
       setSubmitting(false);
     }
-  }, [buildPayload, mode, pack, showToast, router, linkedBags, swappedBagIds, user]);
+  }, [buildPayload, mode, pack, showToast, router, linkedBags, bagChecks, user]);
 
   const handleComplete = useCallback(() => {
     if (!pack || !user) return;
@@ -1088,6 +1316,18 @@ export default function StatpackCheckOffPage() {
 
                 {expanded && (
                   <div className="p-2.5 flex flex-col gap-2">
+                    {pk.bags.map(({ bag, qtyPerPack }) => (
+                      <BagCard
+                        key={bag.id}
+                        bag={bag}
+                        qtyPerPack={qtyPerPack}
+                        check={bagChecks[bag.id]}
+                        blocking={isBagBlocking(mode, bag, bagChecks[bag.id])}
+                        onSealIntact={(intact) => setBagSealIntact(bag.id, intact)}
+                        onResolution={(res) => setBagResolution(bag.id, res)}
+                        onNotes={(notes) => setBagNotes(bag.id, notes)}
+                      />
+                    ))}
                     {pk.items.map(it => {
                       const rules = deriveRules(it);
                       const chk = itemChecks[it.itemId] ?? {};
@@ -1312,23 +1552,20 @@ export default function StatpackCheckOffPage() {
               </div>
 
               {linkedBags.length > 0 && (
-                <ReviewSection title="Exchange bags" empty="">
-                  {linkedBags.map(bag => (
-                    <div key={bag.id} className="flex items-center justify-between bg-content2 rounded-large px-4 py-3">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <Repeat size={13} className="text-foreground-400 flex-none" />
-                        <span className="text-sm font-medium text-foreground truncate">{bag.name}</span>
-                      </div>
-                      <Switch
-                        size="sm"
-                        aria-label={`Swapped ${bag.name}`}
-                        isSelected={!!swappedBagIds[bag.id]}
-                        onValueChange={(val) => setSwappedBagIds(prev => ({ ...prev, [bag.id]: val }))}
-                      >
-                        Swapped this bag
-                      </Switch>
-                    </div>
-                  ))}
+                <ReviewSection title="Exchange bags" empty="No bags checked">
+                  {linkedBags.map(bag => {
+                    const chk = bagChecks[bag.id];
+                    const label = chk?.sealIntact === true
+                      ? 'Sealed'
+                      : chk?.sealIntact === false
+                      ? (chk.resolution === 'swapped' ? 'Swapped' : chk.resolution === 'replaced' ? 'Replaced in place' : 'Broken — unresolved')
+                      : 'Not checked';
+                    const tone = chk?.sealIntact === true ? 'success' as const
+                      : chk?.sealIntact === false && chk.resolution ? 'warning' as const
+                      : chk?.sealIntact === false ? 'danger' as const
+                      : 'foreground' as const;
+                    return <ReviewRow key={bag.id} label={bag.name} value={label} tone={tone} />;
+                  })}
                 </ReviewSection>
               )}
             </div>

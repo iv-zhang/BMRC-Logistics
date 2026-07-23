@@ -16,8 +16,10 @@ import { CategoryBadge } from '@/app/components/category-badge';
 import CountControl from '@/app/components/count-control';
 import ConditionToggle, { type ConditionValue } from '@/app/components/condition-toggle';
 import StorageLocationPicker from '@/app/components/storage-location-picker';
+import ScannerInput from '@/app/components/scanner-input';
 import { determineIsAsset } from '@/app/lib/inventory';
 import { computeBagStock, displayLocation, getItemStatus } from '@/app/lib/item-status';
+import { parseGs1Barcode } from '@/app/lib/gs1';
 import { submitAuditEntries } from '@/app/lib/audit-helpers';
 import {
   addShipment,
@@ -121,6 +123,11 @@ export default function AuditActionDrawer({
   const [shipSupplier, setShipSupplier] = useState('');
   const [shipNotes, setShipNotes] = useState('');
 
+  // Raw code from the last scan (either tab) — attributed on whichever
+  // action ends up being submitted, so a scanned box is traceable in the
+  // ledger even if the member switches tabs before confirming.
+  const [scannedCode, setScannedCode] = useState('');
+
   // Report state
   const [issueType, setIssueType] = useState<ItemIssueType>('missing');
   const [issueQty, setIssueQty] = useState('');
@@ -159,6 +166,7 @@ export default function AuditActionDrawer({
     setShipExp('');
     setShipSupplier('');
     setShipNotes('');
+    setScannedCode('');
     setIssueType('missing');
     setIssueQty('');
     setIssueNotes('');
@@ -193,6 +201,7 @@ export default function AuditActionDrawer({
               notes: countNotes || undefined,
               expirationDate: countExp || undefined,
               lotNumber: countLot || undefined,
+              scannedBarcode: scannedCode || undefined,
             },
           ],
           [item],
@@ -238,6 +247,11 @@ export default function AuditActionDrawer({
             expirationMonth: shipExp || undefined,
             supplier: shipSupplier || undefined,
             notes: shipNotes || undefined,
+            scannedBarcode: scannedCode || undefined,
+            // Fresh per-submission token so rapid identical scans (several
+            // cases of the same SKU) are never mistaken for a double-tap —
+            // see the ShipmentInput/HR-8 comment in audit-actions.ts.
+            idempotencyKey: crypto.randomUUID(),
           },
           actor
         );
@@ -482,6 +496,25 @@ export default function AuditActionDrawer({
 
           {action === 'shipment' && (
             <>
+              <ScannerInput
+                compact
+                showLastScan={false}
+                label="Scan case barcode to prefill lot/expiry"
+                placeholder="Scan or type the case barcode..."
+                onScan={(code) => {
+                  setScannedCode(code);
+                  const gs1 = parseGs1Barcode(code);
+                  if (gs1.lot) setShipLot(gs1.lot);
+                  if (gs1.expiration) setShipExp(gs1.expiration.slice(0, 7));
+                }}
+              />
+              {scannedCode && (
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
+                  <PackagePlus size={12} className="flex-none" />
+                  Scanned <span className="font-mono">{scannedCode}</span> — prefilled from GS1 data where available
+                </div>
+              )}
+
               <div>
                 <label className="text-sm font-semibold text-foreground block mb-2">
                   Sealed boxes/bags received

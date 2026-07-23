@@ -50,12 +50,12 @@ import { deleteDoc } from 'firebase/firestore';
 import { getDoc } from 'firebase/firestore';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { auth, db } from '@/firebase';
-import type { Statpack, InventoryItem, User, StatpackPocket, StatpackCompartment } from '@/app/types';
-import StatpackCheckOffModal from '@/app/components/statpack-checkoff-modal';
+import type { Statpack, InventoryItem, User } from '@/app/types';
 import StatpackHistory from '@/app/components/statpack-history';
 import StatpackLogHistory from '@/app/components/statpack-log-history';
 import StatpackEditorModal from '@/app/components/statpack-editor-modal';
-import { updateAssetAssignment, assignBarcode } from '@/app/lib/inventory';
+import { updateAssetAssignment } from '@/app/lib/inventory';
+import { saveStatpackContents } from '@/app/lib/statpacks';
 import {
   Package,
   Wrench,
@@ -74,7 +74,6 @@ import {
   MoreVertical,
   History,
   Trash,
-  AlertTriangle,
   ChevronDown,
   ChevronUp,
   Search,
@@ -85,11 +84,11 @@ import AssetModal from '@/app/components/assetmodal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import AssetHistory from '@/app/components/asset-history';
 import AdminAuditModal from '@/app/components/admin-audit-modal';
-import AssetAttachModal from '@/app/components/asset-attach-modal';
 import AssetStatpackBadge from '@/app/components/asset-statpack-badge';
 import AssetCheckoutModal from '@/app/components/asset-checkout-modal';
 import PurchaseModal from '@/app/components/purchase-modal';
 import ReceiveDrawer from '@/app/components/receive-drawer';
+import AssignBarcodeModal from '@/app/components/assign-barcode-modal';
 import { isOnTheWay, incomingQty } from '@/app/lib/item-status';
 
   
@@ -131,7 +130,6 @@ export default function AssetsPage() {
   const [editingPack, setEditingPack] = useState<Statpack | null>(null);
   // Statpack activity log (opened from the row's ⋮ menu)
   const [logPack, setLogPack] = useState<{ id: string; name: string } | null>(null);
-  const [editorSelectedPocket, setEditorSelectedPocket] = useState<StatpackPocket | 'all'>('all');
   const assetModalDisclosure = useDisclosure();
   const [editingAsset, setEditingAsset] = useState<any | null>(null);
   // Deletion state for assets/statpacks (admin only)
@@ -141,60 +139,10 @@ export default function AssetsPage() {
   const auditModalDisclosure = useDisclosure();
   const [auditType, setAuditType] = useState<'asset' | 'statpack'>('asset');
   const [auditTarget, setAuditTarget] = useState<AssetRecord | null>(null);
-  const auditPocketDisclosure = useDisclosure();
-  const auditCheckoffDisclosure = useDisclosure();
-  const [auditStatpack, setAuditStatpack] = useState<Statpack | null>(null);
-  const [auditSelectedPocketId, setAuditSelectedPocketId] = useState<string | null>(null);
-  const [auditCompletedPockets, setAuditCompletedPockets] = useState<string[]>([]);
-  const assetAttachDisclosure = useDisclosure();
 
   // Log Purchase → Receive (procurement) state
   const [purchaseOpen, setPurchaseOpen] = useState(false);
   const [receiveItem, setReceiveItem] = useState<InventoryItem | null>(null);
-
-    const handleAssetAttachedToLoose = (assetId: string, serial?: string, displayName?: string) => {
-      if (!editingPack) return;
-      const newItem = {
-        id: `asset_${assetId}_${Date.now()}`,
-        name: displayName || (serial ? `Asset ${serial}` : 'Attached Asset'),
-        qty: 1,
-        pocket: editorSelectedPocket,
-        assetInstanceId: assetId,
-        serialNumber: serial,
-      } as any;
-      const contents = [...(editingPack.contents || []), newItem];
-      setEditingPack({ ...editingPack, contents });
-      assetAttachDisclosure.onClose();
-    };
-
-  const auditPocketIds = useMemo(() => {
-    if (!auditStatpack) return [] as string[];
-    const pockets = ['main', 'front_aux', 'side_left', 'side_right'];
-    return pockets.filter((p) => {
-      const hasCompartments = (auditStatpack.compartments || []).some((c: any) => c.parentPocket === p);
-      const hasLooseItems = (auditStatpack.contents || []).some((i: any) => i.pocket === p && !i.compartmentId);
-      return hasCompartments || hasLooseItems;
-    });
-  }, [auditStatpack]);
-
-  const buildPocketStatpack = (pack: Statpack, pocketId: string | null): Statpack => {
-    if (!pocketId) return pack;
-    const pocketComp = (pack.compartments || []).filter((c) => c.parentPocket === pocketId);
-    let pocketContents: any[] = [];
-    if (pocketComp.length > 0) {
-      pocketContents = pocketComp.flatMap((c) => (pack.contents || []).filter((i) => i.compartmentId === c.id));
-    }
-    const loose = (pack.contents || []).filter((i) => i.pocket === pocketId && !i.compartmentId);
-    pocketContents = [...pocketContents, ...loose];
-
-    if (pocketComp.length === 0 && pocketContents.length === 0) {
-      pocketContents = (pack.contents || []).filter((i) => i.compartmentId === pocketId);
-      const directComp = (pack.compartments || []).filter((c) => c.id === pocketId);
-      return ({ ...pack, contents: pocketContents, compartments: directComp } as Statpack);
-    }
-
-    return ({ ...pack, contents: pocketContents, compartments: pocketComp } as Statpack);
-  };
 
   const openAssetPolicyEditor = async (assetId: string) => {
     try {
@@ -212,13 +160,6 @@ export default function AssetsPage() {
     }
   };
 
-  const openStatpackAudit = (asset: AssetRecord) => {
-    const pack = asset.data as Statpack;
-    setAuditStatpack(JSON.parse(JSON.stringify(pack)) as Statpack);
-    setAuditSelectedPocketId(null);
-    setAuditCompletedPockets([]);
-    auditPocketDisclosure.onOpen();
-  };
   const statpackBodyRef = useRef<HTMLDivElement | null>(null);
 
   // When opening the statpack editor modal, ensure the internal scroll resets to top
@@ -237,7 +178,6 @@ export default function AssetsPage() {
     // preserve the Firestore document id so saving updates the existing statpack
     const packWithId = { ...pack, id: asset.id } as Statpack;
     setEditingPack(packWithId);
-    setEditorSelectedPocket('all');
     statpackDisclosure.onOpen();
   };
 
@@ -249,12 +189,15 @@ export default function AssetsPage() {
     if (asset.id) router.push(`/statpacks/check-off?id=${asset.id}&mode=checkin`);
   };
 
-  // Persist an edited statpack draft coming from StatpackEditorModal.
+  // Persist an edited statpack draft coming from StatpackEditorModal. Routed
+  // through the shared helper so the write is sanitized (removeUndefined),
+  // stamps `contentsUpdatedAt`, and logs a `content_edit` statpack_logs row —
+  // previously this was a raw updateDoc with none of that.
   const saveStatpackDraft = async (draft: Statpack) => {
     try {
-      await updateDoc(doc(db, 'statpacks', String(draft.id)), {
-        ...draft,
-        updatedAt: serverTimestamp(),
+      await saveStatpackContents(draft, {
+        uid: user?.uid,
+        name: user?.displayName || user?.email || 'Unknown',
       });
       statpackDisclosure.onClose();
       setEditingPack(null);
@@ -278,16 +221,10 @@ export default function AssetsPage() {
   const [maintenanceReason, setMaintenanceReason] = useState('');
   const [maintenanceNotes, setMaintenanceNotes] = useState('');
   
-  // Quick-assign barcode state
-  const [showQuickAssignScanner, setShowQuickAssignScanner] = useState(false);
-  const [quickAssignAsset, setQuickAssignAsset] = useState<AssetRecord | null>(null);
-  const [scannedBarcodeQuick, setScannedBarcodeQuick] = useState<string>('');
-  const [duplicateWarningQuick, setDuplicateWarningQuick] = useState<{
-    show: boolean;
-    barcode: string;
-    duplicateItem?: { id: string; name: string; serial?: string };
-  } | null>(null);
-  const [assigningBarcodeQuick, setAssigningBarcodeQuick] = useState(false);
+  // Assign barcode / print label — shared modal, any inventory-collection
+  // asset (not statpacks, which live in a separate collection).
+  const [assignBarcodeItem, setAssignBarcodeItem] = useState<InventoryItem | null>(null);
+  const [assignBarcodeOpen, setAssignBarcodeOpen] = useState(false);
   const [maintenanceTechnician, setMaintenanceTechnician] = useState('');
   const [maintenanceServiceType, setMaintenanceServiceType] = useState<'routine' | 'repair' | 'inspection' | 'replacement'>('routine');
 
@@ -745,70 +682,17 @@ export default function AssetsPage() {
     return 'default';
   };
 
-  // Quick-assign barcode handlers
-  const handleQuickAssignBarcode = (asset: AssetRecord) => {
+  // Assign barcode / print label — any inventory-collection asset. Statpacks
+  // live in a separate collection and don't go through `assignBarcode`
+  // (which writes `inventory` + `barcode_index` docs); assign those tags via
+  // their own asset serial field instead.
+  const handleAssignBarcode = (asset: AssetRecord) => {
     if (asset.type !== 'inventory') {
-      alert('Barcode assignment is only supported for inventory assets currently.');
+      alert("Barcode assignment isn't available for statpacks here — assign barcodes to individual inventory items instead.");
       return;
     }
-    setQuickAssignAsset(asset);
-    setScannedBarcodeQuick('');
-    setDuplicateWarningQuick(null);
-    setShowQuickAssignScanner(true);
-  };
-
-  const handleQuickScanDetected = (code: string) => {
-    setScannedBarcodeQuick(code);
-    setShowQuickAssignScanner(false);
-  };
-
-  const handleQuickAssign = async (allowDuplicate = false) => {
-    if (!quickAssignAsset || !scannedBarcodeQuick.trim() || !user) {
-      return;
-    }
-
-    setAssigningBarcodeQuick(true);
-    setDuplicateWarningQuick(null);
-
-    try {
-      const result = await assignBarcode({
-        itemId: quickAssignAsset.id,
-        barcode: scannedBarcodeQuick,
-        user: { id: user.uid, fullName: user.displayName || user.email || 'Unknown' },
-        options: { allowDuplicate },
-      });
-
-      if (!result.success) {
-        if (result.isDuplicate && !allowDuplicate) {
-          setDuplicateWarningQuick({
-            show: true,
-            barcode: scannedBarcodeQuick,
-            duplicateItem: result.duplicateItem,
-          });
-        } else {
-          alert(result.message);
-        }
-      } else {
-        alert(result.message);
-        setScannedBarcodeQuick('');
-        setQuickAssignAsset(null);
-        setDuplicateWarningQuick(null);
-      }
-    } catch (error: any) {
-      alert(error.message || 'Failed to assign barcode');
-    } finally {
-      setAssigningBarcodeQuick(false);
-    }
-  };
-
-  const handleQuickDuplicateOverride = () => {
-    handleQuickAssign(true);
-  };
-
-  const handleQuickCancelDuplicate = () => {
-    setDuplicateWarningQuick(null);
-    setScannedBarcodeQuick('');
-    setQuickAssignAsset(null);
+    setAssignBarcodeItem(asset.data as InventoryItem);
+    setAssignBarcodeOpen(true);
   };
 
   // Actor for procurement writes (Log Purchase / Receive) — built from the
@@ -1158,7 +1042,7 @@ export default function AssetsPage() {
                                   <DropdownItem key="noop2" className="hidden">.</DropdownItem>
                                 )}
                                 {asset.type === 'inventory' && (userRole === 'admin' || userRole === 'quartermaster' || userRole === 'inventory_helper') ? (
-                                  <DropdownItem key="barcode" startContent={<ScanBarcode size={14} />} onPress={() => handleQuickAssignBarcode(asset)}>
+                                  <DropdownItem key="barcode" startContent={<ScanBarcode size={14} />} onPress={() => handleAssignBarcode(asset)}>
                                     Assign Barcode Tag
                                   </DropdownItem>
                                 ) : (
@@ -1636,13 +1520,6 @@ export default function AssetsPage() {
         canDelete={userRole === 'admin'}
       />
 
-      <AssetAttachModal
-        isOpen={assetAttachDisclosure.isOpen}
-        onOpenChange={assetAttachDisclosure.onOpenChange}
-        onAttach={handleAssetAttachedToLoose}
-        currentItemName={''}
-      />
-
       {/* Asset Add/Edit Modal */}
       <AssetModal
         isOpen={assetModalDisclosure.isOpen}
@@ -1701,121 +1578,6 @@ export default function AssetsPage() {
         }}
       />
 
-      {/* Statpack Audit Pocket Selection */}
-      <Modal isOpen={auditPocketDisclosure.isOpen} onOpenChange={auditPocketDisclosure.onOpenChange} backdrop="blur" size="lg" placement="center">
-        <ModalContent>
-          <ModalHeader>Choose Pocket to Audit</ModalHeader>
-          <ModalBody className="gap-4 max-h-[70vh] overflow-y-auto">
-            {auditStatpack ? (
-              <div className="space-y-3">
-                <Card className="bg-default-100">
-                  <CardBody>
-                    <p className="font-semibold">{auditStatpack.name}</p>
-                    <p className="text-sm text-default-500">Audit pocket-by-pocket to verify expirations and O2.</p>
-                  </CardBody>
-                </Card>
-
-                <div className="flex flex-col gap-3 py-1">
-                  {auditPocketIds.length === 0 && (
-                    <Card>
-                      <CardBody className="text-center">
-                        <p className="text-sm text-default-500">No pockets defined — audit the entire pack.</p>
-                        <div className="mt-3">
-                          <Button onPress={() => {
-                            setAuditSelectedPocketId(null);
-                            auditPocketDisclosure.onClose();
-                            auditCheckoffDisclosure.onOpen();
-                          }}>Audit Full Pack</Button>
-                        </div>
-                      </CardBody>
-                    </Card>
-                  )}
-                  {[
-                    { id: 'main', name: 'Center Pocket' },
-                    { id: 'front_aux', name: 'Front Pocket' },
-                    { id: 'side_left', name: 'Left Side Pocket' },
-                    { id: 'side_right', name: 'Right Side Pocket' },
-                  ].filter((p) => auditPocketIds.includes(p.id)).map((p) => {
-                    const compForPocket = (auditStatpack.compartments || []).filter((c: any) => c.parentPocket === p.id);
-                    const compItemsCount = compForPocket.flatMap((c: any) => (auditStatpack.contents || []).filter((i: any) => i.compartmentId === c.id)).length;
-                    const looseCount = (auditStatpack.contents || []).filter((i: any) => i.pocket === p.id && !i.compartmentId).length;
-                    const count = compItemsCount + looseCount;
-                    const isDone = auditCompletedPockets.includes(p.id);
-
-                    return (
-                      <Card
-                        key={p.id}
-                        isPressable={!isDone}
-                        onPress={() => {
-                          if (isDone) return;
-                          setAuditSelectedPocketId(p.id);
-                          auditPocketDisclosure.onClose();
-                          auditCheckoffDisclosure.onOpen();
-                        }}
-                        className={`w-full transition-shadow ${isDone ? 'border-2 border-success bg-success-50 opacity-90' : 'hover:shadow-md'}`}
-                      >
-                        <CardBody className="flex flex-col items-center text-center gap-3 py-6">
-                          <div className="space-y-1">
-                            <p className="font-semibold text-base">{p.name}</p>
-                            <p className="text-xs text-default-500">{count} items</p>
-                          </div>
-                          {isDone ? (
-                            <div className="w-full flex justify-center">
-                              <Chip size="sm" variant="flat" color="success">Completed</Chip>
-                            </div>
-                          ) : (
-                            <div className="w-full px-4">
-                              <div
-                                role="button"
-                                tabIndex={0}
-                                className="w-full h-12 rounded-md bg-primary text-primary-foreground flex items-center justify-center"
-                                aria-label={`Start audit for ${p.name}`}
-                              >
-                                Tap to start
-                              </div>
-                            </div>
-                          )}
-                        </CardBody>
-                      </Card>
-                    );
-                  })}
-                </div>
-              </div>
-            ) : (
-              <div>No statpack selected.</div>
-            )}
-          </ModalBody>
-          <ModalFooter>
-            <Button color="default" onPress={() => { auditPocketDisclosure.onClose(); setAuditStatpack(null); }}>Cancel</Button>
-          </ModalFooter>
-        </ModalContent>
-      </Modal>
-
-      {/* Statpack Audit Check-Off (pocket-level) */}
-      {auditStatpack && user && (
-        <StatpackCheckOffModal
-          isOpen={auditCheckoffDisclosure.isOpen}
-          onOpenChange={auditCheckoffDisclosure.onOpenChange}
-          statpack={buildPocketStatpack(auditStatpack, auditSelectedPocketId)}
-          action="maintenance"
-          userId={user.uid}
-          userName={user.displayName || user.email || 'Unknown User'}
-          onCheckOffComplete={() => {
-            const newCompleted = auditSelectedPocketId ? [...auditCompletedPockets, auditSelectedPocketId] : [...auditCompletedPockets];
-            setAuditCompletedPockets(newCompleted);
-            setAuditSelectedPocketId(null);
-
-            auditCheckoffDisclosure.onClose();
-            if (newCompleted.length > 0 && newCompleted.length >= auditPocketIds.length) {
-              setAuditStatpack(null);
-              setAuditCompletedPockets([]);
-              return;
-            }
-            setTimeout(() => auditPocketDisclosure.onOpen(), 250);
-          }}
-        />
-      )}
-
       <AdminAuditModal
         isOpen={auditModalDisclosure.isOpen}
         onOpenChange={auditModalDisclosure.onOpenChange}
@@ -1845,13 +1607,6 @@ export default function AssetsPage() {
         onDetected={handleCheckoutScan}
       />
 
-      {/* Quick Assign Barcode Scanner */}
-      <BarcodeScanner
-        isOpen={showQuickAssignScanner}
-        onClose={() => setShowQuickAssignScanner(false)}
-        onDetected={handleQuickScanDetected}
-      />
-
       {/* Asset Checkout/Checkin Modal */}
       {selectedCheckoutAsset && (
         <AssetCheckoutModal
@@ -1865,80 +1620,13 @@ export default function AssetsPage() {
         />
       )}
 
-      {/* Quick Assign Result/Duplicate Warning Modal */}
-      <Modal
-        isOpen={!!scannedBarcodeQuick && !showQuickAssignScanner}
-        onOpenChange={(open) => {
-          if (!open) {
-            setScannedBarcodeQuick('');
-            setQuickAssignAsset(null);
-            setDuplicateWarningQuick(null);
-          }
-        }}
-        size="md"
-      >
-        <ModalContent>
-          <ModalHeader>Assign Barcode Tag</ModalHeader>
-          <ModalBody>
-            {quickAssignAsset && (
-              <div className="space-y-3">
-                <div className="bg-primary-50 border border-primary-200 rounded p-3">
-                  <p className="text-sm font-medium text-primary">Asset: {quickAssignAsset.name}</p>
-                  <p className="text-sm text-primary mt-1">Scanned: <span className="font-mono">{scannedBarcodeQuick}</span></p>
-                </div>
-
-                {duplicateWarningQuick?.show && (
-                  <div className="bg-warning-50 border border-warning-200 rounded p-3">
-                    <p className="text-sm font-semibold text-warning mb-1 flex items-center gap-1"><AlertTriangle size={14} /> Duplicate Barcode</p>
-                    <p className="text-sm text-warning-700 mb-2">
-                      This barcode is already assigned to{' '}
-                      <strong>{duplicateWarningQuick.duplicateItem?.name}</strong>
-                      {duplicateWarningQuick.duplicateItem?.serial && (
-                        <span> (Serial: {duplicateWarningQuick.duplicateItem.serial})</span>
-                      )}
-                    </p>
-                  </div>
-                )}
-              </div>
-            )}
-          </ModalBody>
-          <ModalFooter>
-            {duplicateWarningQuick?.show ? (
-              <>
-                <Button variant="light" onPress={handleQuickCancelDuplicate}>
-                  Cancel
-                </Button>
-                <Button
-                  color="warning"
-                  onPress={handleQuickDuplicateOverride}
-                  isLoading={assigningBarcodeQuick}
-                >
-                  Assign Anyway
-                </Button>
-              </>
-            ) : (
-              <>
-                <Button
-                  variant="light"
-                  onPress={() => {
-                    setScannedBarcodeQuick('');
-                    setQuickAssignAsset(null);
-                  }}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  color="primary"
-                  onPress={() => handleQuickAssign(false)}
-                  isLoading={assigningBarcodeQuick}
-                >
-                  Assign to Asset
-                </Button>
-              </>
-            )}
-          </ModalFooter>
-        </ModalContent>
-      </Modal>
+      {/* Assign barcode / print label — shared with /inventory */}
+      <AssignBarcodeModal
+        isOpen={assignBarcodeOpen}
+        onClose={() => { setAssignBarcodeOpen(false); setAssignBarcodeItem(null); }}
+        item={assignBarcodeItem}
+        user={user ? { id: user.uid, fullName: user.displayName || user.email || 'Unknown' } : null}
+      />
 
       {/* Log Purchase (order-time record; stock enters only on Receive) */}
       <PurchaseModal

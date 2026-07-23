@@ -1,5 +1,5 @@
 'use client';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button,
   Input, Select, SelectItem, Switch, Textarea, Divider, Chip, Slider,
@@ -11,8 +11,11 @@ import { doc, collection as coll, query as q, where, limit, getDocs, writeBatch 
 import { db } from '@/firebase';
 import { safeParseDate } from '@/app/utils/inventoryNormalization';
 import { addAuditEventToBatch } from '@/app/lib/audit';
+import { levenshtein } from '@/app/lib/inventory-merge';
 import StorageLocationPicker from '@/app/components/storage-location-picker';
 import { useStorageLocations } from '@/app/hooks/useStorageLocations';
+import { useOrgConfig } from '@/app/hooks/useOrgConfig';
+import { deriveItemName, parseLegacyName } from '@/app/lib/item-naming';
 
 // Constants
 const CATEGORIES: ItemCategory[] = ['Airway', 'Trauma', 'Vitals', 'Meds', 'PPE', 'Splinting', 'Hygiene', 'First Aid', 'Other'];
@@ -36,6 +39,8 @@ interface InventoryModalProps {
 // Lean form state for disposable inventory
 type InventoryFormState = {
   name: string;
+  family?: string;
+  variantLabel?: string;
   sku?: string;
   barcode?: string;
   category: ItemCategory;
@@ -68,6 +73,8 @@ const uniqueId = () =>
 
 const DEFAULT_STATE: InventoryFormState = {
   name: '',
+  family: '',
+  variantLabel: '',
   category: 'Other',
   unit: 'box',
   reorderThreshold: 5,
@@ -87,10 +94,21 @@ export default function InventoryModal({
 }: InventoryModalProps) {
   // --- Storage data (shared across pickers) ---
   const storageData = useStorageLocations();
+  const { itemFamilies } = useOrgConfig();
 
   // --- Form state ---
   const getInitialFormData = (data?: InventoryItem | null): InventoryFormState => {
     if (!data) return { ...DEFAULT_STATE };
+
+    // Legacy items have no `family` yet — split the free-typed name so the
+    // edit form still shows something sensible in the new Family/Variant UI.
+    let family = data.family;
+    let variantLabel = data.variantLabel;
+    if (!family) {
+      const parsed = parseLegacyName(data.name || '', [...itemFamilies]);
+      family = parsed.family;
+      variantLabel = parsed.variantLabel;
+    }
 
     const rawBatches = data.batches || [];
     const batches: InventoryBatch[] = rawBatches.map((b: unknown) => {
@@ -107,6 +125,8 @@ export default function InventoryModal({
     const dataRecord = data as unknown as Record<string, unknown>;
     return {
       name: data.name || '',
+      family: family || '',
+      variantLabel: variantLabel || '',
       sku: (dataRecord.sku as string) || '',
       barcode: (dataRecord.barcode as string) || '',
       category: data.category || 'Other',
@@ -137,6 +157,12 @@ export default function InventoryModal({
   const [error, setError] = useState<string>('');
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
 
+  // `name` is DERIVED, never typed by hand — see app/lib/item-naming.ts.
+  const derivedName = useMemo(
+    () => deriveItemName(formData.family || '', formData.variantLabel),
+    [formData.family, formData.variantLabel],
+  );
+
   // Reset form when initialData changes or modal opens
   useEffect(() => {
     if (isOpen) {
@@ -147,27 +173,10 @@ export default function InventoryModal({
     }
   }, [initialData]); // Only depend on initialData, not isOpen
 
-  // --- Duplicate detection ---
-  const levenshtein = (a: string, b: string) => {
-    const as = a.toLowerCase().trim();
-    const bs = b.toLowerCase().trim();
-    if (as === bs) return 0;
-    const m = as.length, n = bs.length;
-    const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
-    for (let i = 0; i <= m; i++) dp[i][0] = i;
-    for (let j = 0; j <= n; j++) dp[0][j] = j;
-    for (let i = 1; i <= m; i++) {
-      for (let j = 1; j <= n; j++) {
-        const cost = as[i - 1] === bs[j - 1] ? 0 : 1;
-        dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
-      }
-    }
-    return dp[m][n];
-  };
-
+  // --- Duplicate detection --- (levenshtein is shared from app/lib/inventory-merge.ts)
   useEffect(() => {
     if (!isOpen) return;
-    const name = (formData.name ?? '').trim();
+    const name = derivedName.trim();
     const sku = (formData.sku ?? '').trim();
     const barcode = (formData.barcode ?? '').trim();
     if ((!name || name.length < 2) && !sku && !barcode) { 
@@ -216,7 +225,7 @@ export default function InventoryModal({
       setCheckingDuplicates(false);
     }, 350);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, [formData.name, formData.sku, formData.barcode, isOpen]);
+  }, [derivedName, formData.sku, formData.barcode, isOpen]);
 
   // --- Batch helpers ---
   const addBatch = () => {
@@ -273,7 +282,7 @@ export default function InventoryModal({
 
   // --- Submit ---
   const handleSubmit = async (onClose: () => void) => {
-    if (!formData.name?.trim()) return;
+    if (!formData.family?.trim()) return;
 
     // Compute total stock from batches
     const batchTotal = formData.batches.reduce((a, b) => a + Number(b.stock ?? 0), 0);
@@ -287,7 +296,11 @@ export default function InventoryModal({
     const primaryItemsPerBox = perBagValues.length > 0 ? perBagValues[0] : formData.itemsPerBox;
 
     const payload: Record<string, unknown> = {
-      name: formData.name.trim(),
+      name: derivedName,
+      family: formData.family.trim(),
+      variantLabel: formData.variantLabel?.trim() || undefined,
+      // Saving through this modal is how a naming-review item gets resolved.
+      namingReviewNeeded: false,
       sku: formData.sku || undefined,
       barcode: formData.barcode || undefined,
       category: formData.category,
@@ -448,16 +461,34 @@ export default function InventoryModal({
               <section>
                 <h3 className="text-[11px] font-bold text-foreground-400 uppercase tracking-widest mb-3">Item Details</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <Input
-                    label="Item Name"
-                    placeholder="e.g., Nitrile Gloves (Large)"
+                  <Select
+                    label="Family"
                     variant="bordered"
                     size="sm"
-                    value={formData.name}
-                    onValueChange={(v) => setFormData(prev => ({ ...prev, name: v }))}
+                    selectedKeys={formData.family ? [formData.family] : []}
+                    onSelectionChange={(keys) => setFormData(prev => ({ ...prev, family: Array.from(keys)[0] as string }))}
+                    className="overflow-visible"
+                    popoverProps={{ classNames: { content: 'w-fit' } }}
                     autoFocus
-                    className="md:col-span-2"
+                  >
+                    {(formData.family && !itemFamilies.includes(formData.family)
+                      ? [formData.family, ...itemFamilies]
+                      : itemFamilies
+                    ).map((fam) => (
+                      <SelectItem key={fam}>{fam}</SelectItem>
+                    ))}
+                  </Select>
+                  <Input
+                    label="Variant (optional)"
+                    placeholder="e.g. Small, M, 28 Fr"
+                    variant="bordered"
+                    size="sm"
+                    value={formData.variantLabel ?? ''}
+                    onValueChange={(v) => setFormData(prev => ({ ...prev, variantLabel: v }))}
                   />
+                  <p className="md:col-span-2 text-xs text-foreground-400 -mt-1">
+                    Name: <span className="font-semibold text-foreground-600">{derivedName || '—'}</span>
+                  </p>
                   <Input
                     label="SKU (optional)"
                     placeholder="e.g., GLV-LG-100"
@@ -870,7 +901,7 @@ export default function InventoryModal({
                 color="primary"
                 onPress={() => handleSubmit(() => closeModal())}
                 className="font-semibold shadow-lg"
-                isDisabled={!formData.name?.trim()}
+                isDisabled={!formData.family?.trim()}
               >
                 {isEditMode ? 'Save Changes' : 'Add Item'}
               </Button>

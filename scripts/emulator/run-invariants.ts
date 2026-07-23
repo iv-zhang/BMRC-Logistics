@@ -18,5 +18,8 @@ import './invariants/inv-09.test';
 import './invariants/inv-10.test';
 import './invariants/inv-11.test';
 import './invariants/inv-12.test';
+import './invariants/inv-13.test';
+import './invariants/inv-14.test';
+import './invariants/inv-15.test';
 
 await runRegistered();

@@ -31,6 +31,50 @@ function decodeFields(f: Record<string, any>): Record<string, any> {
   return o;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function encodeVal(v: any): any {
+  if (v === null || v === undefined) return { nullValue: null };
+  if (typeof v === 'boolean') return { booleanValue: v };
+  if (typeof v === 'number') {
+    return Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
+  }
+  if (typeof v === 'string') return { stringValue: v };
+  if (Array.isArray(v)) return { arrayValue: { values: v.map(encodeVal) } };
+  if (v instanceof Date) return { timestampValue: v.toISOString() };
+  if (typeof v === 'object') return { mapValue: { fields: encodeFields(v) } };
+  return { nullValue: null };
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function encodeFields(o: Record<string, any>): Record<string, any> {
+  const f: Record<string, unknown> = {};
+  for (const k of Object.keys(o)) {
+    if (o[k] === undefined) continue;
+    f[k] = encodeVal(o[k]);
+  }
+  return f;
+}
+
+/**
+ * Create a document (server-assigned id unless `id` is given) and return its id.
+ * Seeding fixtures this way is far less brittle than driving creation UI, and it
+ * keeps a test's arrange step from depending on the feature it's verifying.
+ */
+export async function createDoc(
+  collection: string,
+  data: Record<string, any>,
+  id?: string,
+): Promise<string> {
+  const url = `${BASE}/${collection}${id ? `?documentId=${encodeURIComponent(id)}` : ''}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fields: encodeFields(data) }),
+  });
+  if (!res.ok) throw new Error(`emulator CREATE ${collection} → ${res.status} ${await res.text()}`);
+  const json = await res.json();
+  return String(json.name).split('/').pop()!;
+}
+
 /** Fetch one document by `collection/id`; null if it doesn't exist. */
 export async function getDocById(collection: string, id: string): Promise<Record<string, any> | null> {
   const res = await fetch(`${BASE}/${collection}/${id}`);

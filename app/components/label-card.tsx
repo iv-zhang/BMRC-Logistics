@@ -3,13 +3,26 @@
 import React, { useEffect, useState, useRef } from 'react';
 import QRCode from 'qrcode';
 import JsBarcode from 'jsbarcode';
-import type { InventoryItem, Statpack } from '@/app/types';
+import type { InventoryItem, Statpack, ExchangeBag } from '@/app/types';
+import { bagQrPayload } from '@/app/lib/exchange-bags';
+import { ownLabelPayload } from '@/app/lib/scan-resolve';
 
 interface LabelCardProps {
-  asset: InventoryItem | Statpack;
+  asset: InventoryItem | Statpack | ExchangeBag;
   width?: number; // width in mm (will be converted to px for display)
   height?: number; // height in mm (will be converted to px for display)
   dpi?: number; // dots per inch for rendering (default 96)
+}
+
+/** `fullCount`/`lines` only exist on `ExchangeBag` — neither InventoryItem nor Statpack has them. */
+function isExchangeBag(asset: InventoryItem | Statpack | ExchangeBag): asset is ExchangeBag {
+  return 'fullCount' in asset && 'lines' in asset;
+}
+
+/** "Contains: 20 assorted bandaids, 4 gauze" — built from the bag's BOM lines. */
+function bagContentsLine(bag: ExchangeBag): string {
+  if (!bag.lines || bag.lines.length === 0) return 'Contains: (empty)';
+  return 'Contains: ' + bag.lines.map((l) => `${l.qtyPerBag} ${l.itemName}`).join(', ');
 }
 
 /**
@@ -34,11 +47,20 @@ export default function LabelCard({
   const pxWidth = width * (dpi / 25.4);
   const pxHeight = height * (dpi / 25.4);
 
-  // Get the label content (tag/serial)
+  const isBag = isExchangeBag(asset);
+
+  // Get the label content (tag/serial). Bags use a type-level QR payload —
+  // every physical copy of the same bag design shares one code.
   const getTagContent = (): string => {
-    if ('assetSerial' in asset) {
-      // InventoryItem
-      return String((asset as InventoryItem).assetSerial || (asset as InventoryItem).qr || asset.name || '');
+    if (isBag) {
+      return bagQrPayload(asset);
+    } else if ('assetSerial' in asset) {
+      // InventoryItem — never fall back to the human-readable name: no
+      // scanner path resolves a name string back to this item, so a label
+      // without a real code would be unscannable. `ownLabelPayload` is the
+      // last resort — always resolvable via `resolveScan`'s own-label check.
+      const inv = asset as InventoryItem;
+      return String(inv.assignedBarcode || inv.assetSerial || inv.qr || ownLabelPayload(inv.id));
     } else {
       // Statpack
       return String((asset as Statpack).id || asset.name || '');
@@ -53,7 +75,7 @@ export default function LabelCard({
   };
 
   const tagContent = getTagContent();
-  const category = getAssetCategory();
+  const category = isBag ? '' : getAssetCategory();
 
   // Generate QR code
   useEffect(() => {
@@ -82,9 +104,11 @@ export default function LabelCard({
     };
   }, [tagContent]);
 
-  // Generate barcode SVG
+  // Generate barcode SVG — bags drop the code128 barcode entirely (no
+  // scanner-gun workflow for a type-level bag code), so this is a no-op when
+  // the row's <svg> isn't rendered.
   useEffect(() => {
-    if (!tagContent || !svgRef.current) return;
+    if (isBag || !tagContent || !svgRef.current) return;
 
     try {
       JsBarcode(svgRef.current, tagContent, {
@@ -97,7 +121,7 @@ export default function LabelCard({
     } catch (e) {
       console.error('Failed to generate barcode:', e);
     }
-  }, [tagContent]);
+  }, [tagContent, isBag]);
 
   return (
     <div
@@ -137,38 +161,69 @@ export default function LabelCard({
         )}
       </div>
 
-      {/* Barcode */}
-      <div style={{ width: '100%', display: 'flex', justifyContent: 'center', marginBottom: '2px' }}>
-        <svg
-          ref={svgRef}
-          style={{
-            maxWidth: '100%',
-            height: 'auto',
-          }}
-        />
-      </div>
+      {/* Barcode — dropped entirely for bag labels */}
+      {!isBag && (
+        <div style={{ width: '100%', display: 'flex', justifyContent: 'center', marginBottom: '2px' }}>
+          <svg
+            ref={svgRef}
+            style={{
+              maxWidth: '100%',
+              height: 'auto',
+            }}
+          />
+        </div>
+      )}
 
-      {/* Asset Info */}
-      <div
-        style={{
-          width: '100%',
-          textAlign: 'center',
-          fontSize: '7px',
-          lineHeight: '1',
-          overflow: 'hidden',
-          display: '-webkit-box',
-          WebkitLineClamp: 2,
-          WebkitBoxOrient: 'vertical',
-          wordBreak: 'break-word',
-        }}
-      >
-        <div style={{ fontWeight: 'bold', marginBottom: '1px' }}>
-          {asset.name.substring(0, 15)}
+      {isBag ? (
+        /* Bag label: name + "Contains: ..." BOM line built from lines[] */
+        <div
+          style={{
+            width: '100%',
+            textAlign: 'center',
+            lineHeight: '1.25',
+            overflow: 'hidden',
+            wordBreak: 'break-word',
+          }}
+        >
+          <div style={{ fontWeight: 'bold', fontSize: '9px', marginBottom: '2px' }}>
+            {asset.name}
+          </div>
+          <div
+            style={{
+              fontSize: '7px',
+              color: '#6b7280',
+              display: '-webkit-box',
+              WebkitLineClamp: 3,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+            }}
+          >
+            {bagContentsLine(asset)}
+          </div>
         </div>
-        <div style={{ fontSize: '6px', color: '#6b7280' }}>
-          {category}
+      ) : (
+        /* Asset Info */
+        <div
+          style={{
+            width: '100%',
+            textAlign: 'center',
+            fontSize: '7px',
+            lineHeight: '1',
+            overflow: 'hidden',
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+            wordBreak: 'break-word',
+          }}
+        >
+          <div style={{ fontWeight: 'bold', marginBottom: '1px' }}>
+            {asset.name.substring(0, 15)}
+          </div>
+          <div style={{ fontSize: '6px', color: '#6b7280' }}>
+            {category}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

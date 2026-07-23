@@ -5,7 +5,8 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { doc, getDoc } from 'firebase/firestore';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { auth, db } from '@/firebase';
-import type { InventoryItem, Statpack } from '@/app/types';
+import type { InventoryItem, Statpack, ExchangeBag } from '@/app/types';
+import { subscribeExchangeBags } from '@/app/lib/exchange-bags';
 import LabelCard from '@/app/components/label-card';
 import {
   Button,
@@ -34,6 +35,7 @@ import {
 import {
   exportLabelsToPDF,
   DEFAULT_TEMPLATE,
+  BAG_LABEL_TEMPLATE,
   calculateLabelsPerRow,
   calculateLabelsPerPage,
   saveTemplate,
@@ -46,8 +48,8 @@ import '@/app/styles/print-labels.css';
 
 interface AssetData {
   id: string;
-  data: InventoryItem | Statpack;
-  type: 'inventory' | 'statpack';
+  data: InventoryItem | Statpack | ExchangeBag;
+  type: 'inventory' | 'statpack' | 'bag';
 }
 
 function PrintLabelsContent() {
@@ -131,6 +133,17 @@ function PrintLabelsContent() {
 
         const fetchedAssets: AssetData[] = [];
 
+        // Exchange bags source: one-shot snapshot via the shared subscribe
+        // helper (so hydration matches every other bag read path) rather
+        // than a per-id getDoc against a collection this page doesn't
+        // otherwise know the shape of.
+        const bagsById = await new Promise<Record<string, ExchangeBag>>((resolve) => {
+          const unsub = subscribeExchangeBags((bags) => {
+            unsub();
+            resolve(Object.fromEntries(bags.map((b) => [b.id, b])));
+          });
+        });
+
         // Fetch each asset
         for (const id of assetIds) {
           try {
@@ -151,6 +164,9 @@ function PrintLabelsContent() {
                   data: { id, ...spDoc.data() } as Statpack,
                   type: 'statpack',
                 });
+              } else if (bagsById[id]) {
+                // Exchange bag
+                fetchedAssets.push({ id, data: bagsById[id], type: 'bag' });
               }
             }
           } catch (e) {
@@ -161,6 +177,11 @@ function PrintLabelsContent() {
         if (mounted) {
           setAssets(fetchedAssets);
           setSavedTemplates(getSavedTemplates());
+          // Bag labels are taller (name + BOM line, no barcode) — default to
+          // the bag template when the print queue contains any bags.
+          if (fetchedAssets.some((a) => a.type === 'bag')) {
+            setTemplate(BAG_LABEL_TEMPLATE);
+          }
         }
       } catch (e) {
         console.error('Failed to fetch assets:', e);

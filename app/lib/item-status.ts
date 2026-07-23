@@ -121,6 +121,10 @@ export function getItemStatus(item: InventoryItem): ItemStatus {
   if (batches.some(b => batchHasStock(b) && b.expirationDate && b.expirationDate < now))
     return 'expired';
   if (item.isOxygen) return 'ok';
+  // Deliberately keyed on the RESERVE pool only, never the front shelf: an
+  // item with a full front shelf but an empty back room must still read
+  // 'out' for reordering purposes — the shelf is not a substitute for
+  // reserve stock. Do not fold `shelfQuantity` into this decision.
   // Availability, not physical count, drives out/low: an item whose only stock is
   // expired or quarantined has zero deployable units and must read 'out', never 'ok'.
   if (bag.availableItems === 0) return 'out';
@@ -211,4 +215,18 @@ export function statpackAuditDueInDays(lastAuditDate?: Date, now = new Date()): 
   if (!lastAuditDate) return undefined;
   const ageDays = (now.getTime() - lastAuditDate.getTime()) / DAY_MS;
   return Math.round(getThresholds().statpackAuditIntervalDays - ageDays);
+}
+
+// ── Weekly front-shelf check cadence ──────────────────────────────────────────
+
+/**
+ * The front restock shelf (`InventoryItem.shelfQuantity`) is deliberately not
+ * event-tracked (see `app/lib/restock-actions.ts`); instead it's re-anchored
+ * by a physical weekly check. An item's shelf count is "current" only if
+ * `lastShelfCheckAt` falls within `THRESHOLDS.shelfCheckIntervalDays` of now.
+ */
+export function isShelfCheckCurrent(item: InventoryItem, now = new Date()): boolean {
+  if (!item.lastShelfCheckAt) return false;
+  const ageDays = (now.getTime() - item.lastShelfCheckAt.getTime()) / DAY_MS;
+  return ageDays <= getThresholds().shelfCheckIntervalDays;
 }

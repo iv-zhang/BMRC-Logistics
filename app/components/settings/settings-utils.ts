@@ -30,6 +30,20 @@ export function validateOrgConfig(draft: OrgConfigDoc): string[] {
     if (!c.trim()) errors.push('Item categories cannot be empty.');
   });
 
+  {
+    const seen = new Set<string>();
+    draft.itemFamilies.forEach((f) => {
+      const trimmed = f.trim();
+      if (!trimmed) {
+        errors.push('Item families cannot be empty.');
+        return;
+      }
+      const key = trimmed.toLowerCase();
+      if (seen.has(key)) errors.push(`Item family "${trimmed}" is listed more than once.`);
+      seen.add(key);
+    });
+  }
+
   draft.assetCategories.forEach((c) => {
     if (!c.name.trim()) errors.push('Every asset category needs a name.');
   });

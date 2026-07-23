@@ -11,6 +11,7 @@
     "test": "node ./scripts/test-audit-restock.cjs",
     "migrate:batch-locations": "node ./scripts/migrate-batch-locations.js --dry-run",
     "migrate:normalize-inventory": "node ./scripts/normalize-inventory.cjs --dry-run",
+    "migrate:item-naming": "node ./scripts/migrate-item-naming.cjs --dry-run",
     "migrate:tasks-to-team": "node ./scripts/migrate-tasks-to-team.js --dry-run",
     "emulator": "firebase emulators:start --only firestore --project demo-bmrc-logistics",
     "seed": "tsx ./scripts/emulator/seed-cli.ts",

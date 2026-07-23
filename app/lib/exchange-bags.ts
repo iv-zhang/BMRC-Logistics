@@ -28,7 +28,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { consumeReserveUnits } from '@/app/lib/stock-pools';
-import type { ExchangeBag, InventoryItem } from '@/app/types';
+import type { ExchangeBag, ExchangeBagAssignment, InventoryItem, Statpack, StorageLocationRef } from '@/app/types';
 
 export function removeUndefined<T extends Record<string, unknown>>(obj: T): T {
   const cleaned = { ...obj } as T;
@@ -48,20 +48,44 @@ function toDateVal(v: unknown): Date | undefined {
   return undefined;
 }
 
-function hydrateBag(id: string, raw: Record<string, unknown>): ExchangeBag {
+export function hydrateBag(id: string, raw: Record<string, unknown>): ExchangeBag {
   return {
     id,
     name: (raw.name as string) || 'Untitled bag',
     categoryId: raw.categoryId as string | undefined,
+    storageLocation: raw.storageLocation as StorageLocationRef | undefined,
     shelfId: raw.shelfId as string | undefined,
     lines: Array.isArray(raw.lines) ? (raw.lines as ExchangeBag['lines']) : [],
     fullCount: typeof raw.fullCount === 'number' ? raw.fullCount : 0,
     emptyCount: typeof raw.emptyCount === 'number' ? raw.emptyCount : 0,
     parBags: raw.parBags as number | undefined,
+    sealRequired: raw.sealRequired as boolean | undefined,
+    sealPrefix: raw.sealPrefix as string | undefined,
     createdAt: toDateVal(raw.createdAt),
     updatedAt: toDateVal(raw.updatedAt),
     updatedBy: raw.updatedBy as string | undefined,
   };
+}
+
+/**
+ * Read-time shim for `Statpack.exchangeBagAssignments`: returns the
+ * pocket-aware assignments if present, else maps the legacy flat
+ * `exchangeBagIds` array to `{ bagId, pocket: 'main', qtyPerPack: 1 }`.
+ * Every read path (check-off page, editor, detail page) must call this
+ * instead of reading either raw field directly — no Firestore migration
+ * script backfills `exchangeBagAssignments` onto old pack docs.
+ */
+export function resolveBagAssignments(
+  pack: Pick<Statpack, 'exchangeBagAssignments' | 'exchangeBagIds'> | null | undefined,
+): ExchangeBagAssignment[] {
+  if (!pack) return [];
+  if (Array.isArray(pack.exchangeBagAssignments) && pack.exchangeBagAssignments.length > 0) {
+    return pack.exchangeBagAssignments;
+  }
+  if (Array.isArray(pack.exchangeBagIds) && pack.exchangeBagIds.length > 0) {
+    return pack.exchangeBagIds.map((bagId) => ({ bagId, pocket: 'main' as const, qtyPerPack: 1 }));
+  }
+  return [];
 }
 
 /** Live subscription to all exchange bags, ordered by name. */
@@ -78,8 +102,19 @@ export async function saveExchangeBag(
   actor: { id?: string; name?: string },
 ): Promise<string> {
   const { id, ...rest } = patch;
+
+  // `shelfId` is a denormalized mirror of `storageLocation.shelfId` — the
+  // structured ref is the source of truth (see the location-model invariant
+  // in CLAUDE.md). Whenever the caller touches `storageLocation`, re-derive
+  // the mirror here so it can never drift out of sync. If the caller isn't
+  // touching location at all (key absent from the patch), leave the existing
+  // mirror untouched rather than clobbering it.
+  const touchesLocation = 'storageLocation' in rest;
+  const derivedShelfId = touchesLocation ? rest.storageLocation?.shelfId : undefined;
+
   const base = removeUndefined({
     ...rest,
+    ...(touchesLocation ? { shelfId: derivedShelfId } : {}),
     updatedAt: serverTimestamp(),
     updatedBy: actor.name ?? null,
   });
@@ -92,7 +127,8 @@ export async function saveExchangeBag(
   const ref = await addDoc(collection(db, 'exchange_bags'), removeUndefined({
     name: rest.name ?? 'Untitled bag',
     categoryId: rest.categoryId,
-    shelfId: rest.shelfId,
+    storageLocation: rest.storageLocation,
+    shelfId: derivedShelfId,
     lines: rest.lines ?? [],
     fullCount: rest.fullCount ?? 0,
     emptyCount: rest.emptyCount ?? 0,
@@ -200,4 +236,20 @@ export async function refillBag(
   }));
 
   await batch.commit();
+}
+
+// ── Type-level QR label (one code per bag design, not per physical copy) ───
+const BAG_QR_PREFIX = 'BAG:';
+
+/** Encode side: the QR payload printed on every physical copy of this bag design. */
+export function bagQrPayload(bag: Pick<ExchangeBag, 'id'>): string {
+  return `${BAG_QR_PREFIX}${bag.id}`;
+}
+
+/** Decode side: recovers the bag id from a scanned code, or null if it isn't a bag code. */
+export function parseBagQr(code: string): string | null {
+  const trimmed = code.trim();
+  if (!trimmed.startsWith(BAG_QR_PREFIX)) return null;
+  const id = trimmed.slice(BAG_QR_PREFIX.length).trim();
+  return id || null;
 }

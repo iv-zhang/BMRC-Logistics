@@ -29,6 +29,24 @@ export const DEFAULT_TEMPLATE: PrintTemplate = {
 };
 
 /**
+ * Exchange bag labels are taller than the default asset/statpack label —
+ * name + a multi-line "Contains: ..." BOM line + QR, no barcode. Same page
+ * geometry as `DEFAULT_TEMPLATE`, just a taller label cell.
+ */
+export const BAG_LABEL_TEMPLATE: PrintTemplate = {
+  pageWidth: 148,
+  pageHeight: 210,
+  marginTop: 8,
+  marginRight: 8,
+  marginBottom: 8,
+  marginLeft: 8,
+  labelWidth: 48,
+  labelHeight: 50,
+  horizontalGap: 4,
+  verticalGap: 4,
+};
+
+/**
  * Calculate how many labels fit per row based on page and label dimensions
  */
 export function calculateLabelsPerRow(template: PrintTemplate): number {

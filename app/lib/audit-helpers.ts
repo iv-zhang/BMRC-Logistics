@@ -440,6 +440,9 @@ export async function submitAuditEntries(
             batchDate: entry.batchDate ?? null,
             expirationDate: entry.expirationDate ?? null,
           },
+      // Firestore rejects an explicit `undefined` field — omit the key
+      // entirely rather than setting `details: undefined` when nothing was scanned.
+      ...(entry.scannedBarcode ? { details: { scannedBarcode: entry.scannedBarcode } } : {}),
     });
 
     logsToWrite.push({
@@ -455,6 +458,7 @@ export async function submitAuditEntries(
       details: {
         zone,
         isAsset,
+        scannedBarcode: entry.scannedBarcode ?? null,
         ...(isAsset
           ? {}
           : {
