@@ -76,9 +76,12 @@ export function DisposableAuditCard({ item, onAction }: DisposableCardProps) {
         <div className="w-full h-1.5 rounded-full bg-content3 overflow-hidden">
           <div className={`h-full rounded-full transition-all duration-300 ${barColor}`} style={{ width: `${pct}%` }} />
         </div>
-        <span className="text-[11px] text-foreground-400 tabular-nums">
-          {item.totalUnits} units · reorder@{item.reorderThreshold}
-        </span>
+        <div className="flex items-center gap-1 justify-end flex-wrap">
+          <Chip size="sm" variant="flat" color="default">{item.totalUnits} units</Chip>
+          {item.reorderThreshold > 0 && (
+            <Chip size="sm" variant="flat" color="default">Reorder ≤{item.reorderThreshold}</Chip>
+          )}
+        </div>
       </div>
 
       {/* Quick actions */}

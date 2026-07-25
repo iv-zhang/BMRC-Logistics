@@ -873,12 +873,12 @@ export default function InventoryPage() {
 
                   const isSelected = selectedIds.has(item.id);
                   return (
-                    <div key={item.id} className="flex items-start gap-2">
+                    <div key={item.id} className="flex items-center gap-2">
                       <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); toggleSelect(item.id); }}
                         aria-label={isSelected ? 'Deselect item' : 'Select item'}
-                        className={`flex-none mt-4 w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-colors duration-150 ${
+                        className={`flex-none w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-colors duration-150 ${
                           isSelected ? 'bg-primary border-primary' : 'bg-content1 border-divider hover:border-primary/50'
                         }`}
                       >
@@ -979,9 +979,16 @@ export default function InventoryPage() {
                           <div className="w-full h-[5px] rounded-full bg-content3 overflow-hidden">
                             <div className={`h-full rounded-full transition-all duration-300 ${barColor}`} style={{ width: `${barPct}%` }} />
                           </div>
-                          <span className="text-[11px] text-foreground-400">
-                            {bag.totalItems}/{item.maxUnits ?? '—'} max · reorder@{item.reorderThreshold}
-                          </span>
+                          {(!!item.maxUnits || item.reorderThreshold > 0) && (
+                            <div className="flex items-center gap-1 justify-end flex-wrap">
+                              {!!item.maxUnits && (
+                                <Chip size="sm" variant="flat" color="default">Par {item.maxUnits}</Chip>
+                              )}
+                              {item.reorderThreshold > 0 && (
+                                <Chip size="sm" variant="flat" color="default">Reorder ≤{item.reorderThreshold}</Chip>
+                              )}
+                            </div>
+                          )}
                         </div>
                       )}
                       </div>

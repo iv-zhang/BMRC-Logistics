@@ -275,12 +275,15 @@ export interface InventoryItem {
   }>;
   // If this asset is a child of another asset (e.g., battery/pad assigned to AED parent), store parent asset id
   parentAssetId?: string;
+  // When set, this inventory doc is an AED child component (battery or pads), linked to its parent AED via parentAssetId
+  componentType?: 'battery' | 'pads';
   // If assigned to a statpack or other container, reference that entity
   assignedToId?: string;
   // Distinguish asset categories; 'AED' is a special asset type with additional checks
   assetCategory?: 'AED' | 'Generic' | string;
   // Model name or identifier for assets that have multiple models (e.g., 'Philips FRx')
   assetModel?: string;
+  manufacturer?: string; // Asset manufacturer (e.g. "Philips", "ZOLL")
   // If isAsset=true, use assetStatus/lastChecked/nextExpiration instead of quantities.
   assetStatus?: 'Ready' | 'Not Ready' | 'In Use' | 'Checked Out';
   assetLastChecked?: Date;

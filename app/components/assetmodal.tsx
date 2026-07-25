@@ -9,10 +9,15 @@ import QRCode from 'qrcode';
 import JsBarcode from 'jsbarcode';
 import AssetHistory from '@/app/components/asset-history';
 import { exportLabelsToPDF, DEFAULT_TEMPLATE } from '@/app/lib/print';
-import LabelCard from '@/app/components/label-card';
 import ScannerInput from '@/app/components/scanner-input';
 import { assignBarcode } from '@/app/lib/inventory';
 import { ASSET_CATEGORIES_CONFIG, ITEM_CATEGORIES } from '@/app/config/org-config';
+import {
+  subscribeAedComponents,
+  saveAedComponent,
+  deleteAedComponent,
+  type AedComponent,
+} from '@/app/lib/asset-components';
 
 type ExpirationPrecision = 'day' | 'month';
 
@@ -63,7 +68,10 @@ function parseExpirationInput(rawValue: string, precision: ExpirationPrecision) 
 interface AssetModalProps {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
-  onAdd: (payload: Partial<InventoryItem>) => Promise<void> | void;
+  /** Persist a new asset. May return the created doc id (e.g. so a freshly
+   *  created AED can immediately grow battery/pads components) — returning
+   *  void is also accepted for backward compatibility. */
+  onAdd: (payload: Partial<InventoryItem>) => Promise<string | void> | string | void;
   onUpdate: (id: string, payload: Partial<InventoryItem>) => Promise<void> | void;
   initial?: InventoryItem | null;
 }
@@ -91,6 +99,13 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
     duplicateItem?: { id: string; name: string; serial?: string };
   } | null>(null);
   const [assigningBarcode, setAssigningBarcode] = useState(false);
+
+  // Set once a brand-new AED has been saved for the first time (before that,
+  // `initial?.id` doesn't exist yet). Lets the AED Components section unlock
+  // in the same modal session instead of forcing a close-and-reopen.
+  const [createdId, setCreatedId] = useState<string | null>(null);
+  const parentAssetId = initial?.id ?? createdId ?? undefined;
+  const [aedComponents, setAedComponents] = useState<AedComponent[]>([]);
 
   useEffect(() => {
     if (isOpen) {
@@ -122,6 +137,7 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
       setSaving(false);
       setHistorySerial('');
       setScannedTopCode('');
+      setCreatedId(null);
     }
   }, [isOpen, initial]);
 
@@ -131,6 +147,17 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
       setForm((prev) => ({ ...prev, isOxygen: true }));
     }
   }, [form.assetCategory, form.isOxygen, form.maxOxygenPsi, form.oxygenPsi, form.verificationPolicy?.requireO2PsiMin, isOpen]);
+
+  // AED battery/pads components — subscribe only once the parent AED has a
+  // real doc id (existing asset being edited, or just-created via `createdId`).
+  useEffect(() => {
+    if (!isOpen || form.assetCategory !== 'AED' || !parentAssetId) {
+      setAedComponents([]);
+      return;
+    }
+    const unsub = subscribeAedComponents(parentAssetId, setAedComponents);
+    return () => unsub();
+  }, [isOpen, form.assetCategory, parentAssetId]);
 
   // Populate known locations from statpacks and inventory currentLocation fields
   useEffect(() => {
@@ -335,11 +362,16 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
       const barcodeToCheck = String(payload.barcode || '').trim();
       const qrToCheck = String(payload.qr || '').trim();
 
+      // Once a brand-new AED has been saved once (createdId set), further
+      // saves in this same modal session should update that doc, not create
+      // a second one.
+      const targetId = initial?.id ?? createdId ?? undefined;
+
       const checkDuplicate = async (field: 'assetSerial' | 'barcode' | 'qr', value: string) => {
         if (!value) return false;
         const q = query(collection(db, 'inventory'), where(field, '==', value));
         const snap = await getDocs(q);
-        return snap.docs.some((docSnap) => docSnap.id !== initial?.id);
+        return snap.docs.some((docSnap) => docSnap.id !== targetId);
       };
 
       if (await checkDuplicate('assetSerial', serialToCheck)) {
@@ -358,16 +390,22 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
         return;
       }
 
-      if (initial && initial.id) {
-        console.log('AssetModal: updating', initial.id, payload);
-        await onUpdate(initial.id, { ...payload, updatedAt: new Date() } as Partial<InventoryItem>);
+      if (targetId) {
+        console.log('AssetModal: updating', targetId, payload);
+        await onUpdate(targetId, { ...payload, updatedAt: new Date() } as Partial<InventoryItem>);
         console.log('AssetModal: update complete');
         if (typeof onOpenChange === 'function') onOpenChange(false);
       } else {
         console.log('AssetModal: adding', payload);
-        await onAdd({ ...payload, isAsset: true } as Partial<InventoryItem>);
+        const newId = await onAdd({ ...payload, isAsset: true } as Partial<InventoryItem>);
         console.log('AssetModal: add complete');
-        if (typeof onOpenChange === 'function') onOpenChange(false);
+        if (payload.assetCategory === 'AED' && typeof newId === 'string' && newId) {
+          // Keep the modal open so battery/pads components can be added
+          // immediately against the freshly-created AED's real doc id.
+          setCreatedId(newId);
+        } else if (typeof onOpenChange === 'function') {
+          onOpenChange(false);
+        }
       }
     } catch (e) {
       console.error('AssetModal: save error', e);
@@ -456,12 +494,23 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
     setScannedBarcode('');
   };
 
+  const actor = { id: auth.currentUser?.uid, name: auth.currentUser?.displayName || auth.currentUser?.email || 'System' };
+  const battery = aedComponents.find((c) => c.componentType === 'battery');
+  const pads = aedComponents.find((c) => c.componentType === 'pads');
+
   return (
     <>
-    <Modal isOpen={isOpen} onOpenChange={onOpenChange} size="lg" scrollBehavior="inside">
+    <Modal isOpen={isOpen} onOpenChange={onOpenChange} size="5xl" scrollBehavior="inside">
       <ModalContent>
-        <ModalHeader>{initial ? `Edit Asset: ${initial.name}` : 'Add Asset'}</ModalHeader>
-        <ModalBody className="space-y-3">
+        <ModalHeader className="flex flex-col items-start gap-1">
+          <span>{initial ? `Edit Asset: ${initial.name}` : 'Add Asset'}</span>
+          {!initial && createdId && (
+            <span className="text-xs font-normal text-foreground-400">
+              Asset created — add battery &amp; pads below, then Save to finish.
+            </span>
+          )}
+        </ModalHeader>
+        <ModalBody className="space-y-4 pb-2">
           {!initial && (
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-2">
@@ -477,148 +526,307 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
               <p className="text-red-700 text-sm">{validationError}</p>
             </div>
           )}
-          
-          <Input label="Name" value={String(form.name ?? '')} onValueChange={(v) => setForm({ ...form, name: v })} />
-          <Select label="Category" selectedKeys={[String((form.assetCategory as any) ?? 'Generic')]} onChange={(e) => handleCategoryChange(e.target.value)}>
-            <SelectItem key="Generic">Generic</SelectItem>
-            {(() => {
-              const seen = new Set<string>();
-              return (
-                <>
-                  {ASSET_CATEGORIES_CONFIG.map((config) => {
-                    const label = String(config.name || config.id || '');
-                    if (seen.has(label)) return null;
-                    seen.add(label);
-                    return <SelectItem key={label}>{label}</SelectItem>;
-                  })}
-                  {ITEM_CATEGORIES.map((cat) => {
-                    const label = String(cat);
-                    if (seen.has(label)) return null;
-                    seen.add(label);
-                    return <SelectItem key={label}>{label}</SelectItem>;
-                  })}
-                </>
-              );
-            })()}
-          </Select>
-          <Input label="Model" value={String(form.assetModel ?? '')} onValueChange={(v) => setForm({ ...form, assetModel: v })} />
 
-          <Select
-            label="Assigned Statpack"
-            selectedKeys={[String(form.assignedToId ?? '')]}
-            onChange={(e) => setForm({ ...form, assignedToId: e.target.value || undefined })}
-            description="Single-assignment: an asset can belong to only one statpack"
-          >
-            <SelectItem key="">Unassigned</SelectItem>
-            {(statpacks.map(s => <SelectItem key={s.id}>{s.name}</SelectItem>) as any)}
-          </Select>
-          
-          <div className="flex gap-2 items-end">
-            <div className="flex-1">
-              <Input label="Serial / Tag" value={String(form.assetSerial ?? '')} onValueChange={(v) => setForm({ ...form, assetSerial: v })} />
+          {/* ── Identity ─────────────────────────────────────────── */}
+          <Section title="Identity">
+            <Input label="Name" value={String(form.name ?? '')} onValueChange={(v) => setForm({ ...form, name: v })} />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Select label="Category" selectedKeys={[String((form.assetCategory as any) ?? 'Generic')]} onChange={(e) => handleCategoryChange(e.target.value)}>
+                <SelectItem key="Generic">Generic</SelectItem>
+                {(() => {
+                  const seen = new Set<string>();
+                  return (
+                    <>
+                      {ASSET_CATEGORIES_CONFIG.map((config) => {
+                        const label = String(config.name || config.id || '');
+                        if (seen.has(label)) return null;
+                        seen.add(label);
+                        return <SelectItem key={label}>{label}</SelectItem>;
+                      })}
+                      {ITEM_CATEGORIES.map((cat) => {
+                        const label = String(cat);
+                        if (seen.has(label)) return null;
+                        seen.add(label);
+                        return <SelectItem key={label}>{label}</SelectItem>;
+                      })}
+                    </>
+                  );
+                })()}
+              </Select>
+              <Select
+                label="Assigned Statpack"
+                selectedKeys={[String(form.assignedToId ?? '')]}
+                onChange={(e) => setForm({ ...form, assignedToId: e.target.value || undefined })}
+                description="Single-assignment: an asset can belong to only one statpack"
+              >
+                <SelectItem key="">Unassigned</SelectItem>
+                {(statpacks.map(s => <SelectItem key={s.id}>{s.name}</SelectItem>) as any)}
+              </Select>
             </div>
-            <div className="flex flex-col gap-2">
-              <Button size="sm" variant="light" onPress={generateTag}>Generate</Button>
-              <Button size="sm" variant="light" onPress={printTag}>Print</Button>
-              <Button size="sm" variant="flat" color="primary" onPress={printTagPDF}>PDF</Button>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Input label="Model" value={String(form.assetModel ?? '')} onValueChange={(v) => setForm({ ...form, assetModel: v })} />
+              <Input label="Manufacturer" value={String(form.manufacturer ?? '')} onValueChange={(v) => setForm({ ...form, manufacturer: v })} />
             </div>
-          </div>
-          
-          <div className="flex gap-4 items-center">
-            <div>
-              {qrDataUrl ? <img src={qrDataUrl} alt="qr-preview" width={120} height={120} /> : <div className="text-sm text-gray-500">No QR</div>}
-            </div>
-            <div>
-              <svg ref={svgRef} />
-            </div>
-          </div>
+          </Section>
 
-          <Input 
-            label="Barcode (optional)" 
-            placeholder="e.g., code128, UPC barcode value"
-            value={String(form.barcode ?? '')} 
-            onValueChange={(v) => setForm({ ...form, barcode: v })} 
-            description="Either Barcode or QR Code required for scanning checkout"
-          />
-          
-          <Input 
-            label="QR Code (optional)" 
-            placeholder="e.g., QR code content"
-            value={String(form.qr ?? '')} 
-            onValueChange={(v) => setForm({ ...form, qr: v })} 
-            description="Either Barcode or QR Code required for scanning checkout"
-          />
-
-          {/* Verification Policy (per-asset) */}
-          <div className="border-t pt-4 mt-2">
-            <h4 className="text-sm font-semibold mb-2">Verification Policy</h4>
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center justify-between">
-                <div className="text-sm">Require Serial on Checkout</div>
-                <Switch size="sm" isSelected={!!form.verificationPolicy?.requireSerial} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), requireSerial: v } as any })} />
+          {/* ── Value & Assignment ──────────────────────────────── */}
+          <Section title="Value & Assignment">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Input
+                label="Asset Value ($)"
+                type="number"
+                startContent={<span className="text-foreground-400 text-sm">$</span>}
+                value={form.assetValue !== undefined ? String(form.assetValue) : ''}
+                onValueChange={(v) => setForm({ ...form, assetValue: v ? Number(v) : undefined })}
+                description="Set at purchase; editable anytime."
+              />
+              <Select label="Status" selectedKeys={[String(form.assetStatus ?? 'Ready')]} onChange={(e) => setForm({ ...form, assetStatus: e.target.value as any })}>
+                <SelectItem key="Ready">Ready</SelectItem>
+                <SelectItem key="In Use">In Use</SelectItem>
+                <SelectItem key="Checked Out">Checked Out</SelectItem>
+                <SelectItem key="Not Ready">Not Ready</SelectItem>
+              </Select>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
+              <div>
+                <Select label="Current Location" selectedKeys={[String(form.currentLocation ?? (knownLocations[0] ?? ''))]} onChange={(e) => { setForm({ ...form, currentLocation: e.target.value }); setUseCustomLocation(e.target.value === 'Other'); }}>
+                  {(knownLocations.map(l => <SelectItem key={l}>{l}</SelectItem>) as any)}
+                  <SelectItem key="Other">Other</SelectItem>
+                </Select>
               </div>
-              <div className="flex items-center justify-between">
-                <div className="text-sm">Require Expiration Confirmation</div>
-                <Switch size="sm" isSelected={!!form.verificationPolicy?.requireExpirationConfirmation} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), requireExpirationConfirmation: v } as any })} />
+              {useCustomLocation && <Input label="Custom Location" value={String(form.currentLocation ?? '')} onValueChange={(v) => setForm({ ...form, currentLocation: v })} />}
+            </div>
+          </Section>
+
+          {/* ── Codes & Tags ────────────────────────────────────── */}
+          <Section title="Codes & Tags">
+            <div className="flex gap-2 items-end">
+              <div className="flex-1">
+                <Input label="Serial / Tag" value={String(form.assetSerial ?? '')} onValueChange={(v) => setForm({ ...form, assetSerial: v })} />
               </div>
-              {form.assetCategory === 'Oxygen Tank' && (
-                <div className="flex items-center gap-2">
-                  <div className="text-sm flex-1">Minimum O₂ PSI (optional)</div>
-                  <Input size="sm" type="number" className="w-32" value={String(form.verificationPolicy?.requireO2PsiMin ?? '')} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), requireO2PsiMin: v ? Number(v) : undefined } as any })} placeholder="e.g., 1800" />
+              <div className="flex gap-2">
+                <Button size="sm" variant="light" onPress={generateTag}>Generate</Button>
+                <Button size="sm" variant="light" onPress={printTag}>Print</Button>
+                <Button size="sm" variant="flat" color="primary" onPress={printTagPDF}>PDF</Button>
+              </div>
+            </div>
+
+            <div className="flex gap-4 items-center">
+              <div>
+                {qrDataUrl ? <img src={qrDataUrl} alt="qr-preview" width={100} height={100} /> : <div className="text-sm text-gray-500">No QR</div>}
+              </div>
+              <div>
+                <svg ref={svgRef} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Input
+                label="Barcode (optional)"
+                placeholder="e.g., code128, UPC barcode value"
+                value={String(form.barcode ?? '')}
+                onValueChange={(v) => setForm({ ...form, barcode: v })}
+                description="Either Barcode or QR Code required for scanning checkout"
+              />
+              <Input
+                label="QR Code (optional)"
+                placeholder="e.g., QR code content"
+                value={String(form.qr ?? '')}
+                onValueChange={(v) => setForm({ ...form, qr: v })}
+                description="Either Barcode or QR Code required for scanning checkout"
+              />
+            </div>
+
+            {/* External Barcode Assignment */}
+            <div className="border-t border-divider pt-3 mt-1">
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-sm font-semibold">External Asset Tag</h4>
+                {initial?.id && !showScanner && (
+                  <Button
+                    size="sm"
+                    color="secondary"
+                    variant="flat"
+                    onPress={() => setShowScanner(true)}
+                  >
+                    Scan Tag
+                  </Button>
+                )}
+              </div>
+
+              {/* Inline scanner — no separate modal */}
+              {showScanner && (
+                <div className="rounded-lg border border-secondary/20 p-3 mb-3">
+                  <ScannerInput
+                    onScan={handleScanDetected}
+                    placeholder="Scan or type barcode…"
+                    label="Scan Asset Tag"
+                    compact
+                  />
+                  <Button
+                    size="sm"
+                    variant="light"
+                    className="mt-1"
+                    onPress={() => setShowScanner(false)}
+                  >
+                    Cancel
+                  </Button>
                 </div>
               )}
-              <div className="flex items-center justify-between">
-                <div className="text-sm">Advisory Only (non-blocking)</div>
-                <Switch size="sm" isSelected={!!form.verificationPolicy?.advisoryOnly} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), advisoryOnly: v } as any })} />
-              </div>
-            </div>
-          </div>
 
-          {/* Asset-specific fields: O2 tanks, AEDs, Epipens */}
+              {(form as any).assignedBarcode && (
+                <Chip color="success" variant="flat" className="mb-2">
+                  Current: {(form as any).assignedBarcode}
+                </Chip>
+              )}
+
+              {scannedBarcode && (
+                <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-2">
+                  <p className="text-sm font-medium text-blue-900 mb-1">Scanned: {scannedBarcode}</p>
+                  {initial?.id ? (
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        color="primary"
+                        onPress={() => handleAssignBarcode(false)}
+                        isLoading={assigningBarcode}
+                      >
+                        Assign to Asset
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="light"
+                        onPress={() => setScannedBarcode('')}
+                      >
+                        Clear
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <Chip color="primary" variant="flat" size="sm">Will be assigned on save</Chip>
+                      <Button
+                        size="sm"
+                        variant="light"
+                        onPress={() => { setScannedBarcode(''); setForm({ ...form, assignedBarcode: undefined } as any); }}
+                      >
+                        Clear
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {duplicateWarning?.show && (
+                <div className="bg-yellow-50 border border-yellow-300 rounded p-3 mb-2">
+                  <p className="text-sm font-semibold text-yellow-900 mb-1">⚠️ Duplicate Barcode</p>
+                  <p className="text-sm text-yellow-800 mb-2">
+                    This barcode is already assigned to{' '}
+                    <strong>{duplicateWarning.duplicateItem?.name}</strong>
+                    {duplicateWarning.duplicateItem?.serial && (
+                      <span> (Serial: {duplicateWarning.duplicateItem.serial})</span>
+                    )}
+                  </p>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      color="warning"
+                      onPress={handleDuplicateOverride}
+                      isLoading={assigningBarcode}
+                    >
+                      Assign Anyway
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="light"
+                      onPress={handleCancelDuplicate}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {(form as any).barcodeHistory && (form as any).barcodeHistory.length > 0 && (
+                <div className="mt-2">
+                  <p className="text-xs text-gray-600 mb-1">Assignment History:</p>
+                  <div className="space-y-1">
+                    {(form as any).barcodeHistory.slice(-3).reverse().map((entry: any, idx: number) => (
+                      <div key={idx} className="text-xs bg-gray-50 p-1 rounded">
+                        <span className="font-mono">{entry.value}</span>
+                        {' '}
+                        <span className="text-gray-500">
+                          by {entry.assignedBy?.name || 'Unknown'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <p className="text-xs text-gray-500 mt-2">
+                Scan purchased asset tags to assign unique tracking codes. Tags can be reassigned if they wear off.
+              </p>
+            </div>
+          </Section>
+
+          {/* ── Verification ─────────────────────────────────────── */}
+          <Section title="Verification">
+            <div className="flex items-center justify-between">
+              <div className="text-sm">Require Serial on Checkout</div>
+              <Switch size="sm" isSelected={!!form.verificationPolicy?.requireSerial} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), requireSerial: v } as any })} />
+            </div>
+            <div className="flex items-center justify-between">
+              <div className="text-sm">Require Expiration Confirmation</div>
+              <Switch size="sm" isSelected={!!form.verificationPolicy?.requireExpirationConfirmation} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), requireExpirationConfirmation: v } as any })} />
+            </div>
+            {form.assetCategory === 'Oxygen Tank' && (
+              <div className="flex items-center gap-2">
+                <div className="text-sm flex-1">Minimum O₂ PSI (optional)</div>
+                <Input size="sm" type="number" className="w-32" value={String(form.verificationPolicy?.requireO2PsiMin ?? '')} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), requireO2PsiMin: v ? Number(v) : undefined } as any })} placeholder="e.g., 1800" />
+              </div>
+            )}
+            <div className="flex items-center justify-between">
+              <div className="text-sm">Advisory Only (non-blocking)</div>
+              <Switch size="sm" isSelected={!!form.verificationPolicy?.advisoryOnly} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), advisoryOnly: v } as any })} />
+            </div>
+          </Section>
+
+          {/* ── Oxygen (Oxygen Tank category only) ──────────────── */}
           {form.assetCategory === 'Oxygen Tank' && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <Input
-                label="Oxygen PSI (current)"
-                type="number"
-                value={String((form.oxygenPsi ?? '') as any)}
-                onValueChange={(v) => setForm({ ...form, oxygenPsi: v ? Number(v) : undefined })}
-                description="Measured PSI at last check"
-              />
-              <Input
-                label="Max Oxygen PSI"
-                type="number"
-                value={String((form.maxOxygenPsi ?? '') as any)}
-                onValueChange={(v) => setForm({ ...form, maxOxygenPsi: v ? Number(v) : undefined })}
-              />
-            </div>
-          )}
-
-          {form.assetCategory === 'AED' && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <Select label="Battery Status" selectedKeys={[String((form.assetChecks?.batteryStatus) ?? '')]} onChange={(e) => setForm({ ...form, assetChecks: { ...(form.assetChecks || {}), batteryStatus: e.target.value as any } })}>
-                <SelectItem key="">Unknown</SelectItem>
-                <SelectItem key="Good">Good</SelectItem>
-                <SelectItem key="Low">Low</SelectItem>
-              </Select>
-              <div>
+            <Section title="Oxygen">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <Input
-                  label="Battery Expiration"
-                  type="date"
-                  value={form.batteryExpiration ? new Date(form.batteryExpiration).toISOString().slice(0,10) : ''}
-                  onValueChange={(v) => setForm({ ...form, batteryExpiration: v ? new Date(v) : undefined })}
+                  label="Oxygen PSI (current)"
+                  type="number"
+                  value={String((form.oxygenPsi ?? '') as any)}
+                  onValueChange={(v) => setForm({ ...form, oxygenPsi: v ? Number(v) : undefined })}
+                  description="Measured PSI at last check"
                 />
                 <Input
-                  label="Pads Expiration"
-                  type="date"
-                  value={form.padExpiration ? new Date(form.padExpiration).toISOString().slice(0,10) : ''}
-                  onValueChange={(v) => setForm({ ...form, padExpiration: v ? new Date(v) : undefined })}
+                  label="Max Oxygen PSI"
+                  type="number"
+                  value={String((form.maxOxygenPsi ?? '') as any)}
+                  onValueChange={(v) => setForm({ ...form, maxOxygenPsi: v ? Number(v) : undefined })}
                 />
               </div>
-            </div>
+            </Section>
           )}
 
-          {/* Expiration (optional) - available for any asset that expires */}
-          <div className="space-y-2">
+          {/* ── AED Components (AED category only) ──────────────── */}
+          {form.assetCategory === 'AED' && (
+            <Section title="AED Components">
+              {!parentAssetId ? (
+                <p className="text-sm text-foreground-500">Save the AED first, then add its battery &amp; pads.</p>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <AedComponentCard label="Battery" kind="battery" existing={battery} parentId={parentAssetId} actor={actor} />
+                  <AedComponentCard label="Pads" kind="pads" existing={pads} parentId={parentAssetId} actor={actor} />
+                </div>
+              )}
+            </Section>
+          )}
+
+          {/* ── Expiration ───────────────────────────────────────── */}
+          <Section title="Expiration">
             <div className="grid grid-cols-1 md:grid-cols-[180px_minmax(0,1fr)] gap-3 items-start">
               <div>
                 <Select
@@ -656,181 +864,143 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
                 description={(form.expirationPrecision ?? 'month') === 'month' ? 'Type the month and year directly. Example: 2026/05' : 'Type the full date directly. Example: 2026/05/02'}
               />
             </div>
-          </div>
+          </Section>
 
-          {/* External Barcode Assignment Section */}
-          <div className="border-t pt-4 mt-2">
-            <div className="flex items-center justify-between mb-2">
-              <h4 className="text-sm font-semibold">External Asset Tag</h4>
-              {initial?.id && !showScanner && (
-                <Button
-                  size="sm"
-                  color="secondary"
-                  variant="flat"
-                  onPress={() => setShowScanner(true)}
-                >
-                  Scan Tag
-                </Button>
-              )}
-            </div>
+          {/* ── Notes & History ──────────────────────────────────── */}
+          <Section title="Notes & History">
+            <Textarea label="Notes" value={String((form as any).notes ?? '')} onValueChange={(v) => setForm({ ...form, notes: v } as any)} />
 
-            {/* Inline scanner — no separate modal */}
-            {showScanner && (
-              <div className="rounded-lg border border-secondary/20 p-3 mb-3">
-                <ScannerInput
-                  onScan={handleScanDetected}
-                  placeholder="Scan or type barcode…"
-                  label="Scan Asset Tag"
-                  compact
-                />
-                <Button
-                  size="sm"
-                  variant="light"
-                  className="mt-1"
-                  onPress={() => setShowScanner(false)}
-                >
-                  Cancel
-                </Button>
-              </div>
-            )}
-            
-            {(form as any).assignedBarcode && (
-              <Chip color="success" variant="flat" className="mb-2">
-                Current: {(form as any).assignedBarcode}
-              </Chip>
-            )}
-
-            {scannedBarcode && (
-              <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-2">
-                <p className="text-sm font-medium text-blue-900 mb-1">Scanned: {scannedBarcode}</p>
-                {initial?.id ? (
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      color="primary"
-                      onPress={() => handleAssignBarcode(false)}
-                      isLoading={assigningBarcode}
-                    >
-                      Assign to Asset
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="light"
-                      onPress={() => setScannedBarcode('')}
-                    >
-                      Clear
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <Chip color="primary" variant="flat" size="sm">Will be assigned on save</Chip>
-                    <Button
-                      size="sm"
-                      variant="light"
-                      onPress={() => { setScannedBarcode(''); setForm({ ...form, assignedBarcode: undefined } as any); }}
-                    >
-                      Clear
-                    </Button>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {duplicateWarning?.show && (
-              <div className="bg-yellow-50 border border-yellow-300 rounded p-3 mb-2">
-                <p className="text-sm font-semibold text-yellow-900 mb-1">⚠️ Duplicate Barcode</p>
-                <p className="text-sm text-yellow-800 mb-2">
-                  This barcode is already assigned to{' '}
-                  <strong>{duplicateWarning.duplicateItem?.name}</strong>
-                  {duplicateWarning.duplicateItem?.serial && (
-                    <span> (Serial: {duplicateWarning.duplicateItem.serial})</span>
-                  )}
-                </p>
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    color="warning"
-                    onPress={handleDuplicateOverride}
-                    isLoading={assigningBarcode}
-                  >
-                    Assign Anyway
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="light"
-                    onPress={handleCancelDuplicate}
-                  >
-                    Cancel
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            {(form as any).barcodeHistory && (form as any).barcodeHistory.length > 0 && (
-              <div className="mt-2">
-                <p className="text-xs text-gray-600 mb-1">Assignment History:</p>
-                <div className="space-y-1">
-                  {(form as any).barcodeHistory.slice(-3).reverse().map((entry: any, idx: number) => (
-                    <div key={idx} className="text-xs bg-gray-50 p-1 rounded">
-                      <span className="font-mono">{entry.value}</span>
-                      {' '}
-                      <span className="text-gray-500">
-                        by {entry.assignedBy?.name || 'Unknown'}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <p className="text-xs text-gray-500 mt-2">
-              Scan purchased asset tags to assign unique tracking codes. Tags can be reassigned if they wear off.
-            </p>
-          </div>
-          
-          <Input label="Value (USD)" value={form.assetValue != null ? String(form.assetValue) : ''} onValueChange={(v) => setForm({ ...form, assetValue: v ? Number(v) : undefined })} />
-          <div>
-            <Select label="Current Location" selectedKeys={[String(form.currentLocation ?? (knownLocations[0] ?? ''))]} onChange={(e) => { setForm({ ...form, currentLocation: e.target.value }); setUseCustomLocation(e.target.value === 'Other'); }}>
-              {(knownLocations.map(l => <SelectItem key={l}>{l}</SelectItem>) as any)}
-              <SelectItem key="Other">Other</SelectItem>
-            </Select>
-            {useCustomLocation && <Input label="Custom Location" value={String(form.currentLocation ?? '')} onValueChange={(v) => setForm({ ...form, currentLocation: v })} />}
-          </div>
-          <Select label="Status" selectedKeys={[String(form.assetStatus ?? 'Ready')]} onChange={(e) => setForm({ ...form, assetStatus: e.target.value as any })}>
-            <SelectItem key="Ready">Ready</SelectItem>
-            <SelectItem key="In Use">In Use</SelectItem>
-            <SelectItem key="Checked Out">Checked Out</SelectItem>
-            <SelectItem key="Not Ready">Not Ready</SelectItem>
-          </Select>
-          <Textarea label="Notes" value={String((form as any).notes ?? '')} onValueChange={(v) => setForm({ ...form, notes: v } as any)} />
-          
             {initial && initial.id && (
-            <div>
-              <h4 className="text-sm font-semibold mb-2">Activity History</h4>
-              {Array.isArray(initial.assets) && initial.assets.length > 0 && (
-                <Select
-                  label="Filter by Instance"
-                  selectedKeys={historySerial ? [historySerial] : []}
-                  onChange={(e) => setHistorySerial(e.target.value)}
-                  className="mb-2"
-                >
-                  <SelectItem key="">All instances</SelectItem>
-                  {(initial.assets.map(a => (
-                    <SelectItem key={a.serial}>{a.assetTag || a.id || a.serial}</SelectItem>
-                  )) as any)}
-                </Select>
-              )}
-              <AssetHistory assetId={initial.id} maxRows={5} serialNumber={historySerial || undefined} />
-            </div>
-          )}
+              <div>
+                <h4 className="text-sm font-semibold mb-2">Activity History</h4>
+                {Array.isArray(initial.assets) && initial.assets.length > 0 && (
+                  <Select
+                    label="Filter by Instance"
+                    selectedKeys={historySerial ? [historySerial] : []}
+                    onChange={(e) => setHistorySerial(e.target.value)}
+                    className="mb-2"
+                  >
+                    <SelectItem key="">All instances</SelectItem>
+                    {(initial.assets.map(a => (
+                      <SelectItem key={a.serial}>{a.assetTag || a.id || a.serial}</SelectItem>
+                    )) as any)}
+                  </Select>
+                )}
+                <AssetHistory assetId={initial.id} maxRows={5} serialNumber={historySerial || undefined} />
+              </div>
+            )}
+          </Section>
           </ModalBody>
           <BarcodeScanner isOpen={showTopScanner} onClose={() => setShowTopScanner(false)} onDetected={handleTopScanDetected} />
           <ModalFooter>
           <Button variant="light" onPress={() => onOpenChange(false)}>Cancel</Button>
-          <Button color="primary" onPress={save} isLoading={saving}>{initial ? 'Save' : 'Add Asset'}</Button>
+          <Button color="primary" onPress={save} isLoading={saving}>{initial?.id || createdId ? 'Save' : 'Add Asset'}</Button>
         </ModalFooter>
       </ModalContent>
     </Modal>
     </>
+  );
+}
+
+// ── section wrapper — sectioned, roomy card matching the statpack editor's style ──
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="border border-divider rounded-large bg-content1 p-4">
+      <h4 className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400 mb-3">{title}</h4>
+      <div className="flex flex-col gap-3">{children}</div>
+    </div>
+  );
+}
+
+// ── AED battery / pads child-component card ────────────────────────
+// Local draft state + an explicit Save button (rather than writing on every
+// keystroke) so editing a component doesn't create a stream of Firestore
+// writes; a component that already has an `id` updates in place via
+// `saveAedComponent`'s upsert, never creating a duplicate.
+function AedComponentCard({
+  label, kind, existing, parentId, actor,
+}: {
+  label: string;
+  kind: 'battery' | 'pads';
+  existing: AedComponent | undefined;
+  parentId: string;
+  actor: { id?: string; name?: string };
+}) {
+  const [draft, setDraft] = useState<Partial<AedComponent>>(existing ? { ...existing } : { componentType: kind });
+  const [saving, setSaving] = useState(false);
+  const seededId = useRef<string | undefined>(existing?.id);
+
+  useEffect(() => {
+    // Only reseed the draft when the underlying doc identity changes (first
+    // load, or a fresh doc replacing a deleted one) — not on every snapshot,
+    // so we don't clobber in-progress edits with our own just-saved values.
+    if (existing?.id !== seededId.current) {
+      setDraft(existing ? { ...existing } : { componentType: kind });
+      seededId.current = existing?.id;
+    }
+  }, [existing, kind]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const id = await saveAedComponent(parentId, { ...draft, id: existing?.id, componentType: kind }, actor);
+      seededId.current = id;
+    } catch (e) {
+      console.error('Failed to save AED component:', e);
+      alert('Failed to save component');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!existing?.id) return;
+    try {
+      await deleteAedComponent(existing.id);
+    } catch (e) {
+      console.error('Failed to delete AED component:', e);
+      alert('Failed to remove component');
+    }
+  };
+
+  const expInput = draft.expirationDate ? new Date(draft.expirationDate).toISOString().slice(0, 10) : '';
+
+  return (
+    <div className="border border-divider rounded-medium bg-content2 p-3 flex flex-col gap-2.5">
+      <div className="flex items-center justify-between">
+        <span className="text-[12.5px] font-semibold text-foreground">{label}</span>
+        {existing?.id && (
+          <Button size="sm" variant="light" color="danger" onPress={handleDelete}>Remove</Button>
+        )}
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+        <Input size="sm" label="Model / Part #" value={String(draft.assetModel ?? '')} onValueChange={(v) => setDraft((d) => ({ ...d, assetModel: v }))} />
+        <Input size="sm" label="Lot #" value={String(draft.lotNumber ?? '')} onValueChange={(v) => setDraft((d) => ({ ...d, lotNumber: v }))} />
+        <Input size="sm" label="Expiration" type="date" value={expInput} onValueChange={(v) => setDraft((d) => ({ ...d, expirationDate: v ? new Date(v) : undefined }))} />
+        <Input size="sm" label="Serial (optional)" value={String(draft.assetSerial ?? '')} onValueChange={(v) => setDraft((d) => ({ ...d, assetSerial: v }))} />
+      </div>
+      {kind === 'battery' ? (
+        <Select
+          size="sm"
+          label="Battery Status"
+          selectedKeys={[String(draft.batteryStatus ?? 'Unknown')]}
+          onChange={(e) => setDraft((d) => ({ ...d, batteryStatus: e.target.value as AedComponent['batteryStatus'] }))}
+        >
+          <SelectItem key="Unknown">Unknown</SelectItem>
+          <SelectItem key="Good">Good</SelectItem>
+          <SelectItem key="Low">Low</SelectItem>
+        </Select>
+      ) : (
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-foreground-600">Sealed</span>
+          <Switch size="sm" isSelected={!!draft.padsSealed} onValueChange={(v) => setDraft((d) => ({ ...d, padsSealed: v }))} />
+        </div>
+      )}
+      <div className="flex justify-end">
+        <Button size="sm" color="primary" variant="flat" onPress={handleSave} isLoading={saving}>
+          {existing?.id ? 'Save' : `Add ${label}`}
+        </Button>
+      </div>
+    </div>
   );
 }

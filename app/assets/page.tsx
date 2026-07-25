@@ -74,8 +74,6 @@ import {
   MoreVertical,
   History,
   Trash,
-  ChevronDown,
-  ChevronUp,
   Search,
   Truck,
   Receipt,
@@ -124,7 +122,6 @@ export default function AssetsPage() {
   const [hoveredRowId, setHoveredRowId] = useState<string | null>(null);
   const [selectedForPrint, setSelectedForPrint] = useState<Set<string>>(new Set());
   const [searchTerm, setSearchTerm] = useState('');
-  const [expandedAssetId, setExpandedAssetId] = useState<string | null>(null);
   // Statpack editor state (admin-only)
   const statpackDisclosure = useDisclosure();
   const [editingPack, setEditingPack] = useState<Statpack | null>(null);
@@ -244,9 +241,6 @@ export default function AssetsPage() {
     currentLocation: '',
     assetValue: '',
   });
-  const [editingLocationId, setEditingLocationId] = useState<string | null>(null);
-  const [editingLocationValue, setEditingLocationValue] = useState('');
-
   const maintenanceDisclosure = useDisclosure();
   const detailsDisclosure = useDisclosure();
 
@@ -540,33 +534,6 @@ export default function AssetsPage() {
     setSelectedCheckoutAsset(null);
   };
 
-  const startLocationEdit = (asset: AssetRecord) => {
-    setEditingLocationId(asset.id);
-    setEditingLocationValue(asset.currentLocation || '');
-  };
-
-  const cancelLocationEdit = () => {
-    setEditingLocationId(null);
-    setEditingLocationValue('');
-  };
-
-  const saveLocationEdit = async (asset: AssetRecord) => {
-    if (!editingLocationId) return;
-    try {
-      if (asset.type === 'statpack') {
-        await updateDoc(doc(db, 'statpacks', asset.id), { currentLocation: editingLocationValue, updatedAt: serverTimestamp() });
-      } else {
-        await updateDoc(doc(db, 'inventory', asset.id), { currentLocation: editingLocationValue, updatedAt: serverTimestamp() });
-      }
-      setAssets((prev) => prev.map((a) => (a.id === asset.id ? { ...a, currentLocation: editingLocationValue } : a)));
-      setSelectedAsset((prev) => (prev && prev.id === asset.id ? { ...prev, currentLocation: editingLocationValue } : prev));
-    } catch (err) {
-      console.error('Failed to save location:', err);
-      alert('Failed to save location');
-    } finally {
-      cancelLocationEdit();
-    }
-  };
 
   const beginDetailsEdit = (asset: AssetRecord | null) => {
     if (!asset) return;
@@ -898,15 +865,15 @@ export default function AssetsPage() {
                 <div className="divide-y divide-divider border border-divider rounded-xl overflow-hidden">
                   {groupAssets.map((asset) => {
                     const activeMaintenance = getMaintenanceStatus(asset);
-                    const isExpanded = expandedAssetId === asset.id;
                     return (
                       <div key={asset.id} className="bg-content1">
                         <div
                           className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-content2 transition-colors"
                           onClick={() => {
-                            // Statpacks have nothing useful in the inline expansion — go straight to the editor.
+                            // Statpacks open their rich editor; inventory assets open the AssetModal for editing.
                             if (asset.type === 'statpack') { openStatpackEditorModal(asset); return; }
-                            setExpandedAssetId(isExpanded ? null : asset.id);
+                            setEditingAsset({ ...(asset.data as any), id: asset.id });
+                            assetModalDisclosure.onOpen();
                           }}
                         >
                           {userRole === 'admin' && (
@@ -1067,71 +1034,8 @@ export default function AssetsPage() {
                                 )}
                               </DropdownMenu>
                             </Dropdown>
-                            <button
-                              className="p-1 text-foreground-400 transition-colors"
-                              onClick={(e) => { e.stopPropagation(); setExpandedAssetId(isExpanded ? null : asset.id); }}
-                            >
-                              {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                            </button>
                           </div>
                         </div>
-                        {isExpanded && (
-                          <div className="px-4 py-3 bg-content2 border-t border-divider space-y-3">
-                            <div className="flex flex-wrap gap-4 text-sm">
-                              <div>
-                                <p className="text-xs text-foreground-400 mb-1">Location</p>
-                                {editingLocationId === asset.id ? (
-                                  <div className="flex items-center gap-2">
-                                    <Input
-                                      size="sm"
-                                      value={editingLocationValue}
-                                      onValueChange={setEditingLocationValue}
-                                      onKeyDown={(e: any) => {
-                                        if (e.key === 'Enter') saveLocationEdit(asset);
-                                        if (e.key === 'Escape') cancelLocationEdit();
-                                      }}
-                                    />
-                                    <Button size="sm" onPress={() => saveLocationEdit(asset)}>
-                                      <Save size={14} />
-                                    </Button>
-                                    <Button size="sm" variant="light" onPress={() => cancelLocationEdit()}>
-                                      <X size={14} />
-                                    </Button>
-                                  </div>
-                                ) : (
-                                  <div className="flex items-center gap-2">
-                                    <span>{asset.currentLocation || '—'}</span>
-                                    <Tooltip content="Edit location">
-                                      <Button isIconOnly size="sm" variant="light" onPress={() => startLocationEdit(asset)}>
-                                        <Pencil size={14} />
-                                      </Button>
-                                    </Tooltip>
-                                  </div>
-                                )}
-                              </div>
-                              {asset.assetValue && (
-                                <div>
-                                  <p className="text-xs text-foreground-400 mb-1">Value</p>
-                                  <span className="tabular-nums">${asset.assetValue.toFixed(2)}</span>
-                                </div>
-                              )}
-                              {activeMaintenance && (
-                                <div>
-                                  <p className="text-xs text-foreground-400 mb-1">Maintenance</p>
-                                  <div className="flex items-center gap-2">
-                                    <Chip size="sm" color={activeMaintenance.status === 'in-progress' ? 'warning' : 'secondary'} variant="flat">
-                                      {activeMaintenance.status === 'in-progress' ? 'In Progress' : 'Pending'}
-                                    </Chip>
-                                    <span className="text-xs font-semibold">{activeMaintenance.serviceType}</span>
-                                    {activeMaintenance.reason && (
-                                      <span className="text-xs text-foreground-500">{activeMaintenance.reason}</span>
-                                    )}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        )}
                       </div>
                     );
                   })}
@@ -1545,6 +1449,7 @@ export default function AssetsPage() {
                 note: 'Assigned on asset creation',
               });
             }
+            return ref.id;
           } catch (err) {
             console.error('Failed to add asset:', err);
             alert('Failed to add asset');

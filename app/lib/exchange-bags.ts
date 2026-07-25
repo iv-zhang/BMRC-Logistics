@@ -28,6 +28,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { consumeReserveUnits } from '@/app/lib/stock-pools';
+import { deepRemoveUndefined } from '@/app/lib/audit';
 import type { ExchangeBag, ExchangeBagAssignment, InventoryItem, Statpack, StorageLocationRef } from '@/app/types';
 
 export function removeUndefined<T extends Record<string, unknown>>(obj: T): T {
@@ -112,7 +113,7 @@ export async function saveExchangeBag(
   const touchesLocation = 'storageLocation' in rest;
   const derivedShelfId = touchesLocation ? rest.storageLocation?.shelfId : undefined;
 
-  const base = removeUndefined({
+  const base = deepRemoveUndefined({
     ...rest,
     ...(touchesLocation ? { shelfId: derivedShelfId } : {}),
     updatedAt: serverTimestamp(),
@@ -124,7 +125,7 @@ export async function saveExchangeBag(
     return id;
   }
 
-  const ref = await addDoc(collection(db, 'exchange_bags'), removeUndefined({
+  const ref = await addDoc(collection(db, 'exchange_bags'), deepRemoveUndefined({
     name: rest.name ?? 'Untitled bag',
     categoryId: rest.categoryId,
     storageLocation: rest.storageLocation,

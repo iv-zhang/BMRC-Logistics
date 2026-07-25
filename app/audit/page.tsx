@@ -730,12 +730,12 @@ export default function AuditPage() {
               filteredDisposables.map((item) => {
                 const isSelected = selectedIds.has(item.id);
                 return (
-                  <div key={item.id} className="flex items-start gap-2">
+                  <div key={item.id} className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => toggleSelect(item.id)}
                       aria-label={isSelected ? 'Deselect item' : 'Select item'}
-                      className={`flex-none mt-4 w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-colors duration-150 ${
+                      className={`flex-none w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-colors duration-150 ${
                         isSelected
                           ? 'bg-primary border-primary'
                           : 'bg-content1 border-divider hover:border-primary/50'
@@ -769,12 +769,12 @@ export default function AuditPage() {
                 const isSelected = selectedIds.has(item.id);
                 const isTrainer = trainerIds.has(item.id);
                 return (
-                  <div key={item.id} className="flex items-start gap-2">
+                  <div key={item.id} className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => toggleSelect(item.id)}
                       aria-label={isSelected ? 'Deselect item' : 'Select item'}
-                      className={`flex-none mt-4 w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-colors duration-150 ${
+                      className={`flex-none w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-colors duration-150 ${
                         isSelected
                           ? 'bg-primary border-primary'
                           : 'bg-content1 border-divider hover:border-primary/50'
