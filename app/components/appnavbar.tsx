@@ -41,6 +41,8 @@ import {
   CheckSquare,
   GraduationCap,
   ShieldAlert,
+  CalendarDays,
+  History,
   Sun,
   Moon,
 } from 'lucide-react';
@@ -48,6 +50,7 @@ import {
 import { useTheme } from 'next-themes';
 
 import TutorialOverlay from './tutorial-overlay';
+import NotificationBell from './notification-bell';
 
 export default function AppNavbar() {
   const pathname = usePathname();
@@ -59,6 +62,7 @@ export default function AppNavbar() {
   useEffect(() => { setMounted(true); }, []);
 
   const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isMedOps = role === 'medops';
   const [showTutorial, setShowTutorial] = useState(false);
 
   useEffect(() => {
@@ -190,6 +194,29 @@ export default function AppNavbar() {
             </Link>
           </NavbarItem>
 
+          {/* Shifts — visible to every role (members request, managers staff) */}
+          <NavbarItem isActive={isActivePrefix('/events')}>
+            <Link href="/events" className={isActivePrefix('/events') ? 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] bg-primary-50 dark:bg-primary-900/20 text-primary font-semibold text-[15px] transition-colors duration-150' : 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] text-foreground-400 font-medium text-[15px] hover:bg-content2 transition-colors duration-150'}>
+              <CalendarDays className="w-4 h-4" /> Shifts
+            </Link>
+          </NavbarItem>
+
+          {/* History — visible to every role (personal statpack activity + shift history) */}
+          <NavbarItem isActive={isActive('/history')}>
+            <Link href="/history" className={isActive('/history') ? 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] bg-primary-50 dark:bg-primary-900/20 text-primary font-semibold text-[15px] transition-colors duration-150' : 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] text-foreground-400 font-medium text-[15px] hover:bg-content2 transition-colors duration-150'}>
+              <History className="w-4 h-4" /> History
+            </Link>
+          </NavbarItem>
+
+          {/* MedOps: scoped Members (roster) access — role switching + certs only */}
+          {isMedOps && (
+            <NavbarItem isActive={isActive('/roster')}>
+              <Link href="/roster" className={isActive('/roster') ? 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] bg-primary-50 dark:bg-primary-900/20 text-primary font-semibold text-[15px] transition-colors duration-150' : 'flex items-center gap-1.5 px-3 py-[7px] rounded-[8px] text-foreground-400 font-medium text-[15px] hover:bg-content2 transition-colors duration-150'}>
+                <Users className="w-4 h-4" /> Members
+              </Link>
+            </NavbarItem>
+          )}
+
           {isAdmin && (
             <Dropdown>
               <NavbarItem>
@@ -260,6 +287,9 @@ export default function AppNavbar() {
             </Button>
           </Tooltip>
         </NavbarItem>
+        <NavbarItem>
+          <NotificationBell />
+        </NavbarItem>
         {mounted && (
           <NavbarItem>
             <Button
@@ -302,6 +332,23 @@ export default function AppNavbar() {
             <Home size={18} /> Dashboard
           </Link>
         </NavbarMenuItem>
+        <NavbarMenuItem className="py-1">
+          <Link href="/events" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActivePrefix('/events') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/events')}>
+            <CalendarDays size={18} /> Shifts
+          </Link>
+        </NavbarMenuItem>
+        <NavbarMenuItem className="py-1">
+          <Link href="/history" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/history') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/history')}>
+            <History size={18} /> History
+          </Link>
+        </NavbarMenuItem>
+        {isMedOps && (
+          <NavbarMenuItem className="py-1">
+            <Link href="/roster" className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive('/roster') ? 'bg-primary-100 dark:bg-primary-900/30 text-primary font-semibold' : 'text-foreground'}`} onPress={() => navigateMobile('/roster')}>
+              <Users size={18} /> Members
+            </Link>
+          </NavbarMenuItem>
+        )}
         {isAdmin && (<>
           <Divider className="my-1" />
           <NavbarMenuItem className="py-1"><p className="px-3 py-1 text-xs font-semibold text-foreground-400 uppercase tracking-wide">Assets</p></NavbarMenuItem>

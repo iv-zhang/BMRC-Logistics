@@ -11,6 +11,7 @@ import { OrgTab, ThresholdsTab } from '@/app/components/settings/org-and-thresho
 import { SitesRoomsTab } from '@/app/components/settings/sites-rooms-tab';
 import { ItemCategoriesTab, ItemFamiliesTab, AssetCategoriesTab } from '@/app/components/settings/categories-tab';
 import { StatpackTypesTab, VehiclesTab } from '@/app/components/settings/statpacks-vehicles-tab';
+import { EventsVenuesTab } from '@/app/components/settings/events-tab';
 import { validateOrgConfig } from '@/app/components/settings/settings-utils';
 import { propagateFamilyRename } from '@/app/lib/item-naming';
 
@@ -23,6 +24,10 @@ function cloneConfig(cfg: {
   itemCategories: readonly string[];
   itemFamilies: readonly string[];
   thresholds: OrgConfigDoc['thresholds'];
+  venues: OrgConfigDoc['venues'];
+  eventTypes: readonly string[];
+  semesterStartDate: string;
+  requireCertsForShiftSignup: boolean;
 }): OrgConfigDoc {
   const plain: OrgConfigDoc = {
     org: cfg.org,
@@ -33,6 +38,10 @@ function cloneConfig(cfg: {
     itemCategories: [...cfg.itemCategories],
     itemFamilies: [...cfg.itemFamilies],
     thresholds: cfg.thresholds,
+    venues: cfg.venues,
+    eventTypes: [...cfg.eventTypes],
+    semesterStartDate: cfg.semesterStartDate,
+    requireCertsForShiftSignup: cfg.requireCertsForShiftSignup,
   };
   return typeof structuredClone === 'function' ? structuredClone(plain) : JSON.parse(JSON.stringify(plain));
 }
@@ -209,7 +218,12 @@ export default function SettingsPage() {
         </div>
 
         {/* Tabs */}
-        <Tabs aria-label="Organization settings" selectedKey={selectedTab} onSelectionChange={onTabChange}>
+        <Tabs
+          aria-label="Organization settings"
+          selectedKey={selectedTab}
+          onSelectionChange={onTabChange}
+          classNames={{ base: 'w-full', tabList: 'overflow-x-auto flex-nowrap max-w-full' }}
+        >
           <Tab key="organization" title="Organization">
             <div className="mt-4">
               <OrgTab org={draft.org} onChange={(org) => updateDraft({ org })} />
@@ -262,6 +276,18 @@ export default function SettingsPage() {
           <Tab key="vehicles" title="Vehicle Types">
             <div className="mt-4">
               <VehiclesTab vehicles={draft.vehicles} onChange={(vehicles) => updateDraft({ vehicles })} />
+            </div>
+          </Tab>
+
+          <Tab key="events" title="Events & Venues">
+            <div className="mt-4">
+              <EventsVenuesTab
+                venues={draft.venues}
+                eventTypes={draft.eventTypes}
+                semesterStartDate={draft.semesterStartDate}
+                requireCertsForShiftSignup={draft.requireCertsForShiftSignup}
+                onChange={(update) => updateDraft(update)}
+              />
             </div>
           </Tab>
 

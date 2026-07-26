@@ -378,7 +378,7 @@ function AdminDashboard({
                   {readyCount}/{statpacks.length} ready
                 </span>
                 <button
-                  onClick={() => router.push('/statpacks')}
+                  onClick={() => router.push('/assets')}
                   className="ml-auto w-[30px] h-[30px] rounded-[9px] border border-divider bg-content1 text-foreground-400 flex items-center justify-center hover:bg-content2 hover:text-foreground transition-colors duration-150 flex-none"
                 >
                   <ArrowUpRight size={15} />
@@ -883,7 +883,7 @@ function MobileDashboard({
               <div className="text-[11.5px] text-foreground-400 font-medium">{total} packs tracked · today</div>
             </div>
             <button
-              onClick={() => router.push('/statpacks')}
+              onClick={() => router.push('/assets')}
               className="flex items-center gap-0.5 text-xs font-semibold text-primary active:opacity-70"
             >
               Details <ChevronRight size={15} />

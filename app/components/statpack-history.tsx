@@ -155,6 +155,7 @@ export default function StatpackHistory({ statpackId, maxRows = 12 }: StatpackHi
             ? formatDuration(checkin.timestamp.getTime() - checkout.timestamp.getTime())
             : null;
           const isQuickCheckin = checkin ? !!(checkin as unknown as Record<string, unknown>).quickCheckin : (log ? !!(log as unknown as Record<string, unknown>).quickCheckin : false);
+          const eventName = checkout?.eventName || checkin?.eventName || log?.eventName;
 
           return (
             <Card key={key} className="border border-default-200">
@@ -247,6 +248,11 @@ export default function StatpackHistory({ statpackId, maxRows = 12 }: StatpackHi
                   {combinedO2 > 0 && (
                     <Chip size="sm" variant="flat" color="secondary">
                       {combinedO2} O2 readings
+                    </Chip>
+                  )}
+                  {eventName && (
+                    <Chip size="sm" variant="flat" color="primary">
+                      Event: {eventName}
                     </Chip>
                   )}
                 </div>

@@ -12,7 +12,7 @@ import {
   BarChart2, Users, AlertTriangle,
   GraduationCap,
   ChevronsLeft, ChevronsRight, ScanBarcode, SlidersHorizontal,
-  SquareKanban, Ambulance,
+  SquareKanban, Ambulance, CalendarDays,
 } from 'lucide-react';
 import TutorialOverlay from './tutorial-overlay';
 
@@ -38,6 +38,7 @@ export const ADMIN_NAV: NavSection[] = [
   {
     items: [
       { key: 'dashboard', label: 'Dashboard', Icon: Home, path: '/dashboard' },
+      { key: 'shifts',    label: 'Shifts',    Icon: CalendarDays, path: '/events' },
     ],
   },
   {

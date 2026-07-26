@@ -4,7 +4,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import {
   Home, Boxes, Package, CheckSquare, MoreHorizontal,
-  User, X, SquareKanban,
+  User, X, SquareKanban, CalendarDays, Users, History,
 } from 'lucide-react';
 import { ADMIN_NAV, type LucideIcon } from './app-sidebar';
 
@@ -18,7 +18,16 @@ const ADMIN_TABS: Tab[] = [
 ];
 
 const MEMBER_TABS: Tab[] = [
-  { key: 'dashboard', label: 'Dashboard', Icon: Home, path: '/dashboard' },
+  { key: 'dashboard', label: 'Dashboard', Icon: Home,         path: '/dashboard' },
+  { key: 'shifts',    label: 'Shifts',    Icon: CalendarDays, path: '/events' },
+  { key: 'history',   label: 'History',   Icon: History,      path: '/history' },
+];
+
+// MedOps: staffs events + manages members, no logistics surfaces.
+const MEDOPS_TABS: Tab[] = [
+  { key: 'dashboard', label: 'Dashboard', Icon: Home,         path: '/dashboard' },
+  { key: 'shifts',    label: 'Shifts',    Icon: CalendarDays, path: '/events' },
+  { key: 'members',   label: 'Members',   Icon: Users,        path: '/roster' },
 ];
 
 export default function MobileBottomNav() {
@@ -28,6 +37,7 @@ export default function MobileBottomNav() {
   const [moreOpen, setMoreOpen] = useState(false);
 
   const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isMedOps = role === 'medops';
   // Real (non-overridden) role — an override can drop `role` to 'member', so this
   // is how an admin testing a member role stays able to exit back to admin view.
   const isRealAdmin = userData?.role === 'admin' || userData?.role === 'quartermaster';
@@ -35,7 +45,7 @@ export default function MobileBottomNav() {
   const memberTabs = userData?.isCommitteeMember === true
     ? [...MEMBER_TABS, { key: 'committee-board', label: 'Board', Icon: SquareKanban, path: '/committee-board' }]
     : MEMBER_TABS;
-  const tabs = isAdmin ? ADMIN_TABS : memberTabs;
+  const tabs = isAdmin ? ADMIN_TABS : isMedOps ? MEDOPS_TABS : memberTabs;
 
   const isActive = (path: string) => pathname === path || pathname.startsWith(path + '/');
   const primaryActive = tabs.some(t => isActive(t.path));

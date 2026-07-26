@@ -4,6 +4,7 @@ import type { InventoryItem, InventoryBatch, Statpack, StatpackItem, StatpackPoc
 import { recordAuditEvent, removeUndefined, deepRemoveUndefined } from '@/app/lib/audit';
 import { createReport } from '@/app/lib/reports';
 import { getAssetCategoriesRuntime, getThresholds } from '@/app/lib/org-config-store';
+import { endEventShifts } from '@/app/lib/events';
 
 /**
  * Fetch an inventory item by ID and return enriched itemDetails + suggested verification rules.
@@ -403,6 +404,9 @@ export async function logStatpackCheckOff(params: {
    */
   bagChecks?: Record<string, { sealIntact: boolean; resolution?: 'swapped' | 'replaced'; notes?: string }>;
   notes?: string;
+  /** Event this checkout is for (optional, set by the checkout picker). Persisted on the log and stamped onto the pack as `currentEvent`/`currentEventId`; cleared on check-in. */
+  eventId?: string;
+  eventName?: string;
 }) {
   const {
     statpackId,
@@ -419,6 +423,8 @@ export async function logStatpackCheckOff(params: {
     sharpsCheck,
     bagChecks,
     notes,
+    eventId,
+    eventName,
   } = params;
 
   const resolvedPairId = await resolveStatpackPairId({ statpackId, action, pairId });
@@ -492,6 +498,13 @@ export async function logStatpackCheckOff(params: {
     (logData as any).notes = notes;
   }
 
+  // Attach the event this checkout was for, if the caller supplied one.
+  // (On check-in, when the caller doesn't pass one explicitly, we carry it
+  // forward from the pack's own `currentEvent`/`currentEventId` inside the
+  // transaction below, once `spData` is available.)
+  if (eventId) logData.eventId = eventId;
+  if (eventName) logData.eventName = eventName;
+
   // Attach issues only if there are values (sanitize nested objects)
   const issues: any = {};
   if (sealChecks && Object.keys(sealChecks).length > 0) {
@@ -563,6 +576,9 @@ export async function logStatpackCheckOff(params: {
   // Write the log and update the statpack inside a transaction to avoid races.
   const statpackRef = doc(db, 'statpacks', statpackId);
   const newLogRef = doc(collection(db, 'statpack_logs'));
+  // Captured inside the transaction (before currentEventId is cleared) so the
+  // check-in → end-shifts hook below knows which event to end, best-effort.
+  let checkedInEventId: string | undefined;
 
   try {
     await runTransaction(db, async (tx) => {
@@ -698,12 +714,19 @@ export async function logStatpackCheckOff(params: {
         statpackUpdate.checkedOutAt = serverTimestamp();
         statpackUpdate.assignedToUserId = userId;
         statpackUpdate.assignedToUserName = userName;
+        if (eventId) statpackUpdate.currentEventId = eventId;
+        if (eventName) statpackUpdate.currentEvent = eventName;
       } else if (action === 'checkin') {
         statpackUpdate.isCheckedOut = false;
         statpackUpdate.status = deriveStatus();
         statpackUpdate.checkedOutAt = null;
         statpackUpdate.assignedToUserId = null;
         statpackUpdate.assignedToUserName = null;
+        // Capture before clearing so the best-effort end-shifts hook below (run
+        // after the transaction commits) knows which event to end.
+        if (spData?.currentEventId) checkedInEventId = spData.currentEventId;
+        statpackUpdate.currentEvent = null;
+        statpackUpdate.currentEventId = null;
       } else if (action === 'audit') {
         // Audits verify the pack in place — never take ownership of it.
         statpackUpdate.status = deriveStatus();
@@ -717,12 +740,33 @@ export async function logStatpackCheckOff(params: {
       txLog.timestamp = serverTimestamp();
       txLog.clientTimestamp = now;
 
+      // A check-in doesn't ask which event again — carry the event the pack
+      // was already stamped with (from checkout) onto the check-in log, so
+      // history shows the event on both halves of the pair, then clear it
+      // above via statpackUpdate.
+      if (action === 'checkin' && !eventId && !eventName) {
+        if (spData?.currentEventId) txLog.eventId = spData.currentEventId;
+        if (spData?.currentEvent) txLog.eventName = spData.currentEvent;
+      }
+
       tx.set(newLogRef, txLog);
       tx.update(statpackRef, statpackUpdate);
     });
   } catch (e: any) {
     console.warn('logStatpackCheckOff: Transaction failed', e);
     throw e;
+  }
+
+  // Checking a statpack back in that was deployed for an event auto-ends that
+  // event's shifts (the manual counterpart is the "End shift" button in the
+  // event detail drawer). Best-effort, outside the transaction — a failure
+  // here must never fail the check-off itself.
+  if (action === 'checkin' && checkedInEventId) {
+    try {
+      await endEventShifts(checkedInEventId, { uid: userId, name: userName });
+    } catch (e) {
+      console.warn('logStatpackCheckOff: endEventShifts failed', e);
+    }
   }
 
   await logValidationWarningsToCollections({

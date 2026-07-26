@@ -14,8 +14,6 @@ import {
   collection,
   query,
   where,
-  orderBy,
-  limit,
   onSnapshot,
   Timestamp,
   addDoc,
@@ -23,17 +21,22 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
-import type { Statpack, StatpackLog, User } from '@/app/types';
+import type { Statpack, User, AppNotification, ShiftRequest } from '@/app/types';
+import { subscribeUserNotifications, markNotificationRead } from '@/app/lib/notifications';
+import { subscribeMyRequests } from '@/app/lib/events';
+import { toJsDate, formatEventDate } from '@/app/components/events/event-utils';
 import {
   LogIn,
   LogOut,
   ScanLine,
   PackageCheck,
-  Clock,
   AlertTriangle,
   ClipboardCheck,
   Ambulance,
   Truck,
+  CalendarDays,
+  History,
+  Users,
 } from 'lucide-react';
 
 interface InventorySnapshot {
@@ -58,12 +61,14 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
   const router = useRouter();
   const { role } = useUserRole();
   const [assignedPacks, setAssignedPacks] = useState<Statpack[]>([]);
-  const [recentActivity, setRecentActivity] = useState<StatpackLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [upcomingShifts, setUpcomingShifts] = useState<ShiftRequest[]>([]);
+  const [shiftsLoading, setShiftsLoading] = useState(true);
   const [lowStockItems, setLowStockItems] = useState<any[]>([]);
   const [expiringItems, setExpiringItems] = useState<any[]>([]);
   const [purchaseHistoryMap, setPurchaseHistoryMap] = useState<Record<string, any[]>>({});
   const [creatingRequest, setCreatingRequest] = useState<string | null>(null);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const expiringCount = expiringItems.length;
   const attentionList = useMemo(() => {
     const combined = [...lowStockItems, ...expiringItems];
@@ -171,6 +176,12 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
     fetchPurchaseHistory();
   }, [lowStockItems]);
 
+  // Subscribe to notifications
+  useEffect(() => {
+    const unsubscribe = subscribeUserNotifications(userData.id, setNotifications, 5);
+    return () => unsubscribe();
+  }, [userData.id]);
+
   useEffect(() => {
     // Listen for statpacks assigned to this user
     const packsQuery = query(
@@ -184,8 +195,8 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
         return {
           id: doc.id,
           ...data,
-          lastCheckedAt: data.lastCheckedAt instanceof Timestamp 
-            ? data.lastCheckedAt.toDate() 
+          lastCheckedAt: data.lastCheckedAt instanceof Timestamp
+            ? data.lastCheckedAt.toDate()
             : undefined,
           contents: Array.isArray(data.contents)
             ? data.contents.map((item: { expirationDate?: Timestamp | Date; [key: string]: unknown }) => ({
@@ -198,35 +209,36 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
         } as Statpack;
       });
       setAssignedPacks(packs);
-    });
-
-    // Listen for recent activity logs by this user
-    const logsQuery = query(
-      collection(db, 'statpack_logs'),
-      where('userId', '==', userData.id),
-      orderBy('timestamp', 'desc'),
-      limit(5)
-    );
-
-    const unsubLogs = onSnapshot(logsQuery, (snapshot) => {
-      const logs = snapshot.docs.map((doc) => {
-        const data = doc.data();
-        return {
-          id: doc.id,
-          ...data,
-          timestamp: data.timestamp instanceof Timestamp
-            ? data.timestamp.toDate()
-            : new Date(),
-        } as StatpackLog;
-      });
-      setRecentActivity(logs);
       setLoading(false);
     });
 
-    return () => {
-      unsubPacks();
-      unsubLogs();
-    };
+    return () => unsubPacks();
+  }, [userData.id]);
+
+  // Upcoming shifts: this member's pending/approved shift requests, soonest first.
+  // Past-dated approved requests (already happened) are filtered out; undated
+  // requests (rare) are kept and sorted last.
+  useEffect(() => {
+    const unsub = subscribeMyRequests(userData.id, (requests) => {
+      const now = new Date();
+      const upcoming = requests
+        .filter((r) => r.status === 'approved' || r.status === 'pending')
+        .filter((r) => {
+          const d = toJsDate(r.eventDate);
+          return !d || d >= now;
+        })
+        .sort((a, b) => {
+          const da = toJsDate(a.eventDate)?.getTime();
+          const db_ = toJsDate(b.eventDate)?.getTime();
+          if (da == null && db_ == null) return 0;
+          if (da == null) return 1;
+          if (db_ == null) return -1;
+          return da - db_;
+        });
+      setUpcomingShifts(upcoming);
+      setShiftsLoading(false);
+    });
+    return () => unsub();
   }, [userData.id]);
 
   const formatTimestamp = (date: Date) => {
@@ -287,7 +299,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
             Dashboard
           </h1>
           <p className="text-sm md:text-base text-foreground-500 mt-1">
-            Welcome, {userData.fullName}! Your inventory & packs at a glance.
+            Welcome, {userData.fullName}!
           </p>
         </div>
         <Divider />
@@ -426,7 +438,93 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
                 </CardBody>
               </Card>
             )}
+
+            {/* Roster — medops only */}
+            {role === 'medops' && (
+              <Card
+                isPressable
+                onPress={() => router.push('/roster')}
+                className="bg-gradient-to-br from-rose-500 to-pink-600 text-white transition-transform"
+              >
+                <CardBody className="flex flex-col items-center justify-center py-4 md:py-8 gap-2 md:gap-3">
+                  <Users size={36} className="md:w-12 md:h-12" />
+                  <h3 className="text-sm md:text-xl font-semibold">Roster</h3>
+                  <p className="text-xs md:text-sm text-center opacity-90 hidden md:block">
+                    View member roster
+                  </p>
+                </CardBody>
+              </Card>
+            )}
           </div>
+        </section>
+
+        {/* Shifts Section */}
+        <section>
+          <h2 className="text-lg md:text-xl font-semibold mb-3 md:mb-4">
+            Shifts
+          </h2>
+          <Card
+            isPressable
+            onPress={() => router.push('/events')}
+            className="bg-gradient-to-br from-indigo-500 to-violet-600 text-white transition-transform w-full"
+          >
+            <CardBody className="flex flex-col items-center justify-center py-4 md:py-8 gap-2 md:gap-3">
+              <CalendarDays size={36} className="md:w-12 md:h-12" />
+              <h3 className="text-sm md:text-xl font-semibold">Sign Up for Shifts</h3>
+              <p className="text-xs md:text-sm text-center opacity-90 hidden md:block">
+                Request event shifts
+              </p>
+            </CardBody>
+          </Card>
+        </section>
+
+        {/* Upcoming Shifts Section */}
+        <section>
+          <h2 className="text-lg md:text-xl font-semibold mb-3 md:mb-4">
+            Upcoming Shifts
+          </h2>
+          <Card>
+            <CardBody className="gap-2 md:gap-3">
+              {shiftsLoading ? (
+                <p className="text-foreground-500 text-xs md:text-sm">
+                  Loading...
+                </p>
+              ) : upcomingShifts.length === 0 ? (
+                <p className="text-foreground-500 text-xs md:text-sm">
+                  No upcoming shifts. Sign up above to get on the schedule.
+                </p>
+              ) : (
+                upcomingShifts.map((req) => (
+                  <Card
+                    key={req.id}
+                    className="bg-content2 cursor-pointer hover:shadow-md transition-shadow"
+                    isPressable
+                    onPress={() => req.eventId && router.push(`/events?event=${req.eventId}`)}
+                  >
+                    <CardBody className="py-2 md:py-3 px-3 md:px-4">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <h4 className="font-semibold text-sm md:text-base truncate">
+                            {req.eventName}
+                          </h4>
+                          <p className="text-xs text-foreground-500">
+                            {req.teamName} · {req.role} · {formatEventDate(req.eventDate)}
+                          </p>
+                        </div>
+                        <Chip
+                          color={req.status === 'approved' ? 'success' : 'warning'}
+                          size="sm"
+                          variant="flat"
+                        >
+                          {req.status === 'approved' ? 'Confirmed' : 'Requested'}
+                        </Chip>
+                      </div>
+                    </CardBody>
+                  </Card>
+                ))
+              )}
+            </CardBody>
+          </Card>
         </section>
 
         {/* Smart Ordering - Admin Only */}
@@ -474,133 +572,137 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
           </section>
         )}
 
-        {/* Two Column Layout - Mobile Responsive */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
-          {/* Assigned Statpacks */}
-          <Card>
-            <CardHeader className="flex flex-col items-start gap-2 pb-3 md:pb-4">
+        {/* Assigned Statpacks */}
+        <Card>
+          <CardHeader className="flex items-center justify-between gap-2 pb-3 md:pb-4">
+            <div className="flex flex-col items-start gap-2">
               <h3 className="text-base md:text-lg font-semibold">
                 My Assigned Packs
               </h3>
               <Chip size="sm" variant="flat">
                 {assignedPacks.length} pack{assignedPacks.length !== 1 ? 's' : ''}
               </Chip>
-            </CardHeader>
-            <Divider />
-            <CardBody className="gap-2 md:gap-3">
-              {loading ? (
-                <p className="text-foreground-500 text-xs md:text-sm">
-                  Loading...
-                </p>
-              ) : assignedPacks.length === 0 ? (
-                <p className="text-foreground-500 text-xs md:text-sm">
-                  No packs currently assigned. Packs appear here once you check them out.
-                </p>
-              ) : (
-                assignedPacks.map((pack) => (
-                  <Card
-                    key={pack.id}
-                    className="bg-content2 cursor-pointer hover:shadow-md transition-shadow"
-                    isPressable
-                    onPress={() => router.push(`/statpacks/?id=${pack.id}`)}
-                  >
-                    <CardBody className="py-2 md:py-3 px-3 md:px-4">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex-1 min-w-0">
-                          <h4 className="font-semibold text-sm md:text-base truncate">
-                            {pack.name}
-                          </h4>
-                          <p className="text-xs text-foreground-500">
-                            {pack.type}
-                          </p>
-                        </div>
-                        <Chip
-                          color={
-                            pack.status === 'Ready'
-                              ? 'success'
-                              : pack.status === 'In Use'
-                              ? 'warning'
-                              : 'danger'
-                          }
-                          size="sm"
-                          variant="flat"
-                        >
-                          {pack.status}
-                        </Chip>
+            </div>
+            <Button
+              size="sm"
+              variant="light"
+              endContent={<History size={14} />}
+              onPress={() => router.push('/history')}
+            >
+              View full history
+            </Button>
+          </CardHeader>
+          <Divider />
+          <CardBody className="gap-2 md:gap-3">
+            {loading ? (
+              <p className="text-foreground-500 text-xs md:text-sm">
+                Loading...
+              </p>
+            ) : assignedPacks.length === 0 ? (
+              <p className="text-foreground-500 text-xs md:text-sm">
+                No packs currently assigned. Packs appear here once you check them out.
+              </p>
+            ) : (
+              assignedPacks.map((pack) => (
+                <Card
+                  key={pack.id}
+                  className="bg-content2 cursor-pointer hover:shadow-md transition-shadow"
+                  isPressable
+                  onPress={() => router.push(`/statpacks/?id=${pack.id}`)}
+                >
+                  <CardBody className="py-2 md:py-3 px-3 md:px-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-semibold text-sm md:text-base truncate">
+                          {pack.name}
+                        </h4>
+                        <p className="text-xs text-foreground-500">
+                          {pack.type}
+                        </p>
                       </div>
-                    </CardBody>
-                  </Card>
-                ))
-              )}
-            </CardBody>
-          </Card>
+                      <Chip
+                        color={
+                          pack.status === 'Ready'
+                            ? 'success'
+                            : pack.status === 'In Use'
+                            ? 'warning'
+                            : 'danger'
+                        }
+                        size="sm"
+                        variant="flat"
+                      >
+                        {pack.status}
+                      </Chip>
+                    </div>
+                  </CardBody>
+                </Card>
+              ))
+            )}
+          </CardBody>
+        </Card>
 
-          {/* Recent Activity */}
-          <Card>
-            <CardHeader className="flex flex-col items-start gap-2 pb-3 md:pb-4">
-              <h3 className="text-base md:text-lg font-semibold">
-                Your Activity
-              </h3>
-              <Chip size="sm" variant="flat">
-                Last 5
-              </Chip>
-            </CardHeader>
-            <Divider />
-            <CardBody className="gap-2 md:gap-3">
-              {loading ? (
-                <p className="text-foreground-500 text-xs md:text-sm">
-                  Loading...
-                </p>
-              ) : recentActivity.length === 0 ? (
-                <p className="text-foreground-500 text-xs md:text-sm">
-                  No activity yet. Start by checking out a pack!
-                </p>
-              ) : (
-                recentActivity.map((log) => (
+        {/* Notifications Section */}
+        <Card>
+          <CardHeader className="flex flex-col items-start gap-2 pb-3 md:pb-4">
+            <h3 className="text-base md:text-lg font-semibold">
+              Notifications
+            </h3>
+            <Chip size="sm" variant="flat">
+              {notifications.length} message{notifications.length !== 1 ? 's' : ''}
+            </Chip>
+          </CardHeader>
+          <Divider />
+          <CardBody className="gap-2 md:gap-3">
+            {notifications.length === 0 ? (
+              <p className="text-foreground-500 text-xs md:text-sm">
+                No notifications yet. You&apos;ll see important updates here.
+              </p>
+            ) : (
+              notifications.slice(0, 5).map((notif) => {
+                const notifDate = toDateSafe(notif.createdAt) || new Date();
+
+                return (
                   <Card
-                    key={log.id}
-                    className="bg-content2"
-                    shadow="sm"
+                    key={notif.id}
+                    isPressable
+                    onPress={() => {
+                      if (!notif.read) {
+                        markNotificationRead(notif.id!);
+                      }
+                      if (notif.link) {
+                        router.push(notif.link);
+                      }
+                    }}
+                    className={`bg-content2 cursor-pointer hover:shadow-md transition-all ${
+                      !notif.read ? 'border border-primary/30 bg-primary-50/30 dark:bg-primary-900/10' : ''
+                    }`}
                   >
                     <CardBody className="py-2 md:py-3 px-3 md:px-4">
-                      <div className="flex items-start justify-between gap-2">
+                      <div className="flex gap-2 items-start">
+                        {!notif.read && (
+                          <span className="w-2 h-2 rounded-full bg-primary flex-none mt-1.5" />
+                        )}
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1 flex-wrap">
-                            <Chip
-                              size="sm"
-                              color={
-                                log.action === 'checkout'
-                                  ? 'primary'
-                                  : log.action === 'checkin'
-                                  ? 'success'
-                                  : 'default'
-                              }
-                              variant="flat"
-                            >
-                              {log.action === 'checkout' ? 'Checked Out' : log.action === 'checkin' ? 'Checked In' : log.action.replace(/_/g, ' ')}
-                            </Chip>
-                          </div>
-                          <p className="text-xs md:text-sm font-medium truncate">
-                            {log.statpackName || 'Unknown Pack'}
-                          </p>
-                          {log.notes && (
-                            <p className="text-xs text-foreground-500 mt-1 line-clamp-2">
-                              {log.notes}
+                          <h4 className="font-semibold text-sm text-foreground">
+                            {notif.title}
+                          </h4>
+                          {notif.body && (
+                            <p className="text-xs text-foreground-500 mt-0.5 line-clamp-2">
+                              {notif.body}
                             </p>
                           )}
-                        </div>
-                        <div className="flex items-center gap-1 text-xs text-foreground-400 whitespace-nowrap">
-                          <Clock size={12} />
-                          {log.timestamp instanceof Date ? formatTimestamp(log.timestamp) : 'Just now'}
+                          <p className="text-xs text-foreground-400 mt-1">
+                            {formatTimestamp(notifDate)}
+                          </p>
                         </div>
                       </div>
                     </CardBody>
                   </Card>
-                ))
-              )}
-            </CardBody>
-          </Card>
-        </div>
+                );
+              })
+            )}
+          </CardBody>
+        </Card>
       </div>
     </div>
     </>

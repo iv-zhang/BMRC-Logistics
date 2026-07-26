@@ -12,15 +12,30 @@ import {
   Avatar,
   Tabs,
   Tab,
+  Modal,
+  ModalContent,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
+  Select,
+  SelectItem,
 } from '@heroui/react';
-import { Package, ScanLine, Search, LogOut, ArrowLeft, Radio, Monitor, Toolbox, BatteryCharging, Thermometer, HardDrive, Box } from 'lucide-react';
+import { Package, ScanLine, Search, LogOut, ArrowLeft, Radio, Monitor, Toolbox, BatteryCharging, Thermometer, HardDrive, Box, CalendarDays } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { collection, onSnapshot, query, where, orderBy, Timestamp, doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
-import type { InventoryItem, Statpack, StatpackItem } from '@/app/types';
+import type { InventoryItem, Statpack, StatpackItem, Event } from '@/app/types';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import { findAssetByCode } from '@/app/lib/inventory';
+import { subscribeEvents } from '@/app/lib/events';
+import { toJsDate } from '@/app/components/events/event-utils';
 import CheckoutModal from '@/app/components/checkout-modal';
+
+const formatEventDate = (d: Event['date'] | undefined) => {
+  const date = toJsDate(d);
+  if (!date) return '';
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+};
 
 
 export default function CheckoutPage() {
@@ -34,6 +49,12 @@ export default function CheckoutPage() {
   const autoOpenedPackId = React.useRef<string | null>(null);
 
   const [scannerOpen, setScannerOpen] = useState(false);
+
+  // Event picker — shown after a pack is selected for checkout, before
+  // navigating to the check-off flow. Selecting an event is optional.
+  const [events, setEvents] = useState<Event[]>([]);
+  const [eventPickerPackId, setEventPickerPackId] = useState<string | null>(null);
+  const [selectedEventId, setSelectedEventId] = useState('');
 
   // Asset checkout
   const [activeTab, setActiveTab] = useState<string>('statpacks');
@@ -51,6 +72,27 @@ export default function CheckoutPage() {
     const unsub = onAuthStateChanged(auth, (u) => setUser(u));
     return () => unsub();
   }, []);
+
+  // Open (selectable) events for the checkout event picker
+  useEffect(() => {
+    if (!user) return;
+    const unsub = subscribeEvents((evts) => setEvents(evts.filter((e) => e.status === 'open')));
+    return () => unsub();
+  }, [user]);
+
+  // Open the event picker instead of navigating straight to check-off, so the
+  // member can (optionally) tag this checkout with the event it's for.
+  const startCheckout = useCallback((id: string) => {
+    setSelectedEventId('');
+    setEventPickerPackId(id);
+  }, []);
+
+  const confirmEventPicker = useCallback((skip: boolean) => {
+    if (!eventPickerPackId) return;
+    const qs = !skip && selectedEventId ? `&event=${encodeURIComponent(selectedEventId)}` : '';
+    router.push(`/statpacks/check-off?id=${eventPickerPackId}&mode=checkout${qs}`);
+    setEventPickerPackId(null);
+  }, [eventPickerPackId, selectedEventId, router]);
 
   // Read QR query param
   useEffect(() => {
@@ -143,12 +185,13 @@ export default function CheckoutPage() {
     ));
   }, [assetSearchQuery, assetItems]);
 
-  // Navigate to checkoff page when pack is selected
+  // Selecting a pack opens the event picker rather than navigating directly;
+  // the picker itself does the navigation to check-off (Continue or Skip).
   const handleSelectPack = useCallback((pack: Statpack) => {
-    router.push(`/statpacks/check-off?id=${pack.id}&mode=checkout`);
-  }, [router]);
+    startCheckout(pack.id);
+  }, [startCheckout]);
 
-  // QR auto-open: navigate directly if pack is found
+  // QR auto-open: open the event picker directly if pack is found
   useEffect(() => {
     const raw = initialPackQuery;
     if (!raw || autoOpenedPackId.current === raw) return;
@@ -161,7 +204,7 @@ export default function CheckoutPage() {
         const snap = await getDoc(doc(db, 'statpacks', raw));
         if (snap.exists()) {
           autoOpenedPackId.current = raw;
-          router.push(`/statpacks/check-off?id=${raw}&mode=checkout`);
+          startCheckout(raw);
           return;
         }
       } catch { /* fall through to list match */ }
@@ -171,10 +214,10 @@ export default function CheckoutPage() {
       );
       if (found) {
         autoOpenedPackId.current = raw;
-        router.push(`/statpacks/check-off?id=${found.id}&mode=checkout`);
+        startCheckout(found.id);
       }
     })();
-  }, [statpacks, initialPackQuery, user, router]);
+  }, [statpacks, initialPackQuery, user, router, startCheckout]);
 
   const handleScanDetected = (value: string) => {
     setScannerOpen(false);
@@ -184,7 +227,7 @@ export default function CheckoutPage() {
       p.id?.toLowerCase().includes(value.toLowerCase())
     );
     if (found) {
-      router.push(`/statpacks/check-off?id=${found.id}&mode=checkout`);
+      startCheckout(found.id);
     } else {
       alert(`No statpack found matching: ${value}`);
     }
@@ -448,6 +491,44 @@ export default function CheckoutPage() {
           serial={selectedAssetSerial}
         />
       )}
+
+      <Modal
+        isOpen={!!eventPickerPackId}
+        onOpenChange={(open) => { if (!open) setEventPickerPackId(null); }}
+        placement="center"
+      >
+        <ModalContent>
+          <ModalHeader className="flex flex-col gap-1">
+            <div className="flex items-center gap-2">
+              <CalendarDays size={18} className="text-primary" />
+              Which event is this for?
+            </div>
+          </ModalHeader>
+          <ModalBody>
+            <p className="text-sm text-foreground-500">
+              Optional — link this checkout to an event so the pack&apos;s history shows who used it, and where.
+            </p>
+            <Select
+              label="Event"
+              placeholder="No specific event"
+              selectedKeys={selectedEventId ? [selectedEventId] : []}
+              onChange={(e) => setSelectedEventId(e.target.value)}
+            >
+              {events.map((ev) => (
+                <SelectItem key={ev.id}>{`${ev.name} — ${formatEventDate(ev.date)}`}</SelectItem>
+              ))}
+            </Select>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="light" onPress={() => confirmEventPicker(true)}>
+              Skip
+            </Button>
+            <Button color="primary" onPress={() => confirmEventPicker(false)}>
+              Continue
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
     </>
   );
 }

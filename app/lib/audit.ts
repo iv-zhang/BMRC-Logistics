@@ -1,4 +1,4 @@
-import { addDoc, collection, serverTimestamp, doc, WriteBatch, DocumentData } from 'firebase/firestore';
+import { addDoc, collection, serverTimestamp, doc, WriteBatch, DocumentData, Timestamp } from 'firebase/firestore';
 import { db } from '@/firebase';
 
 export type AuditEvent = {
@@ -52,6 +52,10 @@ export function deepRemoveUndefined<T>(obj: T): T {
   if (typeof obj === 'object') {
     // Preserve Date instances as-is
     if (obj instanceof Date) return obj;
+    // Preserve Firestore Timestamp instances — recursing rebuilds them into a
+    // plain {seconds,nanoseconds} map that Firestore stores as data, not a
+    // timestamp (silently breaks date reads; see events createEvent).
+    if (obj instanceof Timestamp) return obj;
     // Preserve Firestore FieldValue sentinels (serverTimestamp, increment, etc.)
     // They have an internal _methodName property – never destructure them.
     if ('_methodName' in (obj as any)) return obj;

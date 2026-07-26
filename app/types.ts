@@ -84,14 +84,34 @@ export interface User {
   id: string;
   fullName: string;
   email: string;
-  role: 'admin' | 'member' | 'FTO' | 'quartermaster' | 'inventory_helper';
+  /**
+   * `medops` is a reduced-admin role: it staffs events and switches members
+   * between FTO/member, but is NOT `isAdmin` and sees no logistics surfaces.
+   */
+  role: 'admin' | 'member' | 'FTO' | 'quartermaster' | 'inventory_helper' | 'medops';
   /** When true, this member can perform inventory audits even if not admin/quartermaster */
   canAudit?: boolean;
   /** When true, this member is on the Logistics Committee (sees the Committee Board) even if not admin/quartermaster */
   isCommitteeMember?: boolean;
+  /**
+   * Field-readiness certifications gating shift signup. Both EMT and CPR must be
+   * present and unexpired for the member to request a shift. Cleared/renewed
+   * manually by medops/admin (see app/lib/certifications.ts) — the app tracks
+   * expiry dates only, not the underlying documents.
+   */
+  certifications?: MemberCertifications;
   /** Whether the user has completed the onboarding tutorial */
   tutorialCompleted?: boolean;
   tutorialCompletedAt?: Date;
+  /**
+   * Self/admin-set experience tier, replacing the old per-request "Experience"
+   * picker. Denormalized onto each ShiftRequest at signup time. Missing/unset
+   * MUST be treated as 'general' everywhere it's read — never leave it
+   * ambiguous between "new" and "not set".
+   */
+  memberStatus?: 'new' | 'probationary' | 'general';
+  /** Freeform term the member joined (e.g. "Fall 2025"). */
+  joinedTerm?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -101,6 +121,167 @@ export interface AuthResponse {
   message: string;
   user?: User;
   error?: string;
+}
+
+// --- MEMBER CERTIFICATIONS (shift-signup gating) ---
+/** One tracked certification (expiry-date only; documents live off-app). */
+export interface CertificationRecord {
+  /** Cert / license number (optional, for reference). */
+  number?: string;
+  /** Expiration date. Absent = never recorded (treated as `missing`). */
+  expiresOn?: Timestamp | Date;
+  /** Who last set/renewed this expiry (medops/admin). */
+  verifiedBy?: string;
+  verifiedAt?: Timestamp | Date;
+}
+
+export interface MemberCertifications {
+  /** California EMT certification. */
+  emt?: CertificationRecord;
+  /** CPR certification. */
+  cpr?: CertificationRecord;
+}
+
+export type CertStatus = 'valid' | 'expired' | 'missing';
+
+// --- EVENTS & SHIFT STAFFING ---
+/** Which member roles may fill a given team slot. */
+export type SlotRole = 'FTO' | 'EMT';
+
+/** One assignable slot on a team (empty until a request is approved into it). */
+export interface TeamSlot {
+  userId?: string;
+  userName?: string;
+  /** shift_requests doc id that filled this slot (for unassign/audit). */
+  requestId?: string;
+}
+
+/**
+ * A staffing team on an event: exactly one FTO + `emtCount` EMTs (2–4, default
+ * 3). An event may have multiple teams. `emtSlots.length` tracks `emtCount`.
+ */
+export interface EventTeam {
+  id: string;
+  name: string;
+  /** The single FTO slot. */
+  ftoSlot: TeamSlot;
+  /** Desired EMT headcount, clamped 2–4. */
+  emtCount: number;
+  emtSlots: TeamSlot[];
+  /** Optional per-team time overrides (fall back to the event's call/end time). */
+  startTime?: string;
+  endTime?: string;
+}
+
+export type EventStatus = 'draft' | 'open' | 'closed' | 'cancelled';
+
+export interface Event {
+  id?: string;
+  name: string;
+  eventType?: string;
+  venue?: string;
+  location?: string;
+  /** Event day. */
+  date: Timestamp | Date;
+  /** Call time as "HH:mm" (note: not necessarily Berkeley time). */
+  callTime?: string;
+  endTime?: string;
+  description?: string;
+  status: EventStatus;
+  teams: EventTeam[];
+  /** Whether a signup-open notification has been broadcast for this event. */
+  notified?: boolean;
+  createdBy: string;
+  createdByName?: string;
+  createdAt: Timestamp | Date | FieldValue;
+  updatedAt?: Timestamp | Date | FieldValue;
+}
+
+/** BMRC self-reported experience ranking carried on a request (informational). */
+export type MemberRanking = 'FTO' | 'returning' | 'new';
+
+export type ShiftRequestStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
+
+/**
+ * Attendance exceptions only — a normal attendance is represented by
+ * `checkedInAt` being set (see `AttendanceRecord`). 'present'/'late' are no
+ * longer stored statuses: lateness is derived from `checkedInAt` vs the
+ * event's call time (see `computeMinutesLate` in event-utils.ts).
+ */
+export type AttendanceStatus = 'no_show' | 'excused';
+
+/**
+ * Attendance record stamped onto an approved ShiftRequest. A member
+ * "attended" iff `checkedInAt` is set and `exception` is unset. `minutesLate`
+ * is a stored snapshot computed at check-in time from arrival − event call
+ * time; it may be recomputed when an FTO overrides the arrival time.
+ */
+export interface AttendanceRecord {
+  /** Stamped when the member checks in (or an FTO backfills the arrival time). */
+  checkedInAt?: Timestamp | Date | FieldValue;
+  /** Stamped when the pack tied to this shift is checked back in, or via manual "End shift". */
+  shiftEndAt?: Timestamp | Date | FieldValue;
+  /** Snapshot: arrival − event call time, in minutes (>= 0). Recomputed on override. */
+  minutesLate?: number;
+  /** No-show / excused absence. Mutually exclusive with `checkedInAt`. */
+  exception?: AttendanceStatus;
+  notes?: string;
+  recordedBy: string;
+  recordedByName?: string;
+  recordedAt: Timestamp | Date | FieldValue;
+}
+
+/** A member's request to fill a specific role on a specific team of an event. */
+export interface ShiftRequest {
+  id?: string;
+  eventId: string;
+  eventName: string;
+  /** Denormalized for list display / sorting. */
+  eventDate?: Timestamp | Date;
+  teamId: string;
+  teamName: string;
+  /** Which slot type the member is applying for. */
+  role: SlotRole;
+  userId: string;
+  userName: string;
+  /** @deprecated Legacy manual FTO/Returning/New picker. No longer written by any UI — kept for back-compat with existing docs. Use `memberStatus`/`joinedTerm` instead. */
+  ranking?: MemberRanking;
+  /** Denormalized from the requester's `User.memberStatus` at signup time (default 'general' when unset on the user doc). */
+  memberStatus?: 'new' | 'probationary' | 'general';
+  /** Denormalized from the requester's `User.joinedTerm` at signup time. */
+  joinedTerm?: string;
+  status: ShiftRequestStatus;
+  /** For an approved request: which slot they were placed in ('fto' | emt index). */
+  assignedSlot?: string;
+  note?: string;
+  requestedAt: Timestamp | Date | FieldValue;
+  decidedBy?: string;
+  decidedByName?: string;
+  decidedAt?: Timestamp | Date | FieldValue;
+  /** Set by the FTO/manager after the event (only on approved requests). */
+  attendance?: AttendanceRecord;
+}
+
+// --- IN-APP NOTIFICATIONS ---
+export type NotificationType =
+  | 'event_open'
+  | 'request_approved'
+  | 'request_rejected'
+  | 'broadcast'
+  | 'cert_expiring';
+
+export interface AppNotification {
+  id?: string;
+  /** Recipient user id. */
+  userId: string;
+  type: NotificationType;
+  title: string;
+  body?: string;
+  /** In-app route to open when tapped (e.g. "/events"). */
+  link?: string;
+  read: boolean;
+  createdAt: Timestamp | Date | FieldValue;
+  createdBy?: string;
 }
 
 // --- MASTER INVENTORY ---
@@ -505,7 +686,10 @@ export interface Statpack {
   lastAuditBy?: string;
   /** Last admin edit of expected contents; drives the "contents changed since last audit" indicator */
   contentsUpdatedAt?: Date;
+  /** Human-readable event name this pack is currently deployed for (checkout → In Use). */
   currentEvent?: string;
+  /** `events` doc id backing `currentEvent`; cleared on check-in. */
+  currentEventId?: string;
   /**
    * @deprecated Legacy flat list of linked exchange bag ids. Superseded by
    * `exchangeBagAssignments` (pocket-aware). Never read this directly — use
@@ -622,6 +806,9 @@ export interface StatpackLog {
   action: 'checkout' | 'checkin' | 'restock' | 'created' | 'maintenance' | 'audit' | 'content_edit';
   pairId?: string; // Explicit pairing between checkout + checkin
   quickCheckin?: boolean; // True when member used quick check-in (no items used)
+  /** Event this checkout was for (set on checkout, carried onto the paired checkin). */
+  eventId?: string;
+  eventName?: string;
   userId: string;
   userName: string;
   timestamp: Date | FieldValue;

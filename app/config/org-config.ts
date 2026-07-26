@@ -24,6 +24,10 @@ import {
   getAssetCategoriesRuntime,
   getStatpackTypesRuntime,
   getVehiclesRuntime,
+  getVenuesRuntime,
+  getEventTypesRuntime,
+  getSemesterStartRuntime,
+  getRequireCertsRuntime,
 } from '@/app/lib/org-config-store';
 
 // ---------------------------------------------------------------------------
@@ -434,6 +438,12 @@ export const ROLES: RoleDef[] = [
     permissions: ['inventory.*', 'assets.*', 'statpacks.*', 'audit.*', 'buylist.*'],
   },
   {
+    id: 'medops',
+    label: 'MedOps',
+    description: 'Staffs events and switches members between FTO/member; no logistics access',
+    permissions: ['events.*', 'roster.roleswitch', 'certifications.*'],
+  },
+  {
     id: 'inventory_helper',
     label: 'Inventory Helper',
     description: 'Basic inventory operations',
@@ -507,6 +517,42 @@ export const ORG_INFO: OrgInfo = {
 };
 
 // ---------------------------------------------------------------------------
+// Events config (venues, event types, semester boundary) — admin-editable at
+// /settings. Selecting a venue on an event auto-fills its `location`.
+// ---------------------------------------------------------------------------
+
+export interface VenueDef {
+  id: string;
+  name: string;
+  /** Address / area auto-filled into an event's location when this venue is picked. */
+  location?: string;
+}
+
+export const VENUES: VenueDef[] = [
+  { id: 'zellerbach', name: 'Zellerbach Auditorium', location: 'UC Berkeley' },
+  { id: 'hertz_hall', name: 'Hertz Hall', location: 'UC Berkeley' },
+  { id: 'greek_theatre', name: 'Greek Theatre', location: 'UC Berkeley' },
+  { id: 'levis_stadium', name: "Levi's Stadium", location: 'Santa Clara' },
+];
+
+export const EVENT_TYPES: string[] = [
+  'Concert', 'Sporting Event', 'Festival', 'Training', 'Community Event', 'Other',
+];
+
+/**
+ * Start of the current semester (ISO 'YYYY-MM-DD'). "This semester" shift stats
+ * count events on/after this date. Admin bumps it each new term at /settings.
+ */
+export const SEMESTER_START_DATE = '2026-01-01';
+
+/**
+ * When true (default), a member must have valid (present + unexpired) EMT and
+ * CPR certifications to request a shift. Admins can turn this OFF during rollout
+ * (before certs are entered) at /settings → Events & Venues.
+ */
+export const REQUIRE_CERTS_FOR_SHIFT_SIGNUP = true;
+
+// ---------------------------------------------------------------------------
 // Runtime config document shape + defaults
 //
 // `OrgConfigDoc` is the admin-editable (v1) surface stored at Firestore doc
@@ -524,6 +570,12 @@ export type OrgConfigDoc = {
   itemCategories: string[];
   itemFamilies: string[];
   thresholds: ThresholdConfig;
+  venues: VenueDef[];
+  eventTypes: string[];
+  /** ISO 'YYYY-MM-DD' start of the current semester (for shift stats). */
+  semesterStartDate: string;
+  /** Gate shift signup on valid EMT + CPR certs (default true). */
+  requireCertsForShiftSignup: boolean;
 };
 
 export const DEFAULT_ORG_CONFIG: OrgConfigDoc = {
@@ -535,6 +587,10 @@ export const DEFAULT_ORG_CONFIG: OrgConfigDoc = {
   itemCategories: [...ITEM_CATEGORIES],
   itemFamilies: [...ITEM_FAMILIES],
   thresholds: THRESHOLDS,
+  venues: VENUES,
+  eventTypes: [...EVENT_TYPES],
+  semesterStartDate: SEMESTER_START_DATE,
+  requireCertsForShiftSignup: REQUIRE_CERTS_FOR_SHIFT_SIGNUP,
 };
 
 // ---------------------------------------------------------------------------
@@ -608,4 +664,39 @@ export function getLocationNames(): string[] {
 export function getRoomNames(locationId: string): string[] {
   const loc = getLocationConfig(locationId);
   return loc?.rooms.map(r => r.name) ?? [];
+}
+
+// ---------------------------------------------------------------------------
+// Events config accessors (runtime)
+// ---------------------------------------------------------------------------
+
+/** All configured venues (runtime override, else defaults). */
+export function getVenues(): VenueDef[] {
+  return getVenuesRuntime();
+}
+
+export function getVenueById(venueId: string): VenueDef | undefined {
+  return getVenuesRuntime().find(v => v.id === venueId);
+}
+
+/** Look up a venue by id OR name (events store the venue name). */
+export function getVenueByName(name: string): VenueDef | undefined {
+  return getVenuesRuntime().find(v => v.name === name);
+}
+
+/** Configured event-type options. */
+export function getEventTypes(): string[] {
+  return getEventTypesRuntime();
+}
+
+/** Current-semester start as a Date (local midnight). Invalid config → epoch. */
+export function getSemesterStart(): Date {
+  const iso = getSemesterStartRuntime();
+  const d = iso ? new Date(`${iso}T00:00:00`) : null;
+  return d && !Number.isNaN(d.getTime()) ? d : new Date(0);
+}
+
+/** Whether shift signup is gated on valid EMT + CPR certs (runtime). */
+export function getRequireCertsForShiftSignup(): boolean {
+  return getRequireCertsRuntime();
 }

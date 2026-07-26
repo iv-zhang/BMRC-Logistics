@@ -30,6 +30,7 @@ import {
   type StatpackTypeDef,
   type VehicleDef,
   type OrgInfo,
+  type VenueDef,
 } from '@/app/config/org-config';
 
 export type { OrgConfigDoc } from '@/app/config/org-config';
@@ -71,6 +72,13 @@ export function applyOrgConfigDoc(data: Partial<OrgConfigDoc> | undefined): void
     itemCategories: pickArray(data.itemCategories, d.itemCategories),
     itemFamilies: pickArray(data.itemFamilies, d.itemFamilies),
     thresholds: { ...d.thresholds, ...(data.thresholds ?? {}) },
+    venues: pickArray(data.venues, d.venues),
+    eventTypes: pickArray(data.eventTypes, d.eventTypes),
+    semesterStartDate: data.semesterStartDate || d.semesterStartDate,
+    requireCertsForShiftSignup:
+      typeof data.requireCertsForShiftSignup === 'boolean'
+        ? data.requireCertsForShiftSignup
+        : d.requireCertsForShiftSignup,
   };
 }
 
@@ -112,6 +120,22 @@ export function getVehiclesRuntime(): VehicleDef[] {
 
 export function getOrgInfoRuntime(): OrgInfo {
   return getRuntimeConfig().org;
+}
+
+export function getVenuesRuntime(): VenueDef[] {
+  return getRuntimeConfig().venues;
+}
+
+export function getEventTypesRuntime(): string[] {
+  return getRuntimeConfig().eventTypes;
+}
+
+export function getSemesterStartRuntime(): string {
+  return getRuntimeConfig().semesterStartDate;
+}
+
+export function getRequireCertsRuntime(): boolean {
+  return getRuntimeConfig().requireCertsForShiftSignup;
 }
 
 // ---------------------------------------------------------------------------

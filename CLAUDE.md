@@ -35,6 +35,13 @@ When the expensive tier has not been run, **say so explicitly** — report the c
 
 ## Architecture
 
+> **Design decisions & rationale:** [decisions.md](decisions.md) records *why* the
+> deliberate choices below were made (config-as-data, two-pool stock, orderless audit,
+> derived pack/attendance status, the deferred stock-pool/per-lot gaps, the events/medops
+> model, etc.). If a change would undo something there, treat it as **stop-and-ask**, not a
+> bug to patch. See also [invariants.md](invariants.md), [FINDINGS.md](FINDINGS.md),
+> [MODEL.md](MODEL.md).
+
 ### Framework & Stack
 - **Next.js 16** App Router — all routes live under `app/`, no `src/` directory.
 - **Firebase**: Firestore (real-time `onSnapshot` listeners everywhere, no REST layer), Firebase Auth.
@@ -42,16 +49,20 @@ When the expensive tier has not been run, **say so explicitly** — report the c
 - **`next-themes`** for dark/light mode; theme wrapping lives in `app/providers.tsx`.
 
 ### Auth & Roles
-`app/hooks/useUserRole.tsx` is the single source of auth state. It combines Firebase Auth with a Firestore `users/{uid}` doc fetch to expose `{ user, userData, role, loading }`.
+`app/hooks/useUserRole.tsx` is the single source of auth state. It combines Firebase Auth with a Firestore `users/{uid}` doc fetch to expose `{ user, userData, role, effectiveUid, loading }`.
 
-Role values: `'admin' | 'quartermaster' | 'inventory_helper' | 'FTO' | 'member'`
+Role values: `'admin' | 'quartermaster' | 'inventory_helper' | 'FTO' | 'medops' | 'member'`
 
 The admin check used throughout the app:
 ```ts
 const isAdmin = role === 'admin' || role === 'quartermaster';
 ```
 
-For local testing, set `localStorage.bmrc_role_override` to any role string; the hook listens for the `bmrc-role-changed` custom event and `storage` events to pick it up immediately.
+**`medops` is intentionally NOT `isAdmin`** (see [decisions.md](decisions.md) D-13): it is a reduced-admin role for running events/roster that must never see logistics surfaces. The event-manager gate is a separate `isEventManagerRole(role)` = `admin | quartermaster | medops` (in `app/lib/events.ts`). Gate event/roster surfaces on that, never on `isAdmin`.
+
+**`effectiveUid`** = the active test-identity uid when a test identity is set, else the real auth uid. Every **user-scoped read/write** (personal history, shift requests, actor attribution) must key on `effectiveUid`, not the raw auth uid — otherwise test identities aren't actually separate (decisions.md D-18). Writes still run under the real Firebase Auth session.
+
+For local testing there are two overrides (watched via the `bmrc-role-changed` custom event + `storage` events): `localStorage.bmrc_role_override` (legacy — a bare role string) and `localStorage.bmrc_test_identity` (a seeded `__test_*` uid → full identity override; seeded by `seedTestUsers()` in `app/lib/test-identity.ts`).
 
 ### Configuration (runtime-overridable, admin-editable)
 Org configuration is **data, not code**. It loads from a single Firestore doc `org_settings/current` and falls back to the defaults in `app/config/org-config.ts` (which is now the DEFAULTS/seed + type source, not the live source of truth).
@@ -80,8 +91,11 @@ Org configuration is **data, not code**. It loads from a single Firestore doc `o
 | `/restock` | Restock shelf management |
 | `/member/report` | Member issue report form |
 | `/audit` | Admin audit tools |
-| `/roster` | Admin member roster |
+| `/roster` | Member roster (admin/quartermaster/**medops**); click-row `MemberDetailModal` for role/cert/status edits |
 | `/storage` | Storage zone/shelf/container management |
+| `/events` | Shift-signup board; member request + manager (`isEventManagerRole`) staffing, attendance, hours |
+| `/history` | A member's own statpack activity + shift history (scoped by `effectiveUid`) |
+| `/profile` | Certifications + "Volunteer Record" (shifts/attendance/hours from `getMemberShiftStats`) |
 
 ### Shared Components
 Key reusable components in `app/components/`:
@@ -123,6 +137,18 @@ Audit mode logs `action: 'audit'` (never `'checkout'`) via `logStatpackCheckOff`
 
 The shared check-off **page** is the single verification flow for members and admins. `app/components/statpack-checkoff-modal.tsx` is retired except one flow that still needs a `maintenance` mode the page lacks (`statpacks/page.tsx` `openMaintenance`); `seal-check-modal.tsx`/`asset-verify-step.tsx` were deleted as dead code. The pocket-by-pocket asset audit in `assets/page.tsx` was removed — `openStatpackAudit` had zero call sites, so the pocket-picker modal, its `maintenance`-mode checkoff modal, and `AssetAttachModal` were all unreachable.
 
+### Events / Shift-Signup (`/events`, `/roster`, `/profile`, `/history`)
+Members request team slots; managers (`isEventManagerRole` = admin/quartermaster/**medops**) staff them. Lib: `app/lib/events.ts`, `app/lib/notifications.ts`, `app/lib/certifications.ts`; UI: `app/events/page.tsx` + `app/components/events/*`. Collections: `events` (each has `teams: EventTeam[]`; one team = 1 FTO + 2–4 EMT slots), `shift_requests`, `notifications`. Design rationale in [decisions.md](decisions.md) D-13…D-19 — the load-bearing rules:
+- **medops ≠ isAdmin** (D-13): manages events/roster only, never logistics. Attendance panel is gated to the **assigned FTO** or admin/quartermaster — medops does not see it.
+- **Cert gating** (D-14): `canSignUpForShifts` needs unexpired EMT **and** CPR (dates only). `org_settings.requireCertsForShiftSignup` (default true) is a kill switch; when on with no certs entered, all signup is blocked by design (inline amber reason on the disabled button).
+- **Experience is derived, not a dropdown** (D-15): computed from `User.memberStatus` (`new|probationary|general`, default `general`) + `User.joinedTerm`, editable in the roster modal by admin/qm **or medops**. Requests denormalize both; `formatMemberExperience` renders. `canRequestRole`: FTO-role → FTO+EMT slots, else EMT only. Bulk import from the roster spreadsheet is a future TODO.
+- **Attendance = check-in stamp; lateness derived** (D-16): `AttendanceRecord = { checkedInAt?, shiftEndAt?, minutesLate?, exception?: 'no_show'|'excused', … }`. FTO/admin taps **Check in** (arrival = now) with an editable "Arrived at" override; `minutesLate` is computed vs the event call time (`computeMinutesLate`/`eventCallDateTime` in `event-utils.ts`) and stored as a snapshot. `recordAttendance(request, patch, actor)` clears exception when `checkedInAt` is set and vice versa.
+- **Shift hours** (D-17): shift ends via per-event **End shift** (`endEventShifts`) OR auto on statpack check-in — `logStatpackCheckOff` captures the pack's `currentEventId` before clearing it and calls `endEventShifts` best-effort *outside* the transaction. Hours = `shiftEndAt − checkedInAt` (`shiftHours`). Stats via `getMemberShiftStats` (shifts/checkedIn/lateCount/totalMinutesLate/noShow/excused/hours, all-time + semester) on `/profile` and `/roster`.
+- **Notifications are in-app broadcasts** (D-19): `requestShift` + the notify modal write `notifications` docs (`broadcast`) to managers + the team FTO. No email — static export has no mail server.
+- **Statpack↔event correlation**: checkout picks an event; threaded through `logStatpackCheckOff` → `StatpackLog.eventId/eventName` + `Statpack.currentEvent(Id)`, cleared on check-in.
+- **Org config** (`/settings` "Events & Venues"): `venues`, `eventTypes`, `semesterStartDate` (drives "this semester" stats). Getters `getVenues/getEventTypes/getSemesterStart`.
+- **Gotcha**: `deepRemoveUndefined` (`app/lib/audit.ts`) preserves Firestore `Timestamp`s (previously rebuilt them into plain maps, breaking `createEvent` dates); `toJsDate` also coerces legacy `{seconds,nanoseconds}` maps. `scripts/repair-event-dates.cjs` (dry-run default) repairs old broken docs.
+
 ### Audit Workbench (`/audit`)
 The audit page is deliberately **orderless** — members act on whatever is physically in front of them, in any order. There is no linear item-by-item wizard. Tapping any item card (or scanning a barcode) opens `app/components/audit-action-drawer.tsx` with five actions: **Count** (boxes/units + condition, submits via `submitAuditEntries`), **Move** (structured zone→shelf→level→container or quick area), **Shipment** (new sealed batch / box increment), **Report** (missing/broken/expired → issue report + `auditCondition` stamp), and **Fixed** (refill/change-out/repair record, clears the condition flag). The write helpers live in `app/lib/audit-actions.ts`; every action writes the inventory change + an `inventory_logs` row + an `auditEvents` ledger entry so usage metrics stay derivable. Shipment semantics: bag-tracked items get a sealed batch (batches are their stock source of truth); box-tracked items get an atomic `unopenedBoxes` increment plus a zero-stock metadata batch when lot/expiry was recorded.
 
@@ -144,10 +170,10 @@ Every consumable `InventoryItem` splits into two pools:
 - **This is a different axis from the deferred class-use vs. field/event stock-pool gap** listed under "Known open design gaps" below — do not conflate the two. That gap is about *which reserve* a draw comes from (class training vs. field deployment); the front-shelf/back-reserve split here is about *deployed-but-uncounted* vs. *counted-and-available* stock within a single reserve.
 
 ### Firestore Collections (what the code actually reads/writes — see MODEL.md for shapes)
-`inventory` (central collection — consumables, assets, oxygen, and medications are all `inventory` docs discriminated by flags; there is **no** separate `assets` collection), `inventory_logs`, `inventory_alerts`, `auditEvents` (audit ledger — camelCase, written by `app/lib/audit.ts`), `statpacks`, `statpack_logs`, `vehicles` (individual fleet vehicles — roster + live checkout state), `vehicle_logs` (one doc per shift, written with the vehicle doc in one transaction by `app/lib/vehicles.ts`), `restock_shelves`, `restock_shelf_events`, `restock_actions`, `restock_reports`, `storage_zones`, `shelves`, `containers`, `box_logs`, `medication_logs`, `buyList` (camelCase — **not** `buy_list`), `tasks`, `issue_reports`, `users`, `org_settings`, `laf_records`, `reconciliation_exceptions`
+`inventory` (central collection — consumables, assets, oxygen, and medications are all `inventory` docs discriminated by flags; there is **no** separate `assets` collection), `inventory_logs`, `inventory_alerts`, `auditEvents` (audit ledger — camelCase, written by `app/lib/audit.ts`), `statpacks`, `statpack_logs`, `vehicles` (individual fleet vehicles — roster + live checkout state), `vehicle_logs` (one doc per shift, written with the vehicle doc in one transaction by `app/lib/vehicles.ts`), `restock_shelves`, `restock_shelf_events`, `restock_actions`, `restock_reports`, `storage_zones`, `shelves`, `containers`, `box_logs`, `medication_logs`, `buyList` (camelCase — **not** `buy_list`), `tasks`, `issue_reports`, `users`, `org_settings`, `laf_records`, `reconciliation_exceptions`, `events` (+ `teams[]`), `shift_requests`, `notifications`
 
 ### Known open design gaps (do not silently "fix")
-Two schema decisions are deliberately deferred, tracked in `FINDINGS.md`/`invariants.md`:
+Two schema decisions are deliberately deferred, tracked in [decisions.md](decisions.md) (D-11/D-12), `FINDINGS.md`, and `invariants.md`:
 - **No stock-pool axis** distinguishing class-use stock from field/event stock.
 - **No real per-lot quantity for box-tracked SKUs** — quantity is pooled onto `unopenedBoxes` with a zero-stock metadata batch standing in for the lot.
 

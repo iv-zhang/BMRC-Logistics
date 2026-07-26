@@ -112,9 +112,11 @@ export default function StatpackLogHistory({ isOpen, onOpenChange, statpackId, s
                     const checkinOk = item.checkin?.checkEntries?.filter(e => e.ok).length || 0;
                     
                     // Check for low O₂ readings in checkout
-                    const lowO2 = item.checkout?.checkEntries?.some(e => 
+                    const lowO2 = item.checkout?.checkEntries?.some(e =>
                       e.assetCheckResult?.oxygenPsi !== undefined && e.assetCheckResult.oxygenPsi < 1800
                     );
+
+                    const eventName = item.checkout?.eventName || item.checkin?.eventName;
 
                     return (
                       <Card
@@ -136,6 +138,9 @@ export default function StatpackLogHistory({ isOpen, onOpenChange, statpackId, s
                               )}
                               {lowO2 && (
                                 <Chip size="sm" variant="flat" color="warning" className="text-xs">Low O2</Chip>
+                              )}
+                              {eventName && (
+                                <Chip size="sm" variant="flat" color="primary" className="text-xs">Event: {eventName}</Chip>
                               )}
                             </div>
                             <span className="text-xs text-default-500 whitespace-nowrap">
@@ -194,6 +199,9 @@ export default function StatpackLogHistory({ isOpen, onOpenChange, statpackId, s
                             {isQuick && <Chip size="sm" color="warning" variant="flat">Quick</Chip>}
                             {!log.pairId && (
                               <Chip size="sm" color="danger" variant="flat">Unpaired</Chip>
+                            )}
+                            {log.eventName && (
+                              <Chip size="sm" color="primary" variant="flat">Event: {log.eventName}</Chip>
                             )}
                           </div>
                           <span className="text-xs text-default-500 whitespace-nowrap">

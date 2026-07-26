@@ -19,6 +19,7 @@ import {
   type RoleDef,
   type VerificationFieldDef,
   type OrgInfo,
+  type VenueDef,
 } from '@/app/config/org-config';
 import {
   subscribeOrgConfig,
@@ -36,6 +37,10 @@ export interface OrgConfigResult {
   verificationFields: Record<string, VerificationFieldDef>;
   itemCategories: readonly string[];
   itemFamilies: readonly string[];
+  venues: VenueDef[];
+  eventTypes: readonly string[];
+  semesterStartDate: string;
+  requireCertsForShiftSignup: boolean;
   /** True until the first Firestore snapshot resolves (defaults are used meanwhile). */
   loading: boolean;
   // Convenience lookups
@@ -65,6 +70,10 @@ function buildResult(cfg: OrgConfigDoc, loading: boolean): OrgConfigResult {
     verificationFields: VERIFICATION_FIELDS,
     itemCategories: cfg.itemCategories,
     itemFamilies: cfg.itemFamilies,
+    venues: cfg.venues,
+    eventTypes: cfg.eventTypes,
+    semesterStartDate: cfg.semesterStartDate,
+    requireCertsForShiftSignup: cfg.requireCertsForShiftSignup,
     loading,
     // Helper fns read the same runtime store the subscription updates, so they
     // stay in sync with the live config.

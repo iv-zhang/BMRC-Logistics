@@ -712,6 +712,8 @@ export default function StatpackCheckOffPage() {
 
   const [packId, setPackId] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>('checkout');
+  const [eventId, setEventId] = useState<string | null>(null);
+  const [eventName, setEventName] = useState<string | null>(null);
   const { role } = useUserRole();
   const isAdmin = role === 'admin' || role === 'quartermaster';
 
@@ -747,15 +749,35 @@ export default function StatpackCheckOffPage() {
   const [bagAssignments, setBagAssignments] = useState<ExchangeBagAssignment[]>([]);
   const [bagChecks, setBagChecks] = useState<Record<string, BagCheckState>>({});
 
-  // Read id and mode from URL query params (avoids useSearchParams Suspense requirement)
+  // Read id, mode, and (optional) event from URL query params (avoids
+  // useSearchParams Suspense requirement)
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const sp = new URLSearchParams(window.location.search);
     const id = sp.get('id');
     const m = sp.get('mode');
+    const ev = sp.get('event');
     if (id) setPackId(id);
     if (m === 'checkout' || m === 'checkin' || m === 'audit') setMode(m);
+    if (ev) setEventId(ev);
   }, []);
+
+  // Look up the event's display name once we know its id (checkout picker
+  // only passes an id; the name is resolved here for the banner + payload).
+  useEffect(() => {
+    if (!eventId) { setEventName(null); return; }
+    (async () => {
+      try {
+        const snap = await getDoc(doc(db, 'events', eventId));
+        if (snap.exists()) {
+          const data = snap.data() as { name?: string };
+          setEventName(data.name || null);
+        }
+      } catch (e) {
+        console.error('Failed to load event for check-off banner:', e);
+      }
+    })();
+  }, [eventId]);
 
   useEffect(() => {
     return onAuthStateChanged(auth, u => {
@@ -1105,10 +1127,12 @@ export default function StatpackCheckOffPage() {
         oxygenReadings: Object.keys(oxygenReadings).length > 0 ? oxygenReadings : undefined,
         sharpsCheck,
         bagChecks: Object.keys(bagChecksPayload).length > 0 ? bagChecksPayload : undefined,
+        ...(mode === 'checkout' && eventId ? { eventId } : {}),
+        ...(mode === 'checkout' && eventName ? { eventName } : {}),
       },
       summary,
     };
-  }, [pack, user, allItems, itemChecks, countOf, resolution, sealState, sharps, sharpsAck, isAdmin, mode, today, bagChecks]);
+  }, [pack, user, allItems, itemChecks, countOf, resolution, sealState, sharps, sharpsAck, isAdmin, mode, today, bagChecks, eventId, eventName]);
 
   const doSubmit = useCallback(async () => {
     const built = buildPayload();
@@ -1229,6 +1253,13 @@ export default function StatpackCheckOffPage() {
                 {statusInfo.label}
               </span>
             </div>
+
+            {mode === 'checkout' && eventName && (
+              <div className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-primary bg-primary-50 dark:bg-primary-900/20 rounded-full px-3 py-1.5">
+                <span className="text-foreground-400 font-medium">For:</span>
+                <span className="truncate">{eventName}</span>
+              </div>
+            )}
 
             <div className="mt-4">
               <div className="flex items-end justify-between mb-2">
