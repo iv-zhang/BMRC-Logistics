@@ -84,14 +84,10 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
   const [mounted, setMounted] = useState(false);
   const [navHover, setNavHover] = useState(false);
   const [showTutorial, setShowTutorial] = useState(false);
-  const [roleOverrideActive, setRoleOverrideActive] = useState<string | null>(null);
 
   useEffect(() => setMounted(true), []);
 
   const isAdmin = role === 'admin' || role === 'quartermaster';
-  // Real (non-overridden) role — an override can drop `role` to 'member', so use
-  // this to keep the test-role control reachable while an override is active.
-  const isRealAdmin = userData?.role === 'admin' || userData?.role === 'quartermaster';
   const isDark = mounted && theme === 'dark';
   const expanded = navHover && !navHidden;
 
@@ -115,42 +111,30 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
     return () => unsub();
   }, []);
 
-  // Role override state sync
+  // First-login tutorial check. Firestore's `tutorialCompleted` is the
+  // authoritative, cross-device source of truth; the per-uid localStorage guard
+  // is only an optimistic local fast-path (prevents a flash before userData
+  // resolves, and a belt-and-suspenders if a completion write failed). It is set
+  // on completion (see TutorialOverlay), never here on show.
+  useEffect(() => {
+    if (!user || !userData || userData.tutorialCompleted) return;
+    let locallyDone = false;
+    try {
+      locallyDone = localStorage.getItem(`bmrc_tutorial_done_v1_${user.uid}`) === '1';
+    } catch {}
+    // Legitimately syncs the modal to async-loaded Firestore state (userData).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!locallyDone) setShowTutorial(true);
+  }, [user, userData]);
+
+  // Transient replay trigger — /profile (and any other surface) dispatches
+  // `bmrc-show-tutorial` to preview the tutorial without touching completion.
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    setRoleOverrideActive(localStorage.getItem('bmrc_role_override'));
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === 'bmrc_role_override') setRoleOverrideActive(e.newValue);
-    };
-    const onCustom = () => setRoleOverrideActive(localStorage.getItem('bmrc_role_override'));
-    window.addEventListener('storage', onStorage);
-    window.addEventListener('bmrc-role-changed', onCustom as EventListener);
-    return () => {
-      window.removeEventListener('storage', onStorage);
-      window.removeEventListener('bmrc-role-changed', onCustom as EventListener);
-    };
+    const onShow = () => setShowTutorial(true);
+    window.addEventListener('bmrc-show-tutorial', onShow as EventListener);
+    return () => window.removeEventListener('bmrc-show-tutorial', onShow as EventListener);
   }, []);
-
-  // Show tutorial when admin activates test role
-  useEffect(() => {
-    if (role === 'admin' && roleOverrideActive) {
-      try { sessionStorage.removeItem('bmrc_tutorial_shown'); } catch {}
-      setShowTutorial(true);
-    }
-  }, [roleOverrideActive, role]);
-
-  // First-login tutorial check
-  useEffect(() => {
-    try {
-      const shown = typeof window !== 'undefined' ? sessionStorage.getItem('bmrc_tutorial_shown') : null;
-      if (userData && !userData.tutorialCompleted && !shown) {
-        setShowTutorial(true);
-        if (typeof window !== 'undefined') sessionStorage.setItem('bmrc_tutorial_shown', '1');
-      }
-    } catch {
-      if (userData && !userData.tutorialCompleted) setShowTutorial(true);
-    }
-  }, [userData]);
 
   const isItemActive = (path: string) =>
     pathname === path || pathname.startsWith(path + '/');

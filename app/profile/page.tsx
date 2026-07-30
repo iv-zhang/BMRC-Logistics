@@ -2,7 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, Chip, Spinner, Select, SelectItem } from '@heroui/react';
-import { ArrowLeft, Mail, UserRound, Sun, Moon, ShieldCheck, LogOut as LogOutIcon, Bug, AlertCircle, Trash2, History, CalendarClock } from 'lucide-react';
+import { ArrowLeft, Mail, UserRound, Sun, Moon, ShieldCheck, LogOut as LogOutIcon, Bug, AlertCircle, Trash2, History, CalendarClock, GraduationCap } from 'lucide-react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, collection, getDocs, query, where } from 'firebase/firestore';
 import { useTheme } from 'next-themes';
@@ -484,6 +484,18 @@ export default function ProfilePage() {
           <div className="bg-content1 border border-divider rounded-large p-5 mt-4">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-3">Support</div>
             <div className="flex flex-col gap-3">
+              <Button
+                className="w-full justify-start"
+                variant="flat"
+                startContent={<GraduationCap size={16} />}
+                onPress={() => {
+                  // Transient preview — does NOT clear tutorialCompleted. The
+                  // mounted AppSidebar listens for this event and opens the overlay.
+                  window.dispatchEvent(new Event('bmrc-show-tutorial'));
+                }}
+              >
+                Replay Tutorial
+              </Button>
               <Button
                 className="w-full justify-start"
                 variant="flat"

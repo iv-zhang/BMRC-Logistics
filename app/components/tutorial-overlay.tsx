@@ -14,7 +14,7 @@ import {
   Sparkles,
   CheckCircle,
 } from 'lucide-react';
-import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '@/firebase';
 
 interface TutorialStep {
@@ -83,14 +83,22 @@ export default function TutorialOverlay({ userId, onComplete }: TutorialOverlayP
 
   const finishTutorial = useCallback(async () => {
     setExiting(true);
+    // `setDoc(..., { merge: true })` (not updateDoc) so it creates-or-updates and
+    // never throws on the first-login race where `users/{uid}` may not exist yet.
     try {
-      await updateDoc(doc(db, 'users', userId), {
-        tutorialCompleted: true,
-        tutorialCompletedAt: serverTimestamp(),
-      });
+      await setDoc(
+        doc(db, 'users', userId),
+        { tutorialCompleted: true, tutorialCompletedAt: serverTimestamp() },
+        { merge: true },
+      );
     } catch (e) {
       console.error('Failed to save tutorial completion:', e);
     }
+    // Optimistic per-uid local guard: set regardless of write outcome so this
+    // device won't re-nag. Firestore stays the cross-device source of truth.
+    try {
+      localStorage.setItem(`bmrc_tutorial_done_v1_${userId}`, '1');
+    } catch {}
     // Small delay for exit animation
     setTimeout(() => onComplete(), 300);
   }, [userId, onComplete]);

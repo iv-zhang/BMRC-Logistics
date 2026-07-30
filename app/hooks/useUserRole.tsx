@@ -46,6 +46,8 @@ function parseUserDoc(id: string, data: Record<string, unknown>, fallbackEmail =
     canAudit: data.canAudit === true,
     isCommitteeMember: data.isCommitteeMember === true,
     certifications: (data.certifications as User['certifications']) || undefined,
+    tutorialCompleted: data.tutorialCompleted === true,
+    tutorialCompletedAt: (data.tutorialCompletedAt as { toDate?: () => Date } | undefined)?.toDate?.(),
     createdAt: createdAt?.toDate?.() || new Date(),
     updatedAt: updatedAt?.toDate?.() || new Date(),
   };
