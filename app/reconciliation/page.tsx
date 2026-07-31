@@ -169,7 +169,7 @@ export default function ReconciliationPage() {
   if (!isAdmin) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
-        <main className="max-w-7xl mx-auto px-6 py-8">
+        <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
           <div className="bg-content1 border border-divider rounded-large p-8 flex flex-col items-center text-center gap-3 max-w-md mx-auto mt-16">
             <div className="w-12 h-12 rounded-large bg-danger-50 dark:bg-danger-900/20 text-danger flex items-center justify-center">
               <ShieldAlert size={24} />
@@ -191,7 +191,7 @@ export default function ReconciliationPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
-      <main className="max-w-7xl mx-auto px-6 py-8">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
 
         {/* Header */}
         <div className="flex items-end justify-between gap-4 mb-6 flex-wrap">

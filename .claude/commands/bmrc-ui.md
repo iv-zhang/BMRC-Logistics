@@ -129,14 +129,16 @@ Every page uses the identical shell. The nav and the body share one container.
 
 ```tsx
 <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
-  <main className="max-w-7xl mx-auto px-6 py-8">
+  <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
     {/* page content */}
   </main>
 </div>
 ```
 
-- Container: `max-w-7xl` (≈ 1280 px). Horizontal padding: `px-6` desktop, `px-4` on small.
-- Top padding: `py-8`. Never vary this across pages.
+- Container: `max-w-7xl` (≈ 1280 px). Horizontal padding: `px-4` on phone, `sm:px-6` at 640 px+.
+- Vertical padding: `py-6` on phone, `sm:py-8` at 640 px+. Never vary this across pages.
+- Write the responsive pair every time — a bare `px-6 py-8` costs 32 px of width on a
+  375 px phone. See *Responsive → Breakpoints, targets, and type floor*.
 
 ### Page header block
 
@@ -387,6 +389,65 @@ phones too — the app hides the icon rail below `md` and swaps in the bottom na
 overflow**. The mobile-first full-screen flow pattern (below) is only for linear guided
 flows; regular pages instead stay one page and adapt at the `md` breakpoint. The default
 is **mobile-first Tailwind**: unprefixed = phone, `sm:`/`md:` layer the wider layout on top.
+
+### Breakpoints, targets, and type floor
+
+Only three breakpoints are in use. Do not introduce `lg:`, `xl:`, or `2xl:` — the app has
+two real layouts (phone and desktop) and `sm:` for the seam.
+
+| Token | Min width | Means |
+|---|---|---|
+| (unprefixed) | 0 | Phone. The default. Bottom nav is showing, icon rail is hidden. |
+| `sm:` | 640 px | Large phone / small tablet. Row wrapping relaxes; page padding widens. |
+| `md:` | 768 px | Desktop. **The rail/bottom-nav switch happens here and nowhere else.** |
+
+`md` is the single shell breakpoint: `app-sidebar.tsx` hides the rail with `max-md:hidden`,
+`sidebar-layout.tsx` zeroes the rail margin with `max-md:!ml-0`, and `mobile-bottom-nav.tsx`
+hides itself with `md:hidden`. All three must agree — changing one without the others
+produces a viewport band with two navs or none.
+
+Page padding by breakpoint — the wrapper is always:
+
+```tsx
+<div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+```
+
+Never a bare `px-6 py-8` on a page that renders on phones.
+
+**Touch targets: 44 × 44 px minimum** for anything tappable on a phone surface. A small
+glyph is fine — pad the hit area, don't grow the icon:
+
+```tsx
+{/* 16px icon, 44px target */}
+<button className="w-11 h-11 flex items-center justify-center rounded-medium ..." aria-label="Close">
+  <X size={16} />
+</button>
+```
+
+**Type floor: `text-[11px]`.** Nothing below 11px in new or touched UI.
+
+Grandfathered exceptions — these are specced elsewhere in this document and are **not**
+errors; do not "fix" them, and do not cite them as precedent for new work:
+
+- `text-[10px]` — mobile bottom-nav tab labels, and inline item-name status tags in dense rows.
+- `text-[9px]` — the unit micro-label beneath a large monospaced quantity.
+- `w-[30px] h-[30px]` — the dashboard section-card navigation arrow (desktop-only surface).
+- `w-[30px] h-11` — the collapsed-sidebar reveal tab (desktop-only; the rail is `max-md:hidden`).
+
+The pattern in those exceptions: sub-floor sizes survive only where the surface is
+desktop-only, or where the label sits beneath an already-large tap target. A new phone
+control gets neither exemption.
+
+Anti-patterns:
+
+- A breakpoint other than `sm:` / `md:` — no `lg:`, `xl:`, `2xl:`.
+- Splitting the rail/bottom-nav switch across two different breakpoints — both are `md`.
+- A bare `px-6 py-8` page wrapper — use `px-4 sm:px-6 py-6 sm:py-8`.
+- A tap target under 44 px on a phone surface; growing the *icon* instead of padding the *hit area*.
+- Any font size below `text-[11px]` outside the grandfathered list above.
+- `maximumScale` / `userScalable: false` in the viewport export — blocks pinch zoom (WCAG 1.4.4).
+- Removing `viewportFit: 'cover'` from the `viewport` export in `app/layout.tsx` — without it
+  `env(safe-area-inset-*)` resolves to 0 and the bottom nav slides under the iOS home indicator.
 
 Four failure modes cause the "page is too wide" bug, and their fixes:
 
@@ -1507,7 +1568,7 @@ Rules:
 ## Definition of done (self-check)
 
 - [ ] Page wrapper uses the gradient; loading state uses the gradient.
-- [ ] Desktop pages: `max-w-7xl mx-auto px-6 py-8`. Mobile-first flows: `max-w-lg mx-auto`, sticky header/footer.
+- [ ] Desktop pages: `max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8`. Mobile-first flows: `max-w-lg mx-auto`, sticky header/footer.
 - [ ] Page header: `text-2xl font-semibold` title + stats row + action buttons, `mb-6`.
 - [ ] No bordered card nested inside another bordered card.
 - [ ] All spacing is on the 4 px scale; icon ↔ text is `gap-2` and vertically centered.
@@ -1533,6 +1594,10 @@ Rules:
 - [ ] `font-bold` only permitted in dashboard section/card titles (with `tracking-tight`); `font-semibold` everywhere else.
 - [ ] Motion: `duration-150` hover, `duration-200` default; no `hover:scale-*`.
 - [ ] Looks correct in both light and dark mode. Looks correct at mobile width.
+- [ ] Page wrapper is `px-4 sm:px-6 py-6 sm:py-8` — no bare `px-6 py-8`.
+- [ ] Only `sm:` and `md:` breakpoints used; the rail/bottom-nav switch is at `md` in all three shell files.
+- [ ] Every phone-surface tap target is ≥ 44 × 44 px (pad the hit area, don't enlarge the icon).
+- [ ] No font size below `text-[11px]` outside the documented grandfathered exceptions.
 
 ## Anti-patterns
 
