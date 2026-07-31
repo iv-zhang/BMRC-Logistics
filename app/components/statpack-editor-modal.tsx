@@ -19,7 +19,7 @@ import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '@/firebase';
 import {
   Plus, Minus, Link2, Search, MapPin, ChevronDown, Pencil, X, Check,
-  Trash2, Shield, AlertTriangle, GripVertical, Save, Package, PackagePlus,
+  Trash2, Shield, AlertTriangle, Save, Package, PackagePlus,
 } from 'lucide-react';
 import type {
   Statpack, StatpackItem, StatpackPocket, StatpackWarning, InventoryItem,
@@ -344,23 +344,28 @@ export default function StatpackEditorModal({
     }
   };
 
+  // Phone: chips grow to equal fractions of a full-width row and stand 44px tall.
+  // `sm:` restores the desktop hug-content, 28px-tall segmented control exactly.
   const filterChip = (active: boolean) =>
-    `flex items-center gap-1.5 text-xs font-semibold rounded-medium px-3 py-1.5 transition-colors duration-150 ${
+    `flex flex-1 sm:flex-none items-center justify-center gap-1.5 text-xs font-semibold rounded-medium px-3 py-3 sm:py-1.5 transition-colors duration-150 ${
       active ? 'bg-primary text-white' : 'text-foreground-500 hover:bg-content2'
     }`;
   const rightTabBtn = (active: boolean) =>
-    `flex items-center gap-1.5 text-xs font-semibold rounded-medium px-3 py-1.5 transition-colors duration-150 ${
+    `flex flex-1 sm:flex-none items-center justify-center gap-1.5 text-xs font-semibold rounded-medium px-3 py-3 sm:py-1.5 transition-colors duration-150 ${
       active ? 'bg-primary text-white' : 'text-foreground-500 hover:bg-content2'
     }`;
 
   return (
     <div
-      className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+      className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-center justify-center md:p-4"
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
+      {/* Phone: full-bleed sheet — the backdrop's p-4 costs 32px of a 390px viewport,
+          which is exactly the width the contents panel is starving for. `overflow-visible`
+          stays so the header popovers can escape the card; they clamp their own width. */}
       <div
         onMouseDown={(e) => e.stopPropagation()}
-        className="w-full max-w-[1140px] h-[min(860px,92vh)] bg-content1 border border-divider rounded-[18px] shadow-2xl flex flex-col overflow-visible"
+        className="w-full max-w-[1140px] h-full md:h-[min(860px,92vh)] bg-content1 border-0 md:border border-divider rounded-none md:rounded-[18px] shadow-2xl flex flex-col overflow-visible"
       >
         {/* ══════ HEADER ══════ */}
         <div className="flex items-center gap-4 px-5 py-3 border-b border-divider flex-none">
@@ -374,13 +379,13 @@ export default function StatpackEditorModal({
             <button
               data-keepopen=""
               onClick={() => { setNameDraft(draft.name); setPopover(popover === 'name' ? null : 'name'); }}
-              className="flex items-center gap-1.5 -ml-0.5 rounded-lg px-1.5 py-0.5 hover:bg-content2 transition-colors"
+              className="flex items-center gap-1.5 -ml-0.5 rounded-lg px-1.5 py-0.5 min-h-11 md:min-h-0 hover:bg-content2 transition-colors"
             >
               <span className="text-xl font-semibold text-foreground leading-none">{draft.name}</span>
               <Pencil size={14} className="text-foreground-400" />
             </button>
             {popover === 'name' && (
-              <div data-keepopen="" className="absolute top-[calc(100%+8px)] left-0 z-40 w-72 bg-content1 border border-divider rounded-large shadow-xl p-3.5">
+              <div data-keepopen="" className="absolute top-[calc(100%+8px)] left-0 z-40 w-72 max-w-[calc(100vw-2rem)] bg-content1 border border-divider rounded-large shadow-xl p-3.5">
                 <span className="block text-[10px] font-semibold uppercase tracking-widest text-foreground-400 mb-1.5">Rename pack</span>
                 <div className="flex gap-1.5">
                   <input
@@ -403,19 +408,19 @@ export default function StatpackEditorModal({
             <div className="relative" data-keepopen="">
               <button
                 onClick={() => setPopover(popover === 'status' ? null : 'status')}
-                className="flex items-center gap-2 h-9 rounded-medium border border-divider bg-content1 px-3 hover:bg-content2 transition-colors"
+                className="flex items-center gap-2 h-11 md:h-9 rounded-medium border border-divider bg-content1 px-3 hover:bg-content2 transition-colors"
               >
                 <span className={`w-[7px] h-[7px] rounded-[2px] ${st.dot}`} />
                 <span className={`text-[13px] font-semibold ${st.text}`}>{draft.status}</span>
                 <ChevronDown size={13} className="text-foreground-400" />
               </button>
               {popover === 'status' && (
-                <div data-keepopen="" className="absolute top-[calc(100%+8px)] right-0 z-40 w-56 bg-content1 border border-divider rounded-large shadow-xl p-1.5 flex flex-col gap-0.5">
+                <div data-keepopen="" className="absolute top-[calc(100%+8px)] right-0 z-40 w-56 max-w-[calc(100vw-2rem)] bg-content1 border border-divider rounded-large shadow-xl p-1.5 flex flex-col gap-0.5">
                   {STATUS_OPTIONS.map(s => {
                     const m = statusMeta(s); const active = draft.status === s;
                     return (
                       <button key={s} onClick={() => { patchPack(p => { p.status = s; }); setPopover(null); }}
-                        className={`flex items-center gap-2 rounded-medium px-2.5 py-2 text-left transition-colors ${active ? m.soft : 'hover:bg-content2'}`}>
+                        className={`flex items-center gap-2 rounded-medium px-2.5 py-3 md:py-2 text-left transition-colors ${active ? m.soft : 'hover:bg-content2'}`}>
                         <span className={`w-2 h-2 rounded-[3px] ${m.dot}`} />
                         <span className={`text-[13px] font-semibold ${m.text}`}>{s}</span>
                       </button>
@@ -429,14 +434,14 @@ export default function StatpackEditorModal({
             <div className="relative" data-keepopen="">
               <button
                 onClick={() => { setLocDraft(draft.currentLocation || ''); setPopover(popover === 'location' ? null : 'location'); }}
-                className="flex items-center gap-2 h-9 rounded-medium border border-divider bg-content1 px-3 hover:bg-content2 transition-colors"
+                className="flex items-center gap-2 h-11 md:h-9 rounded-medium border border-divider bg-content1 px-3 hover:bg-content2 transition-colors"
               >
                 <MapPin size={14} className="text-foreground-500" />
                 <span className="text-[13px] font-semibold text-foreground-600">{draft.currentLocation || '—'}</span>
                 <Pencil size={12} className="text-foreground-400" />
               </button>
               {popover === 'location' && (
-                <div data-keepopen="" className="absolute top-[calc(100%+8px)] right-0 z-40 w-72 bg-content1 border border-divider rounded-large shadow-xl p-3.5">
+                <div data-keepopen="" className="absolute top-[calc(100%+8px)] right-0 z-40 w-72 max-w-[calc(100vw-2rem)] bg-content1 border border-divider rounded-large shadow-xl p-3.5">
                   <span className="block text-[10px] font-semibold uppercase tracking-widest text-foreground-400 mb-1.5">Location</span>
                   <div className="flex gap-1.5 mb-2.5">
                     <input
@@ -453,7 +458,7 @@ export default function StatpackEditorModal({
                   <div className="flex flex-wrap gap-1.5">
                     {LOCATION_PRESETS.map(p => (
                       <button key={p} onClick={() => { patchPack(pk => { pk.currentLocation = p; }); setPopover(null); }}
-                        className="text-[11px] font-semibold text-foreground-600 bg-content2 hover:bg-content3 rounded-md px-2 py-1 transition-colors">
+                        className="text-[11px] font-semibold text-foreground-600 bg-content2 hover:bg-content3 rounded-md px-2 py-2.5 md:py-1 transition-colors">
                         {p}
                       </button>
                     ))}
@@ -462,16 +467,19 @@ export default function StatpackEditorModal({
               )}
             </div>
 
-            <button onClick={onClose} className="w-[34px] h-[34px] rounded-medium bg-content2 hover:bg-content3 text-foreground-500 flex items-center justify-center transition-colors">
+            <button onClick={onClose} aria-label="Close editor" className="w-11 h-11 md:w-[34px] md:h-[34px] rounded-medium bg-content2 hover:bg-content3 text-foreground-500 flex items-center justify-center transition-colors flex-none">
               <X size={16} />
             </button>
           </div>
         </div>
 
         {/* ══════ BODY ══════ */}
-        <div className="flex items-stretch min-h-0 flex-1">
+        {/* Phone: one column, one scroll region. A bare `w-[296px] flex-none` beside the
+            contents panel left it 62px at 390px — that was the whole bug. Below `md` the
+            bag pane becomes a full-width header block at the top of the body's scroller. */}
+        <div className="flex flex-col md:flex-row items-stretch min-h-0 flex-1 max-md:overflow-y-auto">
           {/* LEFT — bag layout + meta */}
-          <div className="w-[296px] flex-none border-r border-divider bg-content2 rounded-bl-[18px] p-4 flex flex-col gap-3.5 min-h-0">
+          <div className="w-full md:w-[296px] flex-none border-b md:border-b-0 md:border-r border-divider bg-content2 md:rounded-bl-[18px] p-4 flex flex-col gap-3.5 min-h-0">
             <div className="flex items-center justify-between">
               <span className="text-[10.5px] font-semibold uppercase tracking-widest text-foreground-400">Bag layout</span>
               {pocket !== 'all' && (
@@ -479,8 +487,10 @@ export default function StatpackEditorModal({
               )}
             </div>
 
-            {/* bag diagram */}
-            <div className="flex gap-1.5 h-[158px]">
+            {/* bag diagram — deliberately NOT stacked on phone. Full-bleed it gets ~358px
+                (vs 264px on desktop), so the LEFT/MAIN/RIGHT/FRONT spatial metaphor reads
+                better there than here; only the height trims so it doesn't eat the fold. */}
+            <div className="flex gap-1.5 h-[132px] md:h-[158px]">
               {(['side_left'] as Pocket[]).map(pid => {
                 const c = pocketCounts(pid); const sel = pocket === pid;
                 return (
@@ -505,12 +515,12 @@ export default function StatpackEditorModal({
 
             <div className="h-px bg-divider" />
 
-            {/* meta readouts */}
-            <div className="flex flex-col gap-2.5">
+            {/* meta readouts — 2×2 on phone so they don't push the contents list past the fold */}
+            <div className="grid grid-cols-2 md:grid-cols-1 gap-x-4 gap-y-2.5">
               <MetaRow label="Total items" value={items.length} />
               <MetaRow label="Assets tracked" value={derived.assets} valueClass="text-primary" />
               <MetaRow label="Needs attention" value={derived.attn} valueClass={derived.attn > 0 ? 'text-warning' : 'text-success'} />
-              <div className="flex items-center justify-between pt-2.5 border-t border-divider">
+              <div className="col-span-2 md:col-span-1 flex items-center justify-between pt-2.5 border-t border-divider">
                 <span className="text-[11.5px] font-semibold text-foreground-500">Asset value</span>
                 <span className="font-mono text-[15px] font-semibold tabular-nums text-foreground">
                   ${derived.totalValue.toLocaleString('en-US', { maximumFractionDigits: 0 })}
@@ -523,7 +533,7 @@ export default function StatpackEditorModal({
           <div className="flex-1 min-w-0 flex flex-col">
             {/* tab switcher */}
             <div className="px-[18px] pt-3.5 flex-none">
-              <div className="flex items-center gap-1 bg-content2 p-1 rounded-medium w-fit">
+              <div className="flex items-center gap-1 bg-content2 p-1 rounded-medium w-full sm:w-fit">
                 <button className={rightTabBtn(rightTab === 'contents')} onClick={() => setRightTab('contents')}>
                   <Package size={13} /> Contents <span className="font-mono opacity-60">{items.length}</span>
                 </button>
@@ -546,20 +556,20 @@ export default function StatpackEditorModal({
                         </span>
                       )}
                     </div>
-                    <div className="flex gap-1 bg-content2 p-0.5 rounded-medium">
+                    <div className="flex gap-1 bg-content2 p-0.5 rounded-medium w-full sm:w-auto">
                       <button className={filterChip(filter === 'all')} onClick={() => setFilter('all')}>All <span className="font-mono opacity-60">{items.length}</span></button>
                       <button className={filterChip(filter === 'assets')} onClick={() => setFilter('assets')}>Assets <span className="font-mono opacity-60">{derived.assets}</span></button>
                       <button className={filterChip(filter === 'contents')} onClick={() => setFilter('contents')}>Consumables <span className="font-mono opacity-60">{derived.consumables}</span></button>
                     </div>
-                    <div className="ml-auto relative" data-keepopen="">
+                    <div className="ml-auto max-md:w-full relative" data-keepopen="">
                       <button
                         onClick={() => { setAddItemError(''); setPopover(popover === 'additem' ? null : 'additem'); }}
-                        className="flex items-center gap-1.5 text-xs font-semibold text-white bg-primary rounded-medium px-3 py-2 hover:opacity-90 transition-opacity"
+                        className="flex max-md:w-full items-center justify-center gap-1.5 text-xs font-semibold text-white bg-primary rounded-medium px-3 py-3 md:py-2 hover:opacity-90 transition-opacity"
                       >
                         <Plus size={13} strokeWidth={2.6} /> Add item
                       </button>
                       {popover === 'additem' && (
-                        <div data-keepopen="" className="absolute top-[calc(100%+8px)] right-0 z-40 w-80 bg-content1 border border-divider rounded-large shadow-xl p-3.5">
+                        <div data-keepopen="" className="absolute top-[calc(100%+8px)] right-0 z-40 w-80 max-w-[calc(100vw-2rem)] bg-content1 border border-divider rounded-large shadow-xl p-3.5">
                           <span className="block text-[10px] font-semibold uppercase tracking-widest text-foreground-400 mb-1.5">Add real inventory item</span>
                           <Autocomplete
                             aria-label="Inventory item"
@@ -574,7 +584,7 @@ export default function StatpackEditorModal({
                           <div className="h-px bg-divider my-3" />
                           <button
                             onClick={addPlaceholderItem}
-                            className="w-full flex items-center gap-1.5 text-[11.5px] font-semibold text-warning bg-warning-50 dark:bg-warning-900/20 border border-dashed border-warning/50 rounded-medium px-2.5 py-1.5 hover:bg-warning-100 dark:hover:bg-warning-900/30 transition-colors"
+                            className="w-full flex items-center gap-1.5 text-[11.5px] font-semibold text-warning bg-warning-50 dark:bg-warning-900/20 border border-dashed border-warning/50 rounded-medium px-2.5 py-3 md:py-1.5 hover:bg-warning-100 dark:hover:bg-warning-900/30 transition-colors"
                           >
                             <AlertTriangle size={12} /> Add placeholder line (off-book item)
                           </button>
@@ -589,12 +599,15 @@ export default function StatpackEditorModal({
                       placeholder="Search contents, categories, serials…"
                       className="flex-1 bg-transparent outline-none text-[12.5px] text-foreground placeholder:text-foreground-400 py-2.5"
                     />
-                    {search && <button onClick={() => setSearch('')} className="text-foreground-400 hover:text-foreground-600"><X size={15} /></button>}
+                    {search && <button onClick={() => setSearch('')} aria-label="Clear search" className="w-11 h-11 md:w-auto md:h-auto flex-none flex items-center justify-center text-foreground-400 hover:text-foreground-600"><X size={15} /></button>}
                   </div>
                 </div>
 
-                {/* list */}
-                <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto px-[18px] pb-2">
+                {/* list — `overflow-y-auto` alone computed overflow-x to `auto` (CSS makes a
+                    `visible` axis `auto` when its sibling axis isn't), which is where the stray
+                    sideways scroll came from. Pinning overflow-x is only safe because the row
+                    reflow below makes the content genuinely fit first. */}
+                <div ref={listRef} className="flex-1 min-h-0 md:overflow-y-auto overflow-x-hidden px-[18px] pb-2">
                   {view.length === 0 ? (
                     <div className="text-center py-12 text-foreground-400">
                       <div className="text-[13px] font-semibold text-foreground-500">Nothing here</div>
@@ -610,6 +623,21 @@ export default function StatpackEditorModal({
                       onRemove={() => { patchPack(p => { p.contents.splice(idx, 1); }); setExpanded(null); }}
                     />
                   ))}
+
+                  {/* Phone-only danger zone. On desktop Delete lives in the footer, but at
+                      390px that puts a destructive control a thumb-width from Save — so on
+                      phone it moves to the end of the scroll, reachable only deliberately. */}
+                  {canDelete && onDelete && (
+                    <div className="md:hidden mt-6 mb-2 pt-4 border-t border-divider">
+                      <p className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400 mb-2">Danger zone</p>
+                      <button
+                        onClick={() => onDelete()}
+                        className="w-full flex items-center justify-center gap-1.5 min-h-11 text-[12.5px] font-semibold text-danger bg-danger-50 dark:bg-danger-900/20 border border-danger/30 rounded-large px-3 py-3 hover:opacity-80 transition-opacity"
+                      >
+                        <Trash2 size={14} /> Delete statpack
+                      </button>
+                    </div>
+                  )}
                 </div>
               </>
             ) : (
@@ -617,7 +645,7 @@ export default function StatpackEditorModal({
               <div className="flex-1 min-h-0 overflow-y-auto px-[18px] py-3.5">
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400">Bag assignments</span>
-                  <button onClick={addBagAssignment} className="flex items-center gap-1.5 text-xs font-semibold text-white bg-primary rounded-medium px-3 py-1.5 hover:opacity-90 transition-opacity">
+                  <button onClick={addBagAssignment} className="flex items-center gap-1.5 text-xs font-semibold text-white bg-primary rounded-medium px-3 py-3 md:py-1.5 hover:opacity-90 transition-opacity">
                     <Plus size={13} strokeWidth={2.6} /> Assign bag
                   </button>
                 </div>
@@ -640,16 +668,19 @@ export default function StatpackEditorModal({
               </div>
             )}
 
-            {/* footer */}
-            <div className="border-t border-divider px-[18px] py-3 flex items-center gap-2.5 flex-none">
+            {/* footer — on phone the body is the scroller, so this must stick or Save
+                scrolls off the end of a long pack. Needs its own bg: sticky chrome over
+                scrolling content bleeds through otherwise. */}
+            <div className="border-t border-divider bg-content1 px-[18px] py-3 flex items-center gap-2.5 flex-none max-md:sticky max-md:bottom-0 max-md:z-10">
+              {/* Desktop keeps Delete here; on phone it lives in the danger zone above. */}
               {canDelete && onDelete && (
-                <button onClick={() => onDelete()} className="flex items-center gap-1.5 text-[12.5px] font-semibold text-danger px-1 py-2 hover:opacity-80 transition-opacity">
+                <button onClick={() => onDelete()} className="hidden md:flex items-center gap-1.5 text-[12.5px] font-semibold text-danger px-1 py-2 hover:opacity-80 transition-opacity">
                   <Trash2 size={14} /> Delete statpack
                 </button>
               )}
-              <div className="ml-auto flex gap-2.5">
-                <button onClick={onClose} className="text-[13px] font-semibold text-foreground-600 bg-content2 hover:bg-content3 rounded-large px-4 py-2.5 transition-colors">Close</button>
-                <button onClick={doSave} disabled={saving} className="flex items-center gap-1.5 text-[13px] font-semibold text-white bg-primary rounded-large px-5 py-2.5 shadow-[0_6px_16px_-5px_rgba(0,111,238,.55)] hover:opacity-90 transition-opacity disabled:opacity-60">
+              <div className="ml-auto flex gap-2.5 max-md:w-full">
+                <button onClick={onClose} className="text-[13px] font-semibold text-foreground-600 bg-content2 hover:bg-content3 rounded-large px-4 py-3 md:py-2.5 transition-colors">Close</button>
+                <button onClick={doSave} disabled={saving} className="flex flex-1 md:flex-none items-center justify-center gap-1.5 text-[13px] font-semibold text-white bg-primary rounded-large px-5 py-3 md:py-2.5 shadow-[0_6px_16px_-5px_rgba(0,111,238,.55)] hover:opacity-90 transition-opacity disabled:opacity-60">
                   <Save size={14} /> {saving ? 'Saving…' : 'Save changes'}
                 </button>
               </div>
@@ -744,9 +775,10 @@ function ItemRow({
   return (
     <div className={`border ${borderClass} rounded-large ${expanded ? 'bg-content2/40' : 'bg-content1'} mb-2.5 overflow-hidden`}>
       {/* head */}
-      <div onClick={onToggleExpand} className="flex items-center gap-2.5 px-3 py-2.5 cursor-pointer select-none">
-        <GripVertical onClick={(e) => e.stopPropagation()} size={15} className="text-foreground-300 flex-none cursor-grab" />
-        <div className="flex-1 min-w-0">
+      {/* `min-w-[60%] sm:min-w-0` on the name block is the lever: it forces the stepper and
+          pocket select onto a second line on a phone, giving the name the full row width. */}
+      <div onClick={onToggleExpand} className="flex flex-wrap sm:flex-nowrap items-center gap-2.5 px-3 py-2.5 cursor-pointer select-none">
+        <div className="flex-1 min-w-[60%] sm:min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap">
             <span className="text-[13.5px] font-semibold text-foreground">{itemName(it)}</span>
             <span className={`text-[9.5px] font-semibold px-1.5 py-0.5 rounded ${cat.bg} ${cat.text}`}>{itemCategory(it)}</span>
@@ -764,19 +796,22 @@ function ItemRow({
         {/* par stepper */}
         <div onClick={(e) => e.stopPropagation()} className="flex items-center gap-1.5 flex-none">
           <button onClick={() => patch(x => { x.requiredQuantity = Math.max(0, x.requiredQuantity - 1); })}
-            className="w-7 h-7 rounded-lg bg-content2 hover:bg-content3 text-foreground-500 flex items-center justify-center transition-colors"><Minus size={13} /></button>
+            aria-label="Decrease par level"
+            className="w-11 h-11 md:w-7 md:h-7 rounded-lg bg-content2 hover:bg-content3 text-foreground-500 flex items-center justify-center transition-colors"><Minus size={13} /></button>
           <div className="text-center min-w-[40px]">
             <div className="font-mono text-base font-semibold tabular-nums text-foreground leading-none">{it.requiredQuantity}</div>
             <div className="text-[8.5px] font-semibold uppercase tracking-wide text-foreground-400 mt-0.5">par</div>
           </div>
           <button onClick={() => patch(x => { x.requiredQuantity += 1; })}
-            className="w-7 h-7 rounded-lg bg-primary-50 dark:bg-primary-900/20 text-primary flex items-center justify-center hover:bg-primary-100 dark:hover:bg-primary-800/30 transition-colors"><Plus size={13} /></button>
+            aria-label="Increase par level"
+            className="w-11 h-11 md:w-7 md:h-7 rounded-lg bg-primary-50 dark:bg-primary-900/20 text-primary flex items-center justify-center hover:bg-primary-100 dark:hover:bg-primary-800/30 transition-colors"><Plus size={13} /></button>
         </div>
 
         {/* pocket quick select */}
         <select value={it.pocket || 'main'} onChange={(e) => setPocket(e.target.value as Pocket)}
           onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}
-          className="flex-none h-[34px] rounded-lg border border-divider bg-content1 text-xs font-semibold text-foreground-600 px-2 outline-none">
+          aria-label="Pocket"
+          className="flex-none h-11 md:h-[34px] rounded-lg border border-divider bg-content1 text-xs font-semibold text-foreground-600 px-2 outline-none">
           {POCKETS.map(p => <option key={p.id} value={p.id}>{p.short}</option>)}
         </select>
       </div>
@@ -790,10 +825,10 @@ function ItemRow({
           </div>
 
           {/* basic grid */}
-          <div className="grid grid-cols-3 gap-2.5 mb-3.5">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 mb-3.5">
             <Field label="Pocket / location">
               <select value={it.pocket || 'main'} onChange={(e) => setPocket(e.target.value as Pocket)}
-                className="h-9 rounded-medium border border-divider bg-content1 text-[12.5px] font-semibold text-foreground-600 px-2.5 outline-none w-full">
+                className="h-11 md:h-9 rounded-medium border border-divider bg-content1 text-[12.5px] font-semibold text-foreground-600 px-2.5 outline-none w-full">
                 {POCKETS.map(p => <option key={p.id} value={p.id}>{p.long}</option>)}
               </select>
             </Field>
@@ -827,7 +862,7 @@ function ItemRow({
                     const [y, mo] = v.split('-').map(Number);
                     x.expirationDate = new Date(y, mo - 1, 1) as unknown as Date;
                   })}
-                  className="font-mono h-9 rounded-medium border border-divider bg-content1 text-[12.5px] font-semibold text-foreground px-2.5 outline-none focus:border-primary" />
+                  className="font-mono h-11 md:h-9 rounded-medium border border-divider bg-content1 text-[12.5px] font-semibold text-foreground px-2.5 outline-none focus:border-primary" />
               </div>
             )}
             {oxygen && (
@@ -840,7 +875,7 @@ function ItemRow({
                   </span>
                   <input value={rules.requireO2PsiMin ? String(rules.requireO2PsiMin) : ''} placeholder="0"
                     onChange={(e) => { const n = parseInt(e.target.value, 10); setRule({ requireO2PsiMin: isNaN(n) ? 0 : n }); }}
-                    className="font-mono w-[88px] h-9 text-center rounded-medium border border-divider bg-content2 text-[13px] font-semibold text-foreground outline-none focus:border-primary" />
+                    className="font-mono w-[88px] h-11 md:h-9 text-center rounded-medium border border-divider bg-content2 text-[13px] font-semibold text-foreground outline-none focus:border-primary" />
                 </div>
               </>
             )}
@@ -864,7 +899,7 @@ function ItemRow({
                 onRemove={() => patch(x => { x.customWarnings = (x.customWarnings || []).filter(a => a.id !== w.id); })} />
             ))}
             <button onClick={() => patch(x => { x.customWarnings = [...(x.customWarnings || []), { id: `w${Date.now()}`, message: '', severity: 'warning', requiresAcknowledgment: true }]; })}
-              className="flex items-center gap-1.5 text-[11.5px] font-semibold text-warning bg-warning-50 dark:bg-warning-900/20 border border-dashed border-warning/50 rounded-medium px-2.5 py-1.5 hover:bg-warning-100 dark:hover:bg-warning-900/30 transition-colors">
+              className="flex items-center gap-1.5 text-[11.5px] font-semibold text-warning bg-warning-50 dark:bg-warning-900/20 border border-dashed border-warning/50 rounded-medium px-2.5 py-3 md:py-1.5 hover:bg-warning-100 dark:hover:bg-warning-900/30 transition-colors">
               <Plus size={12} /> Add warning
             </button>
           </div>
@@ -872,7 +907,7 @@ function ItemRow({
           {/* footer actions */}
           <div className="flex items-center gap-2 mt-3 pt-3 border-t border-divider">
             <button onClick={onRemove}
-              className="flex items-center gap-1.5 text-xs font-semibold text-danger bg-danger-50 dark:bg-danger-900/20 rounded-medium px-3 py-2 hover:opacity-80 transition-opacity">
+              className="flex items-center gap-1.5 text-xs font-semibold text-danger bg-danger-50 dark:bg-danger-900/20 rounded-medium px-3 py-3 md:py-2 hover:opacity-80 transition-opacity">
               <Trash2 size={13} /> Remove
             </button>
           </div>
@@ -895,22 +930,22 @@ function Stepper({ value, onDec, onInc, onInput, editable, valueClass = 'text-fo
   value: number; onDec: () => void; onInc: () => void; onInput?: (n: number) => void; editable?: boolean; valueClass?: string;
 }) {
   return (
-    <div className="flex items-center gap-1.5 h-9 border border-divider rounded-medium bg-content1 px-1.5">
-      <button onClick={onDec} className="w-6 h-6 rounded-md bg-content2 hover:bg-content3 text-foreground-500 flex items-center justify-center flex-none"><Minus size={12} /></button>
+    <div className="flex items-center gap-1.5 h-auto md:h-9 border border-divider rounded-medium bg-content1 px-1.5 py-1 md:py-0">
+      <button onClick={onDec} aria-label="Decrease" className="w-11 h-11 md:w-6 md:h-6 rounded-md bg-content2 hover:bg-content3 text-foreground-500 flex items-center justify-center flex-none"><Minus size={12} /></button>
       {editable ? (
         <input value={String(value)} onChange={(e) => { const n = parseInt(e.target.value, 10); onInput?.(isNaN(n) ? 0 : Math.max(0, n)); }}
           className={`font-mono flex-1 w-full text-center bg-transparent outline-none text-sm font-semibold ${valueClass}`} />
       ) : (
         <span className={`font-mono flex-1 text-center text-sm font-semibold tabular-nums ${valueClass}`}>{value}</span>
       )}
-      <button onClick={onInc} className="w-6 h-6 rounded-md bg-primary-50 dark:bg-primary-900/20 text-primary flex items-center justify-center flex-none"><Plus size={12} /></button>
+      <button onClick={onInc} aria-label="Increase" className="w-11 h-11 md:w-6 md:h-6 rounded-md bg-primary-50 dark:bg-primary-900/20 text-primary flex items-center justify-center flex-none"><Plus size={12} /></button>
     </div>
   );
 }
 
 function ToggleRow({ on, onClick, title, desc }: { on: boolean; onClick: () => void; title: string; desc: string }) {
   return (
-    <button onClick={onClick} className="flex items-center gap-2.5 text-left">
+    <button onClick={onClick} className="flex items-center gap-2.5 text-left py-1.5 md:py-0">
       <span className={`w-[19px] h-[19px] rounded-md flex-none flex items-center justify-center border-2 transition-colors ${on ? 'bg-primary border-primary' : 'bg-content1 border-foreground-300'}`}>
         {on && <Check size={11} strokeWidth={3} className="text-white" />}
       </span>
@@ -931,18 +966,19 @@ function WarningRow({ w, onSev, onMsg, onAck, onRemove }: {
 }) {
   const sevColor = w.severity === 'info' ? 'text-primary' : w.severity === 'critical' ? 'text-danger' : 'text-warning';
   return (
-    <div className="flex items-center gap-2 bg-content1 border border-divider rounded-medium p-2 mb-1.5">
+    <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 bg-content1 border border-divider rounded-medium p-2 mb-1.5">
       <select value={w.severity} onChange={(e) => onSev(e.target.value as StatpackWarning['severity'])}
-        className={`flex-none w-24 h-8 rounded-lg border border-divider bg-content2 text-[11.5px] font-semibold px-2 outline-none ${sevColor}`}>
+        aria-label="Warning severity"
+        className={`flex-none w-24 h-11 md:h-8 rounded-lg border border-divider bg-content2 text-[11.5px] font-semibold px-2 outline-none ${sevColor}`}>
         <option value="info">Info</option>
         <option value="warning">Warning</option>
         <option value="critical">Critical</option>
       </select>
       <input value={w.message} onChange={(e) => onMsg(e.target.value)} placeholder="Warning message…"
-        className="flex-1 h-8 rounded-lg border border-divider bg-content2 text-xs text-foreground px-2.5 outline-none focus:border-primary" />
+        className="flex-1 min-w-[55%] sm:min-w-0 h-11 md:h-8 rounded-lg border border-divider bg-content2 text-xs text-foreground px-2.5 outline-none focus:border-primary" />
       <button onClick={onAck} title="Requires acknowledgment"
-        className={`h-8 rounded-lg border text-[11px] font-semibold px-2.5 flex-none transition-colors ${w.requiresAcknowledgment ? 'border-primary bg-primary-50 dark:bg-primary-900/20 text-primary' : 'border-divider bg-content1 text-foreground-400'}`}>Ack</button>
-      <button onClick={onRemove} className="w-[30px] h-8 rounded-lg bg-danger-50 dark:bg-danger-900/20 text-danger flex items-center justify-center flex-none"><X size={13} /></button>
+        className={`h-11 md:h-8 rounded-lg border text-[11px] font-semibold px-2.5 flex-none transition-colors ${w.requiresAcknowledgment ? 'border-primary bg-primary-50 dark:bg-primary-900/20 text-primary' : 'border-divider bg-content1 text-foreground-400'}`}>Ack</button>
+      <button onClick={onRemove} aria-label="Remove warning" className="w-11 h-11 md:w-[30px] md:h-8 rounded-lg bg-danger-50 dark:bg-danger-900/20 text-danger flex items-center justify-center flex-none"><X size={13} /></button>
     </div>
   );
 }
@@ -960,12 +996,12 @@ function BagAssignmentRow({
 }) {
   const bag = bags.find((b) => b.id === assignment.bagId);
   return (
-    <div className="flex items-center gap-2 bg-content1 border border-divider rounded-large p-2.5 mb-2">
+    <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 bg-content1 border border-divider rounded-large p-2.5 mb-2">
       <PackagePlus size={14} className="text-primary flex-none" />
       <Autocomplete
         aria-label="Exchange bag"
         placeholder="Select bag…"
-        className="flex-1 min-w-0"
+        className="flex-1 min-w-[60%] sm:min-w-0"
         size="sm"
         selectedKey={assignment.bagId || null}
         onSelectionChange={(key) => onBag(key ? String(key) : '')}
@@ -974,22 +1010,25 @@ function BagAssignmentRow({
         {(b) => <AutocompleteItem key={b.id} textValue={b.name}>{b.name}</AutocompleteItem>}
       </Autocomplete>
       <select value={assignment.pocket} onChange={(e) => onPocket(e.target.value as Pocket)}
-        className="flex-none h-9 rounded-medium border border-divider bg-content1 text-xs font-semibold text-foreground-600 px-2 outline-none">
+        aria-label="Bag pocket"
+        className="flex-none h-11 md:h-9 rounded-medium border border-divider bg-content1 text-xs font-semibold text-foreground-600 px-2 outline-none">
         {POCKETS.map(p => <option key={p.id} value={p.id}>{p.short}</option>)}
       </select>
       <div className="flex items-center gap-1 flex-none">
         <button onClick={() => onQty(Math.max(1, assignment.qtyPerPack - 1))}
-          className="w-7 h-7 rounded-lg bg-content2 hover:bg-content3 text-foreground-500 flex items-center justify-center transition-colors"><Minus size={12} /></button>
+          aria-label="Decrease quantity per pack"
+          className="w-11 h-11 md:w-7 md:h-7 rounded-lg bg-content2 hover:bg-content3 text-foreground-500 flex items-center justify-center transition-colors"><Minus size={12} /></button>
         <span className="font-mono text-sm font-semibold tabular-nums w-6 text-center">{assignment.qtyPerPack}</span>
         <button onClick={() => onQty(assignment.qtyPerPack + 1)}
-          className="w-7 h-7 rounded-lg bg-primary-50 dark:bg-primary-900/20 text-primary flex items-center justify-center hover:bg-primary-100 dark:hover:bg-primary-800/30 transition-colors"><Plus size={12} /></button>
+          aria-label="Increase quantity per pack"
+          className="w-11 h-11 md:w-7 md:h-7 rounded-lg bg-primary-50 dark:bg-primary-900/20 text-primary flex items-center justify-center hover:bg-primary-100 dark:hover:bg-primary-800/30 transition-colors"><Plus size={12} /></button>
       </div>
       {bag && bag.lines?.length > 0 && (
         <span className="hidden lg:inline text-[10px] font-medium text-foreground-400 flex-none">
           {bag.lines.length} SKU{bag.lines.length !== 1 ? 's' : ''}
         </span>
       )}
-      <button onClick={onRemove} className="w-8 h-8 rounded-lg bg-danger-50 dark:bg-danger-900/20 text-danger flex items-center justify-center flex-none flex-shrink-0"><Trash2 size={13} /></button>
+      <button onClick={onRemove} aria-label="Remove bag assignment" className="w-11 h-11 md:w-8 md:h-8 rounded-lg bg-danger-50 dark:bg-danger-900/20 text-danger flex items-center justify-center flex-none flex-shrink-0"><Trash2 size={13} /></button>
     </div>
   );
 }
