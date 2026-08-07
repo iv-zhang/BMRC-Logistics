@@ -27,7 +27,7 @@ import {
   ModalFooter,
   Input,
 } from '@heroui/react';
-import { Users, ClipboardCheck, SquareKanban, Shield, CalendarClock, ListFilter, IdCard } from 'lucide-react';
+import { Users, ClipboardCheck, SquareKanban, Shield, CalendarClock, ListFilter, IdCard, Activity, Package, Boxes, CalendarDays, AlertTriangle } from 'lucide-react';
 import { collection, getDocs, doc, updateDoc } from 'firebase/firestore';
 import { db } from '@/firebase'; // Assuming your firebase config export
 import { useUserRole } from '@/app/hooks/useUserRole';
@@ -35,6 +35,7 @@ import { getMemberCertStatuses } from '@/app/lib/certifications';
 import CertEditorModal from '@/app/components/cert-editor-modal';
 import { getMemberShiftStats, type MemberShiftStats } from '@/app/lib/events';
 import { getSemesterStart } from '@/app/config/org-config';
+import { getMemberActivity, type MemberActivityEntry } from '@/app/lib/member-activity';
 import type { User, ShiftRequest } from '@/app/types'; // Adjust path based on your folder structure
 
 type RoleChipColor = 'danger' | 'warning' | 'success' | 'default' | 'secondary';
@@ -43,13 +44,14 @@ const ROLE_OPTIONS: Array<{ label: string; value: User['role']; color: RoleChipC
   { label: 'Admin', value: 'admin', color: 'danger' },
   { label: 'MedOps', value: 'medops', color: 'secondary' },
   { label: 'FTO', value: 'FTO', color: 'warning' },
+  { label: 'FTO Intern', value: 'fto_intern', color: 'warning' },
   { label: 'Quartermaster', value: 'quartermaster', color: 'success' },
   { label: 'Inventory Helper', value: 'inventory_helper', color: 'success' },
   { label: 'Member', value: 'member', color: 'default' },
 ];
 
 // Roles available only for non-admin viewers (medops)
-const MEDOPS_AVAILABLE_ROLES = ['FTO', 'member'] as const;
+const MEDOPS_AVAILABLE_ROLES = ['FTO', 'fto_intern', 'member'] as const;
 
 const ALL_COLUMNS = [
   { name: "MEMBER", uid: "member" },
@@ -318,13 +320,15 @@ export default function RosterPage() {
             </Chip>
           </div>
         );
-      case "role":
-        const roleConfig = ROLE_OPTIONS.find(r => r.value === user.role) || ROLE_OPTIONS[3];
+      case "role": {
+        const roleConfig = ROLE_OPTIONS.find(r => r.value === user.role)
+          ?? ROLE_OPTIONS.find(r => r.value === 'member')!;
         return (
-          <Chip className="capitalize" color={roleConfig.color} size="sm" variant="flat">
-            {user.role}
+          <Chip color={roleConfig.color} size="sm" variant="flat">
+            {roleConfig.label}
           </Chip>
         );
+      }
       case "shifts": {
         const stats = getMemberShiftStats(requestsByUser.get(user.id) ?? [], semesterStart);
         return (
@@ -559,6 +563,74 @@ function ShiftStatsSection({ requests, semesterStart }: { requests: ShiftRequest
   );
 }
 
+const ACTIVITY_KIND_ICON: Record<MemberActivityEntry['kind'], React.ComponentType<{ size?: number; className?: string }>> = {
+  statpack: Package,
+  audit: ClipboardCheck,
+  inventory: Boxes,
+  shift: CalendarDays,
+  report: AlertTriangle,
+};
+
+/** Lazy-loaded, time-sorted activity feed across statpacks/audits/inventory/shifts/reports. Rendered as a section inside MemberDetailModal. */
+function MemberActivitySection({ isOpen, memberId }: { isOpen: boolean; memberId: string }) {
+  const [activity, setActivity] = React.useState<MemberActivityEntry[] | null>(null);
+  const [loading, setLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!isOpen) {
+      setActivity(null);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    getMemberActivity(memberId)
+      .then((entries) => {
+        if (!cancelled) setActivity(entries);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, memberId]);
+
+  return (
+    <div>
+      <div className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400 mb-2 inline-flex items-center gap-1">
+        <Activity size={12} /> Activity
+      </div>
+      {loading ? (
+        <div className="flex items-center justify-center py-6">
+          <Spinner size="sm" />
+        </div>
+      ) : !activity || activity.length === 0 ? (
+        <p className="text-sm text-foreground-400">No recorded activity yet.</p>
+      ) : (
+        <div className="bg-content2 rounded-large divide-y divide-divider max-h-64 overflow-y-auto">
+          {activity.map((entry, idx) => {
+            const Icon = ACTIVITY_KIND_ICON[entry.kind];
+            return (
+              <div key={idx} className="flex items-center gap-3 px-3 py-2.5">
+                <Icon size={14} className="text-foreground-400 flex-none" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-foreground truncate">{entry.title}</p>
+                  {entry.detail && (
+                    <p className="text-xs text-foreground-400 truncate">{entry.detail}</p>
+                  )}
+                </div>
+                <span className="text-xs text-foreground-400 flex-none">
+                  {entry.at.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface MemberDetailModalProps {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
@@ -766,6 +838,10 @@ function MemberDetailModal({
               <Divider />
 
               <ShiftStatsSection requests={requests} semesterStart={semesterStart} />
+
+              <Divider />
+
+              <MemberActivitySection isOpen={isOpen} memberId={member.id} />
             </ModalBody>
             <ModalFooter>
               <Button variant="light" onPress={onClose}>Close</Button>

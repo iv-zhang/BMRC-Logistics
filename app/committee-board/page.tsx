@@ -74,6 +74,7 @@ import { useTeamTasks } from '@/app/hooks/useTeamTasks';
 import { useAuditTaskCards, type AuditTaskCard } from '@/app/hooks/useAuditTaskCards';
 import { TASK_STATUS_CFG } from '@/app/components/task-status-badge';
 import BuyListPanel from '@/app/components/buy-list-panel';
+import PanelShell from '@/app/components/panel-shell';
 import type { TeamTask, TeamTaskStatus, TeamTaskOwner, TeamSubtask, User } from '@/app/types';
 
 const STATUS_ORDER: TeamTaskStatus[] = ['backlog', 'this_cycle', 'in_progress', 'blocked', 'done'];
@@ -724,9 +725,7 @@ export default function CommitteeBoardPage() {
 
       {/* Detail drawer */}
       {drawerTask && (
-        <>
-          <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={() => setDrawerId(null)} />
-          <div className="fixed top-0 right-0 bottom-0 z-50 w-[480px] max-w-[94vw] bg-content1 shadow-2xl flex flex-col">
+        <PanelShell isOpen onClose={() => setDrawerId(null)} ariaLabel="Task detail">
             {/* Header */}
             <div className="px-6 py-5 border-b border-divider">
               <div className="flex items-start justify-between gap-3">
@@ -890,8 +889,7 @@ export default function CommitteeBoardPage() {
                 </Button>
               </div>
             )}
-          </div>
-        </>
+        </PanelShell>
       )}
 
       {/* Saving toast */}

@@ -105,19 +105,24 @@ export async function runRegistered(): Promise<void> {
     }
   }
 
-  // Summary
-  let passed = 0, failed = 0;
+  // Summary. NOTE: a suite that THREW is a failure even if every check it
+  // managed to run passed — otherwise a crash halfway through a suite exits 0
+  // and the remaining assertions silently never run.
+  let passed = 0, failed = 0, errored = 0;
   // eslint-disable-next-line no-console
   console.log(`\n\x1b[1m━━━ SUMMARY ━━━\x1b[0m`);
   for (const s of registry) {
     const p = s.checks.filter(c => c.ok).length;
     const f = s.checks.filter(c => !c.ok).length;
     passed += p; failed += f;
+    if (s.error) errored += 1;
     const verdict = s.error ? '\x1b[31mERROR' : f === 0 ? '\x1b[32mPASS ' : '\x1b[31mFAIL ';
     // eslint-disable-next-line no-console
     console.log(`  ${verdict}\x1b[0m ${s.id.padEnd(7)} ${p}/${p + f} checks — ${s.title}`);
   }
   // eslint-disable-next-line no-console
-  console.log(`\n  ${failed === 0 ? '\x1b[32m' : '\x1b[31m'}${passed} passed, ${failed} failed\x1b[0m\n`);
-  process.exit(failed === 0 ? 0 : 1);
+  const bad = failed > 0 || errored > 0;
+  // eslint-disable-next-line no-console
+  console.log(`\n  ${bad ? '\x1b[31m' : '\x1b[32m'}${passed} passed, ${failed} failed${errored ? `, ${errored} suite(s) ERRORED` : ''}\x1b[0m\n`);
+  process.exit(bad ? 1 : 0);
 }

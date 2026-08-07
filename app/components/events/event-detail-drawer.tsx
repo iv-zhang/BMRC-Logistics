@@ -13,13 +13,27 @@ import {
   rejectRequest,
   cancelRequest,
   recordAttendance,
+  checkInMember,
+  checkOutMember,
   endEventShifts,
   formatMemberExperience,
+  slotRoleLabel,
   type EventActor,
 } from '@/app/lib/events';
-import type { Event, EventStatus, ShiftRequest, User } from '@/app/types';
+import type { Event, EventStatus, ShiftRequest, AttendanceRecord, User } from '@/app/types';
 import TeamCard from './team-card';
-import { formatEventDate, formatTimeRange, toJsDate, eventCallDateTime, computeMinutesLate } from './event-utils';
+import {
+  formatEventDate,
+  formatTimeRange,
+  toJsDate,
+  eventCallDateTime,
+  eventEndDateTime,
+  computeMinutesLate,
+  computeMinutesEarly,
+  getAttendanceAccess,
+  shiftHours,
+} from './event-utils';
+import PanelShell from '@/app/components/panel-shell';
 
 const STATUS_CHIP: Record<EventStatus, { label: string; color: 'primary' | 'default' | 'danger' }> = {
   draft: { label: 'Draft', color: 'default' },
@@ -47,6 +61,55 @@ function combineDayAndTime(day: Date, hhmm: string): Date | null {
   const d = new Date(day);
   d.setHours(hours, minutes, 0, 0);
   return d;
+}
+
+/** The status chips for one row's attendance state — same rendering in every mode. */
+function AttendanceChips({ attendance }: { attendance?: AttendanceRecord }) {
+  if (attendance?.exception) {
+    return (
+      <Chip size="sm" variant="flat" color={attendance.exception === 'no_show' ? 'danger' : 'default'}>
+        {attendance.exception === 'no_show' ? 'No-show' : 'Excused'}
+      </Chip>
+    );
+  }
+  if (!attendance?.checkedInAt) {
+    return (
+      <Chip size="sm" variant="flat" color="default">
+        Unrecorded
+      </Chip>
+    );
+  }
+  const arrivalDate = toJsDate(attendance.checkedInAt);
+  const departureDate = toJsDate(attendance.shiftEndAt);
+  const lateMinutes = attendance.minutesLate ?? 0;
+  const hours = shiftHours(attendance.checkedInAt, attendance.shiftEndAt);
+  return (
+    <>
+      <Chip size="sm" variant="flat" color="success">
+        Arrived {arrivalDate ? toHHmm(arrivalDate) : ''}
+      </Chip>
+      {lateMinutes > 0 && (
+        <Chip size="sm" variant="flat" color="warning">
+          Late by {lateMinutes}m
+        </Chip>
+      )}
+      {departureDate && (
+        <Chip size="sm" variant="flat" color="default">
+          Left {toHHmm(departureDate)}
+        </Chip>
+      )}
+      {attendance.leftEarly && (
+        <Chip size="sm" variant="flat" color="warning">
+          {attendance.minutesEarly ? `Left early by ${attendance.minutesEarly}m` : 'Left early'}
+        </Chip>
+      )}
+      {hours != null && (
+        <Chip size="sm" variant="flat" color="default">
+          {hours}h
+        </Chip>
+      )}
+    </>
+  );
 }
 
 interface EventDetailDrawerProps {
@@ -94,13 +157,36 @@ export default function EventDetailDrawer({
   );
   const pending = useMemo(() => requests.filter((r) => r.status === 'pending'), [requests]);
   const approved = useMemo(() => requests.filter((r) => r.status === 'approved'), [requests]);
-  const isAssignedFto = useMemo(
-    () => (event.teams || []).some((t) => t.ftoSlot?.userId === actor.uid),
-    [event.teams, actor.uid],
+
+  /** Whether the viewer's OWN approved request already has a check-in stamp. */
+  const viewerCheckedIn = !!(myActiveRequest?.status === 'approved' && myActiveRequest.attendance?.checkedInAt);
+
+  const access = useMemo(
+    () =>
+      getAttendanceAccess({
+        event,
+        viewerRole: userData?.role,
+        viewerUid: actor.uid,
+        viewerCheckedIn,
+      }),
+    [event, userData?.role, actor.uid, viewerCheckedIn],
   );
-  const showAttendance = isAssignedFto || userData?.role === 'admin' || userData?.role === 'quartermaster';
+
+  /** Approved requests scoped to what this viewer may see, with the viewer's own
+   *  row sorted to the top when they're gated on checking themselves in first. */
+  const scopedApproved = useMemo(() => {
+    const list =
+      access.scopeTeamIds == null ? approved : approved.filter((r) => access.scopeTeamIds!.includes(r.teamId));
+    if (!access.gatedOnSelfCheckIn) return list;
+    return [...list].sort((a, b) => {
+      const aSelf = a.userId === actor.uid ? 0 : 1;
+      const bSelf = b.userId === actor.uid ? 0 : 1;
+      return aSelf - bSelf;
+    });
+  }, [access, approved, actor.uid]);
 
   const [arrivalDrafts, setArrivalDrafts] = useState<Record<string, string>>({});
+  const [departureDrafts, setDepartureDrafts] = useState<Record<string, string>>({});
   const [attendanceSavingId, setAttendanceSavingId] = useState<string | null>(null);
   const [endingShifts, setEndingShifts] = useState(false);
 
@@ -109,6 +195,7 @@ export default function EventDetailDrawer({
 
   const eventDay = useMemo(() => toJsDate(event.date), [event.date]);
   const callDateTime = useMemo(() => eventCallDateTime(event), [event]);
+  const endDateTime = useMemo(() => eventEndDateTime(event), [event]);
 
   /** The "Arrived at" time input value: the in-progress edit, else the existing check-in, else now. */
   const getArrivalDraft = (req: ShiftRequest): string => {
@@ -117,13 +204,18 @@ export default function EventDetailDrawer({
     return toHHmm(existing ?? new Date());
   };
 
-  const handleCheckInNow = async (req: ShiftRequest) => {
+  /** The "Left at" time input value: the in-progress edit, else the existing departure, else now. */
+  const getDepartureDraft = (req: ShiftRequest): string => {
+    if (req.id && departureDrafts[req.id] !== undefined) return departureDrafts[req.id];
+    const existing = toJsDate(req.attendance?.shiftEndAt);
+    return toHHmm(existing ?? new Date());
+  };
+
+  const handleCheckIn = async (req: ShiftRequest) => {
     if (!req.id) return;
     setAttendanceSavingId(req.id);
     try {
-      const now = new Date();
-      const minutesLate = computeMinutesLate(now, callDateTime);
-      await recordAttendance(req, { checkedInAt: now, minutesLate }, actor);
+      const { minutesLate } = await checkInMember(event, req, actor);
       onToast(true, `${req.userName} checked in${minutesLate > 0 ? ` — late by ${minutesLate}m` : ''}`);
     } catch (e) {
       onToast(false, e instanceof Error ? e.message : 'Failed to check in');
@@ -132,20 +224,43 @@ export default function EventDetailDrawer({
     }
   };
 
-  const handleSaveArrival = async (req: ShiftRequest) => {
+  const handleCheckOut = async (req: ShiftRequest) => {
+    if (!req.id) return;
+    setAttendanceSavingId(req.id);
+    try {
+      const { leftEarly, minutesEarly } = await checkOutMember(event, req, actor);
+      onToast(true, `${req.userName} checked out${leftEarly ? ` — left ${minutesEarly}m early` : ''}`);
+    } catch (e) {
+      onToast(false, e instanceof Error ? e.message : 'Failed to check out');
+    } finally {
+      setAttendanceSavingId(null);
+    }
+  };
+
+  /** Manager-only retro-edit: save both time inputs at once, recomputing the derived snapshots. */
+  const handleSaveRetro = async (req: ShiftRequest) => {
     if (!req.id || !eventDay) return;
     const arrival = combineDayAndTime(eventDay, getArrivalDraft(req));
     if (!arrival) {
-      onToast(false, 'Enter a valid time');
+      onToast(false, 'Enter a valid arrival time');
       return;
     }
+    const departure = combineDayAndTime(eventDay, getDepartureDraft(req));
     setAttendanceSavingId(req.id);
     try {
       const minutesLate = computeMinutesLate(arrival, callDateTime);
-      await recordAttendance(req, { checkedInAt: arrival, minutesLate }, actor);
-      onToast(true, `${req.userName}: arrived ${toHHmm(arrival)}`);
+      const patch: Parameters<typeof recordAttendance>[1] = { checkedInAt: arrival, minutesLate };
+      if (departure) {
+        const minutesEarly = computeMinutesEarly(departure, endDateTime);
+        const leftEarly = minutesEarly > 0;
+        patch.shiftEndAt = departure;
+        patch.leftEarly = leftEarly;
+        patch.minutesEarly = leftEarly ? minutesEarly : undefined;
+      }
+      await recordAttendance(req, patch, actor);
+      onToast(true, `${req.userName}: attendance updated`);
     } catch (e) {
-      onToast(false, e instanceof Error ? e.message : 'Failed to save arrival time');
+      onToast(false, e instanceof Error ? e.message : 'Failed to save attendance');
     } finally {
       setAttendanceSavingId(null);
     }
@@ -181,7 +296,8 @@ export default function EventDetailDrawer({
     if (!event.id) return;
     setEndingShifts(true);
     try {
-      const count = await endEventShifts(event.id, actor);
+      // An assigned FTO ends only their own team's shifts; managers (null scope) sweep the event.
+      const count = await endEventShifts(event.id, actor, access.scopeTeamIds);
       onToast(true, count > 0 ? `Ended ${count} shift${count === 1 ? '' : 's'}` : 'No checked-in shifts to end');
     } catch (e) {
       onToast(false, e instanceof Error ? e.message : 'Failed to end shifts');
@@ -236,13 +352,13 @@ export default function EventDetailDrawer({
   const statusChip = STATUS_CHIP[event.status];
 
   const mobileSections = useMemo(() => {
-    const sections: { key: MobilePage; label: string }[] = [];
+    const sections: { key: MobilePage; label: string; badge?: number }[] = [];
     if (event.description || myActiveRequest) sections.push({ key: 'details', label: 'Details' });
     sections.push({ key: 'teams', label: 'Teams' });
-    if (showAttendance) sections.push({ key: 'attendance', label: 'Attendance' });
-    if (canManage) sections.push({ key: 'requests', label: 'Requests' });
+    if (access.visible) sections.push({ key: 'attendance', label: 'Attendance' });
+    if (canManage) sections.push({ key: 'requests', label: 'Requests', badge: pending.length || undefined });
     return sections;
-  }, [event.description, myActiveRequest, showAttendance, canManage]);
+  }, [event.description, myActiveRequest, access.visible, canManage, pending.length]);
 
   useEffect(() => {
     if (mobileSections.length > 0 && !mobileSections.some((s) => s.key === mobilePage)) {
@@ -251,11 +367,9 @@ export default function EventDetailDrawer({
   }, [mobileSections, mobilePage]);
 
   return (
-    <>
-      <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-      <div className="fixed top-0 right-0 bottom-0 z-50 w-full md:w-[480px] md:max-w-[94vw] bg-content1 shadow-2xl flex flex-col">
+    <PanelShell isOpen onClose={onClose} ariaLabel="Event detail" widthClass="w-full md:w-[560px] md:max-w-[94vw]" forceMode="modal">
         {/* Header */}
-        <div className="px-6 py-5 border-b border-divider">
+        <div className="px-6 py-5 border-b border-divider flex-none">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="font-semibold text-lg text-foreground leading-tight">{event.name}</div>
@@ -314,20 +428,36 @@ export default function EventDetailDrawer({
           )}
         </div>
 
-        {/* Mobile page switcher */}
+        {/* Mobile page switcher — real tabs, not faint pills: equal-width targets,
+            a primary label and a solid underline on the active one so it's obvious
+            at a glance which section you're looking at. */}
         {mobileSections.length > 1 && (
-          <div className="md:hidden flex gap-1.5 overflow-x-auto px-6 py-2 border-b border-divider">
+          <div className="md:hidden flex border-b border-divider bg-content1 flex-none" role="tablist">
             {mobileSections.map((s) => {
               const active = mobilePage === s.key;
               return (
                 <button
                   key={s.key}
+                  role="tab"
+                  aria-selected={active}
                   onClick={() => setMobilePage(s.key)}
-                  className={`flex-none text-xs font-semibold px-2.5 py-1.5 rounded-medium border transition-colors duration-150 ${
-                    active ? 'bg-content3 border-content3 text-foreground' : 'bg-content2 border-divider text-foreground-500 hover:bg-content3'
+                  className={`relative flex-1 min-w-0 px-1 pt-3 pb-2.5 text-[12.5px] font-semibold transition-colors duration-150 ${
+                    active ? 'text-primary' : 'text-foreground-400 active:text-foreground-600'
                   }`}
                 >
-                  {s.label}
+                  <span className="flex items-center justify-center gap-1 truncate">
+                    <span className="truncate">{s.label}</span>
+                    {s.badge ? (
+                      <span className="flex-none min-w-[16px] h-4 px-1 rounded-full bg-danger text-white text-[10px] font-bold leading-4">
+                        {s.badge}
+                      </span>
+                    ) : null}
+                  </span>
+                  <span
+                    className={`absolute left-2.5 right-2.5 bottom-0 h-[3px] rounded-t-full transition-opacity duration-150 ${
+                      active ? 'bg-primary opacity-100' : 'opacity-0'
+                    }`}
+                  />
                 </button>
               );
             })}
@@ -348,7 +478,7 @@ export default function EventDetailDrawer({
                         Your request
                       </div>
                       <div className="text-sm font-medium text-foreground">
-                        {myActiveRequest.teamName} · {myActiveRequest.role}
+                        {myActiveRequest.teamName} · {slotRoleLabel(myActiveRequest.role)}
                       </div>
                       <Chip
                         size="sm"
@@ -388,110 +518,181 @@ export default function EventDetailDrawer({
             </div>
           </div>
 
-          {showAttendance && (
+          {access.visible && (
             <div className={mobilePage === 'attendance' ? 'block' : 'hidden md:block'}>
             <div className="flex flex-col gap-3">
               <div className="flex items-center justify-between gap-2">
                 <div className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400 inline-flex items-center gap-1.5">
                   <ClipboardCheck size={11} /> Attendance
                 </div>
-                <Button
-                  size="sm"
-                  variant="light"
-                  startContent={<LogOut size={13} />}
-                  onPress={handleEndShifts}
-                  isLoading={endingShifts}
-                  isDisabled={approved.length === 0}
-                >
-                  End shift
-                </Button>
+                {access.canRecordLive && (
+                  <Button
+                    size="sm"
+                    variant="light"
+                    startContent={<LogOut size={13} />}
+                    onPress={handleEndShifts}
+                    isLoading={endingShifts}
+                    isDisabled={scopedApproved.length === 0}
+                  >
+                    End shift
+                  </Button>
+                )}
               </div>
+
+              {access.mode === 'read-only' && access.reason && (
+                <p className="text-xs text-foreground-400">{access.reason}</p>
+              )}
+              {access.gatedOnSelfCheckIn && access.reason && (
+                <div className="text-xs text-warning-600 bg-warning-50 dark:bg-warning-900/20 rounded-medium px-2.5 py-1.5 inline-flex items-start gap-1.5">
+                  <Info size={12} className="mt-0.5 flex-none" /> {access.reason}
+                </div>
+              )}
+
               {loadingRequests ? (
                 <div className="flex justify-center py-4">
                   <Spinner size="sm" color="primary" />
                 </div>
-              ) : approved.length === 0 ? (
+              ) : scopedApproved.length === 0 ? (
                 <p className="text-sm text-foreground-400">No confirmed members yet.</p>
               ) : (
                 <div className="flex flex-col gap-2">
-                  {approved.map((req) => {
+                  {scopedApproved.map((req) => {
                     const attendance = req.attendance;
                     const checkedIn = !!attendance?.checkedInAt && !attendance?.exception;
-                    const arrivalDate = attendance?.checkedInAt ? toJsDate(attendance.checkedInAt) : null;
-                    const lateMinutes = attendance?.minutesLate ?? 0;
+                    const hasEnded = checkedIn && !!attendance?.shiftEndAt;
                     const saving = attendanceSavingId === req.id;
+                    const isSelf = req.userId === actor.uid;
+                    const gatedOut = access.gatedOnSelfCheckIn && !isSelf;
+                    const disabled = saving || gatedOut;
+
                     return (
-                      <div key={req.id} className="border border-divider rounded-large p-3 flex flex-col gap-2.5">
+                      <div
+                        key={req.id}
+                        data-testid={`attendance-row-${req.userId}`}
+                        className={`border rounded-large p-3 flex flex-col gap-2.5 ${
+                          access.gatedOnSelfCheckIn && isSelf
+                            ? 'border-primary bg-primary-50/50 dark:bg-primary-900/10'
+                            : 'border-divider'
+                        }`}
+                      >
                         <div className="flex items-center justify-between gap-3">
                           <div className="min-w-0">
-                            <div className="text-sm font-semibold text-foreground truncate">{req.userName}</div>
+                            <div className="text-sm font-semibold text-foreground truncate inline-flex items-center gap-1.5">
+                              {req.userName}
+                              {access.gatedOnSelfCheckIn && isSelf && (
+                                <Chip size="sm" variant="flat" color="primary" className="h-4 text-[10px] px-1.5">
+                                  You
+                                </Chip>
+                              )}
+                            </div>
                             <div className="text-xs text-foreground-500">
-                              {req.teamName} · {req.role}
+                              {req.teamName} · {slotRoleLabel(req.role)}
                             </div>
                           </div>
                           <div className="flex items-center gap-1.5 flex-none flex-wrap justify-end">
-                            {attendance?.exception ? (
-                              <Chip size="sm" variant="flat" color={attendance.exception === 'no_show' ? 'danger' : 'default'}>
-                                {attendance.exception === 'no_show' ? 'No-show' : 'Excused'}
-                              </Chip>
-                            ) : checkedIn ? (
-                              <>
-                                <Chip size="sm" variant="flat" color="success">
-                                  Arrived {arrivalDate ? toHHmm(arrivalDate) : ''}
-                                </Chip>
-                                {lateMinutes > 0 && (
-                                  <Chip size="sm" variant="flat" color="warning">
-                                    Late by {lateMinutes}m
-                                  </Chip>
-                                )}
-                              </>
-                            ) : (
-                              <Chip size="sm" variant="flat" color="default">Unrecorded</Chip>
-                            )}
+                            <AttendanceChips attendance={attendance} />
                           </div>
                         </div>
 
-                        <div className="flex items-end gap-2 flex-wrap">
-                          {!checkedIn && !attendance?.exception && (
-                            <Button size="sm" color="primary" variant="flat" onPress={() => handleCheckInNow(req)} isLoading={saving}>
-                              Check in
+                        {access.mode === 'live' && (
+                          <div className="flex items-end gap-2 flex-wrap">
+                            {!checkedIn && !attendance?.exception && (
+                              <>
+                                <Button
+                                  size="sm"
+                                  color="primary"
+                                  variant="flat"
+                                  onPress={() => handleCheckIn(req)}
+                                  isLoading={saving}
+                                  isDisabled={gatedOut}
+                                >
+                                  Check in
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="bordered"
+                                  color="danger"
+                                  onPress={() => handleSetException(req, 'no_show')}
+                                  isDisabled={disabled}
+                                >
+                                  No-show
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="bordered"
+                                  onPress={() => handleSetException(req, 'excused')}
+                                  isDisabled={disabled}
+                                >
+                                  Excused
+                                </Button>
+                              </>
+                            )}
+                            {checkedIn && !hasEnded && (
+                              <Button
+                                size="sm"
+                                variant="bordered"
+                                onPress={() => handleCheckOut(req)}
+                                isLoading={saving}
+                                isDisabled={gatedOut}
+                              >
+                                Check out
+                              </Button>
+                            )}
+                            {access.canClear && (checkedIn || attendance?.exception) && (
+                              <Button size="sm" variant="light" onPress={() => handleClearAttendance(req)} isDisabled={disabled}>
+                                Clear
+                              </Button>
+                            )}
+                          </div>
+                        )}
+
+                        {access.mode === 'retro-edit' && (
+                          <div className="flex items-end gap-2 flex-wrap">
+                            <Input
+                              size="sm"
+                              type="time"
+                              label="Arrived at"
+                              className="w-32"
+                              value={getArrivalDraft(req)}
+                              onValueChange={(v) => req.id && setArrivalDrafts((prev) => ({ ...prev, [req.id!]: v }))}
+                              isDisabled={saving}
+                            />
+                            <Input
+                              size="sm"
+                              type="time"
+                              label="Left at"
+                              className="w-32"
+                              value={getDepartureDraft(req)}
+                              onValueChange={(v) => req.id && setDepartureDrafts((prev) => ({ ...prev, [req.id!]: v }))}
+                              isDisabled={saving}
+                            />
+                            <Button size="sm" variant="bordered" onPress={() => handleSaveRetro(req)} isLoading={saving}>
+                              Save
                             </Button>
-                          )}
-                          <Input
-                            size="sm"
-                            type="time"
-                            label="Arrived at"
-                            className="w-32"
-                            value={getArrivalDraft(req)}
-                            onValueChange={(v) => req.id && setArrivalDrafts((prev) => ({ ...prev, [req.id!]: v }))}
-                            isDisabled={saving}
-                          />
-                          <Button size="sm" variant="bordered" onPress={() => handleSaveArrival(req)} isLoading={saving}>
-                            Save
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant={attendance?.exception === 'no_show' ? 'solid' : 'bordered'}
-                            color="danger"
-                            onPress={() => handleSetException(req, 'no_show')}
-                            isDisabled={saving}
-                          >
-                            No-show
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant={attendance?.exception === 'excused' ? 'solid' : 'bordered'}
-                            onPress={() => handleSetException(req, 'excused')}
-                            isDisabled={saving}
-                          >
-                            Excused
-                          </Button>
-                          {(checkedIn || attendance?.exception) && (
-                            <Button size="sm" variant="light" onPress={() => handleClearAttendance(req)} isDisabled={saving}>
-                              Clear
+                            <Button
+                              size="sm"
+                              variant={attendance?.exception === 'no_show' ? 'solid' : 'bordered'}
+                              color="danger"
+                              onPress={() => handleSetException(req, 'no_show')}
+                              isDisabled={saving}
+                            >
+                              No-show
                             </Button>
-                          )}
-                        </div>
+                            <Button
+                              size="sm"
+                              variant={attendance?.exception === 'excused' ? 'solid' : 'bordered'}
+                              onPress={() => handleSetException(req, 'excused')}
+                              isDisabled={saving}
+                            >
+                              Excused
+                            </Button>
+                            {access.canClear && (
+                              <Button size="sm" variant="light" onPress={() => handleClearAttendance(req)} isDisabled={saving}>
+                                Clear
+                              </Button>
+                            )}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -518,7 +719,7 @@ export default function EventDetailDrawer({
                       <div>
                         <div className="text-sm font-semibold text-foreground">{req.userName}</div>
                         <div className="text-xs text-foreground-500">
-                          {req.teamName} · {req.role} · {formatMemberExperience(req.memberStatus, req.joinedTerm)}
+                          {req.teamName} · {slotRoleLabel(req.role)} · {formatMemberExperience(req.memberStatus, req.joinedTerm)}
                         </div>
                       </div>
                       {req.note && (
@@ -568,7 +769,6 @@ export default function EventDetailDrawer({
             </div>
           )}
         </div>
-      </div>
-    </>
+    </PanelShell>
   );
 }

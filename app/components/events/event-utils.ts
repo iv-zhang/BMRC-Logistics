@@ -93,6 +93,11 @@ export interface TeamSummary {
   ftoOk: boolean;
   emtFilled: number;
   emtCount: number;
+  /** Whether this team carries an FTO-intern slot at all. */
+  hasIntern: boolean;
+  /** Whether that intern slot is filled. NEVER fold this into staffing totals —
+   *  the intern is supernumerary (see `EventTeam` in app/types.ts). */
+  internFilled: boolean;
 }
 
 export function teamSummaryLines(teams: EventTeam[]): TeamSummary[] {
@@ -102,6 +107,8 @@ export function teamSummaryLines(teams: EventTeam[]): TeamSummary[] {
     ftoOk: !!t.ftoSlot?.userId,
     emtFilled: (t.emtSlots || []).filter((s) => s.userId).length,
     emtCount: t.emtCount,
+    hasIntern: t.hasFtoIntern === true,
+    internFilled: t.hasFtoIntern === true && !!t.ftoInternSlot?.userId,
   }));
 }
 
@@ -129,10 +136,159 @@ export function eventCallDateTime(event: Event): Date | null {
   return d;
 }
 
+/**
+ * Combine `event.date` with `event.endTime` ("HH:mm") into a Date. Null if the
+ * event has no end time — early-departure is undeterminable in that case, which
+ * callers must treat as "not early" rather than guessing.
+ */
+export function eventEndDateTime(event: Event): Date | null {
+  if (!event.endTime) return null;
+  const day = toJsDate(event.date);
+  if (!day) return null;
+  const match = /^(\d{1,2}):(\d{2})$/.exec(event.endTime.trim());
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  const d = new Date(day);
+  d.setHours(hours, minutes, 0, 0);
+  return d;
+}
+
 /** Minutes an arrival is after the event's call time (never negative). 0 if no call time is set. */
 export function computeMinutesLate(arrival: Date, callDateTime: Date | null): number {
   if (!callDateTime) return 0;
   return Math.max(0, Math.round((arrival.getTime() - callDateTime.getTime()) / 60000));
+}
+
+/**
+ * Minutes a departure is BEFORE the event's end time (never negative). 0 when
+ * the event has no end time. There is deliberately no grace window: any
+ * departure strictly before the scheduled end counts as leaving early.
+ */
+export function computeMinutesEarly(departure: Date, endDateTime: Date | null): number {
+  if (!endDateTime) return 0;
+  return Math.max(0, Math.round((endDateTime.getTime() - departure.getTime()) / 60000));
+}
+
+/**
+ * Has the event finished? Uses the end datetime when `endTime` is set, else the
+ * end of the event day. This is what flips attendance from the live stamp flow
+ * to the retroactive (manager-only edit) view — no manual "close" step needed.
+ */
+export function isEventPast(event: Event, now: Date = new Date()): boolean {
+  const end = eventEndDateTime(event);
+  if (end) return now.getTime() > end.getTime();
+  const day = toJsDate(event.date);
+  if (!day) return false;
+  const endOfDay = new Date(day);
+  endOfDay.setHours(23, 59, 59, 999);
+  return now.getTime() > endOfDay.getTime();
+}
+
+// ---------------------------------------------------------------------------
+// Attendance permissions (who may record / edit, and over which teams)
+// ---------------------------------------------------------------------------
+
+export type AttendanceMode = 'live' | 'retro-edit' | 'read-only';
+
+export interface AttendanceAccess {
+  /** Whether the attendance panel renders at all for this viewer. */
+  visible: boolean;
+  mode: AttendanceMode;
+  /** Team ids the viewer may see/act on; `null` means every team on the event. */
+  scopeTeamIds: string[] | null;
+  /** Stamp-only controls (Check in / Check out / No-show / Excused). */
+  canRecordLive: boolean;
+  /** Retroactive time + status overrides, incl. the arrival/departure inputs. */
+  canEditRetro: boolean;
+  /** Managers may wipe an attendance record back to unrecorded. */
+  canClear: boolean;
+  /**
+   * True when the viewer is an assigned FTO who has not checked THEMSELVES in
+   * yet: they may only act on their own row until they start the shift.
+   */
+  gatedOnSelfCheckIn: boolean;
+  /** User-facing explanation for a restricted state (read-only / gated). */
+  reason?: string;
+}
+
+/**
+ * The single source of truth for attendance permissions (see decisions.md D-29).
+ *
+ * - Managers (admin/quartermaster/medops) act on every team. While the event is
+ *   live they get the stamp controls; once it is past they get the ONLY
+ *   retroactive edit surface in the app.
+ * - The assigned FTO acts on their own team only, live only, and must check
+ *   themselves in first — that is what starts the shift.
+ * - An FTO intern is a normal attendee: they are checked in like anyone else and
+ *   get no recording powers of their own.
+ * - Everyone else: no panel.
+ */
+export function getAttendanceAccess(params: {
+  event: Event;
+  viewerRole: string | null | undefined;
+  viewerUid: string | null | undefined;
+  /** Whether the viewer's own approved request already has a check-in stamp. */
+  viewerCheckedIn: boolean;
+  now?: Date;
+}): AttendanceAccess {
+  const { event, viewerRole, viewerUid, viewerCheckedIn } = params;
+  const now = params.now ?? new Date();
+  const isManager =
+    viewerRole === 'admin' || viewerRole === 'quartermaster' || viewerRole === 'medops';
+  const myFtoTeamIds = (event.teams || [])
+    .filter((t) => !!viewerUid && t.ftoSlot?.userId === viewerUid)
+    .map((t) => t.id);
+  const isAssignedFto = myFtoTeamIds.length > 0;
+  const past = isEventPast(event, now);
+
+  if (isManager) {
+    return {
+      visible: true,
+      mode: past ? 'retro-edit' : 'live',
+      scopeTeamIds: null,
+      canRecordLive: !past,
+      canEditRetro: past,
+      canClear: true,
+      gatedOnSelfCheckIn: false,
+    };
+  }
+
+  if (isAssignedFto) {
+    if (past) {
+      return {
+        visible: true,
+        mode: 'read-only',
+        scopeTeamIds: myFtoTeamIds,
+        canRecordLive: false,
+        canEditRetro: false,
+        canClear: false,
+        gatedOnSelfCheckIn: false,
+        reason: 'This event has ended — contact MedOps or an admin to correct attendance.',
+      };
+    }
+    return {
+      visible: true,
+      mode: 'live',
+      scopeTeamIds: myFtoTeamIds,
+      canRecordLive: true,
+      canEditRetro: false,
+      canClear: false,
+      gatedOnSelfCheckIn: !viewerCheckedIn,
+      reason: viewerCheckedIn ? undefined : 'Check yourself in to start the shift.',
+    };
+  }
+
+  return {
+    visible: false,
+    mode: 'read-only',
+    scopeTeamIds: [],
+    canRecordLive: false,
+    canEditRetro: false,
+    canClear: false,
+    gatedOnSelfCheckIn: false,
+  };
 }
 
 /** Hours between check-in and shift-end, rounded to 1 decimal. Null if either is missing/unresolved. */

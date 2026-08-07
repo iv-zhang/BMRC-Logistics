@@ -17,6 +17,7 @@ import CountControl from '@/app/components/count-control';
 import ConditionToggle, { type ConditionValue } from '@/app/components/condition-toggle';
 import StorageLocationPicker from '@/app/components/storage-location-picker';
 import ScannerInput from '@/app/components/scanner-input';
+import PanelShell from '@/app/components/panel-shell';
 import { determineIsAsset } from '@/app/lib/inventory';
 import { computeBagStock, displayLocation, getItemStatus } from '@/app/lib/item-status';
 import { parseGs1Barcode } from '@/app/lib/gs1';
@@ -307,15 +308,7 @@ export default function AuditActionDrawer({
   );
 
   return (
-    <>
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm"
-        onClick={onClose}
-      />
-      {/* Drawer */}
-      <div className="fixed top-0 right-0 bottom-0 z-50 w-[480px] max-w-[94vw] bg-content1 shadow-2xl flex flex-col">
-
+    <PanelShell isOpen onClose={onClose} ariaLabel={`Audit actions for ${item.name}`}>
         {/* Header */}
         <div className="px-6 py-5 border-b border-divider">
           <div className="flex items-start justify-between gap-3">
@@ -662,7 +655,6 @@ export default function AuditActionDrawer({
             {SUBMIT_LABEL[action]}
           </Button>
         </div>
-      </div>
-    </>
+    </PanelShell>
   );
 }

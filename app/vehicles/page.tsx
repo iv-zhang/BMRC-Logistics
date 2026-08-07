@@ -28,6 +28,7 @@ import { useVehicles, useVehicleLogs } from '@/app/hooks/useVehicles';
 import { retireVehicle, reactivateVehicle, deleteVehicleIfUnused, forceCloseVehicleLog } from '@/app/lib/vehicles';
 import { fuelLabel, formatWhen, readingsSummary } from '@/app/lib/vehicle-format';
 import VehicleEditorModal from '@/app/components/vehicles/vehicle-editor-modal';
+import PanelShell from '@/app/components/panel-shell';
 import type { Vehicle, VehicleLog } from '@/app/types';
 
 const TYPE_ICONS: Record<string, React.ComponentType<{ size?: number; className?: string }>> = {
@@ -313,9 +314,7 @@ function VehicleHistoryDrawer({
   };
 
   return (
-    <>
-      <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-      <div className="fixed top-0 right-0 bottom-0 z-50 w-[480px] max-w-[94vw] bg-content1 shadow-2xl flex flex-col">
+    <PanelShell isOpen onClose={onClose} ariaLabel="Vehicle detail">
         {/* Header */}
         <div className="px-6 py-5 border-b border-divider">
           <div className="flex items-start justify-between gap-3">
@@ -406,7 +405,6 @@ function VehicleHistoryDrawer({
             })
           )}
         </div>
-      </div>
-    </>
+    </PanelShell>
   );
 }

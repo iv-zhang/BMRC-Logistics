@@ -4,7 +4,7 @@
  *  (name + EMT count 2–4, clamped via `clampEmtCount`/`resizeEmtSlots`). */
 
 import { useEffect, useState } from 'react';
-import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button, Input, Textarea, Select, SelectItem } from '@heroui/react';
+import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button, Input, Textarea, Select, SelectItem, Switch } from '@heroui/react';
 import { Plus, Trash2, Minus } from 'lucide-react';
 import { createEvent, updateEvent, createEmptyTeam, resizeEmtSlots, clampEmtCount, type EventActor } from '@/app/lib/events';
 import { useOrgConfig } from '@/app/hooks/useOrgConfig';
@@ -83,6 +83,18 @@ export default function EventEditorModal({ isOpen, onClose, event, actor, onSave
         if (t.id !== teamId) return t;
         const count = clampEmtCount(t.emtCount + delta);
         return { ...t, emtCount: count, emtSlots: resizeEmtSlots(t.emtSlots, count) };
+      }),
+    );
+  };
+
+  const toggleFtoIntern = (teamId: string, on: boolean) => {
+    setTeams((prev) =>
+      prev.map((t) => {
+        if (t.id !== teamId) return t;
+        // Turning off clears any stale assignment; turning on ensures the slot
+        // exists without clobbering one that was already there.
+        const ftoInternSlot = on ? (t.ftoInternSlot ?? {}) : {};
+        return { ...t, hasFtoIntern: on, ftoInternSlot };
       }),
     );
   };
@@ -216,6 +228,21 @@ export default function EventEditorModal({ isOpen, onClose, event, actor, onSave
                   <Button size="sm" isIconOnly variant="bordered" onPress={() => changeEmtCount(team.id, 1)} aria-label="More EMTs">
                     <Plus size={13} />
                   </Button>
+                </div>
+                <div className="flex items-center gap-2 flex-none">
+                  <Switch
+                    size="sm"
+                    isSelected={!!team.hasFtoIntern}
+                    onValueChange={(on) => toggleFtoIntern(team.id, on)}
+                    aria-label="FTO intern"
+                  >
+                    <span className="text-xs text-foreground-500">
+                      FTO intern
+                      <span className="block text-[10px] text-foreground-400 leading-tight">
+                        Supervised trainee — not counted toward headcount
+                      </span>
+                    </span>
+                  </Switch>
                 </div>
                 <Button
                   size="sm"

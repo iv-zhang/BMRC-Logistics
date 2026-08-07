@@ -80,6 +80,7 @@ export default function EventList({ events, myRequests, pendingRequests, canMana
                   className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-content2 text-foreground-500"
                 >
                   {t.name}: FTO {t.ftoOk ? '✓' : '—'} · EMT {t.emtFilled}/{t.emtCount}
+                  {t.hasIntern ? ` · Intern ${t.internFilled ? '✓' : '—'}` : ''}
                 </span>
               ))}
             </div>

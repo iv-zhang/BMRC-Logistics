@@ -78,6 +78,9 @@ export default function RegisterPage() {
         fullName,
         email: trimmedEmail,
         role: 'member',
+        // Fresh accounts have not seen onboarding — the interactive tour fires
+        // once on first use, then stamps this true (see onboarding-tour.tsx).
+        tutorialCompleted: false,
         createdAt: new Date(),
         updatedAt: new Date(),
       };

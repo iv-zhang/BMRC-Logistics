@@ -87,8 +87,14 @@ export interface User {
   /**
    * `medops` is a reduced-admin role: it staffs events and switches members
    * between FTO/member, but is NOT `isAdmin` and sees no logistics surfaces.
+   *
+   * `fto_intern` is the training tier below `FTO`: an intern shadows a real FTO
+   * in the field to earn experience. It is a role position like member/FTO —
+   * same cert gating, same permissions as `FTO` — but an intern may only fill
+   * the supernumerary FTO-intern slot (or a plain EMT slot), never the FTO slot,
+   * and never gains the FTO's attendance-recording powers.
    */
-  role: 'admin' | 'member' | 'FTO' | 'quartermaster' | 'inventory_helper' | 'medops';
+  role: 'admin' | 'member' | 'FTO' | 'fto_intern' | 'quartermaster' | 'inventory_helper' | 'medops';
   /** When true, this member can perform inventory audits even if not admin/quartermaster */
   canAudit?: boolean;
   /** When true, this member is on the Logistics Committee (sees the Committee Board) even if not admin/quartermaster */
@@ -146,7 +152,7 @@ export type CertStatus = 'valid' | 'expired' | 'missing';
 
 // --- EVENTS & SHIFT STAFFING ---
 /** Which member roles may fill a given team slot. */
-export type SlotRole = 'FTO' | 'EMT';
+export type SlotRole = 'FTO' | 'FTO_INTERN' | 'EMT';
 
 /** One assignable slot on a team (empty until a request is approved into it). */
 export interface TeamSlot {
@@ -158,13 +164,27 @@ export interface TeamSlot {
 
 /**
  * A staffing team on an event: exactly one FTO + `emtCount` EMTs (2–4, default
- * 3). An event may have multiple teams. `emtSlots.length` tracks `emtCount`.
+ * 3), plus an optional single FTO-intern who shadows the FTO. An event may have
+ * multiple teams. `emtSlots.length` tracks `emtCount`.
  */
 export interface EventTeam {
   id: string;
   name: string;
   /** The single FTO slot. */
   ftoSlot: TeamSlot;
+  /**
+   * Whether this team carries an FTO-intern slot. Defaults to ON for teams
+   * created after the intern feature landed; `undefined` on a legacy doc means
+   * OFF, so pre-existing events don't retroactively sprout an open slot.
+   */
+  hasFtoIntern?: boolean;
+  /**
+   * The single FTO-intern slot (only meaningful when `hasFtoIntern`). The intern
+   * is SUPERNUMERARY: they are an addition to the team, never a substitute, and
+   * must NOT be counted toward staffing totals (a team is staffed at 1 FTO +
+   * `emtCount` EMTs regardless of whether the intern slot is filled).
+   */
+  ftoInternSlot?: TeamSlot;
   /** Desired EMT headcount, clamped 2–4. */
   emtCount: number;
   emtSlots: TeamSlot[];
@@ -212,19 +232,36 @@ export type AttendanceStatus = 'no_show' | 'excused';
 
 /**
  * Attendance record stamped onto an approved ShiftRequest. A member
- * "attended" iff `checkedInAt` is set and `exception` is unset. `minutesLate`
- * is a stored snapshot computed at check-in time from arrival − event call
- * time; it may be recomputed when an FTO overrides the arrival time.
+ * "attended" iff `checkedInAt` is set and `exception` is unset.
+ *
+ * Times are STAMPED BY BUTTON PRESS, never typed: "Check in" sets `checkedInAt`
+ * to now, "Check out" sets `shiftEndAt` to now. There is deliberately no
+ * arrival-time entry field in the live flow — whenever the FTO taps check in IS
+ * when the member arrived. Only a manager (admin/quartermaster/medops) editing a
+ * past event may override these times after the fact.
+ *
+ * `minutesLate` / `minutesEarly` / `leftEarly` are stored SNAPSHOTS derived at
+ * stamp time from the event's call and end times; they are recomputed when a
+ * manager overrides a time retroactively.
  */
 export interface AttendanceRecord {
-  /** Stamped when the member checks in (or an FTO backfills the arrival time). */
+  /** Stamped when the member checks in (or a manager backfills the arrival time). */
   checkedInAt?: Timestamp | Date | FieldValue;
-  /** Stamped when the pack tied to this shift is checked back in, or via manual "End shift". */
+  /** Stamped on "Check out", by manual "End shift", or when the pack tied to this shift is checked back in. */
   shiftEndAt?: Timestamp | Date | FieldValue;
   /** Snapshot: arrival − event call time, in minutes (>= 0). Recomputed on override. */
   minutesLate?: number;
   /** No-show / excused absence. Mutually exclusive with `checkedInAt`. */
   exception?: AttendanceStatus;
+  /**
+   * Snapshot marker that the member checked out before the event's scheduled end
+   * time — DERIVED at check-out, never a toggle. No grace window: any departure
+   * strictly before the end time counts. Left unset when the event has no
+   * `endTime` (undeterminable). Only meaningful when `checkedInAt` is set.
+   */
+  leftEarly?: boolean;
+  /** Snapshot: event end time − departure, in minutes (> 0). Set only when `leftEarly`. */
+  minutesEarly?: number;
   notes?: string;
   recordedBy: string;
   recordedByName?: string;

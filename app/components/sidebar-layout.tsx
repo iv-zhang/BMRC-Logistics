@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { usePathname } from 'next/navigation';
 import AppSidebar from './app-sidebar';
 import MobileBottomNav from './mobile-bottom-nav';
+import OnboardingTour from './onboarding-tour';
 import { useUserRole } from '@/app/hooks/useUserRole';
 
 const NO_SIDEBAR_PATHS = ['/login', '/register', '/forgot-password'];
@@ -40,7 +41,7 @@ export default function SidebarLayout({ children }: { children: React.ReactNode 
         />
       )}
       <div
-        className={`${showSidebar ? 'max-md:!ml-0' : ''} ${showBottomNav ? 'max-md:pb-[72px]' : ''}`}
+        className={`${showSidebar ? 'max-sm:!ml-0' : ''} ${showBottomNav ? 'max-sm:pb-[72px]' : ''}`}
         style={{
           marginLeft: showSidebar && !navHidden ? 72 : 0,
           transition: 'margin-left 0.22s cubic-bezier(.16,1,.3,1)',
@@ -50,6 +51,7 @@ export default function SidebarLayout({ children }: { children: React.ReactNode 
         {children}
       </div>
       {showBottomNav && <MobileBottomNav />}
+      {showSidebar && <OnboardingTour />}
     </>
   );
 }

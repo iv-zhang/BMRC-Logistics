@@ -456,6 +456,12 @@ export const ROLES: RoleDef[] = [
     permissions: ['statpacks.checkout', 'statpacks.checkin', 'assets.checkout', 'assets.checkin'],
   },
   {
+    id: 'fto_intern',
+    label: 'FTO Intern',
+    description: 'Field Training Officer in training — shadows an FTO for field experience',
+    permissions: ['statpacks.checkout', 'statpacks.checkin', 'assets.checkout', 'assets.checkin'],
+  },
+  {
     id: 'member',
     label: 'Member',
     description: 'Standard member',

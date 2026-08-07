@@ -36,6 +36,7 @@ import type { User } from '@/app/types';
 export const TEST_USER_IDS = {
   member: '__test_member',
   fto: '__test_fto',
+  ftoIntern: '__test_fto_intern',
   medops: '__test_medops',
   quartermaster: '__test_quartermaster',
   admin: '__test_admin',
@@ -51,6 +52,7 @@ export interface TestIdentityDef {
 export const TEST_IDENTITIES: TestIdentityDef[] = [
   { id: TEST_USER_IDS.member, fullName: 'Test Member', email: 'test-member@bmrc.test', role: 'member' },
   { id: TEST_USER_IDS.fto, fullName: 'Test FTO', email: 'test-fto@bmrc.test', role: 'FTO' },
+  { id: TEST_USER_IDS.ftoIntern, fullName: 'Test FTO Intern', email: 'test-fto-intern@bmrc.test', role: 'fto_intern' },
   { id: TEST_USER_IDS.medops, fullName: 'Test MedOps', email: 'test-medops@bmrc.test', role: 'medops' },
   { id: TEST_USER_IDS.quartermaster, fullName: 'Test Quartermaster', email: 'test-quartermaster@bmrc.test', role: 'quartermaster' },
   { id: TEST_USER_IDS.admin, fullName: 'Test Admin', email: 'test-admin@bmrc.test', role: 'admin' },
@@ -184,12 +186,12 @@ export async function clearTestIdentityHistory(testUid: string): Promise<{ delet
     console.warn('clearTestIdentityHistory: statpacks vacate failed', err);
   }
 
-  // Vacate: any event team slot (FTO or EMT) this identity is holding
+  // Vacate: any event team slot (FTO, FTO intern, or EMT) this identity is holding
   try {
     const snap = await getDocs(collection(db, 'events'));
     const updates: Promise<void>[] = [];
     for (const d of snap.docs) {
-      const data = d.data() as { teams?: Array<{ id: string; ftoSlot?: { userId?: string }; emtSlots?: Array<{ userId?: string }> }> };
+      const data = d.data() as { teams?: Array<{ id: string; ftoSlot?: { userId?: string }; ftoInternSlot?: { userId?: string }; emtSlots?: Array<{ userId?: string }> }> };
       const teams = data.teams;
       if (!Array.isArray(teams)) continue;
       let changed = false;
@@ -200,6 +202,11 @@ export async function clearTestIdentityHistory(testUid: string): Promise<{ delet
           teamChanged = true;
           nextFto = {};
         }
+        let nextIntern = team.ftoInternSlot;
+        if (team.ftoInternSlot?.userId === testUid) {
+          teamChanged = true;
+          nextIntern = {};
+        }
         const nextEmtSlots = (team.emtSlots || []).map((slot) => {
           if (slot.userId === testUid) {
             teamChanged = true;
@@ -208,7 +215,9 @@ export async function clearTestIdentityHistory(testUid: string): Promise<{ delet
           return slot;
         });
         if (teamChanged) changed = true;
-        return teamChanged ? { ...team, ftoSlot: nextFto, emtSlots: nextEmtSlots } : team;
+        return teamChanged
+          ? { ...team, ftoSlot: nextFto, ftoInternSlot: nextIntern, emtSlots: nextEmtSlots }
+          : team;
       });
       if (changed) {
         updates.push(updateDoc(d.ref, { teams: nextTeams, updatedAt: serverTimestamp() }));

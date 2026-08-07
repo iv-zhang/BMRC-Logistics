@@ -4,13 +4,16 @@
  * Events + shift-staffing operations (`events` and `shift_requests` collections).
  *
  * An event is staffed by one or more TEAMS; each team is exactly one FTO plus
- * `emtCount` EMTs (clamped 2–4, default 3). Members self-request a role on a
- * team (`shift_requests`); a manager (admin/quartermaster/medops) approves,
- * which places them into an open slot on the event's `teams` array.
+ * `emtCount` EMTs (clamped 2–4, default 3), plus an optional single FTO-INTERN
+ * who shadows the FTO. Members self-request a role on a team
+ * (`shift_requests`); a manager (admin/quartermaster/medops) approves, which
+ * places them into an open slot on the event's `teams` array.
  *
- * Eligibility: FTO-role members may request FTO or EMT slots; everyone else may
- * request EMT slots only. Signup is additionally gated on valid certifications
- * (see app/lib/certifications.ts).
+ * Eligibility: FTO-role members may request FTO or EMT slots; `fto_intern`-role
+ * members may request the intern or EMT slot; everyone else may request EMT
+ * slots only. The intern is supernumerary — never counted toward staffing
+ * totals. Signup is additionally gated on valid certifications, identically for
+ * every role including interns (see app/lib/certifications.ts).
  */
 
 import {
@@ -44,7 +47,13 @@ import type {
   User,
   AttendanceStatus,
 } from '@/app/types';
-import { shiftHours } from '@/app/components/events/event-utils';
+import {
+  shiftHours,
+  eventCallDateTime,
+  eventEndDateTime,
+  computeMinutesLate,
+  computeMinutesEarly,
+} from '@/app/components/events/event-utils';
 
 export interface EventActor {
   uid: string;
@@ -61,10 +70,22 @@ export function isEventManagerRole(role?: string | null): boolean {
   return role === 'admin' || role === 'quartermaster' || role === 'medops';
 }
 
-/** May a member of `userRole` request `slotRole`? EMT: anyone; FTO: FTO-role or manager. */
+/**
+ * May a member of `userRole` request `slotRole`?
+ * - EMT: anyone (including FTOs and interns).
+ * - FTO: `FTO` role or a manager. Interns explicitly may NOT — earning the FTO
+ *   slot is the whole point of the intern tier.
+ * - FTO_INTERN: `fto_intern` role or a manager.
+ */
 export function canRequestRole(userRole: string | null | undefined, slotRole: SlotRole): boolean {
   if (slotRole === 'EMT') return true;
+  if (slotRole === 'FTO_INTERN') return userRole === 'fto_intern' || isEventManagerRole(userRole);
   return userRole === 'FTO' || isEventManagerRole(userRole);
+}
+
+/** Human label for a slot role ("FTO Intern" reads better than the raw enum). */
+export function slotRoleLabel(slotRole: SlotRole): string {
+  return slotRole === 'FTO_INTERN' ? 'FTO Intern' : slotRole;
 }
 
 // ---------------------------------------------------------------------------
@@ -88,22 +109,33 @@ export function resizeEmtSlots(slots: TeamSlot[], emtCount: number): TeamSlot[] 
   return next;
 }
 
-export function createEmptyTeam(name: string, emtCount = DEFAULT_EMTS): EventTeam {
+/** New teams carry an FTO-intern slot by default; legacy docs (undefined) do not. */
+export function teamHasIntern(team: EventTeam): boolean {
+  return team.hasFtoIntern === true;
+}
+
+export function createEmptyTeam(name: string, emtCount = DEFAULT_EMTS, hasFtoIntern = true): EventTeam {
   const count = clampEmtCount(emtCount);
   return {
     id: `team_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     name,
     ftoSlot: emptySlot(),
+    hasFtoIntern,
+    ftoInternSlot: emptySlot(),
     emtCount: count,
     emtSlots: Array.from({ length: count }, emptySlot),
   };
 }
 
-/** Count of filled slots on a team. */
-export function teamFilledCount(team: EventTeam): { fto: number; emt: number } {
+/**
+ * Count of filled slots on a team. `intern` is reported separately and must NOT
+ * be folded into staffing totals — the intern is supernumerary (see EventTeam).
+ */
+export function teamFilledCount(team: EventTeam): { fto: number; intern: number; emt: number } {
   return {
     fto: team.ftoSlot?.userId ? 1 : 0,
-    emt: team.emtSlots.filter((s) => s.userId).length,
+    intern: teamHasIntern(team) && team.ftoInternSlot?.userId ? 1 : 0,
+    emt: (team.emtSlots || []).filter((s) => s.userId).length,
   };
 }
 
@@ -218,10 +250,17 @@ export async function requestShift(
     throw new Error(getShiftBlockReason(requester) || 'Your certifications are not current.');
   }
   if (!canRequestRole(requester.role, role)) {
-    throw new Error('Only FTOs may request the FTO slot.');
+    throw new Error(
+      role === 'FTO_INTERN'
+        ? 'Only FTO interns may request the FTO intern slot.'
+        : 'Only FTOs may request the FTO slot.',
+    );
   }
   const team = event.teams.find((t) => t.id === teamId);
   if (!team) throw new Error('Team not found on this event.');
+  if (role === 'FTO_INTERN' && !teamHasIntern(team)) {
+    throw new Error('This team does not have an FTO intern slot.');
+  }
 
   // Block a second active request for the same event.
   const existing = await getDocs(
@@ -268,7 +307,7 @@ export async function requestShift(
       {
         type: 'broadcast',
         title: 'New shift request',
-        body: `${requester.name} requested ${team.name} · ${role} for ${event.name}`,
+        body: `${requester.name} requested ${team.name} · ${slotRoleLabel(role)} for ${event.name}`,
         link: '/events?event=' + event.id,
       },
       { uid: requester.uid, name: requester.name },
@@ -304,6 +343,15 @@ export async function approveRequest(request: ShiftRequest, actor: EventActor): 
       }
       team.ftoSlot = slot;
       placed = 'fto';
+    } else if (request.role === 'FTO_INTERN') {
+      if (!teamHasIntern(team)) {
+        throw new Error('This team does not have an FTO intern slot.');
+      }
+      if (team.ftoInternSlot?.userId && team.ftoInternSlot.userId !== request.userId) {
+        throw new Error('The FTO intern slot on this team is already filled.');
+      }
+      team.ftoInternSlot = slot;
+      placed = 'intern';
     } else {
       team.emtSlots = resizeEmtSlots(team.emtSlots || [], team.emtCount);
       const idx = team.emtSlots.findIndex((s) => !s.userId);
@@ -330,7 +378,7 @@ export async function approveRequest(request: ShiftRequest, actor: EventActor): 
       {
         type: 'request_approved',
         title: `You're confirmed: ${request.eventName}`,
-        body: `${request.teamName} · ${request.role}. See you there!`,
+        body: `${request.teamName} · ${slotRoleLabel(request.role)}. See you there!`,
         link: '/events',
       },
       { uid: actor.uid, name: actor.name },
@@ -361,8 +409,8 @@ export async function rejectRequest(
         type: 'request_rejected',
         title: `Update on ${request.eventName}`,
         body: reason?.trim()
-          ? `Your ${request.role} request wasn't approved: ${reason.trim()}`
-          : `Your ${request.role} request wasn't approved this time.`,
+          ? `Your ${slotRoleLabel(request.role)} request wasn't approved: ${reason.trim()}`
+          : `Your ${slotRoleLabel(request.role)} request wasn't approved this time.`,
         link: '/events',
       },
       { uid: actor.uid, name: actor.name },
@@ -396,6 +444,12 @@ export async function cancelRequest(request: ShiftRequest): Promise<void> {
         if (team.ftoSlot?.requestId === request.id || team.ftoSlot?.userId === request.userId) {
           team.ftoSlot = {};
         }
+        if (
+          team.ftoInternSlot?.requestId === request.id ||
+          team.ftoInternSlot?.userId === request.userId
+        ) {
+          team.ftoInternSlot = {};
+        }
         team.emtSlots = (team.emtSlots || []).map((s) =>
           s.requestId === request.id || s.userId === request.userId ? {} : s,
         );
@@ -411,18 +465,33 @@ export async function cancelRequest(request: ShiftRequest): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Patch attendance onto an approved request. Intended caller: the team's FTO or
- * a manager (UI enforces who sees the control).
+ * Low-level attendance patch on an approved request. This is the MANAGER
+ * (admin/quartermaster/medops) retro-edit path — the live FTO flow goes through
+ * `checkInMember` / `checkOutMember`, which stamp `now` and derive the snapshots.
+ * The UI enforces who may call this (see `getAttendanceAccess` in event-utils).
  *
  * Semantics: `checkedInAt: Date` sets arrival (and clears any exception);
  * `checkedInAt: null` clears arrival. `exception: 'no_show' | 'excused'` sets an
  * exception (and clears arrival/minutesLate); `exception: null` clears it.
- * Passing neither leaves the existing value alone. Any existing `shiftEndAt` is
- * always preserved (only `endEventShifts` sets/clears it).
+ * Passing neither leaves the existing value alone. `shiftEndAt: Date` sets a
+ * departure time (used to mark an early departure); `shiftEndAt: null` clears
+ * it; omitted, the existing value is preserved (only `endEventShifts` normally
+ * sets/clears it otherwise). `leftEarly: true` marks the member as having left
+ * before the event's scheduled end; `leftEarly: false` clears it; omitted, the
+ * existing value is preserved. Clearing `checkedInAt` or setting an `exception`
+ * also clears `leftEarly`/`shiftEndAt` — an absent member can't have left early.
  */
 export async function recordAttendance(
   request: ShiftRequest,
-  patch: { checkedInAt?: Date | null; minutesLate?: number; exception?: 'no_show' | 'excused' | null; notes?: string },
+  patch: {
+    checkedInAt?: Date | null;
+    minutesLate?: number;
+    exception?: 'no_show' | 'excused' | null;
+    notes?: string;
+    shiftEndAt?: Date | null;
+    leftEarly?: boolean;
+    minutesEarly?: number;
+  },
   actor: EventActor,
 ): Promise<void> {
   if (!request.id) throw new Error('Request id missing');
@@ -435,7 +504,9 @@ export async function recordAttendance(
   let checkedInAt: Date | Timestamp | FieldValue | undefined = existing?.checkedInAt;
   let minutesLate: number | undefined = existing?.minutesLate;
   let exception: AttendanceStatus | undefined = existing?.exception;
-  const shiftEndAt = existing?.shiftEndAt;
+  let shiftEndAt: Date | Timestamp | FieldValue | undefined = existing?.shiftEndAt;
+  let leftEarly: boolean | undefined = existing?.leftEarly;
+  let minutesEarly: number | undefined = existing?.minutesEarly;
 
   if (patch.checkedInAt !== undefined) {
     if (patch.checkedInAt) {
@@ -445,6 +516,9 @@ export async function recordAttendance(
     } else {
       checkedInAt = undefined;
       minutesLate = undefined;
+      leftEarly = undefined; // no check-in means "left early" is meaningless
+      minutesEarly = undefined;
+      shiftEndAt = undefined;
     }
   } else if (patch.minutesLate !== undefined && checkedInAt) {
     minutesLate = patch.minutesLate;
@@ -455,9 +529,31 @@ export async function recordAttendance(
       exception = patch.exception;
       checkedInAt = undefined; // setting an exception clears checkedInAt/minutesLate
       minutesLate = undefined;
+      leftEarly = undefined; // an absent member can't have left early
+      minutesEarly = undefined;
+      shiftEndAt = undefined;
     } else {
       exception = undefined;
     }
+  }
+
+  if (patch.shiftEndAt !== undefined) {
+    if (patch.shiftEndAt) {
+      shiftEndAt = patch.shiftEndAt;
+    } else {
+      shiftEndAt = undefined;
+      leftEarly = undefined; // no departure time ⇒ no early-departure snapshot
+      minutesEarly = undefined;
+    }
+  }
+
+  if (patch.leftEarly !== undefined) {
+    leftEarly = patch.leftEarly ? true : undefined;
+    if (!patch.leftEarly) minutesEarly = undefined;
+  }
+
+  if (patch.minutesEarly !== undefined) {
+    minutesEarly = patch.minutesEarly > 0 ? patch.minutesEarly : undefined;
   }
 
   const notes = patch.notes !== undefined ? (patch.notes.trim() || undefined) : existing?.notes;
@@ -468,6 +564,8 @@ export async function recordAttendance(
       shiftEndAt,
       minutesLate,
       exception,
+      leftEarly,
+      minutesEarly,
       notes,
       recordedBy: actor.uid,
       recordedByName: actor.name,
@@ -477,12 +575,63 @@ export async function recordAttendance(
 }
 
 /**
+ * Live check-in: arrival IS the moment the button is tapped. Stamps
+ * `checkedInAt = now` and the `minutesLate` snapshot against the event's call
+ * time. There is deliberately no arrival-time argument — retroactive time
+ * changes are a manager-only path through `recordAttendance`.
+ */
+export async function checkInMember(
+  event: Event,
+  request: ShiftRequest,
+  actor: EventActor,
+  now: Date = new Date(),
+): Promise<{ minutesLate: number }> {
+  const minutesLate = computeMinutesLate(now, eventCallDateTime(event));
+  await recordAttendance(request, { checkedInAt: now, minutesLate }, actor);
+  return { minutesLate };
+}
+
+/**
+ * Live check-out: departure IS the moment the button is tapped. Stamps
+ * `shiftEndAt = now` and derives the early-departure snapshot from the event's
+ * end time — strictly, with no grace window. When the event has no `endTime`,
+ * `leftEarly`/`minutesEarly` are left unset (undeterminable), and the shift
+ * simply ends.
+ */
+export async function checkOutMember(
+  event: Event,
+  request: ShiftRequest,
+  actor: EventActor,
+  now: Date = new Date(),
+): Promise<{ leftEarly: boolean; minutesEarly: number }> {
+  if (!request.attendance?.checkedInAt) {
+    throw new Error('Check the member in before checking them out.');
+  }
+  const minutesEarly = computeMinutesEarly(now, eventEndDateTime(event));
+  const leftEarly = minutesEarly > 0;
+  await recordAttendance(
+    request,
+    { shiftEndAt: now, leftEarly, minutesEarly: leftEarly ? minutesEarly : undefined },
+    actor,
+  );
+  return { leftEarly, minutesEarly };
+}
+
+/**
  * Best-effort: stamp `attendance.shiftEndAt` on every approved request for this
  * event that has checked in but hasn't ended yet. Called both from the manual
  * "End shift" button and automatically when the statpack tied to the event is
  * checked back in. Returns the number of requests updated.
+ *
+ * `teamIds` scopes the sweep to specific teams — an assigned FTO may only end
+ * their OWN team's shifts, while managers (and the statpack auto-end) pass
+ * nothing and sweep the whole event.
  */
-export async function endEventShifts(eventId: string, actor: EventActor): Promise<number> {
+export async function endEventShifts(
+  eventId: string,
+  actor: EventActor,
+  teamIds?: string[] | null,
+): Promise<number> {
   if (!actor?.uid) throw new Error('Actor is required to end shifts');
   const snap = await getDocs(
     query(
@@ -491,8 +640,10 @@ export async function endEventShifts(eventId: string, actor: EventActor): Promis
       where('status', '==', 'approved'),
     ),
   );
+  const scope = teamIds && teamIds.length > 0 ? new Set(teamIds) : null;
   const targets = snap.docs.filter((d) => {
     const r = d.data() as ShiftRequest;
+    if (scope && !scope.has(r.teamId)) return false;
     return !!r.attendance?.checkedInAt && !r.attendance?.shiftEndAt;
   });
   if (targets.length === 0) return 0;
@@ -514,6 +665,8 @@ export interface MemberShiftStats {
   lateCount: number;
   /** Sum of minutesLate across all checked-in shifts. */
   totalMinutesLate: number;
+  /** Subset of `checkedIn` where attendance.leftEarly is true. */
+  leftEarlyCount: number;
   noShow: number;
   excused: number;
   /** Approved shifts still awaiting a check-in or exception. */
@@ -547,6 +700,7 @@ export function getMemberShiftStats(
     checkedIn: 0,
     lateCount: 0,
     totalMinutesLate: 0,
+    leftEarlyCount: 0,
     noShow: 0,
     excused: 0,
     unrecorded: 0,
@@ -571,6 +725,9 @@ export function getMemberShiftStats(
       if (late > 0) {
         stats.lateCount += 1;
         stats.totalMinutesLate += late;
+      }
+      if (attendance.leftEarly === true) {
+        stats.leftEarlyCount += 1;
       }
       const hours = shiftHours(attendance.checkedInAt, attendance.shiftEndAt);
       if (hours != null) {

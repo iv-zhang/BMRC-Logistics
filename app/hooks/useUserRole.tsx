@@ -46,8 +46,15 @@ function parseUserDoc(id: string, data: Record<string, unknown>, fallbackEmail =
     canAudit: data.canAudit === true,
     isCommitteeMember: data.isCommitteeMember === true,
     certifications: (data.certifications as User['certifications']) || undefined,
+    // These MUST be carried through: dropping them made `tutorialCompleted`
+    // permanently undefined (so the onboarding tour re-triggered on every
+    // login) and `memberStatus`/`joinedTerm` invisible to shift requests, which
+    // denormalize them at signup (D-15) — every request recorded "general"
+    // regardless of what the roster said.
     tutorialCompleted: data.tutorialCompleted === true,
     tutorialCompletedAt: (data.tutorialCompletedAt as { toDate?: () => Date } | undefined)?.toDate?.(),
+    memberStatus: (data.memberStatus as User['memberStatus']) || undefined,
+    joinedTerm: (data.joinedTerm as string) || undefined,
     createdAt: createdAt?.toDate?.() || new Date(),
     updatedAt: updatedAt?.toDate?.() || new Date(),
   };

@@ -1,14 +1,15 @@
 'use client';
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Button, Chip, Spinner, Select, SelectItem } from '@heroui/react';
-import { ArrowLeft, Mail, UserRound, Sun, Moon, ShieldCheck, LogOut as LogOutIcon, Bug, AlertCircle, Trash2, History, CalendarClock, GraduationCap } from 'lucide-react';
+import { Button, Chip, Spinner, Select, SelectItem, Tabs, Tab } from '@heroui/react';
+import { ArrowLeft, Mail, UserRound, Sun, Moon, ShieldCheck, LogOut as LogOutIcon, Bug, AlertCircle, Trash2, History, CalendarClock, Sparkles, IdCard, Settings as SettingsIcon } from 'lucide-react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, collection, getDocs, query, where } from 'firebase/firestore';
 import { useTheme } from 'next-themes';
 import { auth, db } from '@/firebase';
 import { ROLES, getSemesterStart } from '@/app/config/org-config';
 import { useUserRole } from '@/app/hooks/useUserRole';
+import { usePanelMode, type PanelMode } from '@/app/hooks/usePanelMode';
 import { getMemberCertStatuses, CERT_LABELS } from '@/app/lib/certifications';
 import { TEST_IDENTITIES, seedTestUsers, clearTestIdentityHistory } from '@/app/lib/test-identity';
 import { getMemberShiftStats } from '@/app/lib/events';
@@ -22,6 +23,7 @@ export default function ProfilePage() {
   const [loading, setLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
   const { setTheme, resolvedTheme } = useTheme();
+  const { mode: panelMode, setMode: setPanelMode } = usePanelMode();
   /** Active `bmrc_test_identity` uid (new identity override), if any. */
   const [testIdentityActive, setTestIdentityActive] = useState<string | null>(null);
   /** Active legacy `bmrc_role_override` string, kept working as a fallback. */
@@ -140,6 +142,7 @@ export default function ProfilePage() {
       case 'admin':
         return 'danger';
       case 'FTO':
+      case 'fto_intern':
         return 'warning';
       case 'quartermaster':
         return 'secondary';
@@ -220,17 +223,32 @@ export default function ProfilePage() {
             <h1 className="text-2xl font-semibold text-foreground mb-1.5">Profile</h1>
             <p className="text-sm text-foreground-500">Your account information</p>
           </div>
-          <Button
-            size="sm"
-            variant="flat"
-            startContent={<ArrowLeft size={14} />}
-            onPress={() => router.push('/dashboard')}
-          >
-            Back to dashboard
-          </Button>
+          {/* Sign Out also lives in the Settings tab's Account card, but it was
+              effectively unfindable there — it's the one action people come to
+              this page for, so it sits in the header too. */}
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="flat"
+              startContent={<ArrowLeft size={14} />}
+              onPress={() => router.push('/dashboard')}
+            >
+              Back to dashboard
+            </Button>
+            <Button
+              size="sm"
+              color="danger"
+              variant="flat"
+              startContent={<LogOutIcon size={14} />}
+              onPress={handleSignOut}
+            >
+              Sign Out
+            </Button>
+          </div>
         </div>
 
         <div className="max-w-2xl">
+          {/* ── Identity card (always visible) ────────────────────────────── */}
           <div className="bg-content1 border border-divider rounded-large p-5">
             {/* Identity row */}
             <div className="flex items-center gap-4">
@@ -268,244 +286,287 @@ export default function ProfilePage() {
             </div>
           </div>
 
-          <div className="bg-content1 border border-divider rounded-large p-5 mt-4">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-3">Certifications</div>
-            <div className="flex flex-col gap-3">
-              {(() => {
-                const certStatuses = getMemberCertStatuses(user);
-                const emtColor = certStatuses.emt === 'valid' ? 'success' : certStatuses.emt === 'expired' ? 'danger' : 'default';
-                const cprColor = certStatuses.cpr === 'valid' ? 'success' : certStatuses.cpr === 'expired' ? 'danger' : 'default';
-                const hasExpiredOrMissing = certStatuses.emt !== 'valid' || certStatuses.cpr !== 'valid';
+          {/* ── Tabs: Your Record / Settings ───────────────────────────────── */}
+          <Tabs
+            aria-label="Profile sections"
+            className="mt-4"
+            classNames={{ tabList: 'w-full', panel: 'px-0' }}
+          >
+            <Tab
+              key="record"
+              title={
+                <span className="flex items-center gap-1.5">
+                  <IdCard size={15} /> Your Record
+                </span>
+              }
+            >
+            <div className="bg-content1 border border-divider rounded-large p-5">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-3">Certifications</div>
+              <div className="flex flex-col gap-3">
+                {(() => {
+                  const certStatuses = getMemberCertStatuses(user);
+                  const emtColor = certStatuses.emt === 'valid' ? 'success' : certStatuses.emt === 'expired' ? 'danger' : 'default';
+                  const cprColor = certStatuses.cpr === 'valid' ? 'success' : certStatuses.cpr === 'expired' ? 'danger' : 'default';
+                  const hasExpiredOrMissing = certStatuses.emt !== 'valid' || certStatuses.cpr !== 'valid';
 
-                return (
-                  <>
-                    <div className="flex flex-wrap gap-2">
-                      <Chip size="sm" variant="flat" color={emtColor}>
-                        <span className="font-medium">{CERT_LABELS.emt}</span>
-                        {certStatuses.emt === 'valid' && user.certifications?.emt?.expiresOn && (
-                          <span className="text-xs ml-1">
-                            ({(() => {
-                              const d = user.certifications.emt?.expiresOn;
-                              const date = d instanceof Date ? d : (typeof d === 'object' && d !== null && 'toDate' in d ? (d as unknown as { toDate(): Date }).toDate() : new Date(String(d)));
-                              return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-                            })()})
-                          </span>
-                        )}
-                      </Chip>
-                      <Chip size="sm" variant="flat" color={cprColor}>
-                        <span className="font-medium">{CERT_LABELS.cpr}</span>
-                        {certStatuses.cpr === 'valid' && user.certifications?.cpr?.expiresOn && (
-                          <span className="text-xs ml-1">
-                            ({(() => {
-                              const d = user.certifications.cpr?.expiresOn;
-                              const date = d instanceof Date ? d : (typeof d === 'object' && d !== null && 'toDate' in d ? (d as unknown as { toDate(): Date }).toDate() : new Date(String(d)));
-                              return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-                            })()})
-                          </span>
-                        )}
-                      </Chip>
-                    </div>
-                    {hasExpiredOrMissing && (
-                      <div className="flex items-start gap-2 bg-warning/10 border border-warning/30 rounded-lg p-3 text-sm text-warning">
-                        <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
-                        <span>Send updated documents to MedOps to restore shift signup.</span>
+                  return (
+                    <>
+                      <div className="flex flex-wrap gap-2">
+                        <Chip size="sm" variant="flat" color={emtColor}>
+                          <span className="font-medium">{CERT_LABELS.emt}</span>
+                          {certStatuses.emt === 'valid' && user.certifications?.emt?.expiresOn && (
+                            <span className="text-xs ml-1">
+                              ({(() => {
+                                const d = user.certifications.emt?.expiresOn;
+                                const date = d instanceof Date ? d : (typeof d === 'object' && d !== null && 'toDate' in d ? (d as unknown as { toDate(): Date }).toDate() : new Date(String(d)));
+                                return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                              })()})
+                            </span>
+                          )}
+                        </Chip>
+                        <Chip size="sm" variant="flat" color={cprColor}>
+                          <span className="font-medium">{CERT_LABELS.cpr}</span>
+                          {certStatuses.cpr === 'valid' && user.certifications?.cpr?.expiresOn && (
+                            <span className="text-xs ml-1">
+                              ({(() => {
+                                const d = user.certifications.cpr?.expiresOn;
+                                const date = d instanceof Date ? d : (typeof d === 'object' && d !== null && 'toDate' in d ? (d as unknown as { toDate(): Date }).toDate() : new Date(String(d)));
+                                return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                              })()})
+                            </span>
+                          )}
+                        </Chip>
                       </div>
-                    )}
-                  </>
-                );
-              })()}
-            </div>
-          </div>
-
-          <div className="bg-content1 border border-divider rounded-large p-5 mt-4">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-3 inline-flex items-center gap-1.5">
-              <CalendarClock size={13} /> Volunteer Record
-            </div>
-            {shiftStatsLoading ? (
-              <div className="flex justify-center py-4">
-                <Spinner size="sm" color="primary" />
+                      {hasExpiredOrMissing && (
+                        <div className="flex items-start gap-2 bg-warning/10 border border-warning/30 rounded-lg p-3 text-sm text-warning">
+                          <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
+                          <span>Send updated documents to MedOps to restore shift signup.</span>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
-            ) : !shiftStats || shiftStats.shiftsAllTime === 0 ? (
-              <p className="text-sm text-foreground-400">
-                No shifts on record yet. Sign up for an event on the Shifts board to start building your volunteer record.
-              </p>
-            ) : (
-              <div className="flex flex-col gap-4">
-                <div className="flex gap-3">
-                  <div className="flex-1 bg-content2 rounded-large p-4">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1.5">This Semester</div>
-                    <div className="font-mono text-[24px] font-semibold tabular-nums leading-tight text-foreground">
-                      {shiftStats.shiftsThisSemester}
+            </div>
+
+            <div className="bg-content1 border border-divider rounded-large p-5 mt-4">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-3 inline-flex items-center gap-1.5">
+                <CalendarClock size={13} /> Volunteer Record
+              </div>
+              {shiftStatsLoading ? (
+                <div className="flex justify-center py-4">
+                  <Spinner size="sm" color="primary" />
+                </div>
+              ) : !shiftStats || shiftStats.shiftsAllTime === 0 ? (
+                <p className="text-sm text-foreground-400">
+                  No shifts on record yet. Sign up for an event on the Shifts board to start building your volunteer record.
+                </p>
+              ) : (
+                <div className="flex flex-col gap-4">
+                  <div className="flex gap-3">
+                    <div className="flex-1 bg-content2 rounded-large p-4">
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1.5">This Semester</div>
+                      <div className="font-mono text-[24px] font-semibold tabular-nums leading-tight text-foreground">
+                        {shiftStats.shiftsThisSemester}
+                      </div>
+                      <div className="text-xs text-foreground-400 mt-0.5">{shiftStats.hoursThisSemester}h volunteered</div>
                     </div>
-                    <div className="text-xs text-foreground-400 mt-0.5">{shiftStats.hoursThisSemester}h volunteered</div>
+                    <div className="flex-1 bg-content2 rounded-large p-4">
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1.5">All-Time</div>
+                      <div className="font-mono text-[24px] font-semibold tabular-nums leading-tight text-foreground-600">
+                        {shiftStats.shiftsAllTime}
+                      </div>
+                      <div className="text-xs text-foreground-400 mt-0.5">{shiftStats.hoursAllTime}h volunteered</div>
+                    </div>
                   </div>
-                  <div className="flex-1 bg-content2 rounded-large p-4">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1.5">All-Time</div>
-                    <div className="font-mono text-[24px] font-semibold tabular-nums leading-tight text-foreground-600">
-                      {shiftStats.shiftsAllTime}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="flex items-center gap-2 bg-success-50 dark:bg-success-900/20 border border-success/30 rounded-large px-3 py-1.5">
+                      <span className="w-2 h-2 rounded-sm bg-success flex-none" />
+                      <span className="font-mono font-semibold tabular-nums text-success">{shiftStats.checkedIn}</span>
+                      <span className="text-xs text-success/80 font-medium">checked in</span>
                     </div>
-                    <div className="text-xs text-foreground-400 mt-0.5">{shiftStats.hoursAllTime}h volunteered</div>
+                    <div className="flex items-center gap-2 bg-warning-50 dark:bg-warning-900/20 border border-warning/30 rounded-large px-3 py-1.5">
+                      <span className="w-2 h-2 rounded-sm bg-warning flex-none" />
+                      <span className="font-mono font-semibold tabular-nums text-warning">{shiftStats.lateCount}</span>
+                      <span className="text-xs text-warning/80 font-medium">
+                        late{shiftStats.totalMinutesLate > 0 ? ` (${shiftStats.totalMinutesLate}m total)` : ''}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 bg-danger-50 dark:bg-danger-900/20 border border-danger/30 rounded-large px-3 py-1.5">
+                      <span className="w-2 h-2 rounded-sm bg-danger flex-none" />
+                      <span className="font-mono font-semibold tabular-nums text-danger">{shiftStats.noShow}</span>
+                      <span className="text-xs text-danger/80 font-medium">no-show</span>
+                    </div>
+                    <div className="flex items-center gap-2 bg-content2 border border-divider rounded-large px-3 py-1.5">
+                      <span className="font-mono font-semibold tabular-nums text-foreground">{shiftStats.excused}</span>
+                      <span className="text-xs text-foreground-400">excused</span>
+                    </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <div className="flex items-center gap-2 bg-success-50 dark:bg-success-900/20 border border-success/30 rounded-large px-3 py-1.5">
-                    <span className="w-2 h-2 rounded-sm bg-success flex-none" />
-                    <span className="font-mono font-semibold tabular-nums text-success">{shiftStats.checkedIn}</span>
-                    <span className="text-xs text-success/80 font-medium">checked in</span>
+              )}
+            </div>
+            </Tab>
+
+            <Tab
+              key="settings"
+              title={
+                <span className="flex items-center gap-1.5">
+                  <SettingsIcon size={15} /> Settings
+                </span>
+              }
+            >
+            <div className="bg-content1 border border-divider rounded-large p-5">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-3">Appearance</div>
+              <div className="flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-foreground">Theme</div>
+                  <div className="text-xs text-foreground-400 mt-0.5">Choose light or dark mode</div>
+                </div>
+                {mounted && (
+                  <div className="flex items-center gap-1 bg-content2 rounded-large p-1 flex-none">
+                    <button
+                      onClick={() => setTheme('light')}
+                      className={`flex items-center gap-1.5 h-8 px-3 rounded-medium text-[13px] font-medium transition-colors ${resolvedTheme === 'light' ? 'bg-content1 text-foreground shadow-sm' : 'text-foreground-400 hover:text-foreground-600'}`}
+                    >
+                      <Sun size={15} /> Light
+                    </button>
+                    <button
+                      onClick={() => setTheme('dark')}
+                      className={`flex items-center gap-1.5 h-8 px-3 rounded-medium text-[13px] font-medium transition-colors ${resolvedTheme === 'dark' ? 'bg-content1 text-foreground shadow-sm' : 'text-foreground-400 hover:text-foreground-600'}`}
+                    >
+                      <Moon size={15} /> Dark
+                    </button>
                   </div>
-                  <div className="flex items-center gap-2 bg-warning-50 dark:bg-warning-900/20 border border-warning/30 rounded-large px-3 py-1.5">
-                    <span className="w-2 h-2 rounded-sm bg-warning flex-none" />
-                    <span className="font-mono font-semibold tabular-nums text-warning">{shiftStats.lateCount}</span>
-                    <span className="text-xs text-warning/80 font-medium">
-                      late{shiftStats.totalMinutesLate > 0 ? ` (${shiftStats.totalMinutesLate}m total)` : ''}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2 bg-danger-50 dark:bg-danger-900/20 border border-danger/30 rounded-large px-3 py-1.5">
-                    <span className="w-2 h-2 rounded-sm bg-danger flex-none" />
-                    <span className="font-mono font-semibold tabular-nums text-danger">{shiftStats.noShow}</span>
-                    <span className="text-xs text-danger/80 font-medium">no-show</span>
-                  </div>
-                  <div className="flex items-center gap-2 bg-content2 border border-divider rounded-large px-3 py-1.5">
-                    <span className="font-mono font-semibold tabular-nums text-foreground">{shiftStats.excused}</span>
-                    <span className="text-xs text-foreground-400">excused</span>
-                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between gap-4 mt-4">
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-foreground">Pop-out style</div>
+                  <div className="text-xs text-foreground-400 mt-0.5">How pop-out panels open across the app</div>
+                </div>
+                <div className="flex items-center gap-1 bg-content2 rounded-large p-1 flex-none">
+                  {([
+                    { key: 'drawer', label: 'Drawer' },
+                    { key: 'dropdown', label: 'Dropdown' },
+                    { key: 'modal', label: 'Center' },
+                  ] as { key: PanelMode; label: string }[]).map(({ key, label }) => (
+                    <button
+                      key={key}
+                      onClick={() => setPanelMode(key)}
+                      className={`flex items-center gap-1.5 h-8 px-3 rounded-medium text-[13px] font-medium transition-colors ${panelMode === key ? 'bg-content1 text-foreground shadow-sm' : 'text-foreground-400 hover:text-foreground-600'}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-content1 border border-divider rounded-large p-5 mt-4">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-3">Account</div>
+              <div className="flex flex-col gap-3">
+                {canManageTestRole && (
+                  <Select
+                    startContent={<ShieldCheck size={16} />}
+                    placeholder="Select test identity"
+                    isDisabled={switchingIdentity}
+                    isLoading={switchingIdentity}
+                    selectedKeys={testIdentityActive ? [testIdentityActive] : []}
+                    onChange={(e) => { void handleRoleSelect(e.target.value); }}
+                    label={
+                      activeIdentityDef
+                        ? `Test Identity: ${activeIdentityDef.fullName}`
+                        : legacyRoleOverrideActive
+                          ? `Test Role: ${legacyRoleOverrideActive}`
+                          : `Real role: ${user?.role || 'Unknown'}`
+                    }
+                    description="Switching seeds a dedicated test account (writes are attributed to it, not your real account)."
+                    className="w-full"
+                  >
+                    {[
+                      ...TEST_IDENTITIES.map((identity) => (
+                        <SelectItem key={identity.id}>
+                          {identity.fullName} ({ROLES.find((r) => r.id === identity.role)?.label ?? identity.role})
+                        </SelectItem>
+                      )),
+                      <SelectItem key="clear">
+                        Clear override / Real role
+                      </SelectItem>,
+                    ]}
+                  </Select>
+                )}
+                <Button
+                  className="w-full justify-start"
+                  color="danger"
+                  variant="flat"
+                  startContent={<LogOutIcon size={16} />}
+                  onPress={handleSignOut}
+                >
+                  Sign Out
+                </Button>
+              </div>
+            </div>
+
+            {isRealAdmin && (
+              <div className="bg-content1 border border-divider rounded-large p-5 mt-4">
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1">
+                  <History size={13} /> Test Account History
+                </div>
+                <p className="text-xs text-foreground-400 mb-3">
+                  Manually wipe what a seeded test identity has generated — shift requests, statpack logs, vehicle
+                  shifts, notifications, and issue reports — plus vacate any statpack/event slot it&apos;s holding. This
+                  does not delete the test account itself, and history is never cleared automatically.
+                </p>
+                <div className="flex flex-col gap-2">
+                  {TEST_IDENTITIES.map((identity) => (
+                    <div key={identity.id} className="flex items-center justify-between gap-3 bg-content2 rounded-large p-3">
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-foreground truncate">{identity.fullName}</div>
+                        <div className="text-xs text-foreground-400">
+                          {ROLES.find((r) => r.id === identity.role)?.label ?? identity.role}
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="flat"
+                        color="danger"
+                        startContent={<Trash2 size={14} />}
+                        isLoading={clearingId === identity.id}
+                        isDisabled={clearingId !== null && clearingId !== identity.id}
+                        onPress={() => handleClearHistory(identity.id, identity.fullName)}
+                      >
+                        Clear history
+                      </Button>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
-          </div>
 
-          <div className="bg-content1 border border-divider rounded-large p-5 mt-4">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-3">Appearance</div>
-            <div className="flex items-center justify-between gap-4">
-              <div className="min-w-0">
-                <div className="text-sm font-semibold text-foreground">Theme</div>
-                <div className="text-xs text-foreground-400 mt-0.5">Choose light or dark mode</div>
-              </div>
-              {mounted && (
-                <div className="flex items-center gap-1 bg-content2 rounded-large p-1 flex-none">
-                  <button
-                    onClick={() => setTheme('light')}
-                    className={`flex items-center gap-1.5 h-8 px-3 rounded-medium text-[13px] font-medium transition-colors ${resolvedTheme === 'light' ? 'bg-content1 text-foreground shadow-sm' : 'text-foreground-400 hover:text-foreground-600'}`}
-                  >
-                    <Sun size={15} /> Light
-                  </button>
-                  <button
-                    onClick={() => setTheme('dark')}
-                    className={`flex items-center gap-1.5 h-8 px-3 rounded-medium text-[13px] font-medium transition-colors ${resolvedTheme === 'dark' ? 'bg-content1 text-foreground shadow-sm' : 'text-foreground-400 hover:text-foreground-600'}`}
-                  >
-                    <Moon size={15} /> Dark
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="bg-content1 border border-divider rounded-large p-5 mt-4">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-3">Account</div>
-            <div className="flex flex-col gap-3">
-              {canManageTestRole && (
-                <Select
-                  startContent={<ShieldCheck size={16} />}
-                  placeholder="Select test identity"
-                  isDisabled={switchingIdentity}
-                  isLoading={switchingIdentity}
-                  selectedKeys={testIdentityActive ? [testIdentityActive] : []}
-                  onChange={(e) => { void handleRoleSelect(e.target.value); }}
-                  label={
-                    activeIdentityDef
-                      ? `Test Identity: ${activeIdentityDef.fullName}`
-                      : legacyRoleOverrideActive
-                        ? `Test Role: ${legacyRoleOverrideActive}`
-                        : `Real role: ${user?.role || 'Unknown'}`
-                  }
-                  description="Switching seeds a dedicated test account (writes are attributed to it, not your real account)."
-                  className="w-full"
-                >
-                  {[
-                    ...TEST_IDENTITIES.map((identity) => (
-                      <SelectItem key={identity.id}>
-                        {identity.fullName} ({ROLES.find((r) => r.id === identity.role)?.label ?? identity.role})
-                      </SelectItem>
-                    )),
-                    <SelectItem key="clear">
-                      Clear override / Real role
-                    </SelectItem>,
-                  ]}
-                </Select>
-              )}
-              <Button
-                className="w-full justify-start"
-                color="danger"
-                variant="flat"
-                startContent={<LogOutIcon size={16} />}
-                onPress={handleSignOut}
-              >
-                Sign Out
-              </Button>
-            </div>
-          </div>
-
-          {isRealAdmin && (
             <div className="bg-content1 border border-divider rounded-large p-5 mt-4">
-              <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1">
-                <History size={13} /> Test Account History
-              </div>
-              <p className="text-xs text-foreground-400 mb-3">
-                Manually wipe what a seeded test identity has generated — shift requests, statpack logs, vehicle
-                shifts, notifications, and issue reports — plus vacate any statpack/event slot it&apos;s holding. This
-                does not delete the test account itself, and history is never cleared automatically.
-              </p>
-              <div className="flex flex-col gap-2">
-                {TEST_IDENTITIES.map((identity) => (
-                  <div key={identity.id} className="flex items-center justify-between gap-3 bg-content2 rounded-large p-3">
-                    <div className="min-w-0">
-                      <div className="text-sm font-semibold text-foreground truncate">{identity.fullName}</div>
-                      <div className="text-xs text-foreground-400">
-                        {ROLES.find((r) => r.id === identity.role)?.label ?? identity.role}
-                      </div>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="flat"
-                      color="danger"
-                      startContent={<Trash2 size={14} />}
-                      isLoading={clearingId === identity.id}
-                      isDisabled={clearingId !== null && clearingId !== identity.id}
-                      onPress={() => handleClearHistory(identity.id, identity.fullName)}
-                    >
-                      Clear history
-                    </Button>
-                  </div>
-                ))}
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-3">Support</div>
+              <div className="flex flex-col gap-3">
+                <Button
+                  className="w-full justify-start"
+                  variant="flat"
+                  startContent={<Bug size={16} />}
+                  onPress={() => setIsReportOpen(true)}
+                >
+                  Report a Bug
+                </Button>
+                <Button
+                  className="w-full justify-start"
+                  variant="flat"
+                  startContent={<Sparkles size={16} />}
+                  onPress={() => window.dispatchEvent(new Event('bmrc-replay-tutorial'))}
+                >
+                  Replay tutorial
+                </Button>
               </div>
             </div>
-          )}
-
-          <div className="bg-content1 border border-divider rounded-large p-5 mt-4">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-3">Support</div>
-            <div className="flex flex-col gap-3">
-              <Button
-                className="w-full justify-start"
-                variant="flat"
-                startContent={<GraduationCap size={16} />}
-                onPress={() => {
-                  // Transient preview — does NOT clear tutorialCompleted. The
-                  // mounted AppSidebar listens for this event and opens the overlay.
-                  window.dispatchEvent(new Event('bmrc-show-tutorial'));
-                }}
-              >
-                Replay Tutorial
-              </Button>
-              <Button
-                className="w-full justify-start"
-                variant="flat"
-                startContent={<Bug size={16} />}
-                onPress={() => setIsReportOpen(true)}
-              >
-                Report a Bug
-              </Button>
-            </div>
-          </div>
+            </Tab>
+          </Tabs>
         </div>
       </div>
 

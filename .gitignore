@@ -32,6 +32,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...but DO track the secret-free example template
+!.env.staging.local.example
 
 # vercel
 .vercel
@@ -74,3 +76,5 @@ ui-debug.log
 /playwright-report/
 /blob-report/
 .playwright/
+
+bmrc-staging-firebase-adminsdk-fbsvc-24968c8495.json

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, Fragment } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Chip, Button, Spinner, Select, SelectItem,
@@ -31,6 +31,8 @@ import { preparePayload, safeParseDate } from '@/app/utils/inventoryNormalizatio
 import { ITEM_CATEGORIES, getInventoryAreaOptions } from '@/app/config/org-config';
 import { useOrgConfig } from '@/app/hooks/useOrgConfig';
 import { CAT_CFG } from '@/app/components/category-badge';
+import PanelShell from '@/app/components/panel-shell';
+import { usePanelMode } from '@/app/hooks/usePanelMode';
 import {
   computeBagStock, displayLocation, getItemStatus, formatExp, expTextColor,
   statusQtyColor, statusBarColor, isOnTheWay, incomingQty, type ItemStatus,
@@ -91,6 +93,288 @@ export default function InventoryPage() {
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [tableExpanded, setTableExpanded] = useState<Set<string>>(new Set());
   const [detailItem, setDetailItem] = useState<InventoryItem | null>(null);
+  // Pop-out preference. In "dropdown" mode the list view expands the item detail
+  // inline (accordion) instead of the shared PanelShell overlay; every other
+  // mode/view keeps using PanelShell (which itself centers "dropdown").
+  const { mode: panelMode } = usePanelMode();
+  const inlineDropdown = panelMode === 'dropdown' && viewMode === 'list';
+
+  // Shared item-detail content, rendered either inline (list + dropdown mode)
+  // or inside PanelShell (drawer / center / table view).
+  const renderItemDetail = (item: InventoryItem) => {
+    const bag = computeBagStock(item);
+    const status = getItemStatus(item);
+    const cfg = CAT_CFG[item.category];
+    const loc = displayLocation(item);
+    const qtyColor = statusQtyColor(status);
+    const onTheWay = isOnTheWay(item);
+    const isPlaceholder = item.orderStatus === 'on_order';
+    const sortedBatches = [...(item.batches || [])].sort(
+      (a, b) => (a.expirationDate?.getTime() ?? Infinity) - (b.expirationDate?.getTime() ?? Infinity),
+    );
+    return (
+      <>
+              <div className="px-6 py-5 border-b border-divider">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-[46px] h-[46px] rounded-[12px] flex items-center justify-center font-mono font-semibold text-sm flex-none ${cfg.bg} ${cfg.text}`}>
+                      {cfg.code}
+                    </div>
+                    <div>
+                      <div className="font-semibold text-lg text-foreground leading-tight">{item.name}</div>
+                      {loc && (
+                        <div className="flex items-center gap-1 text-xs text-foreground-500 mt-0.5">
+                          <MapPin size={11} /> {loc}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setDetailItem(null)}
+                    className="w-8 h-8 rounded-medium bg-content2 hover:bg-content3 text-foreground-400 flex items-center justify-center transition-colors flex-none mt-0.5"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+                <div className="flex gap-1.5 flex-wrap mt-4">
+                  {status === 'expired'  && <Chip size="sm" variant="flat" color="danger">Expired</Chip>}
+                  {status === 'low'      && <Chip size="sm" variant="flat" color="warning">Low Stock</Chip>}
+                  {status === 'out' && !isPlaceholder && <Chip size="sm" variant="flat" color="danger">Out of Stock</Chip>}
+                  {status === 'expiring' && <Chip size="sm" variant="flat" color="warning">Exp. Soon</Chip>}
+                  {status === 'ok'       && <Chip size="sm" variant="flat" color="success">OK</Chip>}
+                  {item.isMedication     && <Chip size="sm" variant="flat" color="danger">Med</Chip>}
+                  {item.isOxygen         && <Chip size="sm" variant="flat" color="secondary">O₂</Chip>}
+                  {onTheWay && (
+                    <Chip size="sm" variant="flat" color="primary" startContent={<Truck size={12} />}>
+                      On the way · {incomingQty(item)} units
+                    </Chip>
+                  )}
+                </div>
+              </div>
+
+              {/* Drawer body */}
+              <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+                {/* On the way — Receive action */}
+                {onTheWay && (
+                  <div className="bg-primary-50 dark:bg-primary-900/20 border border-primary/30 rounded-large px-4 py-3 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <Truck size={16} className="text-primary flex-none" />
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-primary">On the way</div>
+                        <div className="text-xs text-primary/80 truncate">{incomingQty(item)} units incoming</div>
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      color="primary"
+                      className="flex-none"
+                      onPress={() => { setDetailItem(null); setReceiveItem(item); }}
+                    >
+                      Receive
+                    </Button>
+                  </div>
+                )}
+
+                {/* Stock stats */}
+                <div className="flex gap-3">
+                  <div className="flex-1 bg-content2 rounded-large p-4">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1.5">On Hand</div>
+                    <div className={`font-mono text-[28px] font-semibold tabular-nums leading-tight ${qtyColor}`}>
+                      {item.isOxygen ? (item.oxygenPsi ?? 0) : (bag.hasBagTracking ? bag.totalItems : item.unopenedBoxes)}
+                      <span className="text-sm text-foreground-400 font-normal ml-1.5">
+                        {item.isOxygen ? 'PSI' : (bag.hasBagTracking ? 'items' : (item.unit || 'units'))}
+                      </span>
+                    </div>
+                    {bag.hasBagTracking && (
+                      <div className="text-xs text-foreground-400 mt-1">
+                        {bag.totalBags} bag{bag.totalBags !== 1 ? 's' : ''} · {bag.totalLoose} loose
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 bg-content2 rounded-large p-4">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1.5">Reorder At</div>
+                    <div className="font-mono text-[28px] font-semibold tabular-nums leading-tight text-foreground-600">
+                      {item.reorderThreshold}
+                    </div>
+                    <div className={`text-xs font-semibold mt-1 ${
+                      isPlaceholder ? 'text-primary' :
+                      status === 'ok' ? 'text-success' :
+                      status === 'low' ? 'text-warning' :
+                      status === 'out' ? 'text-danger' :
+                      status === 'expired' ? 'text-danger' : 'text-foreground-500'
+                    }`}>
+                      {isPlaceholder ? 'On the way' :
+                       status === 'ok' ? 'Well stocked' :
+                       status === 'low' ? 'Below threshold' :
+                       status === 'out' ? 'Out of stock' :
+                       status === 'expired' ? 'Has expired batches' : 'Expiring soon'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Batches */}
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-xs font-semibold uppercase tracking-wide text-foreground-500">
+                      Batches & Expiration
+                    </h4>
+                    <span className="text-xs text-foreground-400 font-semibold">FIFO — oldest first</span>
+                  </div>
+                  {sortedBatches.length === 0 ? (
+                    <div className="text-xs text-foreground-400 text-center py-4 border border-dashed border-divider rounded-large">
+                      No batch tracking — stock counted at item level.
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {sortedBatches.map(bt => {
+                        const bStatus = bt.status || (isBatchExpired(bt, item) ? 'expired' : (bt.bagCount ?? 0) > 0 ? 'sealed' : 'open');
+                        const total = bt.bagCount !== undefined
+                          ? (bt.bagCount ?? 0) * (bt.itemsPerBag ?? 0) + (bt.looseItems ?? 0)
+                          : bt.stock;
+                        const hasSealedBag = (bt.bagCount ?? 0) > 0 && bt.itemsPerBag;
+                        return (
+                          <div key={bt.id} className="border border-divider rounded-large p-4">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-sm font-semibold text-foreground">
+                                  {bt.lotNumber || '(no lot)'}
+                                </span>
+                                <Chip size="sm" variant="flat" color={BATCH_STATUS_COLORS[bStatus] || 'default'}>
+                                  {bStatus}
+                                </Chip>
+                              </div>
+                              <span className="font-mono text-[15px] font-semibold text-foreground-500">{total}</span>
+                            </div>
+                            <div className="flex items-center justify-between mt-2">
+                              <span className={`text-xs font-semibold ${expTextColor(bt.expirationDate)}`}>
+                                Expires {formatExp(bt.expirationDate)}
+                              </span>
+                              {hasSealedBag && (
+                                <Button
+                                  size="sm"
+                                  variant="bordered"
+                                  color="primary"
+                                  startContent={<PackageOpen size={12} />}
+                                  onPress={() => handleOpenBag(item, bt.id)}
+                                >
+                                  Open bag
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* History */}
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400">
+                      Activity History
+                    </h4>
+                    {historyLoading && <Spinner size="sm" color="primary" />}
+                  </div>
+                  {drawerHistory.length === 0 && !historyLoading ? (
+                    <div className="text-xs text-foreground-400 text-center py-4 border border-dashed border-divider rounded-large">
+                      No activity logged yet.
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {drawerHistory.map(entry => {
+                        const ACTION_LABELS: Record<string, string> = {
+                          create_open_batch: 'Batch added', consume_box: 'Units consumed',
+                          restock_needed: 'Restock alert', asset_checkout: 'Checked out',
+                          asset_checkin: 'Checked in', asset_assign: 'Assigned',
+                          asset_unassign: 'Unassigned', intake: 'Stock intake',
+                          batch_added: 'Stock intake', quick_adjust: 'Quick adjust',
+                        };
+                        const label = ACTION_LABELS[entry.action] ?? entry.action.replace(/_/g, ' ');
+                        const isIn = ['intake', 'batch_added', 'create_open_batch', 'asset_checkin'].includes(entry.action);
+                        return (
+                          <div key={entry.id} className="flex items-start gap-3 border border-divider rounded-large p-3">
+                            <div className={`w-7 h-7 rounded-[8px] flex items-center justify-center flex-none mt-0.5 ${
+                              isIn ? 'bg-success-50 dark:bg-success-900/20 text-success' : 'bg-content3 text-foreground-400'
+                            }`}>
+                              {isIn ? <Plus size={13} /> : <Minus size={13} />}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-sm font-semibold text-foreground capitalize">{label}</span>
+                                {entry.quantity !== undefined && (
+                                  <span className={`font-mono text-sm font-semibold tabular-nums ${isIn ? 'text-success' : 'text-foreground-500'}`}>
+                                    {isIn ? '+' : '−'}{Math.abs(entry.quantity)}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                                {entry.userName && <span className="text-xs text-foreground-400">{entry.userName}</span>}
+                                {entry.supplier && <span className="text-xs text-primary font-medium">via {entry.supplier}</span>}
+                                {entry.timestamp && (
+                                  <span className="text-xs text-foreground-300">
+                                    {entry.timestamp.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                                    {' · '}
+                                    {entry.timestamp.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                                  </span>
+                                )}
+                              </div>
+                              {entry.notes && <p className="text-xs text-foreground-400 mt-1">{entry.notes}</p>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Assign barcode / print label — any inventory item */}
+                <Button
+                  variant="flat"
+                  color="primary"
+                  fullWidth
+                  startContent={<ScanBarcode size={15} />}
+                  onPress={() => { setDetailItem(null); setAssignBarcodeItem(item); setAssignBarcodeOpen(true); }}
+                >
+                  Assign barcode / print label
+                </Button>
+
+                {/* Med cabinet link */}
+                {item.isMedication && (
+                  <Button
+                    variant="flat"
+                    color="danger"
+                    fullWidth
+                    onPress={() => { setDetailItem(null); setMedCabinetItem(item); setMedCabinetOpen(true); }}
+                  >
+                    Med Cabinet
+                  </Button>
+                )}
+              </div>
+
+              {/* Drawer footer */}
+              <div className="px-6 py-4 border-t border-divider flex gap-3">
+                <Button
+                  variant="bordered"
+                  className="flex-1"
+                  startContent={<Plus size={15} />}
+                  onPress={() => { setDetailItem(null); setSelectedItem(item); setIsOpen(true); }}
+                >
+                  Edit / Add batch
+                </Button>
+                <Button
+                  color="primary"
+                  className="flex-1"
+                  startContent={<ArrowRight size={15} />}
+                  onPress={() => { setDetailItem(null); handleRestockForward(item); }}
+                >
+                  Restock forward
+                </Button>
+              </div>
+      </>
+    );
+  };
+
 
   // Modals
   const [isOpen, setIsOpen] = useState(false);
@@ -758,7 +1042,7 @@ export default function InventoryPage() {
               </div>
 
               {/* Category */}
-              <div className="bg-content1 border border-divider rounded-large p-3 flex-none flex flex-col">
+              <div className="bg-content1 border border-divider rounded-large p-3 flex-none md:flex-1 md:min-h-0 flex flex-col">
                 <div className="flex items-center justify-between mb-2 flex-none">
                   <p className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400">
                     Category
@@ -773,8 +1057,9 @@ export default function InventoryPage() {
                   )}
                 </div>
                 {/* Bounded scroll: the only exception to "the aside never scrolls" —
-                    an org with many categories must not push Location out of view. */}
-                <div className="flex flex-col gap-0.5 md:max-h-[42vh] md:overflow-y-auto">
+                    the category list flexes to absorb overflow so Stock Status and
+                    Location (both flex-none) always stay pinned in one viewport. */}
+                <div className="flex flex-col gap-0.5 md:flex-1 md:min-h-0 md:overflow-y-auto">
                   {CATEGORIES.map(cat => {
                     const cfg = CAT_CFG[cat];
                     const active = categoryFilters.includes(cat);
@@ -872,8 +1157,10 @@ export default function InventoryPage() {
                     : getCardTint(status);
 
                   const isSelected = selectedIds.has(item.id);
+                  const isExpandedInline = inlineDropdown && detailItem?.id === item.id;
                   return (
-                    <div key={item.id} className="flex items-center gap-2">
+                    <Fragment key={item.id}>
+                    <div className="flex items-center gap-2">
                       <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); toggleSelect(item.id); }}
@@ -885,7 +1172,7 @@ export default function InventoryPage() {
                         {isSelected && <Check size={13} strokeWidth={3.5} className="text-white" />}
                       </button>
                       <div
-                      onClick={() => setDetailItem(item)}
+                      onClick={() => setDetailItem(prev => prev?.id === item.id ? null : item)}
                       className={`flex-1 min-w-0 flex flex-wrap sm:flex-nowrap gap-3 sm:gap-4 items-center border rounded-[14px] px-4 py-4 cursor-pointer transition-all duration-150 hover:-translate-y-px hover:shadow-[0_6px_22px_rgba(16,24,40,0.09)] dark:hover:shadow-[0_6px_22px_rgba(0,0,0,0.35)] ${cardTint}`}
                     >
                       {/* Category badge */}
@@ -993,6 +1280,12 @@ export default function InventoryPage() {
                       )}
                       </div>
                     </div>
+                    {isExpandedInline && (
+                      <div className="rounded-[14px] border border-divider bg-content1 shadow-sm overflow-hidden transition-all duration-200">
+                        {renderItemDetail(item)}
+                      </div>
+                    )}
+                    </Fragment>
                   );
                 })
               )}
@@ -1248,289 +1541,13 @@ export default function InventoryPage() {
       </div>
 
       {/* ══ Detail Drawer ═══════════════════════════════════════════════════════ */}
-      {detailItem && (() => {
-        const item = detailItem;
-        const bag = computeBagStock(item);
-        const status = getItemStatus(item);
-        const cfg = CAT_CFG[item.category];
-        const loc = displayLocation(item);
-        const qtyColor = statusQtyColor(status);
-        const onTheWay = isOnTheWay(item);
-        const isPlaceholder = item.orderStatus === 'on_order';
-        const sortedBatches = [...(item.batches || [])].sort(
-          (a, b) => (a.expirationDate?.getTime() ?? Infinity) - (b.expirationDate?.getTime() ?? Infinity),
-        );
-
-        return (
-          <>
-            <div
-              className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm"
-              style={{ animation: 'bmrcFadeIn 0.2s ease forwards' }}
-              onClick={() => setDetailItem(null)}
-            />
-            <div className="fixed top-0 right-0 bottom-0 z-50 w-[480px] max-w-[94vw] bg-content1 shadow-2xl flex flex-col" style={{ animation: 'bmrcSlide 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards' }}>
-              {/* Drawer header */}
-              <div className="px-6 py-5 border-b border-divider">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <div className={`w-[46px] h-[46px] rounded-[12px] flex items-center justify-center font-mono font-semibold text-sm flex-none ${cfg.bg} ${cfg.text}`}>
-                      {cfg.code}
-                    </div>
-                    <div>
-                      <div className="font-semibold text-lg text-foreground leading-tight">{item.name}</div>
-                      {loc && (
-                        <div className="flex items-center gap-1 text-xs text-foreground-500 mt-0.5">
-                          <MapPin size={11} /> {loc}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => setDetailItem(null)}
-                    className="w-8 h-8 rounded-medium bg-content2 hover:bg-content3 text-foreground-400 flex items-center justify-center transition-colors flex-none mt-0.5"
-                  >
-                    <X size={16} />
-                  </button>
-                </div>
-                <div className="flex gap-1.5 flex-wrap mt-4">
-                  {status === 'expired'  && <Chip size="sm" variant="flat" color="danger">Expired</Chip>}
-                  {status === 'low'      && <Chip size="sm" variant="flat" color="warning">Low Stock</Chip>}
-                  {status === 'out' && !isPlaceholder && <Chip size="sm" variant="flat" color="danger">Out of Stock</Chip>}
-                  {status === 'expiring' && <Chip size="sm" variant="flat" color="warning">Exp. Soon</Chip>}
-                  {status === 'ok'       && <Chip size="sm" variant="flat" color="success">OK</Chip>}
-                  {item.isMedication     && <Chip size="sm" variant="flat" color="danger">Med</Chip>}
-                  {item.isOxygen         && <Chip size="sm" variant="flat" color="secondary">O₂</Chip>}
-                  {onTheWay && (
-                    <Chip size="sm" variant="flat" color="primary" startContent={<Truck size={12} />}>
-                      On the way · {incomingQty(item)} units
-                    </Chip>
-                  )}
-                </div>
-              </div>
-
-              {/* Drawer body */}
-              <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
-                {/* On the way — Receive action */}
-                {onTheWay && (
-                  <div className="bg-primary-50 dark:bg-primary-900/20 border border-primary/30 rounded-large px-4 py-3 flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <Truck size={16} className="text-primary flex-none" />
-                      <div className="min-w-0">
-                        <div className="text-sm font-semibold text-primary">On the way</div>
-                        <div className="text-xs text-primary/80 truncate">{incomingQty(item)} units incoming</div>
-                      </div>
-                    </div>
-                    <Button
-                      size="sm"
-                      color="primary"
-                      className="flex-none"
-                      onPress={() => { setDetailItem(null); setReceiveItem(item); }}
-                    >
-                      Receive
-                    </Button>
-                  </div>
-                )}
-
-                {/* Stock stats */}
-                <div className="flex gap-3">
-                  <div className="flex-1 bg-content2 rounded-large p-4">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1.5">On Hand</div>
-                    <div className={`font-mono text-[28px] font-semibold tabular-nums leading-tight ${qtyColor}`}>
-                      {item.isOxygen ? (item.oxygenPsi ?? 0) : (bag.hasBagTracking ? bag.totalItems : item.unopenedBoxes)}
-                      <span className="text-sm text-foreground-400 font-normal ml-1.5">
-                        {item.isOxygen ? 'PSI' : (bag.hasBagTracking ? 'items' : (item.unit || 'units'))}
-                      </span>
-                    </div>
-                    {bag.hasBagTracking && (
-                      <div className="text-xs text-foreground-400 mt-1">
-                        {bag.totalBags} bag{bag.totalBags !== 1 ? 's' : ''} · {bag.totalLoose} loose
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex-1 bg-content2 rounded-large p-4">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1.5">Reorder At</div>
-                    <div className="font-mono text-[28px] font-semibold tabular-nums leading-tight text-foreground-600">
-                      {item.reorderThreshold}
-                    </div>
-                    <div className={`text-xs font-semibold mt-1 ${
-                      isPlaceholder ? 'text-primary' :
-                      status === 'ok' ? 'text-success' :
-                      status === 'low' ? 'text-warning' :
-                      status === 'out' ? 'text-danger' :
-                      status === 'expired' ? 'text-danger' : 'text-foreground-500'
-                    }`}>
-                      {isPlaceholder ? 'On the way' :
-                       status === 'ok' ? 'Well stocked' :
-                       status === 'low' ? 'Below threshold' :
-                       status === 'out' ? 'Out of stock' :
-                       status === 'expired' ? 'Has expired batches' : 'Expiring soon'}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Batches */}
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <h4 className="text-xs font-semibold uppercase tracking-wide text-foreground-500">
-                      Batches & Expiration
-                    </h4>
-                    <span className="text-xs text-foreground-400 font-semibold">FIFO — oldest first</span>
-                  </div>
-                  {sortedBatches.length === 0 ? (
-                    <div className="text-xs text-foreground-400 text-center py-4 border border-dashed border-divider rounded-large">
-                      No batch tracking — stock counted at item level.
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      {sortedBatches.map(bt => {
-                        const bStatus = bt.status || (isBatchExpired(bt, item) ? 'expired' : (bt.bagCount ?? 0) > 0 ? 'sealed' : 'open');
-                        const total = bt.bagCount !== undefined
-                          ? (bt.bagCount ?? 0) * (bt.itemsPerBag ?? 0) + (bt.looseItems ?? 0)
-                          : bt.stock;
-                        const hasSealedBag = (bt.bagCount ?? 0) > 0 && bt.itemsPerBag;
-                        return (
-                          <div key={bt.id} className="border border-divider rounded-large p-4">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-2">
-                                <span className="font-mono text-sm font-semibold text-foreground">
-                                  {bt.lotNumber || '(no lot)'}
-                                </span>
-                                <Chip size="sm" variant="flat" color={BATCH_STATUS_COLORS[bStatus] || 'default'}>
-                                  {bStatus}
-                                </Chip>
-                              </div>
-                              <span className="font-mono text-[15px] font-semibold text-foreground-500">{total}</span>
-                            </div>
-                            <div className="flex items-center justify-between mt-2">
-                              <span className={`text-xs font-semibold ${expTextColor(bt.expirationDate)}`}>
-                                Expires {formatExp(bt.expirationDate)}
-                              </span>
-                              {hasSealedBag && (
-                                <Button
-                                  size="sm"
-                                  variant="bordered"
-                                  color="primary"
-                                  startContent={<PackageOpen size={12} />}
-                                  onPress={() => handleOpenBag(item, bt.id)}
-                                >
-                                  Open bag
-                                </Button>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-
-                {/* History */}
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <h4 className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400">
-                      Activity History
-                    </h4>
-                    {historyLoading && <Spinner size="sm" color="primary" />}
-                  </div>
-                  {drawerHistory.length === 0 && !historyLoading ? (
-                    <div className="text-xs text-foreground-400 text-center py-4 border border-dashed border-divider rounded-large">
-                      No activity logged yet.
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      {drawerHistory.map(entry => {
-                        const ACTION_LABELS: Record<string, string> = {
-                          create_open_batch: 'Batch added', consume_box: 'Units consumed',
-                          restock_needed: 'Restock alert', asset_checkout: 'Checked out',
-                          asset_checkin: 'Checked in', asset_assign: 'Assigned',
-                          asset_unassign: 'Unassigned', intake: 'Stock intake',
-                          batch_added: 'Stock intake', quick_adjust: 'Quick adjust',
-                        };
-                        const label = ACTION_LABELS[entry.action] ?? entry.action.replace(/_/g, ' ');
-                        const isIn = ['intake', 'batch_added', 'create_open_batch', 'asset_checkin'].includes(entry.action);
-                        return (
-                          <div key={entry.id} className="flex items-start gap-3 border border-divider rounded-large p-3">
-                            <div className={`w-7 h-7 rounded-[8px] flex items-center justify-center flex-none mt-0.5 ${
-                              isIn ? 'bg-success-50 dark:bg-success-900/20 text-success' : 'bg-content3 text-foreground-400'
-                            }`}>
-                              {isIn ? <Plus size={13} /> : <Minus size={13} />}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="text-sm font-semibold text-foreground capitalize">{label}</span>
-                                {entry.quantity !== undefined && (
-                                  <span className={`font-mono text-sm font-semibold tabular-nums ${isIn ? 'text-success' : 'text-foreground-500'}`}>
-                                    {isIn ? '+' : '−'}{Math.abs(entry.quantity)}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                                {entry.userName && <span className="text-xs text-foreground-400">{entry.userName}</span>}
-                                {entry.supplier && <span className="text-xs text-primary font-medium">via {entry.supplier}</span>}
-                                {entry.timestamp && (
-                                  <span className="text-xs text-foreground-300">
-                                    {entry.timestamp.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                                    {' · '}
-                                    {entry.timestamp.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
-                                  </span>
-                                )}
-                              </div>
-                              {entry.notes && <p className="text-xs text-foreground-400 mt-1">{entry.notes}</p>}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-
-                {/* Assign barcode / print label — any inventory item */}
-                <Button
-                  variant="flat"
-                  color="primary"
-                  fullWidth
-                  startContent={<ScanBarcode size={15} />}
-                  onPress={() => { setDetailItem(null); setAssignBarcodeItem(item); setAssignBarcodeOpen(true); }}
-                >
-                  Assign barcode / print label
-                </Button>
-
-                {/* Med cabinet link */}
-                {item.isMedication && (
-                  <Button
-                    variant="flat"
-                    color="danger"
-                    fullWidth
-                    onPress={() => { setDetailItem(null); setMedCabinetItem(item); setMedCabinetOpen(true); }}
-                  >
-                    Med Cabinet
-                  </Button>
-                )}
-              </div>
-
-              {/* Drawer footer */}
-              <div className="px-6 py-4 border-t border-divider flex gap-3">
-                <Button
-                  variant="bordered"
-                  className="flex-1"
-                  startContent={<Plus size={15} />}
-                  onPress={() => { setDetailItem(null); setSelectedItem(item); setIsOpen(true); }}
-                >
-                  Edit / Add batch
-                </Button>
-                <Button
-                  color="primary"
-                  className="flex-1"
-                  startContent={<ArrowRight size={15} />}
-                  onPress={() => { setDetailItem(null); handleRestockForward(item); }}
-                >
-                  Restock forward
-                </Button>
-              </div>
-            </div>
-          </>
-        );
-      })()}
+      {/* In drawer/center mode (and table view) the detail renders in PanelShell.
+          In list + dropdown mode it renders inline within the list (see the map). */}
+      {detailItem && !inlineDropdown && (
+        <PanelShell isOpen onClose={() => setDetailItem(null)} ariaLabel={`Details for ${detailItem.name}`}>
+          {renderItemDetail(detailItem)}
+        </PanelShell>
+      )}
 
       {/* ══ Modals ═══════════════════════════════════════════════════════════ */}
       <InventoryModal

@@ -20,6 +20,7 @@ import {
   deleteEvent,
   approveRequest,
   rejectRequest,
+  slotRoleLabel,
   type EventActor,
 } from '@/app/lib/events';
 import type { Event, ShiftRequest } from '@/app/types';
@@ -393,7 +394,7 @@ function PendingRequestsInbox({
               </button>
             </div>
             <div className="text-xs text-foreground-500 mt-0.5">
-              {req.teamName} · {req.role}
+              {req.teamName} · {slotRoleLabel(req.role)}
               {` · ${formatExperience(req)}`}
               {req.note ? ` — "${req.note}"` : ''}
             </div>

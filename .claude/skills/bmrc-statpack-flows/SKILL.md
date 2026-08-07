@@ -89,10 +89,14 @@ It is not logging-only. Inside its transaction it writes the **pack** and a
   pairing/duration helpers (`pairStatpackLogs`, `calculateEventDuration`).
 - **Pack types/pockets** are org-config (`statpackTypes` with `pockets` — see
   the **bmrc-org-config** skill), editable in `/settings`.
-- **`statpack-checkoff-modal.tsx` is retired** except two flows that need its
-  `maintenance` mode, which the page lacks: `statpacks/page.tsx`
-  (`openMaintenance`) and the pocket-by-pocket asset audit in
-  `assets/page.tsx`. Do not build new features on the modal; extend the page.
+- **`statpack-checkoff-modal.tsx` is retired** except **one** flow that still
+  needs its `maintenance` mode, which the page lacks: `statpacks/page.tsx`
+  (`openMaintenance`). Do not build new features on the modal; extend the page.
+  `seal-check-modal.tsx` / `asset-verify-step.tsx` were deleted as dead code,
+  and the pocket-by-pocket asset audit in `assets/page.tsx` was **removed** —
+  `openStatpackAudit` had zero call sites, so the pocket-picker modal, its
+  `maintenance`-mode checkoff modal, and `AssetAttachModal` were all
+  unreachable. Don't reintroduce them.
 - Asset assignment to packs: `assignAssetToStatpack` /
   `unassignAssetFromStatpack` / `validateStatpackAssignments` in
   `app/lib/inventory.ts`.

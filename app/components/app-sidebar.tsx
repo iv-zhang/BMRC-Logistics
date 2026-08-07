@@ -14,7 +14,6 @@ import {
   ChevronsLeft, ChevronsRight, ScanBarcode, SlidersHorizontal,
   SquareKanban, Ambulance, CalendarDays,
 } from 'lucide-react';
-import TutorialOverlay from './tutorial-overlay';
 
 export interface AppSidebarProps {
   navHidden: boolean;
@@ -83,13 +82,24 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
   const { theme } = useTheme();
   const [mounted, setMounted] = useState(false);
   const [navHover, setNavHover] = useState(false);
-  const [showTutorial, setShowTutorial] = useState(false);
+  const [tourPinned, setTourPinned] = useState(false);
 
   useEffect(() => setMounted(true), []);
 
+  useEffect(() => {
+    const handleTourActive = () => setTourPinned(true);
+    const handleTourInactive = () => setTourPinned(false);
+    window.addEventListener('bmrc-tour-active', handleTourActive);
+    window.addEventListener('bmrc-tour-inactive', handleTourInactive);
+    return () => {
+      window.removeEventListener('bmrc-tour-active', handleTourActive);
+      window.removeEventListener('bmrc-tour-inactive', handleTourInactive);
+    };
+  }, []);
+
   const isAdmin = role === 'admin' || role === 'quartermaster';
   const isDark = mounted && theme === 'dark';
-  const expanded = navHover && !navHidden;
+  const expanded = (navHover || tourPinned) && !navHidden;
 
   // Firestore user sync
   useEffect(() => {
@@ -111,37 +121,16 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
     return () => unsub();
   }, []);
 
-  // First-login tutorial check. Firestore's `tutorialCompleted` is the
-  // authoritative, cross-device source of truth; the per-uid localStorage guard
-  // is only an optimistic local fast-path (prevents a flash before userData
-  // resolves, and a belt-and-suspenders if a completion write failed). It is set
-  // on completion (see TutorialOverlay), never here on show.
-  useEffect(() => {
-    if (!user || !userData || userData.tutorialCompleted) return;
-    let locallyDone = false;
-    try {
-      locallyDone = localStorage.getItem(`bmrc_tutorial_done_v1_${user.uid}`) === '1';
-    } catch {}
-    // Legitimately syncs the modal to async-loaded Firestore state (userData).
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (!locallyDone) setShowTutorial(true);
-  }, [user, userData]);
-
-  // Transient replay trigger — /profile (and any other surface) dispatches
-  // `bmrc-show-tutorial` to preview the tutorial without touching completion.
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const onShow = () => setShowTutorial(true);
-    window.addEventListener('bmrc-show-tutorial', onShow as EventListener);
-    return () => window.removeEventListener('bmrc-show-tutorial', onShow as EventListener);
-  }, []);
+  // First-run onboarding (and the "Tutorial" replay button) are handled by the
+  // single OnboardingTour controller mounted in sidebar-layout — nothing to do here.
 
   const isItemActive = (path: string) =>
     pathname === path || pathname.startsWith(path + '/');
 
-  // On mobile the icon rail is replaced app-wide by the bottom nav bar
-  // (see mobile-bottom-nav.tsx), so hide the rail below `md` on every route.
-  const railHideCls = 'max-md:hidden';
+  // On true phones (< sm) the icon rail is replaced app-wide by the bottom nav
+  // bar (see mobile-bottom-nav.tsx). From `sm` up — tablets and narrow desktops —
+  // the rail stays visible so the full left bar is available at those sizes.
+  const railHideCls = 'max-sm:hidden';
 
   // Committee members (flag on the users doc) get the board section without being admins
   const isCommitteeMember = userData?.isCommitteeMember === true;
@@ -162,10 +151,6 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
 
   const labelCls = `transition-opacity duration-150 ${expanded ? 'opacity-100' : 'opacity-0'}`;
 
-  const tutorialNode = showTutorial && user ? (
-    <TutorialOverlay userId={user.uid} onComplete={() => setShowTutorial(false)} />
-  ) : null;
-
   if (navHidden) {
     return (
       <>
@@ -177,7 +162,6 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
         >
           <ChevronsRight size={18} />
         </button>
-        {tutorialNode}
       </>
     );
   }
@@ -235,6 +219,7 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
                 {section.items.map(({ key, label, Icon, path }) => (
                   <button
                     key={key}
+                    data-tour={key}
                     onClick={() => router.push(path)}
                     className={navItemCls(isItemActive(path))}
                   >
@@ -249,9 +234,9 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
           {/* Bottom controls */}
           <div className="px-3 pb-3.5 pt-2 border-t border-divider flex flex-col gap-[2px]">
 
-            {/* Tutorial */}
+            {/* Tutorial — replays the interactive onboarding tour (see onboarding-tour.tsx) */}
             <button
-              onClick={() => setShowTutorial(true)}
+              onClick={() => window.dispatchEvent(new Event('bmrc-replay-tutorial'))}
               className="flex items-center gap-[13px] h-9 px-[11px] rounded-[10px] whitespace-nowrap text-[13px] w-full text-left text-foreground-500 font-medium hover:bg-content2 transition-colors duration-150"
             >
               <GraduationCap size={19} className="flex-none" />
@@ -262,6 +247,7 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
 
             {/* User row — this IS the profile link (no separate Profile button). */}
             <button
+              data-tour="profile"
               onClick={() => router.push('/profile')}
               title="Profile"
               className={`flex items-center gap-[11px] h-10 px-[11px] rounded-[10px] whitespace-nowrap w-full text-left transition-colors duration-150 ${
@@ -290,8 +276,6 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
           </div>
         </div>
       </aside>
-
-      {tutorialNode}
     </>
   );
 }

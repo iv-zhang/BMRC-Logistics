@@ -64,13 +64,13 @@ export default function MobileBottomNav() {
   return (
     <>
       <nav
-        className="md:hidden fixed left-0 right-0 bottom-0 z-30 bg-background/85 backdrop-blur-md border-t border-divider px-2 pt-2 pb-[max(env(safe-area-inset-bottom),8px)] flex"
+        className="sm:hidden fixed left-0 right-0 bottom-0 z-30 bg-background/85 backdrop-blur-md border-t border-divider px-2 pt-2 pb-[max(env(safe-area-inset-bottom),8px)] flex"
         style={{ transform: 'translateZ(0)', willChange: 'transform', WebkitBackfaceVisibility: 'hidden' }}
       >
         {tabs.map(({ key, label, Icon, path }) => {
           const active = isActive(path);
           return (
-            <button key={key} onClick={() => go(path)} className={tabBtnCls(active)}>
+            <button key={key} data-tour={key === 'members' ? 'roster' : key} onClick={() => go(path)} className={tabBtnCls(active)}>
               <Icon size={22} />
               <span className={`text-[10px] ${active ? 'font-semibold' : 'font-medium'}`}>{label}</span>
             </button>
@@ -79,12 +79,12 @@ export default function MobileBottomNav() {
 
         {/* Members: Report shortcut. Admins: More sheet. */}
         {isAdmin ? (
-          <button onClick={() => setMoreOpen(true)} className={tabBtnCls(moreOpen || !primaryActive)}>
+          <button data-tour="more" onClick={() => setMoreOpen(true)} className={tabBtnCls(moreOpen || !primaryActive)}>
             <MoreHorizontal size={22} />
             <span className={`text-[10px] ${moreOpen || !primaryActive ? 'font-semibold' : 'font-medium'}`}>More</span>
           </button>
         ) : (
-          <button onClick={() => go('/profile')} className={tabBtnCls(isActive('/profile'))}>
+          <button data-tour="profile" onClick={() => go('/profile')} className={tabBtnCls(isActive('/profile'))}>
             <User size={22} />
             <span className={`text-[10px] ${isActive('/profile') ? 'font-semibold' : 'font-medium'}`}>Profile</span>
           </button>
@@ -93,7 +93,7 @@ export default function MobileBottomNav() {
 
       {/* More sheet — full navigation for admins */}
       {moreOpen && (
-        <div className="md:hidden fixed inset-0 z-50 flex flex-col justify-end" onClick={() => setMoreOpen(false)}>
+        <div className="sm:hidden fixed inset-0 z-50 flex flex-col justify-end" onClick={() => setMoreOpen(false)}>
           <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
           <div
             className="relative bg-content1 rounded-t-[22px] flex flex-col overflow-hidden max-h-[85vh]"

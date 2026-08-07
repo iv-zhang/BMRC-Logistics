@@ -10,8 +10,8 @@
 
 import { useState } from 'react';
 import { Button, Textarea, Tooltip } from '@heroui/react';
-import { UserRound, ShieldCheck, Users } from 'lucide-react';
-import { canRequestRole, requestShift, type ShiftRequester } from '@/app/lib/events';
+import { UserRound, ShieldCheck, Users, GraduationCap } from 'lucide-react';
+import { canRequestRole, requestShift, teamHasIntern, slotRoleLabel, type ShiftRequester } from '@/app/lib/events';
 import { canSignUpForShifts, getShiftBlockReason } from '@/app/lib/certifications';
 import type { Event, EventTeam, SlotRole, User, ShiftRequest } from '@/app/types';
 
@@ -112,7 +112,7 @@ export default function TeamCard({
         onPress={() => setOpenRole(role)}
         className="w-full mt-1.5"
       >
-        Request {role}
+        Request {slotRoleLabel(role)}
       </Button>
     );
 
@@ -131,12 +131,25 @@ export default function TeamCard({
     <div className="border border-divider rounded-large p-4 flex flex-col gap-3">
       <div className="text-sm font-semibold text-foreground">{team.name}</div>
 
-      <div>
-        <div className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400 mb-1 flex items-center gap-1">
-          <ShieldCheck size={11} /> FTO
+      <div className="border border-divider rounded-large p-2.5 flex flex-col gap-2">
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400 mb-1 flex items-center gap-1">
+            <ShieldCheck size={11} /> FTO
+          </div>
+          <SlotRow filled={!!team.ftoSlot?.userId} name={team.ftoSlot?.userName} />
+          {renderRequestControl('FTO', !team.ftoSlot?.userId)}
         </div>
-        <SlotRow filled={!!team.ftoSlot?.userId} name={team.ftoSlot?.userName} />
-        {renderRequestControl('FTO', !team.ftoSlot?.userId)}
+
+        {teamHasIntern(team) && (
+          <div className="pl-2.5 ml-1 border-l-2 border-divider">
+            <div className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400 mb-1 flex items-center gap-1.5">
+              <GraduationCap size={11} /> FTO Intern
+              <span className="text-[10px] font-normal normal-case tracking-normal text-foreground-400">(supervised)</span>
+            </div>
+            <SlotRow filled={!!team.ftoInternSlot?.userId} name={team.ftoInternSlot?.userName} />
+            {renderRequestControl('FTO_INTERN', !team.ftoInternSlot?.userId)}
+          </div>
+        )}
       </div>
 
       <div>

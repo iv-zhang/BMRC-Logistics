@@ -99,6 +99,41 @@ structured ref — never the reverse.** Invariants (all enforced in
 - `InventoryItem.isTrainer` marks training gear (trainer AEDs, manikins) —
   still an asset, but filtered out of every deployable/readiness view.
 
+## Two-pool stock model (back reserve / front shelf)
+
+A **different axis** from bag- vs. box-tracking above: every consumable also
+splits into two pools.
+
+- **Back reserve** — the item's batch/box counts (`batches[]`, or
+  `unopenedBoxes`/`looseUnits`). This is what `computeBagStock().availableItems`
+  returns and the **only** pool that drives `getItemStatus` (ok/low/out/
+  expired/expiring) and reordering. An item with a full front shelf but an
+  empty back room still correctly reads `out` — the shelf is never a substitute
+  for reserve in that math, **on purpose** (see the comment at `getItemStatus`
+  in `app/lib/item-status.ts`).
+- **Front shelf** — `InventoryItem.shelfQuantity`, the deployed pool members
+  actually grab from day to day. It is deliberately **not event-tracked**:
+  general members won't reliably log every unit they take, so instead of
+  instrumenting consumption, roughly weekly someone physically counts the shelf
+  and that count **re-anchors** `shelfQuantity` to reality.
+  `lastShelfCheckAt`/`lastShelfCheckBy` stamp the check; `isShelfCheckCurrent()`
+  (`app/lib/item-status.ts`) tests it against
+  `getThresholds().shelfCheckIntervalDays` (default 7).
+- **`refillShelf()`** (`app/lib/restock-actions.ts`, pool math in
+  `app/lib/stock-pools.ts`) is a **transfer, never a stock creation**. It moves
+  units reserve→shelf via `consumeReserveUnits` (FEFO,
+  loose-before-breaking-bags/boxes, clamped to what reserve actually has) and
+  either increments `shelfQuantity` (plain refill) or, when `observedShelfQty`
+  is passed, **SETS** it to `observedShelfQty + consumed` (the weekly
+  re-anchor). A check can also run with no transfer at all (`qty: 0` +
+  `observedShelfQty`) to record a count without touching reserve. UI:
+  `RefillModal` / `ShelfSweepModal` in `app/restock/page.tsx`.
+- **Do not conflate this with the deferred class-use vs. field/event stock-pool
+  gap** (D-11, "Known open design gaps" in `CLAUDE.md`). That gap is about
+  *which reserve* a draw comes from; this split is about
+  *deployed-but-uncounted* vs. *counted-and-available* stock **within** a single
+  reserve.
+
 ## Audit cycles
 
 - **Supplies: monthly calendar cycle.** An item is verified only if
@@ -110,11 +145,16 @@ structured ref — never the reverse.** Invariants (all enforced in
 
 ## Firestore conventions
 
-Collections: `inventory`, `inventory_logs`, `statpacks`, `statpack_logs`,
-`assets`, `restock_shelves`, `restock_logs`, `restock_reports`, `auditEvents`
+Collections: `inventory` (the central collection — consumables, assets, oxygen
+and medications are **all** `inventory` docs discriminated by flags; there is
+**no** separate `assets` collection), `inventory_logs`, `inventory_alerts`,
+`statpacks`, `statpack_logs`, `vehicles`, `vehicle_logs`, `restock_shelves`,
+`restock_shelf_events`, `restock_actions`, `restock_reports`, `auditEvents`
 (camelCase — the audit ledger, written by `app/lib/audit.ts`), `issue_reports`,
-`buy_list`, `tasks`, `users`, `storage_zones`, `shelves`, `containers`,
-`box_logs`, `medication_logs`, `org_settings`.
+`buyList` (camelCase — **not** `buy_list`), `tasks`, `users`, `storage_zones`,
+`shelves`, `containers`, `box_logs`, `medication_logs`, `org_settings`,
+`laf_records`, `reconciliation_exceptions`, `events` (+ `teams[]`),
+`shift_requests`, `notifications`. Shapes are in `MODEL.md`.
 
 Rules that bite:
 

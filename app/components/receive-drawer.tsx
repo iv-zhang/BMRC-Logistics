@@ -8,6 +8,7 @@ import { receivePurchaseLine, type PurchaseActor, type ReceiveLineInput } from '
 import { addShipment, type AuditActor } from '@/app/lib/audit-actions';
 import { resolveScan } from '@/app/lib/scan-resolve';
 import ScannerInput from '@/app/components/scanner-input';
+import PanelShell from '@/app/components/panel-shell';
 import type { InventoryItem, Purchase, PurchaseLine } from '@/app/types';
 
 interface ReceiveDrawerProps {
@@ -322,12 +323,7 @@ export default function ReceiveDrawer({ isOpen, onClose, item, actor, onReceived
   }
 
   return (
-    <>
-      {/* Backdrop */}
-      <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={finish} />
-
-      {/* Drawer */}
-      <div className="fixed top-0 right-0 bottom-0 z-50 w-[480px] max-w-[94vw] bg-content1 shadow-2xl flex flex-col">
+    <PanelShell isOpen onClose={finish} ariaLabel="Receive shipment">
         {/* Header */}
         <div className="px-6 py-5 border-b border-divider flex-none">
           <div className="flex items-start justify-between gap-3">
@@ -595,7 +591,6 @@ export default function ReceiveDrawer({ isOpen, onClose, item, actor, onReceived
             Close
           </Button>
         </div>
-      </div>
-    </>
+    </PanelShell>
   );
 }

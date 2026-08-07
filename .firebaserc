@@ -1,5 +1,8 @@
 {
   "projects": {
-    "default": "bmrc-logistics"
-  }
+    "default": "bmrc-staging",
+    "staging": "bmrc-staging"
+  },
+  "targets": {},
+  "etags": {}
 }

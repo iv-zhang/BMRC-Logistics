@@ -336,6 +336,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
           <div className="grid grid-cols-2 md:grid-cols-2 gap-2 md:gap-4">
             <Card
               isPressable
+              data-tour="checkout"
               onPress={() => router.push('/statpacks/checkout')}
               className="bg-gradient-to-br from-blue-500 to-blue-600 text-white transition-transform"
             >
@@ -350,6 +351,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
 
             <Card
               isPressable
+              data-tour="checkin"
               onPress={() => router.push('/statpacks/checkin')}
               className="bg-gradient-to-br from-green-500 to-green-600 text-white transition-transform"
             >
@@ -443,6 +445,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
             {role === 'medops' && (
               <Card
                 isPressable
+                data-tour="roster"
                 onPress={() => router.push('/roster')}
                 className="bg-gradient-to-br from-rose-500 to-pink-600 text-white transition-transform"
               >
@@ -465,6 +468,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
           </h2>
           <Card
             isPressable
+            data-tour="shifts"
             onPress={() => router.push('/events')}
             className="bg-gradient-to-br from-indigo-500 to-violet-600 text-white transition-transform w-full"
           >
@@ -586,6 +590,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
             <Button
               size="sm"
               variant="light"
+              data-tour="history"
               endContent={<History size={14} />}
               onPress={() => router.push('/history')}
             >

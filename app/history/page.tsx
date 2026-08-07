@@ -22,6 +22,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
+import { slotRoleLabel } from '@/app/lib/events';
 import type { StatpackLog, ShiftRequest, AttendanceRecord } from '@/app/types';
 import { toJsDate, formatEventDate } from '@/app/components/events/event-utils';
 
@@ -235,7 +236,7 @@ export default function HistoryPage() {
                             {req.eventName}
                           </p>
                           <p className="text-xs text-foreground-500 mt-0.5">
-                            {req.teamName} · {req.role}
+                            {req.teamName} · {slotRoleLabel(req.role)}
                           </p>
                           <p className="text-xs text-foreground-400 mt-0.5">
                             {formatEventDate(req.eventDate)}
