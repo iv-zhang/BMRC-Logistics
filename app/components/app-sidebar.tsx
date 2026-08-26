@@ -12,7 +12,7 @@ import {
   BarChart2, Users, AlertTriangle,
   GraduationCap,
   ChevronsLeft, ChevronsRight, ScanBarcode, SlidersHorizontal,
-  SquareKanban, Ambulance, CalendarDays,
+  SquareKanban, Ambulance, CalendarDays, Shirt,
 } from 'lucide-react';
 
 export interface AppSidebarProps {
@@ -53,6 +53,7 @@ export const ADMIN_NAV: NavSection[] = [
       { key: 'inventory',     label: 'Inventory',        Icon: Package,     path: '/inventory' },
       { key: 'audit',         label: 'Supply Audit',     Icon: ScanBarcode, path: '/audit' },
       { key: 'restock',       label: 'Restock',          Icon: RefreshCw,   path: '/restock' },
+      { key: 'apparel',       label: 'Uniform Exchange', Icon: Shirt,       path: '/apparel' },
       { key: 'stats',         label: 'Stats',            Icon: BarChart2,   path: '/stats' },
     ],
   },
@@ -71,6 +72,7 @@ export const MEMBER_NAV: NavSection[] = [
   {
     items: [
       { key: 'dashboard', label: 'Dashboard', Icon: Home, path: '/dashboard' },
+      { key: 'apparel',   label: 'Uniform Exchange', Icon: Shirt, path: '/apparel' },
     ],
   },
 ];

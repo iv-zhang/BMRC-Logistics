@@ -305,7 +305,9 @@ export type NotificationType =
   | 'request_approved'
   | 'request_rejected'
   | 'broadcast'
-  | 'cert_expiring';
+  | 'cert_expiring'
+  | 'apparel_available'
+  | 'apparel_withdrawn';
 
 export interface AppNotification {
   id?: string;
@@ -1430,4 +1432,129 @@ export interface MedicationInfo {
   parLevel?: number;
   /** National Drug Code */
   ndcNumber?: string;
+}
+
+// --- UNIFORM EXCHANGE ---
+// Deliberately separate from `inventory` — garments are not medical supply
+// stock and must never be fed into determineIsAsset/buildExceptions/Supply
+// Audit. One doc per physical garment (no quantity-per-listing). No photos,
+// no storageLocation. See decisions.md before adding either back.
+
+/** Admin-managed at runtime in `apparel_categories` — see decisions.md before
+ *  reintroducing a hardcoded garment-type union. */
+export interface ApparelCategory {
+  id?: string;
+  /** Display name, e.g. "Shirts". Trimmed on save. */
+  name: string;
+  /** Explicit numeric order — NOT array position, so archiving one category
+   *  never has to shift its siblings. */
+  sortOrder: number;
+  /** false = archived. Archiving is the only "delete" — the doc is never
+   *  hard-deleted, so a garment's categoryId always keeps resolving. */
+  active: boolean;
+  createdBy: string;
+  createdByName?: string;
+  createdAt: Date | FieldValue;
+  updatedAt: Date | FieldValue;
+  archivedAt?: Date | FieldValue | null;
+  archivedBy?: string | null;
+}
+
+export type ApparelCondition = 'new' | 'good' | 'fair' | 'worn';
+
+export type ApparelDisposition = 'free' | 'for_sale' | 'loaner';
+
+export type ApparelItemStatus =
+  | 'available' | 'claimed' | 'on_loan' | 'picked_up' | 'withdrawn';
+
+export interface ApparelWaitlistEntry {
+  userId: string;
+  userName?: string;
+  /** Client Date — serverTimestamp() is rejected inside array elements. */
+  joinedAt: Date;
+}
+
+export interface ApparelItem {
+  id?: string;
+  /** References `apparel_categories/{id}`. Joined on read against the live
+   *  categories list — deliberately no denormalized name mirror here (see
+   *  decisions.md); an archived category still resolves forever. */
+  categoryId: string;
+  /** Freeform, e.g. "M", "Large", "10.5" — deliberately not a constrained dropdown. */
+  sizeLabel: string;
+  condition: ApparelCondition;
+  disposition: ApparelDisposition;
+  /** Dollars; meaningful only when disposition === 'for_sale'. */
+  price?: number;
+  /** Brand/color/fit notes — the only "visual" info, since there are no photos. */
+  description?: string;
+  status: ApparelItemStatus;
+
+  // Hold fields — present only while status === 'claimed'. claimExpiresAt is
+  // the ONLY field expiry logic reads; never derive expiry from claimedAt.
+  claimedBy?: string;
+  claimedByName?: string;
+  /** serverTimestamp() — audit/display only, never read for expiry math. */
+  claimedAt?: Date | FieldValue;
+  /** Plain client Date; claimedAt(client) + HOLD_DURATION_MS. */
+  claimExpiresAt?: Date;
+  /** Back-pointer to the open apparel_claims doc (statpack/vehicle pattern). */
+  activeClaimId?: string;
+
+  // Loan fields — present only while status === 'on_loan'.
+  loanedAt?: Date | FieldValue;
+  /** Plain Date; isLoanOverdue() derives from this, never asserted as a status. */
+  loanDueAt?: Date;
+
+  // Payment — for_sale only.
+  isPaid?: boolean;
+  paidAt?: Date | FieldValue;
+  paidBy?: string;
+
+  // Pickup — terminal for free/for_sale.
+  pickedUpAt?: Date | FieldValue;
+  pickedUpBy?: string;
+  pickedUpByName?: string;
+
+  // Withdrawal — soft delete only, nothing is ever hard-deleted.
+  withdrawnAt?: Date | FieldValue;
+  withdrawnBy?: string;
+  withdrawnReason?: string;
+
+  waitlist?: ApparelWaitlistEntry[];
+
+  listedBy: string;
+  listedByName?: string;
+  createdAt: Date | FieldValue;
+  updatedAt: Date | FieldValue;
+}
+
+export type ApparelClaimAction =
+  | 'claimed' | 'released' | 'expired' | 'picked_up' | 'paid'
+  | 'loaned' | 'returned' | 'withdrawn' | 'reactivated'
+  | 'waitlist_joined' | 'waitlist_left';
+
+/** Append-only log in `apparel_claims` — never updated after write. */
+export interface ApparelClaim {
+  id?: string;
+  itemId: string;
+  categoryId: string;
+  /** Frozen at write time — NOT a synced mirror. A later category rename or
+   *  archive must not retroactively change what a historical entry says. */
+  categoryName: string;
+  sizeLabel: string;
+  action: ApparelClaimAction;
+  /** The member the action concerns. */
+  userId: string;
+  userName?: string;
+  /** Present only when actor !== userId (e.g. admin force-release/withdraw). */
+  actorId?: string;
+  actorName?: string;
+  timestamp: Date | FieldValue;
+  /** Dual-stamp, same reason as StatpackLog/VehicleLog. */
+  clientTimestamp?: Date;
+  /** Groups claimed→released/expired/picked_up/paid/loaned/returned into one lifecycle. */
+  pairId?: string;
+  notes?: string;
+  details?: Record<string, any>;
 }
