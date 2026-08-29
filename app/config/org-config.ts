@@ -781,6 +781,8 @@ export interface EventPolicyOverride {
   shortNoticeResponseWindowHours?: number;
   declinedOfferBehavior?: 'terminal' | 'requeue_back';
   maxQueueLength?: number;
+  /** Whether a member may still join a queue after the shift has started. */
+  allowQueueAfterShiftStart?: boolean;
   cancellation?: Partial<CancellationPolicyConfig>;
   reminderHoursBefore?: number[];
 }

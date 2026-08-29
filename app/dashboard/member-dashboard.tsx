@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Card,
@@ -18,13 +18,16 @@ import {
   Timestamp,
   addDoc,
   serverTimestamp,
+  getDoc,
+  doc,
 } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
-import type { Statpack, User, AppNotification, ShiftRequest } from '@/app/types';
+import type { Statpack, User, AppNotification, ShiftRequest, Event } from '@/app/types';
 import { subscribeUserNotifications, markNotificationRead } from '@/app/lib/notifications';
-import { subscribeMyRequests } from '@/app/lib/events';
+import { subscribeMyRequests, resolveOfferState } from '@/app/lib/events';
 import { toJsDate, formatEventDate, shiftRequestStatusChip } from '@/app/components/events/event-utils';
+import WaitlistOfferModal from '@/app/components/events/waitlist-offer-modal';
 import {
   LogIn,
   LogOut,
@@ -57,6 +60,32 @@ interface MemberDashboardProps {
   userData: User;
 }
 
+/**
+ * [Phase 1 / waitlist plan §5.2] Countdown color escalation for an
+ * outstanding offer's `respondBy` — matches the thresholds the offer modal
+ * itself uses (default -> warning under 30min -> danger under 5min).
+ */
+function offerCountdownColor(msRemaining: number): 'default' | 'warning' | 'danger' {
+  if (msRemaining <= 5 * 60_000) return 'danger';
+  if (msRemaining <= 30 * 60_000) return 'warning';
+  return 'default';
+}
+
+/** `mm:ss` under an hour remaining, else `Xh Ym`. Never negative. */
+function formatOfferCountdown(msRemaining: number): string {
+  if (msRemaining <= 0) return 'Expired';
+  const totalSeconds = Math.floor(msRemaining / 1000);
+  if (totalSeconds < 3600) {
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  }
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours}h ${minutes}m`;
+}
+
 export default function MemberDashboard({ userData }: MemberDashboardProps) {
   const router = useRouter();
   const { role } = useUserRole();
@@ -64,6 +93,14 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
   const [loading, setLoading] = useState(true);
   const [upcomingShifts, setUpcomingShifts] = useState<ShiftRequest[]>([]);
   const [shiftsLoading, setShiftsLoading] = useState(true);
+  // [Phase 1 / waitlist plan §5.2 Surface A] Outstanding offers, rendered in
+  // their own "Shift Offers" section above "Upcoming Shifts" rather than
+  // folded into that list — see the filter comment further down.
+  const [shiftOffers, setShiftOffers] = useState<ShiftRequest[]>([]);
+  const [offerEvents, setOfferEvents] = useState<Record<string, Event>>({});
+  const fetchedOfferEventIdsRef = useRef<Set<string>>(new Set());
+  const [selectedOffer, setSelectedOffer] = useState<ShiftRequest | null>(null);
+  const [offerCountdownNow, setOfferCountdownNow] = useState(() => new Date());
   const [lowStockItems, setLowStockItems] = useState<any[]>([]);
   const [expiringItems, setExpiringItems] = useState<any[]>([]);
   const [purchaseHistoryMap, setPurchaseHistoryMap] = useState<Record<string, any[]>>({});
@@ -215,20 +252,23 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
     return () => unsubPacks();
   }, [userData.id]);
 
-  // Upcoming shifts: this member's pending/approved/offered shift requests,
-  // soonest first. Past-dated approved requests (already happened) are
-  // filtered out; undated requests (rare) are kept and sorted last.
-  // [Phase 0 / waitlist plan §2.1] `offered` added — an unanswered offer is
-  // the single most time-critical thing a member can have, and this is the
-  // surface they actually look at (§5.2's offer-response entry point lands
-  // here in Phase 1). `waitlisted` is intentionally NOT included: a plain
-  // queue position isn't yet "upcoming" the way an offer or a confirmed seat
-  // is.
+  // Upcoming shifts: this member's pending/approved shift requests, soonest
+  // first. Past-dated approved requests (already happened) are filtered out;
+  // undated requests (rare) are kept and sorted last.
+  // [Phase 1 / waitlist plan §5.2] `offered` is deliberately NOT included
+  // here (Phase 0 had added it, reasoning it was the single most
+  // time-critical thing a member could have) — that reasoning is now
+  // superseded: an offer gets its own "Shift Offers" section above this one
+  // instead, because a response window as short as 2h (P8 default) can't be
+  // trusted to a member scrolling past one more row in this list. Folding it
+  // into both places would show the same offer twice. `waitlisted` remains
+  // NOT included: a plain queue position isn't yet "upcoming" the way an
+  // offer or a confirmed seat is.
   useEffect(() => {
     const unsub = subscribeMyRequests(userData.id, (requests) => {
       const now = new Date();
       const upcoming = requests
-        .filter((r) => r.status === 'approved' || r.status === 'pending' || r.status === 'offered')
+        .filter((r) => r.status === 'approved' || r.status === 'pending')
         .filter((r) => {
           const d = toJsDate(r.eventDate);
           return !d || d >= now;
@@ -242,10 +282,65 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
           return da - db_;
         });
       setUpcomingShifts(upcoming);
+
+      // Live offers only: re-derive through resolveOfferState (not raw
+      // status) so a stale `offered` doc past its respondBy — unswept
+      // because promotion is only evaluated lazily when a manager's client
+      // opens the event (§3.6) — never renders here as if it were still
+      // actionable.
+      const liveOffers = requests.filter(
+        (r) => r.status === 'offered' && !r.offer?.response && resolveOfferState(r, now) === 'offered',
+      );
+      setShiftOffers(liveOffers);
+
       setShiftsLoading(false);
     });
     return () => unsub();
   }, [userData.id]);
+
+  // Fetch the Event doc for each request with a live offer — cheap and
+  // on-demand: only runs when there's actually an offer, dedupes by id, and
+  // never subscribes (a one-time getDoc is enough; the offer itself is what's
+  // live, not the event).
+  useEffect(() => {
+    const missingIds = Array.from(new Set(shiftOffers.map((o) => o.eventId))).filter(
+      (id) => id && !fetchedOfferEventIdsRef.current.has(id),
+    );
+    if (missingIds.length === 0) return;
+    missingIds.forEach((id) => fetchedOfferEventIdsRef.current.add(id));
+    let cancelled = false;
+    (async () => {
+      const results = await Promise.all(
+        missingIds.map(async (id) => {
+          try {
+            const snap = await getDoc(doc(db, 'events', id));
+            return snap.exists() ? ([id, { id: snap.id, ...(snap.data() as Event) }] as const) : null;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      if (cancelled) return;
+      setOfferEvents((prev) => {
+        const next = { ...prev };
+        for (const result of results) {
+          if (result) next[result[0]] = result[1];
+        }
+        return next;
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [shiftOffers]);
+
+  // Live countdown ticker for the offer chips — only runs while there's at
+  // least one outstanding offer to show.
+  useEffect(() => {
+    if (shiftOffers.length === 0) return;
+    const id = setInterval(() => setOfferCountdownNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, [shiftOffers.length]);
 
   const formatTimestamp = (date: Date) => {
     const now = new Date();
@@ -488,6 +583,53 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
           </Card>
         </section>
 
+        {/* Shift Offers Section — [Phase 1 / waitlist plan §5.2 Surface A]
+            Deliberately its own section above "Upcoming Shifts", not folded
+            into that list: an outstanding offer can have as little as a 2h
+            response window, so it can't be one more row a member scrolls
+            past. Renders nothing at all when there are no live offers — no
+            empty-state placeholder. */}
+        {shiftOffers.length > 0 && (
+          <section>
+            <h2 className="text-lg md:text-xl font-semibold mb-3 md:mb-4">
+              Shift Offers
+            </h2>
+            <div className="flex flex-col gap-2 md:gap-3">
+              {shiftOffers.map((req) => {
+                const respondByDate = req.offer?.respondBy ? req.offer.respondBy.toDate() : null;
+                const msRemaining = respondByDate ? respondByDate.getTime() - offerCountdownNow.getTime() : 0;
+                return (
+                  <Card
+                    key={req.id}
+                    isPressable
+                    className="bg-warning-50 dark:bg-warning-900/20 border border-warning/40 w-full"
+                    onPress={() => setSelectedOffer(req)}
+                  >
+                    <CardBody className="py-2 md:py-3 px-3 md:px-4">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <h4 className="font-semibold text-sm md:text-base truncate">
+                            {req.eventName}
+                          </h4>
+                          <p className="text-xs text-foreground-500">
+                            {req.teamName ? `${req.teamName} · ` : ''}
+                            {req.role} · {formatEventDate(req.eventDate)}
+                          </p>
+                        </div>
+                        {respondByDate && (
+                          <Chip size="sm" variant="flat" color={offerCountdownColor(msRemaining)}>
+                            {formatOfferCountdown(msRemaining)}
+                          </Chip>
+                        )}
+                      </div>
+                    </CardBody>
+                  </Card>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
         {/* Upcoming Shifts Section */}
         <section>
           <h2 className="text-lg md:text-xl font-semibold mb-3 md:mb-4">
@@ -720,6 +862,20 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
         </Card>
       </div>
     </div>
+
+    {selectedOffer && offerEvents[selectedOffer.eventId] && (
+      <WaitlistOfferModal
+        isOpen={!!selectedOffer}
+        onClose={() => setSelectedOffer(null)}
+        request={selectedOffer}
+        event={offerEvents[selectedOffer.eventId]}
+        actor={{ uid: userData.id, name: userData.fullName || 'Unknown', role: role ?? undefined }}
+        onDecided={(_ok, msg) => {
+          setSelectedOffer(null);
+          if (msg) alert(msg);
+        }}
+      />
+    )}
     </>
   );
 }

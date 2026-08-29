@@ -10,7 +10,7 @@ import {
   Card,
   CardBody,
 } from '@heroui/react';
-import { Bell, X } from 'lucide-react';
+import { Bell, X, Clock } from 'lucide-react';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { subscribeUserNotifications, markNotificationRead, markAllRead } from '@/app/lib/notifications';
 import type { AppNotification } from '@/app/types';
@@ -125,34 +125,52 @@ export default function NotificationBell() {
             </div>
           ) : (
             <div className="divide-y divide-divider">
-              {notifications.map((notification) => (
-                <button
-                  key={notification.id}
-                  onClick={() => handleNotificationClick(notification)}
-                  className={`w-full text-left px-4 py-3 hover:bg-content2 transition-colors ${
-                    !notification.read ? 'bg-primary-50/50 dark:bg-primary-900/10' : ''
-                  }`}
-                >
-                  <div className="flex gap-2 items-start">
-                    {!notification.read && (
-                      <span className="w-2 h-2 rounded-full bg-primary flex-none mt-1.5" />
-                    )}
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-semibold text-foreground leading-tight">
-                        {notification.title}
-                      </p>
-                      {notification.body && (
-                        <p className="text-xs text-foreground-500 mt-0.5 line-clamp-2">
-                          {notification.body}
-                        </p>
+              {notifications.map((notification) => {
+                // [Phase 1 / waitlist plan §5.2] `waitlist_offer` is the one
+                // notification type carrying a hard deadline (offer.respondBy
+                // can be as little as 2h out) — give it a distinct warning
+                // treatment so it doesn't blend into the generic feed. The
+                // bell had no type→icon/color mapping before this, so the
+                // other new types (`waitlist_promoted`, `shift_reminder`,
+                // `tier_open`) intentionally render as plain rows for now.
+                const isOffer = notification.type === 'waitlist_offer';
+                return (
+                  <button
+                    key={notification.id}
+                    onClick={() => handleNotificationClick(notification)}
+                    className={`w-full text-left px-4 py-3 hover:bg-content2 transition-colors ${
+                      isOffer
+                        ? 'bg-warning-50/60 dark:bg-warning-900/20'
+                        : !notification.read
+                          ? 'bg-primary-50/50 dark:bg-primary-900/10'
+                          : ''
+                    }`}
+                  >
+                    <div className="flex gap-2 items-start">
+                      {isOffer ? (
+                        <Clock size={14} className="text-warning flex-none mt-0.5" />
+                      ) : (
+                        !notification.read && (
+                          <span className="w-2 h-2 rounded-full bg-primary flex-none mt-1.5" />
+                        )
                       )}
-                      <p className="text-xs text-foreground-400 mt-1">
-                        {formatTime(notification.createdAt)}
-                      </p>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-foreground leading-tight">
+                          {notification.title}
+                        </p>
+                        {notification.body && (
+                          <p className="text-xs text-foreground-500 mt-0.5 line-clamp-2">
+                            {notification.body}
+                          </p>
+                        )}
+                        <p className="text-xs text-foreground-400 mt-1">
+                          {formatTime(notification.createdAt)}
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                </button>
-              ))}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>

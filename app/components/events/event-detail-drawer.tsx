@@ -4,9 +4,25 @@
  *  slots (member: request buttons; manager: also a pending-requests inbox
  *  scoped to this event), and manager actions (edit/notify/delete). */
 
-import { useEffect, useMemo, useState } from 'react';
-import { Button, Chip, Spinner, Textarea, Input } from '@heroui/react';
-import { X, MapPin, Clock, CalendarDays, Pencil, Trash2, BellRing, Info, ClipboardCheck, LogOut } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Button, Chip, Spinner, Textarea, Input, Dropdown, DropdownTrigger, DropdownMenu, DropdownItem } from '@heroui/react';
+import { collection, documentId, getDocs, query, where } from 'firebase/firestore';
+import { db } from '@/firebase';
+import {
+  X,
+  MapPin,
+  Clock,
+  CalendarDays,
+  Pencil,
+  Trash2,
+  BellRing,
+  Info,
+  ClipboardCheck,
+  LogOut,
+  ChevronDown,
+  Mail,
+} from 'lucide-react';
+import { useOrgConfig } from '@/app/hooks/useOrgConfig';
 import {
   subscribeEventRequests,
   approveRequest,
@@ -18,9 +34,23 @@ import {
   endEventShifts,
   formatMemberExperience,
   slotRoleLabel,
+  resolveEventPolicy,
+  queueKeyOf,
+  getWaitlistPosition,
+  waitlistComparator,
+  resolveOfferState,
+  promoteNextFromWaitlist,
+  sweepExpiredOffers,
+  skipWaitlistEntry,
+  unskipWaitlistEntry,
+  removeWaitlistEntry,
+  isSlotHeld,
+  isCommitmentBinding,
+  resolveSlotRef,
   type EventActor,
 } from '@/app/lib/events';
-import type { Event, EventStatus, ShiftRequest, AttendanceRecord, User } from '@/app/types';
+import type { Event, EventStatus, ShiftRequest, AttendanceRecord, User, SlotRole } from '@/app/types';
+import type { ResolvedEventPolicy } from '@/app/config/org-config';
 import TeamCard from './team-card';
 import {
   formatEventDate,
@@ -113,6 +143,102 @@ function AttendanceChips({ attendance }: { attendance?: AttendanceRecord }) {
   );
 }
 
+/**
+ * Mirrors `evaluateLateCancellation`'s late-window predicate (events.ts, not
+ * exported) closely enough to decide whether the `mode: 'confirm'` dialog
+ * should appear before `cancelRequest` is even called. The lib itself
+ * re-derives and stamps the authoritative flag inside the write, so this is
+ * UI-only foresight, never a duplicate of `mode: 'block'`'s enforcement —
+ * that throw is surfaced through the existing toast catch instead.
+ */
+function isWithinCancellationNoticeWindow(request: ShiftRequest, policy: ResolvedEventPolicy): boolean {
+  const cancellation = policy.cancellation;
+  if (!cancellation.enabled) return false;
+  const applies = cancellation.appliesTo === 'all' || isCommitmentBinding(request);
+  if (!applies) return false;
+  const shiftStart = toJsDate(request.shiftStartAt);
+  if (!shiftStart) return false;
+  const hoursUntilShift = (shiftStart.getTime() - Date.now()) / 3_600_000;
+  return hoursUntilShift < cancellation.noticeHours;
+}
+
+/** Compact "1h 42m" / "42m" / "Expired" countdown text for an offer's `respondBy`. */
+function formatCountdown(target: Date, now: Date): string {
+  const ms = target.getTime() - now.getTime();
+  if (ms <= 0) return 'Expired';
+  const totalMinutes = Math.floor(ms / 60_000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+}
+
+/** One `role` (or `(teamId, role)` under `scope: 'team'`) queue on the manager waitlist panel. */
+interface WaitlistQueueGroup {
+  key: string;
+  role: SlotRole;
+  /** `waitlisted` entries plus any still-live (`resolveOfferState`) `offered` entries, in queue order. */
+  entries: ShiftRequest[];
+  /** Teams with a genuinely open (unfilled, unheld) slot for `role` right now. */
+  openTeams: { id: string; name: string }[];
+}
+
+/**
+ * §5.4 — the Force-promote control. A dropdown listing every open slot across
+ * teams for the row's role (member's preference sorted first by the caller),
+ * degrading to a single labelled button when only one slot is open, per plan.
+ */
+function ForcePromoteControl({
+  openTeams,
+  isLoading,
+  onPromote,
+}: {
+  openTeams: { id: string; name: string }[];
+  isLoading: boolean;
+  onPromote: (teamId: string, teamName: string) => void;
+}) {
+  if (openTeams.length === 0) {
+    return (
+      <Button size="sm" variant="bordered" isDisabled>
+        No open slot
+      </Button>
+    );
+  }
+  if (openTeams.length === 1) {
+    const team = openTeams[0];
+    return (
+      <Button
+        size="sm"
+        variant="bordered"
+        color="primary"
+        isLoading={isLoading}
+        onPress={() => onPromote(team.id, team.name)}
+      >
+        Force-promote → {team.name}
+      </Button>
+    );
+  }
+  return (
+    <Dropdown>
+      <DropdownTrigger>
+        <Button size="sm" variant="bordered" color="primary" isLoading={isLoading} endContent={<ChevronDown size={12} />}>
+          Force-promote
+        </Button>
+      </DropdownTrigger>
+      <DropdownMenu
+        aria-label="Force-promote to team"
+        onAction={(key) => {
+          const team = openTeams.find((t) => t.id === String(key));
+          if (team) onPromote(team.id, team.name);
+        }}
+      >
+        {openTeams.map((team) => (
+          <DropdownItem key={team.id}>{team.name}</DropdownItem>
+        ))}
+      </DropdownMenu>
+    </Dropdown>
+  );
+}
+
 interface EventDetailDrawerProps {
   event: Event;
   canManage: boolean;
@@ -151,6 +277,25 @@ export default function EventDetailDrawer({
     });
     return () => unsub();
   }, [event.id]);
+
+  // [Phase 1 / waitlist plan §3.6, §5.4] Opportunistic expiry sweep — once per
+  // drawer open (guarded on event.id, NOT re-run on every onSnapshot tick from
+  // the effect above), and only for managers. Completely silent: no toast, no
+  // spinner. Any write it makes flows back through the subscription above and
+  // re-renders the queue naturally; swallow any throw.
+  const sweptEventIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!canManage || !event.id) return;
+    if (sweptEventIdRef.current === event.id) return;
+    sweptEventIdRef.current = event.id;
+    sweepExpiredOffers(event, actor).catch((e) => {
+      console.error('sweepExpiredOffers failed:', e);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [event.id, canManage]);
+
+  /** §4.3 — resolved once per event so every TeamCard and the waitlist panel agree on scope/notice/cancellation policy. */
+  const policy = useMemo(() => resolveEventPolicy(event), [event]);
 
   // [Phase 0 / waitlist plan §2.1] Widened beyond pending/approved — a member
   // with a live waitlisted or offered entry must see IT as their request (and
@@ -213,7 +358,26 @@ export default function EventDetailDrawer({
   const [attendanceSavingId, setAttendanceSavingId] = useState<string | null>(null);
   const [endingShifts, setEndingShifts] = useState(false);
 
-  type MobilePage = 'details' | 'teams' | 'attendance' | 'requests';
+  // [Phase 1 / waitlist plan §5.4] Manager waitlist queue panel state.
+  const [promotingId, setPromotingId] = useState<string | null>(null);
+  const [skippingId, setSkippingId] = useState<string | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const [removeConfirmId, setRemoveConfirmId] = useState<string | null>(null);
+  const [emailingQueue, setEmailingQueue] = useState(false);
+  const { notificationDelivery } = useOrgConfig();
+  // Ticks the offer countdown chips / re-evaluates resolveOfferState while any
+  // offer is live, so the panel doesn't freeze a stale "expires in" reading
+  // between Firestore snapshot updates. Cosmetic only — the real expiry
+  // enforcement is the sweep effect + resolveOfferState, not this timer.
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (!canManage) return;
+    if (!requests.some((r) => r.status === 'offered')) return;
+    const id = setInterval(() => setNowTick(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, [canManage, requests]);
+
+  type MobilePage = 'details' | 'teams' | 'waitlist' | 'attendance' | 'requests';
   const [mobilePage, setMobilePage] = useState<MobilePage>('details');
 
   const eventDay = useMemo(() => toJsDate(event.date), [event.date]);
@@ -357,10 +521,31 @@ export default function EventDetailDrawer({
     }
   };
 
+  /**
+   * [Phase 1 / waitlist plan §3.4] `mode: 'block'` is enforced inside
+   * `cancelRequest` itself (it throws) — that error surfaces through the
+   * ordinary catch/toast below, never duplicated here. `mode: 'confirm'`
+   * (the default) is a UI-only gate: when the cancellation falls inside the
+   * notice window for a binding request, show the config-sourced
+   * `memberMessage` before calling through. `{hours}` is the only
+   * interpolation token the copy defines (P11 — this text must come from
+   * config, never a literal).
+   */
   const handleWithdraw = async () => {
     if (!myActiveRequest) return;
+    if (
+      (myActiveRequest.status === 'offered' || myActiveRequest.status === 'approved') &&
+      policy.cancellation.mode === 'confirm' &&
+      isWithinCancellationNoticeWindow(myActiveRequest, policy)
+    ) {
+      const message = policy.cancellation.memberMessage.replace(
+        '{hours}',
+        String(policy.cancellation.noticeHours),
+      );
+      if (!window.confirm(message)) return;
+    }
     try {
-      await cancelRequest(myActiveRequest);
+      await cancelRequest(myActiveRequest, actor, event);
       onToast(true, 'Request withdrawn');
     } catch (e) {
       onToast(false, e instanceof Error ? e.message : 'Failed to withdraw request');
@@ -372,16 +557,154 @@ export default function EventDetailDrawer({
     onDelete();
   };
 
+  // [Phase 1 / waitlist plan §5.4] Manager waitlist queue panel — grouped by
+  // `queueKeyOf` (role alone under the default `scope: 'event'`, `(teamId,
+  // role)` under the legacy `scope: 'team'` opt-in) so this can never drift
+  // from the promotion path's own grouping.
+  const waitlistGroups = useMemo<WaitlistQueueGroup[]>(() => {
+    if (!canManage) return [];
+    const now = new Date(nowTick);
+    // Only still-live offers count — a stale, unswept `offered` doc past its
+    // respondBy reads as `resolveOfferState(...) === 'expired'` and is
+    // dropped here rather than shown as an active queue row.
+    const relevant = requests.filter((r) => {
+      if (r.status === 'waitlisted') return true;
+      if (r.status === 'offered') return resolveOfferState(r, now) === 'offered';
+      return false;
+    });
+    const byKey = new Map<string, ShiftRequest[]>();
+    for (const r of relevant) {
+      const key = queueKeyOf(r, policy);
+      const list = byKey.get(key);
+      if (list) list.push(r);
+      else byKey.set(key, [r]);
+    }
+    const groups: WaitlistQueueGroup[] = [];
+    for (const [key, entries] of byKey) {
+      entries.sort(waitlistComparator);
+      const role = entries[0].role;
+      const scopeTeamId = policy.scope === 'team' ? entries[0].teamId : undefined;
+      const openTeams = (event.teams || [])
+        .filter((team) => (scopeTeamId ? team.id === scopeTeamId : true))
+        .filter((team) => {
+          const ref = resolveSlotRef(team, role);
+          return !!ref && !ref.slot.userId && !isSlotHeld(ref.slot, now);
+        })
+        .map((team) => ({ id: team.id, name: team.name }));
+      groups.push({ key, role, entries, openTeams });
+    }
+    return groups.sort((a, b) => a.role.localeCompare(b.role));
+  }, [requests, policy, event.teams, canManage, nowTick]);
+
+  const hasAnyWaitlistEntries = waitlistGroups.some((g) => g.entries.length > 0);
+  const totalWaitlistCount = waitlistGroups.reduce((sum, g) => sum + g.entries.length, 0);
+
+  const handleForcePromote = async (req: ShiftRequest, teamId: string, teamName: string) => {
+    if (!req.id) return;
+    setPromotingId(req.id);
+    try {
+      await promoteNextFromWaitlist(event, teamId, req.role, actor, { force: true, requestId: req.id });
+      onToast(true, `${req.userName} force-promoted to ${teamName}`);
+    } catch (e) {
+      onToast(false, e instanceof Error ? e.message : 'Failed to force-promote');
+    } finally {
+      setPromotingId(null);
+    }
+  };
+
+  const handleToggleSkip = async (req: ShiftRequest) => {
+    if (!req.id) return;
+    setSkippingId(req.id);
+    try {
+      if (req.skippedAt) {
+        await unskipWaitlistEntry(req, actor);
+        onToast(true, `${req.userName}: restored to queue position`);
+      } else {
+        await skipWaitlistEntry(req, actor);
+        onToast(true, `${req.userName}: skipped`);
+      }
+    } catch (e) {
+      onToast(false, e instanceof Error ? e.message : 'Failed to update queue entry');
+    } finally {
+      setSkippingId(null);
+    }
+  };
+
+  const handleRemoveWaitlistEntry = async (req: ShiftRequest) => {
+    if (!req.id) return;
+    setRemovingId(req.id);
+    try {
+      await removeWaitlistEntry(req, actor);
+      onToast(true, `${req.userName} removed from the queue`);
+      setRemoveConfirmId(null);
+    } catch (e) {
+      onToast(false, e instanceof Error ? e.message : 'Failed to remove from queue');
+    } finally {
+      setRemovingId(null);
+    }
+  };
+
+  /**
+   * [Phase 1 / waitlist plan §6.3/§6.4] "Email the queue" — the zero-
+   * infrastructure mitigation for a short-notice offer: a human with a phone
+   * still beats every automated channel for a two-hour window, and this app
+   * is a static export with no mail server, so the only channel available is
+   * the manager's own mail client via `mailto:`. Addresses go in `bcc` and
+   * `to` is left empty — a volunteer roster's email addresses must never be
+   * exposed to every other recipient. `ShiftRequest` doesn't carry an email
+   * (only `userId`/`userName`), so it's fetched here, on press, from `users`.
+   */
+  const handleEmailQueue = async () => {
+    if (emailingQueue) return;
+    setEmailingQueue(true);
+    try {
+      const userIds = Array.from(
+        new Set(waitlistGroups.flatMap((g) => g.entries.map((e) => e.userId)).filter(Boolean)),
+      );
+      const emails: string[] = [];
+      for (let i = 0; i < userIds.length; i += 30) {
+        const chunk = userIds.slice(i, i + 30);
+        const snap = await getDocs(query(collection(db, 'users'), where(documentId(), 'in', chunk)));
+        snap.docs.forEach((d) => {
+          const email = (d.data() as { email?: string }).email;
+          if (email) emails.push(email);
+        });
+      }
+      const skipped = userIds.length - emails.length;
+      if (emails.length === 0) {
+        onToast(false, 'No one on the waitlist has an email on file');
+        return;
+      }
+      const subject = `${event.name} — shift slot available`;
+      const when = [formatEventDate(event.date), formatTimeRange(event.callTime, event.endTime)]
+        .filter(Boolean)
+        .join(' · ');
+      const body = `A slot has opened up for ${event.name}${when ? ` (${when})` : ''}. Open the app to claim it — first to respond gets the spot.`;
+      const url = `mailto:?bcc=${encodeURIComponent(emails.join(','))}&subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+      window.location.href = url;
+      if (skipped > 0) {
+        onToast(true, `Opened your mail client for ${emails.length} — skipped ${skipped} with no email on file`);
+      }
+    } catch (e) {
+      onToast(false, e instanceof Error ? e.message : 'Failed to email the queue');
+    } finally {
+      setEmailingQueue(false);
+    }
+  };
+
   const statusChip = STATUS_CHIP[event.status];
 
   const mobileSections = useMemo(() => {
     const sections: { key: MobilePage; label: string; badge?: number }[] = [];
     if (event.description || myActiveRequest) sections.push({ key: 'details', label: 'Details' });
     sections.push({ key: 'teams', label: 'Teams' });
+    if (canManage && hasAnyWaitlistEntries) {
+      sections.push({ key: 'waitlist', label: 'Waitlist', badge: totalWaitlistCount || undefined });
+    }
     if (access.visible) sections.push({ key: 'attendance', label: 'Attendance' });
     if (canManage) sections.push({ key: 'requests', label: 'Requests', badge: pending.length || undefined });
     return sections;
-  }, [event.description, myActiveRequest, access.visible, canManage, pending.length]);
+  }, [event.description, myActiveRequest, canManage, hasAnyWaitlistEntries, totalWaitlistCount, access.visible, pending.length]);
 
   useEffect(() => {
     if (mobileSections.length > 0 && !mobileSections.some((s) => s.key === mobilePage)) {
@@ -540,12 +863,181 @@ export default function EventDetailDrawer({
                   actorUid={actor.uid}
                   actorName={actor.name}
                   myActiveRequest={myActiveRequest}
+                  eventRequests={requests}
+                  policy={policy}
                   onRequested={() => onToast(true, 'Request sent')}
                   onError={(msg) => onToast(false, msg)}
                 />
               ))}
             </div>
           </div>
+
+          {/* [Phase 1 / waitlist plan §5.4] Manager waitlist queue panel — desktop
+              order is deliberate: Teams (confirmed) -> Waitlist (queued) ->
+              Attendance (showed up). Omitted entirely (not an empty-state card)
+              when the event has no waitlist activity at all (§5.7) — this is a
+              manager convenience panel, not a page members expect to always see. */}
+          {canManage && hasAnyWaitlistEntries && (
+            <div className={mobilePage === 'waitlist' ? 'block' : 'hidden md:block'}>
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400">
+                    Waitlist queue
+                  </div>
+                  {notificationDelivery.allowManagerMailto && (
+                    <Button
+                      size="sm"
+                      variant="light"
+                      startContent={<Mail size={13} />}
+                      onPress={handleEmailQueue}
+                      isLoading={emailingQueue}
+                    >
+                      Email the queue
+                    </Button>
+                  )}
+                </div>
+
+                {policy.autoPromote === false && (
+                  <div className="text-xs text-warning-600 bg-warning-50 dark:bg-warning-900/20 rounded-medium px-2.5 py-1.5 inline-flex items-start gap-1.5">
+                    <Info size={12} className="mt-0.5 flex-none" />
+                    Auto-promotion is off for this event — freed slots wait for you.
+                  </div>
+                )}
+
+                {(!event.callTime || event.needsCallTime) && (
+                  <div className="text-xs text-warning-600 bg-warning-50 dark:bg-warning-900/20 rounded-medium px-2.5 py-1.5 flex items-center justify-between gap-2 flex-wrap">
+                    <span className="inline-flex items-start gap-1.5">
+                      <Info size={12} className="mt-0.5 flex-none" /> Needs a call time before offers can be sent
+                    </span>
+                    <Button size="sm" variant="light" onPress={onEdit}>
+                      Add call time
+                    </Button>
+                  </div>
+                )}
+
+                <div className="flex flex-col gap-4">
+                  {waitlistGroups.map((group) => {
+                    if (group.entries.length === 0) return null;
+                    const now = new Date(nowTick);
+                    const openSlotsLabel =
+                      group.openTeams.length === 0
+                        ? '0 open slots'
+                        : group.openTeams.length === 1
+                          ? `1 open slot — ${group.openTeams[0].name}`
+                          : `${group.openTeams.length} open slots across ${group.openTeams.length} teams`;
+                    return (
+                      <div key={group.key} className="flex flex-col gap-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-semibold text-foreground">{slotRoleLabel(group.role)}</span>
+                          <span className="text-xs text-foreground-500">
+                            {group.entries.length} waiting · {openSlotsLabel}
+                          </span>
+                        </div>
+                        <div className="flex flex-col gap-2">
+                          {group.entries.map((entry) => {
+                            const liveStatus = resolveOfferState(entry, now);
+                            const isOffered = liveStatus === 'offered';
+                            const position = getWaitlistPosition(requests, entry, policy);
+                            const experience = formatMemberExperience(entry.memberStatus, entry.joinedTerm);
+                            const preferredTeamName = entry.preferredTeamId
+                              ? (event.teams || []).find((t) => t.id === entry.preferredTeamId)?.name
+                              : undefined;
+                            const orderedOpenTeams = entry.preferredTeamId
+                              ? [...group.openTeams].sort((a, b) =>
+                                  a.id === entry.preferredTeamId ? -1 : b.id === entry.preferredTeamId ? 1 : 0,
+                                )
+                              : group.openTeams;
+                            const respondBy = isOffered ? toJsDate(entry.offer?.respondBy) : null;
+
+                            return (
+                              <div key={entry.id} className="border border-divider rounded-large p-3 flex flex-col gap-2">
+                                <div className="min-w-0">
+                                  <div className="text-sm font-semibold text-foreground flex items-center gap-1.5 flex-wrap">
+                                    <span className="text-foreground-400 font-mono text-xs">#{position}</span>
+                                    {entry.userName}
+                                    {entry.skippedAt && (
+                                      <Chip size="sm" variant="flat" color="default">
+                                        Skipped
+                                      </Chip>
+                                    )}
+                                    {isOffered && (
+                                      <Chip size="sm" variant="flat" color="primary">
+                                        Offered {entry.offer?.teamName}
+                                      </Chip>
+                                    )}
+                                  </div>
+                                  <div className="text-xs text-foreground-500 mt-0.5">{experience}</div>
+                                  {policy.honorTeamPreference !== 'ignore' && (
+                                    <div className="text-xs text-foreground-400 mt-0.5">
+                                      {preferredTeamName ? `prefers ${preferredTeamName}` : 'no preference'}
+                                    </div>
+                                  )}
+                                  {isOffered && respondBy && (
+                                    <div className="text-xs text-warning-600 mt-1">
+                                      expires in {formatCountdown(respondBy, now)}
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="flex gap-2 justify-end flex-wrap">
+                                  {removeConfirmId === entry.id ? (
+                                    <>
+                                      <Button
+                                        size="sm"
+                                        variant="light"
+                                        onPress={() => setRemoveConfirmId(null)}
+                                        isDisabled={removingId === entry.id}
+                                      >
+                                        Cancel
+                                      </Button>
+                                      <Button
+                                        size="sm"
+                                        color="danger"
+                                        onPress={() => handleRemoveWaitlistEntry(entry)}
+                                        isLoading={removingId === entry.id}
+                                      >
+                                        Confirm remove
+                                      </Button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      {entry.status === 'waitlisted' && (
+                                        <Button
+                                          size="sm"
+                                          variant="light"
+                                          onPress={() => handleToggleSkip(entry)}
+                                          isLoading={skippingId === entry.id}
+                                        >
+                                          {entry.skippedAt ? 'Unskip' : 'Skip'}
+                                        </Button>
+                                      )}
+                                      <Button
+                                        size="sm"
+                                        variant="bordered"
+                                        color="danger"
+                                        onPress={() => setRemoveConfirmId(entry.id ?? null)}
+                                      >
+                                        Remove
+                                      </Button>
+                                      <ForcePromoteControl
+                                        openTeams={orderedOpenTeams}
+                                        isLoading={promotingId === entry.id}
+                                        onPromote={(teamId, teamName) => handleForcePromote(entry, teamId, teamName)}
+                                      />
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
 
           {access.visible && (
             <div className={mobilePage === 'attendance' ? 'block' : 'hidden md:block'}>

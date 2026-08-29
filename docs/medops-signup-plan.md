@@ -3018,7 +3018,7 @@ disagree, this section is current and the plan section is historical.
 | **PR zero** — CI deploy path | ✅ committed | `816eb87` on `chore/ci-hosting-fix` | All three §9.5 defects verified present, then fixed. |
 | **Phase 0** — schema + org config + consumer audit | ✅ committed | `3b8c6f0` on `feat/waitlist-p0-schema` | Build ✅, 69/69 tests ✅, `tsc` clean, zero new lint. |
 | **Phase 0.5** — Firestore rules split | ✅ committed | `434a046` on `feat/waitlist-p05-rules` | Ruleset needed a fix the plan did not anticipate — **D4** below. |
-| **Phase 1** — waitlist queue | ⏳ in progress | — | |
+| **Phase 1** — waitlist queue | 🔨 feature-complete in the tree, uncommitted | — | Every row of the §8 Phase 1 table is written. The first end-to-end run of the new `evt-waitlist` suite found **two real bugs** — **D11** (accepting an EMT offer was impossible) and **D12** (every decline threw); both fixed, and `test:events` is now **146/146 across all 15 suites**. Discoveries **D5–D13** below. Not yet runtime-verified in a browser (see §10.5). |
 | **Phase 2** — priority tiers | ⏳ pending | — | |
 | **Phase 3** — in-app reminders | ⏳ pending | — | |
 | **Phase 4a/4b** | ⛔ out of scope | — | Excluded by agreement at build start. |
@@ -3177,6 +3177,204 @@ lives in `getAttendanceAccess()` and role checks in TypeScript, and much of it i
 written from the *intent* ("the FTO may check in their team") rather than from the *write paths*
 will deny real traffic. Write rules against grepped call sites, not against the design.
 
+#### D5 — two Phase 1 types §2 never declared, and one config knob with no way in
+
+Phase 0 declared **every** waitlist field on `ShiftRequest` and `WaitlistOffer` — the schema section
+is unusually complete. It missed two fields on the *other* side of the model, both of which the
+promotion algorithm in §3.5 uses freely as though they already existed:
+
+| Field | Why §2 missed it | What it does |
+|---|---|---|
+| `TeamSlot.heldUntil?: Timestamp` | §2.2 is titled "`Event` extensions" and stops at the `Event` doc. `TeamSlot` lives *inside* `Event.teams[]`, so nobody's eye landed on it. | The soft hold. §3.5 writes `slotRef.heldUntil` in its pseudocode without ever declaring it. |
+| `Event.needsCallTime?: boolean` | §3.5 calls `flagEventNeedsCallTime(eventId)` and §3.8 lists its signature, but no section says what it *writes*. | The legacy-event marker (P12). Set on a refused auto-offer; cleared by `updateEvent` when a call time is finally saved. |
+
+Separately, `WaitlistConfig.allowQueueAfterShiftStart` is the one waitlist knob with **no path
+through `resolveEventPolicy`**. Every other setting appears on `EventPolicyOverride` *and*
+`ResolvedEventPolicy`, or — in the single case of `maxOffersPerMember` — is deliberately org-wide
+with a doc comment saying so. This one was simply skipped, and the omission is invisible: nothing
+fails, the value just silently can't be overridden per event, and `requestShift` has to reach past
+policy resolution into raw config to read it at all. That reach-past is the exact thing
+`ResolvedEventPolicy` exists to make impossible, so the bug is self-concealing — the workaround
+looks like ordinary code.
+
+**Rule this establishes:** when a config group is added, the completeness check is not "is every
+field declared" but **"does every field have a resolution path"**. A field on `WaitlistConfig` that
+never appears in `resolveEventPolicy` is dead weight pretending to be a setting.
+
+#### D6 — a resolver that resized the caller's live data
+
+The plan's §3.5 pseudocode mutates a slot through a reference (`slotRef.heldUntil = respondBy`).
+Real deserialized Firestore objects have no such reference, so slot addressing had to become a real
+helper — `resolveSlotRef(team, role)` — shared by all six transactions that place, hold, or release
+a slot.
+
+The first version reproduced a detail from `approveRequest`: it called `resizeEmtSlots` to normalize
+a legacy-short `emtSlots` array before searching it, so a truncated array couldn't hide a genuinely
+open seat. That is correct behaviour, and inside a transaction (which always operates on a cloned
+team) it is harmless. But `resolveSlotRef` is also called on the **read** path — `requestShift` uses
+it to answer "is any slot for this role open anywhere on the event?" — and there it is handed the
+live, caller-owned `Event` object straight out of React state. A resolver that resizes an array as
+a side effect of being *asked a question* mutates UI state and, if `emtCount` had ever been reduced,
+discards real slot data from the object the caller still holds.
+
+Fixed by resizing a local view on resolve and writing back only through `assign()`, which only
+transactional callers invoke. **The general shape is worth naming**: any helper shared between a
+read path and a write path must be side-effect-free on the read path, and "normalize the input
+first" is the idiom most likely to violate that quietly. It is not a bug the type system can catch —
+both paths type-check identically.
+
+#### D7 — the cancellation policy must not reach the queue
+
+§3.4 specifies the cancellation policy as a property of `cancelRequest`, without saying which
+statuses it applies to. Read literally, it applies to all of them — and `mode: 'block'` then
+**prevents a member from leaving the waitlist** inside the notice window.
+
+That directly contradicts `leaveWaitlist`, three sections earlier, which the plan describes as
+"plain status update, zero side effects, zero cost — this is not a no-show surface." Both statements
+are in the plan; only one can be true in code.
+
+Resolved in favour of the queue: the policy evaluates only on `approved` and `offered` requests —
+the two states where the member actually holds something. A `pending` request has no seat and a
+`waitlisted` entry has no commitment, so there is nothing for a notice period to protect. Under P4
+this is the only coherent reading: penalising a queue withdrawal would punish exactly the low-cost
+participation the waitlist is built to encourage.
+
+#### D8 — `joinWaitlist` cannot take the team its validation needs
+
+§3.8 gives `joinWaitlist` the signature `(event, role, requester, opts?)` — no `teamId`, correctly,
+since under P13 the queue is event-scoped and a queue entry has no team. But it also describes the
+function as "a thin wrapper over `requestShift`'s waitlist branch", and `requestShift` requires a
+`teamId` for validation it genuinely needs (does this team have an intern slot? which team's FTO
+gets notified?).
+
+Resolved by anchoring on `opts.preferredTeamId ?? event.teams[0].id` purely for that validation,
+while delegating the actual open-slot decision to `requestShift`, which scans the whole event
+anyway. The consequence worth stating: `joinWaitlist` can legitimately produce a **`pending`**
+request rather than a queue entry, if a slot turns out to be open at write time. That is correct —
+the member wanted a shift and there was one — but the function name promises otherwise, so callers
+must not assume the resulting doc is `waitlisted`.
+
+#### D9 — §5's UI sections read policy off an object that does not carry it
+
+§5.1 instructs the team card to render `policy.copy.joinButtonLabel`, `policy.copy.queuedLabel` and
+`policy.copy.preferenceHint`. **`ResolvedEventPolicy` has no `copy` field.** Member-facing copy
+lives on `WaitlistConfig.copy` and is org-wide only — it is deliberately absent from
+`EventPolicyOverride`, so it never enters policy resolution.
+
+That absence is correct and should stay: copy is branding, not policy. An event that quietly
+reworded "Join waitlist" would make the same affordance read differently on two events in the same
+list, for no operational gain. But §5 never says so, and its `policy.copy.*` phrasing actively
+implies the opposite — that copy is per-event overridable like every other knob beside it.
+
+Resolved by reading copy from `getWaitlistConfig().copy` at the component, and policy from the
+passed-down `ResolvedEventPolicy`. **Two different objects, two different lifetimes**: policy is
+resolved once per event in the drawer and threaded down; copy is org-wide and read where it is
+rendered. The one exception is the offer modal, which reads its notice-class thresholds from the
+**frozen** `offer.policy` rather than either — because an offer must stay explicable months later
+under P3, and live config cannot promise that.
+
+#### D10 — "the guard is the entire insertion point" was not true
+
+§5.1 states that `renderRequestControl`'s `if (!hasOpenSlot) return null` is "the entire insertion
+point — no other structural change to the component." That holds for the *control*, and is wrong
+about the *input*.
+
+`hasOpenSlot` was computed as `!slot.userId`. Phase 1 introduces a third slot state between filled
+and open: soft-held by an outstanding offer (`heldUntil` in the future). `requestShift` correctly
+excludes held slots when deciding whether to create a `pending` request or a queue entry — so with
+the old definition, a member looking at a soft-held seat sees a **primary blue "Request EMT"**
+button, presses it, and is silently placed on the waitlist. The button promises a seat the lib
+already knows is spoken for.
+
+Fixed by making the openness predicate hold-aware at every call site
+(`!slot.userId && !isSlotHeld(slot)`), so the UI and `requestShift` share one definition of "open".
+**The general rule:** introducing a new state into a domain means auditing every *derivation* of the
+old boolean, not just the branches that read it. The plan audited the branches.
+
+Note this is the same failure shape as **D1** one phase earlier — a widened union whose *producers*
+were checked and whose *derived predicates* were not. Two phases, two instances; it is the
+characteristic error of this feature.
+
+#### D11 — `resolveSlotRef` answers "where can someone go", not "where is this person"
+
+The first end-to-end emulator run of the Phase 1 suite (`npm run test:events`) found that **accepting
+an EMT offer is impossible**. EVT-05 and EVT-08 both died at `acceptOffer` with
+*"This offer is no longer available."* after every preceding assertion passed.
+
+The cause is a single-sentence mismatch. `resolveSlotRef(team, role)` resolves **a slot available for
+a NEW assignment** — for EMT, `slots.findIndex((s) => !s.userId && !isSlotHeld(s))`. That is exactly
+right for `approveRequest` and `promoteNextFromWaitlist`, which are looking for somewhere to *place*
+a person. Two other callers were asking the opposite question — *which slot is currently held by THIS
+request?* — and expressing it as `resolveSlotRef(...)` plus a `slot.requestId === request.id` check:
+
+| Caller | What actually happens |
+|---|---|
+| `acceptOffer` | The offered slot is live-held, so `resolveSlotRef` **excludes it by construction**. On a team whose other EMT seats are full it returns `null`; where one is free it returns the wrong seat. The guard fails either way, and the member is told their own offer no longer exists. |
+| `releaseOfferHoldInTx` | Same mismatch, but it fails **silently**: the `requestId` comparison never matches on a live-held slot, so the hold is never cleared and the seat stays soft-held until `heldUntil` elapses on its own. Affects `declineOffer`, `removeWaitlistEntry`, and `cancelRequest`'s `offered` branch. |
+
+`sweepExpiredOffers` uses the same helper and passed — **by accident**. Its hold has already elapsed,
+so `isSlotHeld` is false and the slot becomes visible to `resolveSlotRef` again. Give it a
+lower-indexed free EMT seat and it would clear the wrong slot, leaving a stale `requestId`/`heldUntil`
+pair behind.
+
+FTO and FTO_INTERN offers worked throughout, which is why nothing caught this earlier by inspection:
+those branches of `resolveSlotRef` return the team's single slot regardless of hold state, so the
+`requestId` check does the real work there. The bug is specific to the one role that has *several*
+slots — and EMT is the role the waitlist exists to fill.
+
+**Fixed** by splitting the two questions into two functions: `resolveSlotRef` keeps placement, and a
+new `findSlotRefByRequest(team, requestId)` does identification, scanning all three slot kinds for the
+one carrying that request id regardless of hold or fill state. Both return the same `SlotRef` and both
+obey D6's rule — resize a local view, never mutate the caller's team except through `assign()`.
+
+**This is D6's shape a second time, and D1/D10's a third.** Every instance in this feature is the
+same error: a helper or predicate that was correct for the states that existed before the waitlist,
+reused unexamined for a state the waitlist introduced. The new state here is *held* — neither open nor
+filled. `requestShift` and the team card were both taught about it (D10); the slot **resolver** was
+not. **The check that would have caught all three:** for each new state, list every existing function
+whose answer changes in that state — not just the ones that branch on it.
+
+#### D12 — a `serverTimestamp()` sentinel cannot live inside an array
+
+`declineOffer` built its `offerHistory` entry as
+`{ ...freshReq.offer, response: 'declined', respondedAt: serverTimestamp() }` and pushed it onto the
+array. Firestore rejects that outright:
+
+```
+FirebaseError: Function Transaction.update() called with invalid data.
+serverTimestamp() is not currently supported inside arrays
+```
+
+So **every decline threw**, on both the `requeue_back` and the terminal branch. It is not a subtle
+failure once observed, and it was invisible until the suite ran: the identical spread is legal one
+line away, where `offer` is a plain **map** (`sweepExpiredOffers` does exactly this and passes). The
+sentinel restriction is about the *container*, not the shape of the value — a distinction nothing in
+the code makes visible.
+
+**Fixed** by computing one concrete `Timestamp.now()` per transaction and using it for both the
+history element and the live `offer.respondedAt`, so the two record the same instant rather than two
+clocks. The tradeoff is real and now carries a comment at the line: history entries are **client**-
+clocked, because a server sentinel is illegal where they live. That is a correctness cost worth
+naming so nobody "fixes" it back.
+
+**Rule this establishes:** any field on a type that ends up inside an array — `offerHistory`,
+`teams[]`, `emtSlots[]` — cannot carry a `FieldValue` of any kind (`serverTimestamp`, `increment`,
+`deleteField`). Denormalizing a map into an array list changes what may legally be written into it,
+and the type system says nothing.
+
+#### D13 — the emulator harness swallowed the stack of every suite that threw
+
+Both bugs above took a second full emulator run to locate, for no good reason: `runRegistered`
+captured `(e as Error).stack` into `suite.error` and then printed only `e.message`. A suite that
+*fails* an assertion prints what it expected and got; a suite that *throws* printed one line with no
+throw site — and for a `FirebaseError` from deep inside a transaction, the message alone does not
+identify which of a dozen writes produced it.
+
+Fixed in `scripts/emulator/harness.ts`: the summary now prints the captured stack, dimmed and
+indented, beneath any `ERROR` row. Kept out of the inline per-check output so a passing run reads
+exactly as it did before. This is a permanent improvement to the shared harness, not waitlist-specific
+— every suite in `run-events.ts`, `run-invariants.ts` and `run-properties.ts` inherits it.
+
 ### 10.4 Corrections to earlier sections
 
 | Section | Correction |
@@ -3186,6 +3384,14 @@ will deny real traffic. Write rules against grepped call sites, not against the 
 | §9.5 | The `firestore.rules` banner cited `scripts/emulator/guard.cjs`; the file is `guard.ts`. Fixed in Phase 0.5, which moved that banner to `firestore.emulator.rules`. |
 | §8 Phase 0.5 | The exit criterion "the five emulator test scripts still pass" is **not fully met — and was not met before this phase either**. See §10.5: the failures are pre-existing and unrelated to rules. |
 | §4.1 | The nested-merge trap the section warns about is real and was hit — but the *empty-array* variant (D3), not the whole-object variant the section describes. Both now have guards. |
+| §2.1 | `ShiftRequest.lateCancellationHours`'s doc comment **contradicted itself**: its first sentence said "hours-before-shift the cancellation happened", its own rationale said the configurable *threshold*. §3.4's implementation paragraph is authoritative — it stores the resolved `noticeHours`. Comment fixed at the declaration. |
+| §3.8 | Two signatures in the table are now stale. `cancelRequest` is `(request, actor, event?)` — the optional third argument lets callers that already hold the event skip a fetch, and the function needs the event for both policy resolution and the promotion trigger. `requestShift`'s fifth parameter is an options object (`{ note?, preferredTeamId? }`), not a bare `note?: string`. |
+| §5.2 | Names the offer notification type `'shift_offer'`. **No such value exists** — Phase 0 shipped `'waitlist_offer'` (offer made) and `'waitlist_promoted'` (offer accepted) on `NotificationType`, exactly as §2.4 specifies. §2.4 is right; §5.2 is stale. |
+| §5.2 / §5.6 | The two sections **disagree about who owns the `?offer=` deep link** — §5.2 puts it in `app/events/page.tsx`, §5.6's inventory table assigns "offer-deep-link auto-open" to `event-detail-drawer.tsx`. Resolved in favour of `events/page.tsx`: it already owns the `?event=` deep-link pattern, and two owners would race to render the same modal. |
+| §5.1 | Says the join button reads `policy.copy.joinButtonLabel`; `ResolvedEventPolicy` has no `copy`. See **D9**. Same for `policy.allowQueueAfterShiftStart`, which did not resolve until **D5** was fixed. |
+| §5.2 | Types `onDecided` as `(msg: string) => void`. The modal has to report success *and* failure, so the shipped contract is `(ok: boolean, msg: string) => void`, matching the `onToast(ok, msg)` idiom already used throughout the events UI. |
+| §5.4 | Identifies a soft-held slot by matching "an `offered` request whose `offer.teamId`/`offer.teamName` matches this team and role." That is ambiguous for EMT, where one team has several slots and several may be held at once. `TeamSlot.requestId` — which already exists for exactly this purpose — is the unambiguous key, and is what shipped. |
+| §5.4 | The panel header mock reads "N open slots across N teams". Force-promote operates at *team* granularity (`resolveSlotRef` picks the seat), so the shipped count is teams-with-an-open-slot: a team with two free EMT seats counts once, not twice. |
 
 ### 10.5 Verification standing
 
@@ -3216,6 +3422,40 @@ and time out waiting on the `/audit` search box — a page no commit on this bra
 The positive evidence that the split works: `test:invariants` completed 67 successful assertions,
 which requires successful unauthenticated reads and writes. A misrouted config would have failed at
 the first seed write, not at assertion 68.
+
+**Phase 1 emulator results — first end-to-end run** (`npm run test:events`, 15 suites). This is the
+run that earned its keep: **129 assertions passed, 0 failed, 3 suites ERRORED**, and all three errors
+were genuine product bugs rather than test problems.
+
+| Suite | Result |
+|---|---|
+| EVT-01…04 (pre-existing shift/attendance suites) | ✅ unchanged by Phase 1 |
+| EVT-05 waitlisted → offered → accepted | ✖ threw at `acceptOffer` — **D11** |
+| EVT-06 offered → expired → next | ✅ 10/10 |
+| EVT-07 cross-team promotion | ✅ 7/7 |
+| EVT-08 notice class / binding | ✖ threw at `acceptOffer` — **D11** |
+| EVT-09 team `startTime` overrides `callTime` (D2) | ✅ 6/6 |
+| EVT-10 the soft hold is real | ✅ 9/9 |
+| EVT-11 `getWaitlistPosition` ordering + skip/unskip | ✅ 9/9 |
+| EVT-12 `leaveWaitlist` is free | ✅ 6/6 |
+| EVT-13 `declineOffer` is never punitive | ✖ threw on the array-sentinel write — **D12** |
+| EVT-14 one active request per event | ✅ 5/5 |
+| EVT-15 `autoPromote: false` + force | ✅ 3/3 |
+
+**Second run, after the D11/D12 fixes: 146 passed, 0 failed, 0 errored — all 15 suites green.** The
+assertion count rose from 129 to 146 without a single new test being written: EVT-05 went 9 → 14,
+EVT-08 2 → 6 and EVT-13 1 → 9, because each suite now runs *past* the point where it used to throw.
+That gap is worth noticing as a habit — a suite that errors reports the checks it managed to reach as
+passing, so a green-looking partial count can hide a third of a suite. `runRegistered` already treats
+a throw as a failure for exactly this reason (see its comment); the assertion delta is the measure of
+how much was never being exercised.
+
+
+Worth stating plainly, because it is the argument for having written these suites before the smoke
+driver: **neither D11 nor D12 is reachable by reading the code**, and neither would have been caught by
+`tsc`, lint, or `npm run build` — all three of which were clean over the same tree. D11 needed a team
+whose *other* EMT seats were full; D12 needed Firestore itself to reject the write. A UI smoke pass
+would have found D11 eventually, as "the Accept button doesn't work", with none of the explanation.
 
 - **NOT yet run:** the `run-bmrc-logistics` emulator smoke driver. Phase 0 is therefore
   **built and typechecked, not runtime-verified** — no one has driven the new `/settings` tab in a

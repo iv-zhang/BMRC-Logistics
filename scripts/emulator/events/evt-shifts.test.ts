@@ -181,7 +181,7 @@ defineInvariant('EVT-01', 'FTO intern fills its own slot and never counts toward
   await t.rejects(approveRequest(second, MANAGER), 'the single intern slot cannot be double-filled');
 
   // Cancelling frees it again.
-  await cancelRequest(approved);
+  await cancelRequest(approved, MANAGER);
   const freed = await readEvent(event.id!);
   t.ok(!freed.teams[0].ftoInternSlot?.userId, 'cancelling an approved intern request frees the intern slot');
 });

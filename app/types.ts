@@ -177,8 +177,23 @@ export type SlotRole = 'FTO' | 'FTO_INTERN' | 'EMT';
 export interface TeamSlot {
   userId?: string;
   userName?: string;
-  /** shift_requests doc id that filled this slot (for unassign/audit). */
+  /**
+   * shift_requests doc id that filled this slot (for unassign/audit), OR — while
+   * `heldUntil` is set and no `userId` has landed yet — the doc id of the
+   * `offered` request softly holding this slot (see `heldUntil`).
+   */
   requestId?: string;
+  /**
+   * [Phase 1 / waitlist plan §3.5] A SOFT HOLD from an outstanding
+   * `WaitlistOffer`: the slot is reserved for `requestId`'s member until this
+   * instant, without yet placing them (`userId`/`userName` stay unset until
+   * `acceptOffer` actually fills the slot). The slot is EFFECTIVELY OPEN AGAIN
+   * once `heldUntil` is in the past — every read must treat a stale hold as
+   * open, never as occupancy, and there is deliberately no write that "releases"
+   * an expired hold: it simply stops counting once `now > heldUntil` (see
+   * `isSlotHeld` in app/lib/events.ts). Absent = not held.
+   */
+  heldUntil?: Timestamp;
 }
 
 /**
@@ -305,6 +320,18 @@ export interface Event {
   teams: EventTeam[];
   /** Whether a signup-open notification has been broadcast for this event. */
   notified?: boolean;
+  /**
+   * [Phase 1 / waitlist plan §3.3, §3.5, P12] Set `true` by
+   * `flagEventNeedsCallTime` when `promoteNextFromWaitlist` is attempted
+   * against this event and `computeNoticeClass` returns `null` — i.e. a
+   * legacy event with no `callTime`, which can't be auto-promoted because
+   * notice class is undecidable. `updateEvent` clears it (`needsCallTime:
+   * false`) whenever a non-empty `callTime` is saved, so fixing the one field
+   * un-flags the event with no separate "resolve" step. Absent = never
+   * flagged (the common case for every event created after `callTime` became
+   * required).
+   */
+  needsCallTime?: boolean;
   /**
    * [Phase 0 / waitlist plan §2.2, P5] Staged-release tier config, prefilled
    * from `org_settings.priorityTiers` at event creation and then owned by the
@@ -622,10 +649,13 @@ export interface ShiftRequest {
    */
   lateCancellation?: boolean;
   /**
-   * Hours-before-shift the cancellation happened, stored alongside the flag
-   * because the THRESHOLD is configurable and per-event overridable — a flag
-   * alone can't tell a manager six weeks later whether "late" meant 48h or
-   * 12h on that particular event.
+   * The resolved `policy.cancellation.noticeHours` THRESHOLD the cancellation
+   * was evaluated against — NOT the actual hours-of-notice the member gave.
+   * Stored alongside the flag because the threshold is configurable and
+   * per-event overridable — a flag alone can't tell a manager six weeks later
+   * whether "late" meant 48h or 12h on that particular event. (The actual
+   * notice given is cheaply recoverable from `shiftStartAt`/`decidedAt` if
+   * ever needed, so it isn't duplicated here.)
    */
   lateCancellationHours?: number;
 }

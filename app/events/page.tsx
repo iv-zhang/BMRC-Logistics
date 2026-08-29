@@ -21,6 +21,7 @@ import {
   approveRequest,
   rejectRequest,
   slotRoleLabel,
+  resolveOfferState,
   type EventActor,
 } from '@/app/lib/events';
 import type { Event, ShiftRequest } from '@/app/types';
@@ -29,6 +30,7 @@ import EventList from '@/app/components/events/event-list';
 import EventDetailDrawer from '@/app/components/events/event-detail-drawer';
 import EventEditorModal from '@/app/components/events/event-editor-modal';
 import NotifyModal from '@/app/components/events/notify-modal';
+import WaitlistOfferModal from '@/app/components/events/waitlist-offer-modal';
 
 type ViewMode = 'calendar' | 'list' | 'requests';
 
@@ -49,6 +51,18 @@ export default function EventsPage() {
     return new URLSearchParams(window.location.search).get('event');
   });
   const [deepLinkHandled, setDeepLinkHandled] = useState(false);
+  // `?offer=<requestId>` deep link (from a shift-offer notification or the
+  // dashboard "Shift Offers" card) — same lazy window.location.search read as
+  // `?event=` above, for the same output:export/no-Suspense reason. Opens
+  // WaitlistOfferModal on top of the drawer once the deep-linked event has
+  // resolved and the viewer's own requests have loaded.
+  const [deepLinkOfferId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return new URLSearchParams(window.location.search).get('offer');
+  });
+  const [offerDeepLinkHandled, setOfferDeepLinkHandled] = useState(false);
+  const [myRequestsLoaded, setMyRequestsLoaded] = useState(false);
+  const [offerRequest, setOfferRequest] = useState<ShiftRequest | null>(null);
 
   const [viewMode, setViewMode] = useState<ViewMode>('calendar');
   const [month, setMonth] = useState(() => {
@@ -91,7 +105,10 @@ export default function EventsPage() {
       setMyRequests([]);
       return;
     }
-    const unsub = subscribeMyRequests(effectiveUid, setMyRequests);
+    const unsub = subscribeMyRequests(effectiveUid, (requests) => {
+      setMyRequests(requests);
+      setMyRequestsLoaded(true);
+    });
     return () => unsub();
   }, [effectiveUid]);
 
@@ -115,6 +132,22 @@ export default function EventsPage() {
     () => (selectedEvent ? (events.find((e) => e.id === selectedEvent.id) ?? selectedEvent) : null),
     [selectedEvent, events],
   );
+
+  // Once the deep-linked event's drawer has resolved (deepLinkHandled above)
+  // and the viewer's own requests have loaded, auto-open the offer modal for
+  // the matching `?offer=` request — but only while it's still live per
+  // `resolveOfferState` (§5.7: never open a modal onto a resolved offer, e.g.
+  // one already accepted/declined/expired via another tab, or swept stale).
+  // Guarded by offerDeepLinkHandled exactly like deepLinkHandled so closing
+  // the modal doesn't snap it back open on the next requests snapshot.
+  useEffect(() => {
+    if (offerDeepLinkHandled || !deepLinkOfferId || !liveSelectedEvent || !myRequestsLoaded) return;
+    const req = myRequests.find((r) => r.id === deepLinkOfferId);
+    if (req && resolveOfferState(req, new Date()) === 'offered') {
+      setOfferRequest(req);
+    }
+    setOfferDeepLinkHandled(true);
+  }, [deepLinkOfferId, offerDeepLinkHandled, liveSelectedEvent, myRequestsLoaded, myRequests]);
 
   const actor: EventActor = {
     uid: effectiveUid ?? 'unknown',
@@ -322,6 +355,20 @@ export default function EventsPage() {
         onSent={handleNotifySent}
         onError={(msg) => notify(false, msg)}
       />
+
+      {offerRequest && liveSelectedEvent && (
+        <WaitlistOfferModal
+          isOpen={!!offerRequest}
+          onClose={() => setOfferRequest(null)}
+          request={offerRequest}
+          event={liveSelectedEvent}
+          actor={actor}
+          onDecided={(ok, msg) => {
+            notify(ok, msg);
+            setOfferRequest(null);
+          }}
+        />
+      )}
 
       {toast && (
         <div

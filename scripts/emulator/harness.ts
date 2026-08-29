@@ -119,6 +119,14 @@ export async function runRegistered(): Promise<void> {
     const verdict = s.error ? '\x1b[31mERROR' : f === 0 ? '\x1b[32mPASS ' : '\x1b[31mFAIL ';
     // eslint-disable-next-line no-console
     console.log(`  ${verdict}\x1b[0m ${s.id.padEnd(7)} ${p}/${p + f} checks — ${s.title}`);
+    // A suite that threw is undebuggable without its stack: the per-suite line
+    // above prints only the message, and the throw site is what identifies the
+    // failing write. Captured at line 102; print it here rather than inline so
+    // the run's check output stays readable.
+    if (s.error) {
+      // eslint-disable-next-line no-console
+      console.log(`\x1b[90m${s.error.split('\n').map((l) => `        ${l}`).join('\n')}\x1b[0m`);
+    }
   }
   // eslint-disable-next-line no-console
   const bad = failed > 0 || errored > 0;

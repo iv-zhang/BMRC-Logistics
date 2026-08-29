@@ -22,6 +22,8 @@ import {
   addDoc,
   updateDoc,
   deleteDoc,
+  deleteField,
+  getDoc,
   getDocs,
   query,
   where,
@@ -32,6 +34,7 @@ import {
   serverTimestamp,
   Timestamp,
   type FieldValue,
+  type Transaction,
 } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { deepRemoveUndefined } from '@/app/lib/audit';
@@ -42,10 +45,12 @@ import type {
   EventTeam,
   EventStatus,
   ShiftRequest,
+  ShiftRequestStatus,
   SlotRole,
   TeamSlot,
   User,
   AttendanceStatus,
+  WaitlistOffer,
 } from '@/app/types';
 import {
   shiftHours,
@@ -56,7 +61,13 @@ import {
 } from '@/app/components/events/event-utils';
 // [Phase 0 / waitlist plan §4.3, §3.8] Used only by `resolveEventPolicy` below
 // — no existing function in this file reads org config.
-import { getOrgConfig, type OrgConfigDoc, type ResolvedEventPolicy } from '@/app/config/org-config';
+import {
+  getOrgConfig,
+  getCancellationPolicy,
+  type OrgConfigDoc,
+  type ResolvedEventPolicy,
+  type CancellationPolicyConfig,
+} from '@/app/config/org-config';
 
 export interface EventActor {
   uid: string;
@@ -184,7 +195,21 @@ export async function createEvent(input: CreateEventInput, actor: EventActor) {
   return addDoc(collection(db, 'events'), payload);
 }
 
-/** Patch event fields. Pass `date` as a Date; it is converted to a Timestamp. */
+/**
+ * Patch event fields. Pass `date` as a Date; it is converted to a Timestamp.
+ *
+ * [Phase 1 / waitlist plan §2.1 propagation obligation, decision 2] When
+ * `date`, `callTime`, or `teams` change — the only inputs
+ * `getShiftStartInstant` reads — every non-terminal (`pending`/`waitlisted`/
+ * `offered`/`approved`) request for this event gets its denormalized
+ * `shiftStartAt` re-stamped in one batch, same obligation the location model
+ * carries for zone renames. A non-empty `callTime` also clears
+ * `needsCallTime` (the flag `flagEventNeedsCallTime` sets when promotion was
+ * refused on a legacy event with none). Both are best-effort AFTER the event
+ * save itself commits: a propagation failure must never fail the edit, but
+ * it is logged loudly since a stale `shiftStartAt` would silently mislead the
+ * cancellation policy and the external sweep worker.
+ */
 export async function updateEvent(
   eventId: string,
   patch: Partial<Omit<CreateEventInput, 'date'>> & { date?: Date; teams?: EventTeam[]; notified?: boolean },
@@ -199,13 +224,48 @@ export async function updateEvent(
   if (patch.eventType !== undefined) update.eventType = patch.eventType.trim() || null;
   if (patch.venue !== undefined) update.venue = patch.venue.trim() || null;
   if (patch.location !== undefined) update.location = patch.location.trim() || null;
-  if (patch.callTime !== undefined) update.callTime = patch.callTime || null;
+  if (patch.callTime !== undefined) {
+    const callTime = patch.callTime || null;
+    update.callTime = callTime;
+    if (callTime) update.needsCallTime = false;
+  }
   if (patch.endTime !== undefined) update.endTime = patch.endTime || null;
   if (patch.description !== undefined) update.description = patch.description.trim() || null;
   if (patch.status !== undefined) update.status = patch.status;
   if (patch.teams !== undefined) update.teams = patch.teams;
   if (patch.notified !== undefined) update.notified = patch.notified;
   await updateDoc(doc(db, 'events', eventId), update);
+
+  if (patch.date !== undefined || patch.callTime !== undefined || patch.teams !== undefined) {
+    try {
+      const eventSnap = await getDoc(doc(db, 'events', eventId));
+      if (eventSnap.exists()) {
+        const freshEvent = { id: eventSnap.id, ...(eventSnap.data() as Event) };
+        const reqsSnap = await getDocs(
+          query(
+            collection(db, 'shift_requests'),
+            where('eventId', '==', eventId),
+            where('status', 'in', ['pending', 'waitlisted', 'offered', 'approved']),
+          ),
+        );
+        if (!reqsSnap.empty) {
+          const batch = writeBatch(db);
+          for (const d of reqsSnap.docs) {
+            const r = d.data() as ShiftRequest;
+            const team = freshEvent.teams.find((t) => t.id === r.teamId);
+            const shiftStart = getShiftStartInstant(freshEvent, team);
+            batch.update(
+              d.ref,
+              shiftStart ? { shiftStartAt: Timestamp.fromDate(shiftStart) } : { shiftStartAt: deleteField() },
+            );
+          }
+          await batch.commit();
+        }
+      }
+    } catch (e) {
+      console.error('updateEvent: shiftStartAt propagation failed:', e);
+    }
+  }
 }
 
 export async function setEventStatus(eventId: string, status: EventStatus) {
@@ -237,16 +297,39 @@ export function formatMemberExperience(status?: User['memberStatus'], term?: str
   return term ? `${label} · ${term}` : label;
 }
 
+export interface RequestShiftOptions {
+  note?: string;
+  /**
+   * The member's soft team preference for a queue entry — see
+   * `ShiftRequest.preferredTeamId`. Defaults to the `teamId` the member
+   * actually pressed (the team-card they were looking at) when omitted, so a
+   * plain "request this team's slot" click that overflows into the waitlist
+   * still records a sensible preference with zero extra UI.
+   */
+  preferredTeamId?: string;
+}
+
 /**
  * Create a member's request for a role on a team. Enforces: event open, cert
  * validity, role eligibility, and no duplicate active request for this event.
+ *
+ * [Phase 1 / waitlist plan §3.2, §3.8, P13] Branches to a `waitlisted` queue
+ * entry when no slot for `role` is open ANYWHERE on the event (not just on
+ * `teamId`) — the queue is event-scoped by default (`policy.scope ===
+ * 'event'`), so "full" means the whole event, not the one team the member
+ * happened to click. "Open" excludes a slot with a live `heldUntil` (an
+ * outstanding offer) — see `isSlotHeld`. The `pending` (direct-signup) branch
+ * is otherwise unchanged: it still attaches to the exact `teamId` requested,
+ * even if some other team on the event has room, matching the pre-Phase-1
+ * behavior where `approveRequest`'s own transaction is what actually enforces
+ * capacity.
  */
 export async function requestShift(
   event: Event,
   teamId: string,
   role: SlotRole,
   requester: ShiftRequester,
-  note?: string,
+  opts?: RequestShiftOptions,
 ): Promise<void> {
   if (event.status !== 'open') throw new Error('This event is not open for signups.');
   if (!canSignUpForShifts(requester)) {
@@ -283,6 +366,71 @@ export async function requestShift(
   });
   if (hasActive) throw new Error('You already have an active request for this event.');
 
+  const policy = resolveEventPolicy(event);
+  const now = new Date();
+  const openSomewhere = hasOpenSlotForRoleOnEvent(event, role, now);
+
+  if (!openSomewhere && !policy.waitlistEnabled) {
+    // [Phase 1 / waitlist plan §3.8] Waitlisting is off org/event-wide and
+    // nothing is open — this is a hard "full", not a queueable state.
+    throw new Error(`${role === 'FTO' ? 'The FTO' : role === 'FTO_INTERN' ? 'The FTO intern' : 'Every EMT'} slot is full for this event.`);
+  }
+
+  if (!openSomewhere) {
+    // [Phase 1] Under the default event-scoped queue the member has no team
+    // yet, so `shiftStartAt` can only be the event-level approximation (see
+    // `WaitlistOffer.shiftStartAt`'s doc comment for why this must never be
+    // treated as the real per-team instant). Under the legacy `scope: 'team'`
+    // opt-in the team IS known (it's the real queue key), so use it.
+    const queueTeam = policy.scope === 'team' ? team : undefined;
+    const queueShiftStart = getShiftStartInstant(event, queueTeam);
+
+    // [Phase 1 / waitlist plan §4.1] Queue-entry guards. Both read config,
+    // never block a member simply asking to be placed on hold — they throw a
+    // member-readable reason instead.
+    if (!policy.allowQueueAfterShiftStart && queueShiftStart && queueShiftStart.getTime() <= now.getTime()) {
+      throw new Error('This shift has already started — joining the waitlist is disabled for it.');
+    }
+    if (policy.maxQueueLength > 0) {
+      const queueScopeConstraints = [
+        where('eventId', '==', event.id),
+        where('role', '==', role),
+        where('status', '==', 'waitlisted'),
+      ];
+      if (policy.scope === 'team') queueScopeConstraints.push(where('teamId', '==', teamId));
+      const queueSnap = await getDocs(query(collection(db, 'shift_requests'), ...queueScopeConstraints));
+      if (queueSnap.size >= policy.maxQueueLength) {
+        throw new Error(`The waitlist for this role is full (max ${policy.maxQueueLength}).`);
+      }
+    }
+
+    const payload = deepRemoveUndefined({
+      eventId: event.id,
+      eventName: event.name,
+      eventDate: event.date,
+      // [P13] Event-scoped queue: unassigned until an offer picks a team.
+      // Under the legacy `scope: 'team'` opt-in, the real team is kept.
+      teamId: policy.scope === 'team' ? teamId : '',
+      teamName: policy.scope === 'team' ? team.name : '',
+      role,
+      userId: requester.uid,
+      userName: requester.name,
+      memberStatus: requester.memberStatus || 'general',
+      joinedTerm: requester.joinedTerm || undefined,
+      status: 'waitlisted' as const,
+      note: opts?.note?.trim() || undefined,
+      requestedAt: serverTimestamp(),
+      waitlistedAt: serverTimestamp(),
+      preferredTeamId: opts?.preferredTeamId || teamId,
+      commitmentBinding: false,
+      shiftStartAt: queueShiftStart ? Timestamp.fromDate(queueShiftStart) : undefined,
+      eventType: event.eventType || undefined,
+    });
+    await addDoc(collection(db, 'shift_requests'), payload);
+    return;
+  }
+
+  const pendingShiftStart = getShiftStartInstant(event, team);
   const payload = deepRemoveUndefined({
     eventId: event.id,
     eventName: event.name,
@@ -295,8 +443,11 @@ export async function requestShift(
     memberStatus: requester.memberStatus || 'general',
     joinedTerm: requester.joinedTerm || undefined,
     status: 'pending' as const,
-    note: note?.trim() || undefined,
+    note: opts?.note?.trim() || undefined,
     requestedAt: serverTimestamp(),
+    commitmentBinding: false,
+    shiftStartAt: pendingShiftStart ? Timestamp.fromDate(pendingShiftStart) : undefined,
+    eventType: event.eventType || undefined,
   });
   await addDoc(collection(db, 'shift_requests'), payload);
 
@@ -325,9 +476,64 @@ export async function requestShift(
 }
 
 /**
+ * [Phase 1 / waitlist plan §3.8] Thin, intention-revealing wrapper over
+ * `requestShift`'s waitlist branch — for a "Join waitlist" button the UI only
+ * shows once it already knows the role is full on this event. Delegates
+ * entirely to `requestShift`'s own openness check rather than forcing a queue
+ * entry: if a slot actually IS open (e.g. a race with another member's
+ * cancellation), the member is placed directly instead of needlessly queued.
+ * `teamId` is not a parameter here (the queue is event-scoped, P13) — an
+ * `opts.preferredTeamId` anchors the request to a specific team for
+ * validation/notification purposes and is what ends up recorded as the
+ * member's preference; without one, the event's first team is used as that
+ * anchor only (never written to the queue entry itself under the default
+ * event-scoped mode).
+ */
+export async function joinWaitlist(
+  event: Event,
+  role: SlotRole,
+  requester: ShiftRequester,
+  opts?: RequestShiftOptions,
+): Promise<void> {
+  const anchorTeamId = opts?.preferredTeamId ?? event.teams[0]?.id;
+  if (!anchorTeamId) throw new Error('This event has no teams configured.');
+  return requestShift(event, anchorTeamId, role, requester, opts);
+}
+
+/**
+ * [Phase 1 / waitlist plan §3.2] `waitlisted -> cancelled`. Zero side
+ * effects, zero penalty, no slot interaction (a waitlisted entry never held
+ * one), and — deliberately — no promotion trigger. This is NOT a no-show
+ * surface; a member leaving a queue costs them nothing. Refuses anything
+ * that isn't currently `waitlisted` (an `offered` member should decline via
+ * `declineOffer`, not this — the semantics differ: an offer is a live
+ * proposal with a countdown, a plain queue entry is not).
+ */
+export async function leaveWaitlist(request: ShiftRequest, actor: EventActor): Promise<void> {
+  if (!request.id) throw new Error('Request id missing');
+  if (request.status !== 'waitlisted') {
+    throw new Error('This request is not currently on the waitlist.');
+  }
+  await updateDoc(doc(db, 'shift_requests', request.id), {
+    status: 'cancelled',
+    decidedBy: actor.uid,
+    decidedByName: actor.name,
+    decidedAt: serverTimestamp(),
+  });
+}
+
+/**
  * Approve a request: place the member into an open slot on the team and stamp
  * the request. Runs in a transaction against the event doc so slot capacity
  * (1 FTO / emtCount EMTs) can't be oversubscribed by concurrent approvals.
+ *
+ * [Phase 1 / waitlist plan §3.5, §3.8] Direct placement is always binding
+ * (`commitmentBinding: true`), regardless of role — this is a manager
+ * bypassing the queue/offer machinery entirely, not an offer acceptance.
+ * Also refuses a slot with a live soft-hold (`heldUntil` in the future) from
+ * an outstanding `WaitlistOffer` rather than silently clobbering it — see
+ * `resolveSlotRef`'s FTO/FTO_INTERN branch below for the single-slot case
+ * this actually applies to.
  */
 export async function approveRequest(request: ShiftRequest, actor: EventActor): Promise<void> {
   if (!request.id) throw new Error('Request id missing');
@@ -342,35 +548,55 @@ export async function approveRequest(request: ShiftRequest, actor: EventActor): 
     const team = teams.find((t) => t.id === request.teamId);
     if (!team) throw new Error('Team no longer exists on this event');
 
-    const slot: TeamSlot = { userId: request.userId, userName: request.userName, requestId: request.id };
+    const slotValue: TeamSlot = { userId: request.userId, userName: request.userName, requestId: request.id };
     let placed: string;
-    if (request.role === 'FTO') {
-      if (team.ftoSlot?.userId && team.ftoSlot.userId !== request.userId) {
-        throw new Error('The FTO slot on this team is already filled.');
+
+    if (request.role === 'FTO' || request.role === 'FTO_INTERN') {
+      const ref = resolveSlotRef(team, request.role);
+      if (!ref) throw new Error('This team does not have an FTO intern slot.');
+      if (ref.slot.userId && ref.slot.userId !== request.userId) {
+        throw new Error(
+          request.role === 'FTO'
+            ? 'The FTO slot on this team is already filled.'
+            : 'The FTO intern slot on this team is already filled.',
+        );
       }
-      team.ftoSlot = slot;
-      placed = 'fto';
-    } else if (request.role === 'FTO_INTERN') {
-      if (!teamHasIntern(team)) {
-        throw new Error('This team does not have an FTO intern slot.');
+      // A live soft-hold from an outstanding offer to SOMEONE ELSE blocks a
+      // direct placement into the same slot — the manager must wait for it
+      // to resolve or use the explicit force-promote override, never a
+      // silent clobber that orphans the offeree's pending promise (§3.5).
+      if (isSlotHeld(ref.slot) && ref.slot.requestId !== request.id) {
+        let holderName = 'another member';
+        if (ref.slot.requestId) {
+          const offerSnap = await tx.get(doc(db, 'shift_requests', ref.slot.requestId));
+          if (offerSnap.exists()) holderName = (offerSnap.data() as ShiftRequest).userName || holderName;
+        }
+        const expiresAt = toJsDate(ref.slot.heldUntil);
+        throw new Error(
+          `This slot has a pending offer to ${holderName}, expiring ${
+            expiresAt ? expiresAt.toLocaleString() : 'soon'
+          } — wait or force-promote instead.`,
+        );
       }
-      if (team.ftoInternSlot?.userId && team.ftoInternSlot.userId !== request.userId) {
-        throw new Error('The FTO intern slot on this team is already filled.');
-      }
-      team.ftoInternSlot = slot;
-      placed = 'intern';
+      ref.assign(slotValue);
+      placed = ref.kind === 'fto' ? 'fto' : 'intern';
     } else {
-      team.emtSlots = resizeEmtSlots(team.emtSlots || [], team.emtCount);
-      const idx = team.emtSlots.findIndex((s) => !s.userId);
-      if (idx === -1) throw new Error('All EMT slots on this team are full.');
-      team.emtSlots[idx] = slot;
-      placed = `emt:${idx}`;
+      // EMT: `resolveSlotRef` already skips filled AND live-held slots when
+      // choosing an index, so `null` here genuinely means no seat is
+      // available (full, or every remaining seat is held by an offer).
+      const ref = resolveSlotRef(team, request.role);
+      if (!ref) {
+        throw new Error('All EMT slots on this team are full or have a pending offer — wait or force-promote instead.');
+      }
+      ref.assign(slotValue);
+      placed = `emt:${ref.index}`;
     }
 
     tx.update(eventRef, { teams, updatedAt: serverTimestamp() });
     tx.update(reqRef, {
       status: 'approved',
       assignedSlot: placed,
+      commitmentBinding: true,
       decidedBy: actor.uid,
       decidedByName: actor.name,
       decidedAt: serverTimestamp(),
@@ -428,54 +654,141 @@ export async function rejectRequest(
 }
 
 /**
- * Cancel/withdraw a request. If it was already approved, free the team slot it
- * occupied (transaction) so the seat re-opens.
+ * Cancel/withdraw a request. `actor` is required (Phase 1 — cancellations are
+ * now attributable, since a late one can be flagged against the member).
+ *
+ * What each status actually does now:
+ * - `pending` / `waitlisted`: plain status write. Neither ever held a slot,
+ *   so there's nothing to free and no promotion to trigger. The
+ *   cancellation policy is deliberately NOT evaluated for these — see the
+ *   note below.
+ * - `offered`: releases the soft hold on whatever slot the offer had (if
+ *   any — it may have already expired), marks the request `cancelled`, then
+ *   rolls the queue forward via `promoteNextFromWaitlist`.
+ * - `approved`: frees the `TeamSlot` it occupied, marks `cancelled`, then
+ *   rolls the queue forward the same way.
+ * - anything already terminal (`rejected`/`cancelled`/`declined`/`expired`):
+ *   idempotent plain write, matching the permissive behavior this function
+ *   has always had.
+ *
+ * The cancellation policy (§3.4 — `lateCancellation`/`lateCancellationHours`
+ * stamping, and `mode: 'block'`'s throw) is evaluated ONLY for `offered` and
+ * `approved`, never for `pending`/`waitlisted`: a queue entry never held a
+ * real commitment, so there is nothing to be "late" about, and blocking a
+ * pending/waitlisted withdrawal would directly contradict `leaveWaitlist`'s
+ * documented zero-cost guarantee. This is a plan ambiguity resolved here —
+ * §3.4's implementation paragraph doesn't scope `appliesTo` by status, but
+ * "every confirmed shift" (its own description of the `'all'` mode) reads as
+ * "every approved/offered seat," not "every cancellation of any kind."
+ *
+ * `event` lets a caller that already has it loaded (the events board, the
+ * detail drawer) skip a read; when omitted this fetches it. If the event doc
+ * is missing entirely (deleted), this NEVER blocks the cancel — it falls
+ * back to org-default policy and simply skips the promotion step (there is
+ * no event left to promote against).
  */
-export async function cancelRequest(request: ShiftRequest): Promise<void> {
+export async function cancelRequest(
+  request: ShiftRequest,
+  actor: EventActor,
+  event?: Event,
+): Promise<void> {
   if (!request.id) throw new Error('Request id missing');
   const reqRef = doc(db, 'shift_requests', request.id);
 
-  // [Phase 0 / waitlist plan §2.1] This early-exit branch already covers
-  // every non-approved status, including the new `waitlisted`/`offered`
-  // ones, and today that's correct for BOTH: a waitlisted doc never held a
-  // TeamSlot, so there's nothing to free — just mark it cancelled. An
-  // offered doc is *also* correct today only because no code yet gives an
-  // offer a real hold on a TeamSlot (§3.5's soft-hold mechanism doesn't
-  // exist in this phase, and no `offered` doc exists in any DB yet). Once
-  // Phase 1 lands soft-held slots, cancelling an `offered` request must
-  // release that hold here — and this is also the hook where cancelling an
-  // `approved` seat should fire the promotion sweep (declining an `offered`
-  // entry must NOT re-trigger that sweep recursively in the same call).
-  if (request.status !== 'approved') {
-    await updateDoc(reqRef, { status: 'cancelled', decidedAt: serverTimestamp() });
+  let liveEvent: Event | null = event ?? null;
+  if (!liveEvent) {
+    const eventSnap = await getDoc(doc(db, 'events', request.eventId));
+    liveEvent = eventSnap.exists() ? ({ id: eventSnap.id, ...(eventSnap.data() as Event) }) : null;
+  }
+  const policy = resolveEventPolicy(liveEvent ?? syntheticEventForPolicy(request.eventId));
+
+  if (request.status === 'pending' || request.status === 'waitlisted') {
+    await updateDoc(reqRef, { status: 'cancelled', decidedBy: actor.uid, decidedByName: actor.name, decidedAt: serverTimestamp() });
     return;
   }
 
-  const eventRef = doc(db, 'events', request.eventId);
-  await runTransaction(db, async (tx) => {
-    const eventSnap = await tx.get(eventRef);
-    if (eventSnap.exists()) {
-      const event = eventSnap.data() as Event;
-      const teams = (event.teams || []).map((t) => ({ ...t }));
-      const team = teams.find((t) => t.id === request.teamId);
-      if (team) {
-        if (team.ftoSlot?.requestId === request.id || team.ftoSlot?.userId === request.userId) {
-          team.ftoSlot = {};
-        }
-        if (
-          team.ftoInternSlot?.requestId === request.id ||
-          team.ftoInternSlot?.userId === request.userId
-        ) {
-          team.ftoInternSlot = {};
-        }
-        team.emtSlots = (team.emtSlots || []).map((s) =>
-          s.requestId === request.id || s.userId === request.userId ? {} : s,
-        );
-        tx.update(eventRef, { teams, updatedAt: serverTimestamp() });
-      }
+  if (request.status === 'offered') {
+    const { blocked, stampLate, noticeHours } = evaluateLateCancellation(request, policy.cancellation);
+    if (blocked) {
+      throw new Error(
+        `Cancellations within ${noticeHours} hours of this shift aren't allowed — contact a manager.`,
+      );
     }
-    tx.update(reqRef, { status: 'cancelled', decidedAt: serverTimestamp() });
-  });
+    let liveEventFresh: Event | null = null;
+    await runTransaction(db, async (tx) => {
+      const reqSnap = await tx.get(reqRef);
+      if (!reqSnap.exists()) throw new Error('Request no longer exists.');
+      const freshReq = { id: reqSnap.id, ...(reqSnap.data() as ShiftRequest) };
+      if (freshReq.status === 'offered') {
+        liveEventFresh = await releaseOfferHoldInTx(tx, freshReq);
+      }
+      tx.update(
+        reqRef,
+        deepRemoveUndefined({
+          status: 'cancelled',
+          decidedBy: actor.uid,
+          decidedByName: actor.name,
+          decidedAt: serverTimestamp(),
+          lateCancellation: stampLate || undefined,
+          lateCancellationHours: stampLate ? noticeHours : undefined,
+        }),
+      );
+    });
+    if (liveEventFresh) await promoteNextFromWaitlist(liveEventFresh, request.teamId, request.role, actor);
+    return;
+  }
+
+  if (request.status === 'approved') {
+    const { blocked, stampLate, noticeHours } = evaluateLateCancellation(request, policy.cancellation);
+    if (blocked) {
+      throw new Error(
+        `Cancellations within ${noticeHours} hours of this shift aren't allowed — contact a manager.`,
+      );
+    }
+    let liveEventFresh: Event | null = null;
+    await runTransaction(db, async (tx) => {
+      const eventRef = doc(db, 'events', request.eventId);
+      const eventSnap = await tx.get(eventRef);
+      if (eventSnap.exists()) {
+        const ev = eventSnap.data() as Event;
+        const teams = (ev.teams || []).map((t) => ({ ...t }));
+        const team = teams.find((t) => t.id === request.teamId);
+        if (team) {
+          if (team.ftoSlot?.requestId === request.id || team.ftoSlot?.userId === request.userId) {
+            team.ftoSlot = {};
+          }
+          if (
+            team.ftoInternSlot?.requestId === request.id ||
+            team.ftoInternSlot?.userId === request.userId
+          ) {
+            team.ftoInternSlot = {};
+          }
+          team.emtSlots = (team.emtSlots || []).map((s) =>
+            s.requestId === request.id || s.userId === request.userId ? {} : s,
+          );
+          tx.update(eventRef, { teams, updatedAt: serverTimestamp() });
+        }
+        liveEventFresh = { id: eventSnap.id, ...ev };
+      }
+      tx.update(
+        reqRef,
+        deepRemoveUndefined({
+          status: 'cancelled',
+          decidedBy: actor.uid,
+          decidedByName: actor.name,
+          decidedAt: serverTimestamp(),
+          lateCancellation: stampLate || undefined,
+          lateCancellationHours: stampLate ? noticeHours : undefined,
+        }),
+      );
+    });
+    if (liveEventFresh) await promoteNextFromWaitlist(liveEventFresh, request.teamId, request.role, actor);
+    return;
+  }
+
+  // Already terminal (rejected/cancelled/declined/expired) — idempotent
+  // plain write, matching this function's pre-existing permissive behavior.
+  await updateDoc(reqRef, { status: 'cancelled', decidedBy: actor.uid, decidedByName: actor.name, decidedAt: serverTimestamp() });
 }
 
 // ---------------------------------------------------------------------------
@@ -700,6 +1013,26 @@ export interface MemberShiftStats {
   hoursAllTime: number;
   /** Sum of shiftHours() across approved requests since `semesterStart`. */
   hoursThisSemester: number;
+  /**
+   * [Phase 1 / waitlist plan §3.4] No-shows against a short-notice-offer
+   * acceptance (`commitmentBinding === false`) — informational only. NEVER
+   * summed into `noShow` on any surface; a manager scanning for reliability
+   * problems must not see a free short-notice pickup inflate someone's
+   * no-show count (P4).
+   */
+  noShowNonBinding: number;
+  /**
+   * [Phase 1 / waitlist plan §3.4] Count of `cancelled` requests carrying
+   * `lateCancellation === true`, gated on the ORG-WIDE
+   * `cancellationPolicy.countsAgainstRecord` (`getCancellationPolicy()`) —
+   * this function has no event in hand, so a per-event policy override on
+   * this one flag can't be honoured here. Known limitation, not a bug.
+   */
+  lateCancellations: number;
+  /** [Phase 1 / waitlist plan §3.4, Q4] Approved shifts by `eventType`. A request with no denormalized `eventType` counts toward `shiftsAllTime` but lands in no bucket. */
+  shiftsByType: Record<string, number>;
+  /** Same as `shiftsByType`, scoped to the current term. */
+  shiftsByTypeSemester: Record<string, number>;
 }
 
 function toJsDate(value: unknown): Date | null {
@@ -731,6 +1064,10 @@ export function getMemberShiftStats(
     unrecorded: 0,
     hoursAllTime: 0,
     hoursThisSemester: 0,
+    noShowNonBinding: 0,
+    lateCancellations: 0,
+    shiftsByType: {},
+    shiftsByTypeSemester: {},
   };
   for (const r of requests) {
     // [Phase 0 / waitlist plan §2.1] Already correct — new statuses are
@@ -743,9 +1080,23 @@ export function getMemberShiftStats(
     const inSemester = !!d && d.getTime() >= semesterStart.getTime();
     if (inSemester) stats.shiftsThisSemester += 1;
 
+    // [Phase 1 / waitlist plan §3.4, Q4] Never synthesize an 'other' bucket
+    // for a request with no `eventType` — that would silently satisfy a
+    // `minShiftsByType` tier criterion nobody actually met.
+    if (r.eventType) {
+      stats.shiftsByType[r.eventType] = (stats.shiftsByType[r.eventType] || 0) + 1;
+      if (inSemester) {
+        stats.shiftsByTypeSemester[r.eventType] = (stats.shiftsByTypeSemester[r.eventType] || 0) + 1;
+      }
+    }
+
     const attendance = r.attendance;
     if (attendance?.exception === 'no_show') {
-      stats.noShow += 1;
+      // [Phase 1 / waitlist plan §3.4] Split on whether this specific request
+      // actually carried no-show liability — see `isCommitmentBinding` for
+      // the legacy-undefined default this leans on.
+      if (isCommitmentBinding(r)) stats.noShow += 1;
+      else stats.noShowNonBinding += 1;
     } else if (attendance?.exception === 'excused') {
       stats.excused += 1;
     } else if (attendance?.checkedInAt) {
@@ -769,16 +1120,29 @@ export function getMemberShiftStats(
   }
   stats.hoursAllTime = Math.round(stats.hoursAllTime * 10) / 10;
   stats.hoursThisSemester = Math.round(stats.hoursThisSemester * 10) / 10;
+
+  // [Phase 1 / waitlist plan §3.4] Second pass, over the SAME flat list but
+  // NOT gated on `status === 'approved'` — a late cancellation is stamped on
+  // a `cancelled` doc, which the main loop above always `continue`s past.
+  // Reads the org-wide policy (no event join available here); see the field
+  // doc comment on `MemberShiftStats.lateCancellations`.
+  if (getCancellationPolicy().countsAgainstRecord) {
+    for (const r of requests) {
+      if (r.status === 'cancelled' && r.lateCancellation === true) {
+        stats.lateCancellations += 1;
+      }
+    }
+  }
+
   return stats;
 }
 
 /**
  * Approved-request userIds for an event (audience = "people signed up").
- * [Phase 0 / waitlist plan §2.1] This defines the notification/broadcast
- * audience. Left `approved`-only — whether an `offered` (softly holding a
- * slot) or `waitlisted` member should also be counted as "signed up" for
- * broadcast purposes is an open question explicitly deferred to Phase 1, not
- * a bug to fix here.
+ * [Phase 1 / waitlist plan §2.1, resolved] Left `approved`-only, by decision:
+ * the broadcast audience is CONFIRMED people — a queued (`waitlisted`) or
+ * softly-held (`offered`) member has no shift yet and should not be told
+ * "you're signed up" alongside people who actually are.
  */
 export async function getSignedUpUserIds(eventId: string): Promise<string[]> {
   const snap = await getDocs(
@@ -913,6 +1277,7 @@ export function resolveEventPolicy(
       override.shortNoticeResponseWindowHours ?? w.shortNoticeResponseWindowHours,
     declinedOfferBehavior: override.declinedOfferBehavior ?? w.declinedOfferBehavior,
     maxQueueLength: override.maxQueueLength ?? w.maxQueueLength,
+    allowQueueAfterShiftStart: override.allowQueueAfterShiftStart ?? w.allowQueueAfterShiftStart,
     // Org-wide only by design — see the field's doc comment on
     // `ResolvedEventPolicy`; there is intentionally no `override` read here.
     maxOffersPerMember: w.maxOffersPerMember,
@@ -962,4 +1327,818 @@ export function isUnassignedQueueEntry(
   request: Pick<ShiftRequest, 'teamId'>,
 ): boolean {
   return !request.teamId;
+}
+
+// ---------------------------------------------------------------------------
+// [Phase 1 — waitlist plan §3.2–§3.6, §3.8] The waitlist queue itself: pure
+// notice-class / soft-hold / ordering / expiry primitives first, then the
+// write paths (join/leave, promote, accept/decline, sweep, manager queue
+// actions) that are built entirely out of them. Nothing below should
+// re-derive a queue key, a notice window, or a slot occupancy check inline —
+// route through these.
+// ---------------------------------------------------------------------------
+
+/**
+ * The shift's start instant: `team.startTime` if set, else `event.callTime`,
+ * resolved against `event.date` in the BROWSER'S LOCAL TIMEZONE (same
+ * convention as `eventCallDateTime`/`eventEndDateTime`, event-utils.ts — see
+ * §3.3 for the DST/clock-skew caveat, an accepted pre-existing risk, not new
+ * here). `team` is optional because a per-event queue entry has no team
+ * until it is offered one (P13); omitting it falls back to the event-level
+ * approximation. Returns `null` only for a legacy event with no `callTime`
+ * (P12) — that is now a "needs attention" condition, not a silent default.
+ */
+export function getShiftStartInstant(event: Event, team?: EventTeam): Date | null {
+  const timeStr = team?.startTime ?? event.callTime;
+  if (!timeStr) return null;
+  const day = toJsDate(event.date);
+  if (!day) return null;
+  const match = /^(\d{1,2}):(\d{2})$/.exec(timeStr.trim());
+  if (!match) return null;
+  const d = new Date(day);
+  d.setHours(Number(match[1]), Number(match[2]), 0, 0);
+  return d;
+}
+
+/**
+ * Which notice-window bucket a promotion offered right now would fall into.
+ * `team` is REQUIRED (unlike `getShiftStartInstant`'s) — §3.5/D2: notice
+ * class must always be computed from a resolved team, never the request-level
+ * event-only approximation, or a team starting earlier than the event call
+ * time could wrongly read as `'long'` (and therefore binding) on a shift
+ * that's actually inside the short-notice window. See
+ * `WaitlistOffer.shiftStartAt`'s doc comment (app/types.ts) for the full
+ * argument. Returns `null` when `getShiftStartInstant` does (legacy event).
+ */
+export function computeNoticeClass(
+  event: Event,
+  team: EventTeam,
+  now: Date,
+  policy: Pick<ResolvedEventPolicy, 'longNoticeThresholdHours'>,
+): 'long' | 'short' | null {
+  const shiftStart = getShiftStartInstant(event, team);
+  if (!shiftStart) return null;
+  const hoursUntilShift = (shiftStart.getTime() - now.getTime()) / 3_600_000;
+  return hoursUntilShift >= policy.longNoticeThresholdHours ? 'long' : 'short';
+}
+
+/**
+ * Freeze the resolved policy onto an offer at the moment it's made (P3) —
+ * `responseWindowHours` is the window ACTUALLY USED for this offer (the long
+ * or short window, whichever `noticeClass` selected), not both, so a reader
+ * months later doesn't have to re-derive which one applied.
+ */
+export function freezePolicy(
+  policy: Pick<
+    ResolvedEventPolicy,
+    'longNoticeThresholdHours' | 'longNoticeResponseWindowHours' | 'shortNoticeResponseWindowHours' | 'cancellation'
+  >,
+  noticeClass: 'long' | 'short',
+): WaitlistOffer['policy'] {
+  return {
+    longNoticeThresholdHours: policy.longNoticeThresholdHours,
+    responseWindowHours:
+      noticeClass === 'long' ? policy.longNoticeResponseWindowHours : policy.shortNoticeResponseWindowHours,
+    cancellationNoticeHours: policy.cancellation.noticeHours,
+    cancellationMode: policy.cancellation.mode,
+  };
+}
+
+/**
+ * Whether a `TeamSlot`'s soft hold is still live. A hold with `heldUntil` in
+ * the past reads as effectively open again with NO write required to
+ * "release" it (see `TeamSlot.heldUntil`'s doc comment, app/types.ts) — every
+ * occupancy check in this file goes through this rather than testing
+ * `heldUntil` truthiness directly.
+ */
+export function isSlotHeld(slot: TeamSlot, now: Date = new Date()): boolean {
+  if (!slot.heldUntil) return false;
+  const t = toJsDate(slot.heldUntil);
+  return !!t && t.getTime() > now.getTime();
+}
+
+/** A resolved reference to one team slot, with a way to write a new value back onto the (cloned) team it came from. */
+export interface SlotRef {
+  kind: 'fto' | 'ftoIntern' | 'emt';
+  /** Only meaningful for `kind === 'emt'`. */
+  index?: number;
+  /** The slot's value as of resolution — read-only; write via `assign`. */
+  slot: TeamSlot;
+  /** Overwrite this slot's value on the team object `resolveSlotRef` was called with. */
+  assign(next: TeamSlot): void;
+}
+
+/**
+ * The single place slot addressing happens for FTO / FTO_INTERN / EMT
+ * PLACEMENT — used by every transaction that is looking for somewhere to put
+ * a NEW assignment or hold (`approveRequest`, `promoteNextFromWaitlist`).
+ * Mutates `team` in place via the returned `assign` closure — callers pass a
+ * shallow-cloned team (as every transaction here already does before
+ * mutating) and re-serialize the whole `teams` array in one `tx.update`.
+ *
+ * This answers "where can I PUT someone", not "which slot does THIS request
+ * already hold" — for the latter question (accepting/releasing an existing
+ * offer) use `findSlotRefByRequest` instead, which addresses a slot by
+ * `requestId` regardless of hold/fill state. Picking the wrong one of the two
+ * is exactly the bug this pair of doc comments exists to prevent: a live-held
+ * EMT slot is invisible to this function BY DESIGN (see below), so a caller
+ * that means "find the slot I already hold" and calls this one instead will
+ * see it as taken or will resolve to the wrong seat.
+ *
+ * FTO / FTO_INTERN: always resolves to the team's single slot for that role
+ * (or `null` for FTO_INTERN when the team has no intern slot at all) —
+ * occupancy/hold state is the CALLER's to check, since there's only one
+ * candidate slot to reason about.
+ *
+ * EMT: resolves to the first slot that is neither filled NOR live-held
+ * (`isSlotHeld`) — i.e. genuinely available for a NEW assignment/hold. Reads
+ * through a RESIZED VIEW of `team.emtSlots` (padded/truncated to
+ * `team.emtCount`, mirroring the invariant `approveRequest` always enforced
+ * before this helper existed — a legacy/short array can't hide a real open
+ * seat) without mutating `team` itself: this function must stay side-effect
+ * free on resolve, since read-only callers (`hasOpenSlotForRoleOnEvent`) pass
+ * live, caller-owned `Event`/`EventTeam` objects (e.g. UI state) that must
+ * never be mutated just by asking "is there an open slot?" — only `assign()`
+ * writes back, and only transactional callers (which always pass an
+ * already-cloned team) call it. Returns `null` when no such slot exists
+ * (every EMT seat is filled or held).
+ */
+export function resolveSlotRef(team: EventTeam, role: SlotRole): SlotRef | null {
+  if (role === 'FTO') {
+    return {
+      kind: 'fto',
+      slot: team.ftoSlot ?? {},
+      assign: (next) => {
+        team.ftoSlot = next;
+      },
+    };
+  }
+  if (role === 'FTO_INTERN') {
+    if (!teamHasIntern(team)) return null;
+    return {
+      kind: 'ftoIntern',
+      slot: team.ftoInternSlot ?? {},
+      assign: (next) => {
+        team.ftoInternSlot = next;
+      },
+    };
+  }
+  const slots = resizeEmtSlots(team.emtSlots || [], team.emtCount); // pure — does NOT write to `team`
+  const idx = slots.findIndex((s) => !s.userId && !isSlotHeld(s));
+  if (idx === -1) return null;
+  return {
+    kind: 'emt',
+    index: idx,
+    slot: slots[idx],
+    assign: (next) => {
+      const arr = [...slots];
+      arr[idx] = next;
+      team.emtSlots = arr;
+    },
+  };
+}
+
+/**
+ * The single place slot addressing happens for FTO / FTO_INTERN / EMT
+ * IDENTIFICATION — used by every transaction that already knows a slot is
+ * (or was) assigned to a specific request and needs to find THAT slot again,
+ * regardless of its current hold/fill state: `acceptOffer` (confirm the held
+ * seat is still this request's before promoting it), `releaseOfferHoldInTx`
+ * (shared by `declineOffer`, `removeWaitlistEntry`, and `cancelRequest`'s
+ * `offered` branch — clear the hold this request placed), and
+ * `sweepExpiredOffers` (clear the hold on an offer nobody answered in time).
+ *
+ * This is the mirror image of `resolveSlotRef`: that one answers "where can I
+ * PUT someone" (skips filled/held seats by construction, so it can never see
+ * a slot this function needs to find), this one answers "which slot does
+ * THIS REQUEST already occupy" by matching on `slot.requestId` alone. An EMT
+ * seat holding an offer is exactly the case `resolveSlotRef` is built to
+ * exclude, which is why the two must never be swapped.
+ *
+ * Scans FTO, then FTO_INTERN (only when `teamHasIntern(team)` — a legacy team
+ * with no intern slot has nothing to match there), then EMT — through the
+ * same resized view `resolveSlotRef` uses (`resizeEmtSlots`), for the same
+ * reason: a short/legacy `emtSlots` array must not hide a real held seat.
+ * Like `resolveSlotRef`, this stays side-effect free on resolve — it never
+ * mutates `team`, only `assign()` does, and only once a transactional caller
+ * invokes it. Returns `null` when no slot on the team carries `requestId`.
+ */
+export function findSlotRefByRequest(team: EventTeam, requestId: string): SlotRef | null {
+  if (team.ftoSlot?.requestId === requestId) {
+    return {
+      kind: 'fto',
+      slot: team.ftoSlot,
+      assign: (next) => {
+        team.ftoSlot = next;
+      },
+    };
+  }
+  if (teamHasIntern(team) && team.ftoInternSlot?.requestId === requestId) {
+    return {
+      kind: 'ftoIntern',
+      slot: team.ftoInternSlot,
+      assign: (next) => {
+        team.ftoInternSlot = next;
+      },
+    };
+  }
+  const slots = resizeEmtSlots(team.emtSlots || [], team.emtCount); // pure — does NOT write to `team`
+  const idx = slots.findIndex((s) => s.requestId === requestId);
+  if (idx === -1) return null;
+  return {
+    kind: 'emt',
+    index: idx,
+    slot: slots[idx],
+    assign: (next) => {
+      const arr = [...slots];
+      arr[idx] = next;
+      team.emtSlots = arr;
+    },
+  };
+}
+
+/**
+ * [P13] Is there a genuinely open slot for `role` on ANY team of this event
+ * ("open" excludes a live-held slot)? This is the exact condition
+ * `requestShift` branches `pending` vs `waitlisted` on — event-scoped, not
+ * `teamId`-scoped, because the default queue is event-scoped.
+ */
+function hasOpenSlotForRoleOnEvent(event: Event, role: SlotRole, now: Date = new Date()): boolean {
+  return (event.teams || []).some((team) => {
+    const ref = resolveSlotRef(team, role);
+    if (!ref) return false;
+    return !ref.slot.userId && !isSlotHeld(ref.slot, now);
+  });
+}
+
+/**
+ * Total order over a waitlist queue: skipped entries sort behind every
+ * non-skipped entry (`skippedAt == null ? 0 : 1` first), then ascending
+ * `waitlistedAt` (a `waitlisted` doc with no `waitlistedAt` is a
+ * data-integrity bug per its doc comment — sorts LAST, not first), then a
+ * stable tie-break on doc id so two docs with the exact same `waitlistedAt`
+ * (a race) don't reorder between renders.
+ */
+export function waitlistComparator(a: ShiftRequest, b: ShiftRequest): number {
+  const skipRank = (r: ShiftRequest) => (r.skippedAt == null ? 0 : 1);
+  const sa = skipRank(a);
+  const sb = skipRank(b);
+  if (sa !== sb) return sa - sb;
+  const ta = toJsDate(a.waitlistedAt)?.getTime() ?? Infinity;
+  const tb = toJsDate(b.waitlistedAt)?.getTime() ?? Infinity;
+  if (ta !== tb) return ta - tb;
+  return (a.id ?? '').localeCompare(b.id ?? '');
+}
+
+/**
+ * 1-based rank of `entry` among the `waitlisted` docs sharing its queue key
+ * (`queueKeyOf`), ordered by `waitlistComparator`. Pure, no I/O — position is
+ * NEVER a stored field (P2), always a read-time computation over the docs the
+ * caller already has loaded. `entry` is included in the candidate set even
+ * when its own status is `offered` (so an offered member still sees a
+ * displayable rank) or if it isn't present in `requests` at all.
+ */
+export function getWaitlistPosition(
+  requests: ShiftRequest[],
+  entry: ShiftRequest,
+  policy: Pick<ResolvedEventPolicy, 'scope'>,
+): number {
+  const key = queueKeyOf(entry, policy);
+  const candidates = requests.filter(
+    (r) => (r.status === 'waitlisted' || r.id === entry.id) && queueKeyOf(r, policy) === key,
+  );
+  if (!candidates.some((r) => r.id === entry.id)) candidates.push(entry);
+  candidates.sort(waitlistComparator);
+  const idx = candidates.findIndex((r) => r.id === entry.id);
+  return idx === -1 ? candidates.length : idx + 1;
+}
+
+/**
+ * §3.6 — pure, read-time expiry resolution. Every read surface that shows an
+ * `offered` request must call this instead of trusting `request.status`
+ * directly: promotion only advances the queue when a manager client opens
+ * the event (§3.6's "lazy evaluation" design), so a stale `offered` doc can
+ * sit past its `respondBy` until someone's client sweeps it.
+ */
+export function resolveOfferState(request: ShiftRequest, now: Date): ShiftRequestStatus {
+  if (request.status !== 'offered') return request.status;
+  if (request.offer?.response) return request.status;
+  if (request.offer && now.getTime() > request.offer.respondBy.toMillis()) return 'expired';
+  return 'offered';
+}
+
+/**
+ * [P4] Whether a no-show against THIS request carries real liability — see
+ * `ShiftRequest.commitmentBinding`'s doc comment (app/types.ts) for the full
+ * LEGACY-UNDEFINED ASYMMETRY this centralizes. Never inline `?? true` / `??
+ * false` at a call site — only one of those defaults is right, and which one
+ * depends on `status`:
+ *   - explicit `commitmentBinding` present -> use it, unconditionally.
+ *   - `undefined` AND `status === 'approved'` -> `true` (a legacy direct
+ *     approval predates waitlisting and was always binding in practice;
+ *     defaulting it non-binding would silently forgive real historical
+ *     no-show liability).
+ *   - `undefined` AND any other status -> `false` (no shift to be liable for).
+ */
+export function isCommitmentBinding(request: Pick<ShiftRequest, 'status' | 'commitmentBinding'>): boolean {
+  if (request.commitmentBinding !== undefined) return request.commitmentBinding;
+  return request.status === 'approved';
+}
+
+/**
+ * The late-cancellation policy math (§3.4), shared by every `cancelRequest`
+ * branch that actually held a commitment (`offered`/`approved` — see that
+ * function's doc comment for why `pending`/`waitlisted` never call this).
+ * `appliesTo: 'binding'` (default) gates on `isCommitmentBinding`; `'all'`
+ * evaluates the notice math regardless. `enabled: false` short-circuits
+ * everything to "not late, not blocked."
+ */
+function evaluateLateCancellation(
+  request: Pick<ShiftRequest, 'shiftStartAt' | 'status' | 'commitmentBinding'>,
+  cancellation: CancellationPolicyConfig,
+): { blocked: boolean; stampLate: boolean; noticeHours: number } {
+  const notLate = { blocked: false, stampLate: false, noticeHours: cancellation.noticeHours };
+  if (!cancellation.enabled) return notLate;
+  const applies = cancellation.appliesTo === 'all' || isCommitmentBinding(request);
+  if (!applies) return notLate;
+  const shiftStart = toJsDate(request.shiftStartAt);
+  if (!shiftStart) return notLate;
+  const hoursUntilShift = (shiftStart.getTime() - Date.now()) / 3_600_000;
+  const late = hoursUntilShift < cancellation.noticeHours;
+  if (!late) return notLate;
+  return {
+    blocked: cancellation.mode === 'block',
+    stampLate: cancellation.mode === 'flag' || cancellation.mode === 'confirm',
+    noticeHours: cancellation.noticeHours,
+  };
+}
+
+/**
+ * A synthetic `Event` good for exactly one thing: resolving org-default
+ * policy when the real event doc is missing (deleted, or a race).
+ * `resolveEventPolicy` only ever reads `event.policy`/`event.waitlistEnabled`
+ * off its argument, both absent here, so this always falls through to plain
+ * org config. Used so cancelling/declining can NEVER be blocked by a missing
+ * event (decision: §3.2/§3.8).
+ */
+function syntheticEventForPolicy(eventId: string): Event {
+  return { id: eventId, teams: [] } as unknown as Event;
+}
+
+/** Does this user already hold an `approved` request on this event (any team/role)? */
+async function hasActiveApprovalOnEvent(userId: string, eventId: string): Promise<boolean> {
+  const snap = await getDocs(
+    query(
+      collection(db, 'shift_requests'),
+      where('eventId', '==', eventId),
+      where('userId', '==', userId),
+      where('status', '==', 'approved'),
+    ),
+  );
+  return !snap.empty;
+}
+
+/**
+ * Release the soft hold `request` has on its offered slot, if one is still
+ * live for it, inside an already-open transaction. Shared by every path that
+ * can terminate an `offered` request outside of accept/expiry —
+ * `declineOffer`, `removeWaitlistEntry`, and `cancelRequest`'s `offered`
+ * branch — so the release logic (find the team, resolve the slot, confirm
+ * it's still held for THIS request, clear it) exists exactly once. Returns
+ * the event as read inside the transaction (or `null` if the event doc is
+ * gone) so the caller can decide whether/what to roll forward.
+ */
+async function releaseOfferHoldInTx(
+  tx: Transaction,
+  request: Pick<ShiftRequest, 'id' | 'eventId' | 'teamId' | 'role'>,
+): Promise<Event | null> {
+  const eventRef = doc(db, 'events', request.eventId);
+  const eventSnap = await tx.get(eventRef);
+  if (!eventSnap.exists()) return null;
+  const ev = eventSnap.data() as Event;
+  const teams = (ev.teams || []).map((t) => ({ ...t }));
+  const team = teams.find((t) => t.id === request.teamId);
+  if (team) {
+    // `findSlotRefByRequest`, not `resolveSlotRef`: the seat we're releasing
+    // is live-held (that's the whole point of a hold), so the placement
+    // resolver would skip right past it — see both functions' doc comments.
+    const slotRef = findSlotRefByRequest(team, request.id!);
+    if (slotRef) {
+      slotRef.assign({});
+      tx.update(eventRef, { teams, updatedAt: serverTimestamp() });
+    }
+  }
+  return { id: eventSnap.id, ...ev };
+}
+
+/**
+ * Best-effort: flag a legacy event with no `callTime` as blocked-for-
+ * promotion (P12) rather than silently skipping it. `updateEvent` clears
+ * this the moment a non-empty `callTime` is saved (decision: app/types.ts
+ * `Event.needsCallTime`).
+ */
+export async function flagEventNeedsCallTime(eventId: string): Promise<void> {
+  try {
+    await updateDoc(doc(db, 'events', eventId), { needsCallTime: true });
+  } catch (e) {
+    console.error('flagEventNeedsCallTime failed:', e);
+  }
+}
+
+/**
+ * §3.5 — offer the next eligible waitlisted member the slot that just freed
+ * on `(teamId, role)`. Short-circuits when waitlisting is off, or when
+ * `autoPromote` is off and the caller didn't pass `opts.force` (the manual
+ * "send this offer by hand" path from the manager queue panel — same
+ * function, one extra flag, never a second implementation).
+ *
+ * `opts.requestId` (only meaningful with `opts.force`) pins the promotion to
+ * one specific queued member — the manager's force-promote picker —
+ * bypassing FIFO order and `honorTeamPreference` entirely.
+ */
+export async function promoteNextFromWaitlist(
+  event: Event,
+  teamId: string,
+  role: SlotRole,
+  actor: EventActor,
+  opts?: { force?: boolean; requestId?: string },
+): Promise<void> {
+  const policy = resolveEventPolicy(event);
+  if (!policy.waitlistEnabled) return;
+  if (!policy.autoPromote && !opts?.force) return;
+
+  // 1. Candidate query — event-scoped (P13); the Firestore query can't
+  // consult `queueKeyOf` directly (it needs literal `where()` clauses), so
+  // the same scope condition is mirrored here by hand.
+  const constraints = [
+    where('eventId', '==', event.id),
+    where('role', '==', role),
+    where('status', '==', 'waitlisted'),
+  ];
+  if (policy.scope === 'team') constraints.push(where('teamId', '==', teamId));
+  const candidatesSnap = await getDocs(
+    query(collection(db, 'shift_requests'), ...constraints, orderBy('waitlistedAt', 'asc')),
+  );
+  const queue = candidatesSnap.docs
+    .map((d) => ({ id: d.id, ...(d.data() as ShiftRequest) }))
+    .sort(waitlistComparator);
+
+  // 2. Ordering. `opts.requestId` bypasses everything below and pins to one
+  // candidate. Otherwise `honorTeamPreference`'s two-pass ordering — the
+  // queue's underlying FIFO order never changes, this only decides which
+  // pass a candidate is considered in.
+  const ordered = opts?.requestId
+    ? queue.filter((c) => c.id === opts.requestId)
+    : policy.honorTeamPreference === 'ignore'
+      ? queue
+      : policy.honorTeamPreference === 'strict'
+        ? queue.filter((c) => !c.preferredTeamId || c.preferredTeamId === teamId)
+        : [
+            ...queue.filter((c) => !c.preferredTeamId || c.preferredTeamId === teamId),
+            ...queue.filter((c) => c.preferredTeamId && c.preferredTeamId !== teamId),
+          ];
+
+  for (const candidate of ordered) {
+    // 3. Eligibility re-check — a queued member can go stale (certs lapse,
+    // role changes, or they got approved onto ANOTHER team for this event).
+    const userSnap = await getDoc(doc(db, 'users', candidate.userId));
+    if (!userSnap.exists()) continue;
+    const user = userSnap.data() as User;
+    if (!canSignUpForShifts(user)) continue;
+    if (!canRequestRole(user.role, role)) continue;
+    if (await hasActiveApprovalOnEvent(candidate.userId, event.id!)) continue;
+    // TODO(Phase 2): getTierAccess re-check per plan §3.5 step 3
+
+    // 4. Notice class — computed ONCE here from the RESOLVED TEAM (D2), then
+    // frozen onto the offer (P3). See `computeNoticeClass`'s doc comment for
+    // why this must never be derived from the request-level `shiftStartAt`
+    // approximation instead.
+    const team = event.teams.find((t) => t.id === teamId);
+    if (!team) continue;
+    const now = new Date();
+    const noticeClass = computeNoticeClass(event, team, now, policy);
+    if (noticeClass === null) {
+      // Legacy event with no callTime (P12) — do not auto-offer; flag it.
+      await flagEventNeedsCallTime(event.id!);
+      return;
+    }
+    const shiftStart = getShiftStartInstant(event, team)!; // non-null: noticeClass !== null guarantees this
+    const windowHours =
+      noticeClass === 'long' ? policy.longNoticeResponseWindowHours : policy.shortNoticeResponseWindowHours;
+    const respondBy = new Date(Date.now() + windowHours * 3_600_000);
+
+    // 5. Transactional soft-hold against the EVENT doc.
+    const ok = await runTransaction(db, async (tx) => {
+      const eventRef = doc(db, 'events', event.id!);
+      const eventSnap = await tx.get(eventRef);
+      if (!eventSnap.exists()) return false;
+      const liveEvent = eventSnap.data() as Event;
+      const teams = (liveEvent.teams || []).map((t) => ({ ...t }));
+      const liveTeam = teams.find((t) => t.id === teamId);
+      if (!liveTeam) return false;
+      const slotRef = resolveSlotRef(liveTeam, role);
+      if (!slotRef || slotRef.slot.userId || isSlotHeld(slotRef.slot)) return false; // taken or held — try next candidate
+
+      slotRef.assign({ heldUntil: Timestamp.fromDate(respondBy), requestId: candidate.id });
+      tx.update(eventRef, { teams, updatedAt: serverTimestamp() });
+      tx.update(
+        doc(db, 'shift_requests', candidate.id!),
+        deepRemoveUndefined({
+          status: 'offered',
+          teamId,
+          teamName: liveTeam.name,
+          // Now that a team is resolved, the request-level approximation can
+          // be replaced with the real per-team instant too.
+          shiftStartAt: Timestamp.fromDate(shiftStart),
+          offer: {
+            offeredAt: serverTimestamp(),
+            respondBy: Timestamp.fromDate(respondBy),
+            noticeClass,
+            binding: noticeClass === 'long',
+            policy: freezePolicy(policy, noticeClass),
+            teamId,
+            teamName: liveTeam.name,
+            shiftStartAt: Timestamp.fromDate(shiftStart),
+            offeredBy: actor.uid,
+          },
+        }),
+      );
+      return true;
+    });
+
+    if (ok) {
+      try {
+        await createNotification(
+          candidate.userId,
+          {
+            type: 'waitlist_offer',
+            title: `Shift offer: ${event.name}`,
+            body: `${team.name} · ${slotRoleLabel(role)} — respond by ${respondBy.toLocaleString()}.`,
+            link: '/events?event=' + event.id + '&offer=' + candidate.id,
+          },
+          { uid: actor.uid, name: actor.name },
+        );
+      } catch (e) {
+        console.error('waitlist offer notification failed:', e);
+      }
+      return;
+    }
+    // else: slot claimed between the query and the transaction — try the next candidate.
+  }
+  // No eligible candidate — slot stays open, untouched.
+}
+
+/**
+ * §3.5/§3.6 — accept a live offer: `offered -> approved`. Fails closed (never
+ * silently "succeeds" past the deadline) if `resolveOfferState` already reads
+ * the offer as expired, or if it's already been responded to — the client
+ * should already have disabled the button via the same check; this is
+ * defence in depth against a stale render.
+ */
+export async function acceptOffer(request: ShiftRequest, actor: EventActor): Promise<void> {
+  if (!request.id) throw new Error('Request id missing');
+  const reqRef = doc(db, 'shift_requests', request.id);
+  const eventRef = doc(db, 'events', request.eventId);
+
+  await runTransaction(db, async (tx) => {
+    const reqSnap = await tx.get(reqRef);
+    if (!reqSnap.exists()) throw new Error('Request no longer exists.');
+    const freshReq = { id: reqSnap.id, ...(reqSnap.data() as ShiftRequest) };
+    const now = new Date();
+    if (freshReq.status !== 'offered' || !freshReq.offer) {
+      throw new Error('This offer is no longer available.');
+    }
+    if (resolveOfferState(freshReq, now) === 'expired' || freshReq.offer.response) {
+      throw new Error('This offer is no longer available.');
+    }
+
+    const eventSnap = await tx.get(eventRef);
+    if (!eventSnap.exists()) throw new Error('Event no longer exists.');
+    const liveEvent = eventSnap.data() as Event;
+    const teams = (liveEvent.teams || []).map((t) => ({ ...t }));
+    const team = teams.find((t) => t.id === freshReq.teamId);
+    if (!team) throw new Error('Team no longer exists on this event.');
+    // `findSlotRefByRequest`, not `resolveSlotRef`: the slot we're accepting
+    // is the one this request already holds, which is exactly the state
+    // `resolveSlotRef` treats as unavailable for a NEW placement. The
+    // `requestId` match is already guaranteed by the lookup itself; the only
+    // thing left to verify is that the hold hasn't lapsed out from under us.
+    const slotRef = findSlotRefByRequest(team, request.id!); // narrowed by the `if (!request.id) throw` guard above; the guard's narrowing doesn't survive into this transaction closure
+    if (!slotRef || !isSlotHeld(slotRef.slot, now)) {
+      throw new Error('This offer is no longer available.');
+    }
+
+    slotRef.assign({ userId: request.userId, userName: request.userName, requestId: request.id });
+    tx.update(eventRef, { teams, updatedAt: serverTimestamp() });
+    tx.update(
+      reqRef,
+      deepRemoveUndefined({
+        status: 'approved',
+        assignedSlot: slotRef.kind === 'fto' ? 'fto' : slotRef.kind === 'ftoIntern' ? 'intern' : `emt:${slotRef.index}`,
+        teamId: freshReq.teamId,
+        teamName: freshReq.teamName,
+        // Long-notice acceptance is binding; short-notice never is, even
+        // accepted (P4) — mirrors `offer.binding`, computed once more here
+        // because `commitmentBinding` is the field everything else reads.
+        commitmentBinding: freshReq.offer.noticeClass === 'long',
+        offer: { ...freshReq.offer, respondedAt: serverTimestamp(), response: 'accepted' },
+        decidedBy: actor.uid,
+        decidedByName: actor.name,
+        decidedAt: serverTimestamp(),
+      }),
+    );
+  });
+
+  try {
+    await createNotification(
+      request.userId,
+      {
+        type: 'waitlist_promoted',
+        title: `You're confirmed: ${request.eventName}`,
+        body: `${request.teamName} · ${slotRoleLabel(request.role)}. See you there!`,
+        link: '/events',
+      },
+      { uid: actor.uid, name: actor.name },
+    );
+  } catch (e) {
+    console.error('waitlist accept notification failed:', e);
+  }
+}
+
+/**
+ * §3.5/§4.1 — decline a live offer: `offered -> declined`, OR back to
+ * `waitlisted` under `declinedOfferBehavior: 'requeue_back'`. NEVER
+ * punitive regardless of `noticeClass` — no flag, no counter that feeds an
+ * attendance stat, by design (P4). Releases the slot's soft hold in the same
+ * transaction as the status write, then rolls the queue forward for the
+ * same `(teamId, role)` — a decline always frees the slot for someone else
+ * regardless of what happens to the decliner's own status.
+ */
+export async function declineOffer(request: ShiftRequest, actor: EventActor): Promise<void> {
+  if (!request.id) throw new Error('Request id missing');
+  const reqRef = doc(db, 'shift_requests', request.id);
+
+  let liveEventForPromotion: Event | null = null;
+  let rollForward: { teamId: string; role: SlotRole } | null = null;
+
+  await runTransaction(db, async (tx) => {
+    const reqSnap = await tx.get(reqRef);
+    if (!reqSnap.exists()) throw new Error('Request no longer exists.');
+    const freshReq = { id: reqSnap.id, ...(reqSnap.data() as ShiftRequest) };
+    if (freshReq.status !== 'offered' || !freshReq.offer) {
+      throw new Error('This offer is no longer available.');
+    }
+
+    liveEventForPromotion = await releaseOfferHoldInTx(tx, freshReq);
+    const policy = resolveEventPolicy(liveEventForPromotion ?? syntheticEventForPolicy(request.eventId));
+
+    // Firestore rejects `serverTimestamp()` sentinels inside arrays outright
+    // ("serverTimestamp() is not currently supported inside arrays"), and
+    // `offerHistory` is an array — so the response instant is necessarily a
+    // concrete CLIENT timestamp here, taken once and reused for both the
+    // history entry below and the terminal branch's `offer` map further down
+    // so the live offer and its archived copy agree on the exact instant.
+    // This is a small, deliberate accuracy tradeoff (client clock, not
+    // server); do not "fix" it back to `serverTimestamp()`.
+    const respondedAt = Timestamp.now();
+    const offerHistory = [
+      ...(freshReq.offerHistory || []),
+      { ...freshReq.offer, response: 'declined' as const, respondedAt },
+    ];
+    const offerCount = (freshReq.offerCount || 0) + 1;
+
+    // [Phase 1 / waitlist plan §4.1, decision 7] `requeue_back`: send the
+    // member to the back of the queue (a fresh `skippedAt`, which the
+    // comparator already treats as "behind every non-skipped entry") instead
+    // of terminating them, unless they've burned their offer allowance.
+    if (policy.declinedOfferBehavior === 'requeue_back' && offerCount < policy.maxOffersPerMember) {
+      tx.update(
+        reqRef,
+        deepRemoveUndefined({
+          status: 'waitlisted',
+          skippedAt: serverTimestamp(),
+          offerCount,
+          offerHistory,
+          offer: deleteField(),
+        }),
+      );
+    } else {
+      tx.update(
+        reqRef,
+        deepRemoveUndefined({
+          status: 'declined',
+          offerCount,
+          offerHistory,
+          offer: { ...freshReq.offer, response: 'declined', respondedAt },
+          decidedBy: actor.uid,
+          decidedByName: actor.name,
+          decidedAt: serverTimestamp(),
+        }),
+      );
+    }
+
+    rollForward = { teamId: freshReq.teamId, role: freshReq.role };
+  });
+
+  if (liveEventForPromotion && rollForward) {
+    const { teamId, role } = rollForward as { teamId: string; role: SlotRole };
+    await promoteNextFromWaitlist(liveEventForPromotion, teamId, role, actor);
+  }
+}
+
+/**
+ * §3.6 — opportunistic sweep of every `offered` request on this event whose
+ * `respondBy` has elapsed with no response: flips it to `expired`, releases
+ * its slot's soft hold, and rolls the queue forward. Meant to be called once
+ * per manager-client event-drawer mount (debounced there via a `useRef`
+ * guard, not here — this function is safe to call redundantly since every
+ * write is idempotent on the in-transaction `status === 'offered'`
+ * precondition: two managers' clients racing this both attempt it, the
+ * second's precondition fails harmlessly, Firestore's tx retry sees the new
+ * state and no-ops).
+ */
+export async function sweepExpiredOffers(event: Event, actor: EventActor): Promise<void> {
+  const offeredSnap = await getDocs(
+    query(collection(db, 'shift_requests'), where('eventId', '==', event.id), where('status', '==', 'offered')),
+  );
+  const now = new Date();
+  for (const docSnap of offeredSnap.docs) {
+    const req = { id: docSnap.id, ...(docSnap.data() as ShiftRequest) };
+    if (resolveOfferState(req, now) !== 'expired') continue;
+
+    let liveEventFresh: Event | null = null;
+    let rollForward: { teamId: string; role: SlotRole } | null = null;
+
+    await runTransaction(db, async (tx) => {
+      const reqRef = doc(db, 'shift_requests', req.id!);
+      const freshReqSnap = await tx.get(reqRef);
+      if (!freshReqSnap.exists()) return;
+      const freshReq = freshReqSnap.data() as ShiftRequest;
+      if (freshReq.status !== 'offered') return; // already handled by a concurrent sweep
+
+      liveEventFresh = await releaseOfferHoldInTx(tx, { id: req.id, eventId: event.id!, teamId: freshReq.teamId, role: freshReq.role });
+      tx.update(
+        reqRef,
+        deepRemoveUndefined({
+          status: 'expired',
+          offer: { ...freshReq.offer, response: 'expired', respondedAt: serverTimestamp() },
+        }),
+      );
+      rollForward = { teamId: freshReq.teamId, role: freshReq.role };
+    });
+
+    if (liveEventFresh && rollForward) {
+      const { teamId, role } = rollForward as { teamId: string; role: SlotRole };
+      await promoteNextFromWaitlist(liveEventFresh, teamId, role, actor);
+    }
+  }
+}
+
+/**
+ * Manager **Skip** action: deprioritize a queued member without removing
+ * them (see `ShiftRequest.skippedAt`'s doc comment for the ordering rule).
+ * A second skip on an already-skipped entry is a no-op.
+ */
+export async function skipWaitlistEntry(request: ShiftRequest, actor: EventActor): Promise<void> {
+  void actor; // no attribution field exists for this action today — see ShiftRequest.skippedAt
+  if (!request.id) throw new Error('Request id missing');
+  if (request.skippedAt) return;
+  await updateDoc(doc(db, 'shift_requests', request.id), { skippedAt: serverTimestamp() });
+}
+
+/** Undo `skipWaitlistEntry`, restoring the member's original queue position. */
+export async function unskipWaitlistEntry(request: ShiftRequest, actor: EventActor): Promise<void> {
+  void actor;
+  if (!request.id) throw new Error('Request id missing');
+  if (!request.skippedAt) return;
+  await updateDoc(doc(db, 'shift_requests', request.id), { skippedAt: deleteField() });
+}
+
+/**
+ * Manager removal of a queued or offered member: `-> cancelled`, stamped
+ * with who decided it. Unlike `leaveWaitlist` (member-initiated, always
+ * `waitlisted`-only), this also handles an `offered` entry — releasing its
+ * soft hold and rolling the queue forward — since a manager clearing the
+ * queue panel shouldn't have to know which sub-state a row is in.
+ */
+export async function removeWaitlistEntry(request: ShiftRequest, actor: EventActor): Promise<void> {
+  if (!request.id) throw new Error('Request id missing');
+  const reqRef = doc(db, 'shift_requests', request.id);
+  let liveEventFresh: Event | null = null;
+
+  await runTransaction(db, async (tx) => {
+    if (request.status === 'offered') {
+      liveEventFresh = await releaseOfferHoldInTx(tx, request);
+    }
+    tx.update(reqRef, {
+      status: 'cancelled',
+      decidedBy: actor.uid,
+      decidedByName: actor.name,
+      decidedAt: serverTimestamp(),
+    });
+  });
+
+  if (request.status === 'offered' && liveEventFresh) {
+    await promoteNextFromWaitlist(liveEventFresh, request.teamId, request.role, actor);
+  }
 }

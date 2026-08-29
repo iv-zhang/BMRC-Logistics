@@ -6,5 +6,6 @@
 import { runRegistered } from './harness';
 
 import './events/evt-shifts.test';
+import './events/evt-waitlist.test';
 
 await runRegistered();
