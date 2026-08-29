@@ -41,3 +41,10 @@ jobs:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_BMRC_LOGISTICS }}
           projectId: bmrc-logistics
+        env:
+          # Without this the Firebase CLI ignores the Next.js framework build and
+          # publishes firebase.json's `"public": "public"` — the stock placeholder
+          # page — to the preview channel. next.config.ts is `output: 'export'`,
+          # which writes to a gitignored `out/`, so there is no app in the deploy
+          # at all without the framework path. See plan §9.5 defect 3.
+          FIREBASE_CLI_EXPERIMENTS: webframeworks
