@@ -1,12 +1,37 @@
 # MedOps Signup, Waitlist & Priority Access — Implementation Plan
 
-> **Status:** Plan only — no code has been written. **Revision 3**, for Ivan's approval.
+> **Status:** **In build. Revision 4.** PR zero and Phase 0 are committed locally (not pushed);
+> Phases 0.5 → 3 are in progress. See [§10 Implementation log](#10-implementation-log-r4) for what
+> has actually shipped and what the build discovered that the plan did not predict.
 > **Scope:** Extends the existing event / shift-signup system (`app/events`, `app/lib/events.ts`)
 > with a waitlist queue, tiered notice-based promotion, priority access windows for high-demand
 > events, tenure tracking, and reminder notifications.
 > **Policy is settled.** The tiered-notice promotion model and the no-show rules in §3 are the
 > output of a resolved internal debate and are treated here as fixed requirements. This document
 > plans *how to build them against the current code*, not whether to.
+
+> ### Revision 4 — 2026-08-29 (build begins; three defects the plan missed)
+>
+> The plan left approval and entered implementation. Scope agreed with Ivan: **PR zero → Phase 3**
+> (Phases 4a/4b excluded). Git handling **overrides P14's "open a PR"** for now: branch and commit
+> each phase locally, **never push** — per the repo's standing "never commit or push unless the user
+> explicitly asks" rule, of which committing locally is the part that was asked for.
+>
+> Implementation surfaced three defects **not in this plan**, all now fixed in Phase 0. Each is
+> written up in [§10.3](#103-discoveries--things-the-plan-did-not-predict); the short version:
+>
+> | # | What the plan missed | Why it mattered |
+> |---|---|---|
+> | **D1** | §2.1's audit enumerated 25 **client-side** `===`/`!==` sites but **no Firestore `where('status', …)` filters**. `subscribePendingRequests` filters status *server-side*. | A different and worse risk class. Every client fix in the audit is recoverable by reading the code; an over-narrow **query** never fetches the docs at all, so Phase 1's manager queue panel would have rendered a plausible, silent, permanently-empty list. |
+> | **D2** | `EventTeam.startTime` per-team overrides mean an offered member's real shift start is **not** `Event.callTime`. | Classing notice from the event-level time can stamp `binding: true` on a shift that is genuinely inside the short-notice window — a direct **P4** violation with real no-show liability attached. |
+> | **D3** | `pickArray`'s "empty array means unset, use defaults" rule is wrong for the new **opt-out** config lists. | Deleting every reminder row would silently restore `[48, 12]` and keep firing reminders. Reads to the admin as "the settings page ignored my edit" — a **P11** violation. |
+>
+> One thing the plan got right and is worth recording as such: §9.5's three CI defects were each
+> independently verified in the repo before PR zero touched them, and Phase 0.5's safety claim holds
+> (186 top-level `collection(db, …)` call sites, **0** subcollection accesses).
+>
+> Changes introduced by this revision are marked **[R4]** inline. **[R3]**/**[R2]** markers are
+> left as-is.
 
 > ### Revision 3 — 2026-08-28 (issue sweep + delivery workflow)
 >
@@ -69,6 +94,7 @@
 | 7 | [Resolved decisions (was: open questions)](#7-resolved-decisions-was-open-questions) |
 | 8 | [Suggested build order and phasing](#8-suggested-build-order-and-phasing) |
 | 9 | **[R3]** [Delivery workflow — branch, local verification and PR to `origin/main`](#9-delivery-workflow--branch-local-verification-and-pr-to-originmain-r3) |
+| 10 | **[R4]** [Implementation log — what shipped, and what the build discovered](#10-implementation-log-r4) |
 
 ## 0. Binding design decisions (referenced as **P1–P14** throughout)
 
@@ -2975,3 +3001,172 @@ deploy rules (staging, then prod) → Phase 1 merge.**
   migration, and it is only worth writing if a revert actually lasts more than a day.
 - **The backfills** (`shiftStartAt`/`eventType`, `joinedOn`) are dry-run by default and write only
   new fields. There is no reverse migration because nothing is overwritten.
+
+---
+
+## 10. Implementation log **[R4]**
+
+Written during the build, not before it. §§1–9 remain the *plan*; this section is the *record* —
+what actually shipped, what the plan got wrong, and what the next phase inherits. Where the two
+disagree, this section is current and the plan section is historical.
+
+### 10.1 Status by phase
+
+| Phase | State | Commit | Notes |
+|---|---|---|---|
+| **PR zero** — CI deploy path | ✅ committed | `816eb87` on `chore/ci-hosting-fix` | All three §9.5 defects verified present, then fixed. |
+| **Phase 0** — schema + org config + consumer audit | ✅ committed | `3b8c6f0` on `feat/waitlist-p0-schema` | Build ✅, 69/69 tests ✅, `tsc` clean, zero new lint. |
+| **Phase 0.5** — Firestore rules split | ⏳ in progress | — | |
+| **Phase 1** — waitlist queue | ⏳ pending | — | |
+| **Phase 2** — priority tiers | ⏳ pending | — | |
+| **Phase 3** — in-app reminders | ⏳ pending | — | |
+| **Phase 4a/4b** | ⛔ out of scope | — | Excluded by agreement at build start. |
+
+**Nothing is pushed.** Every commit is local. P14's "open a PR into `origin/main`" is deferred to an
+explicit instruction; P14's actual prohibition — never commit *to* `main` — is honoured.
+
+### 10.2 What PR zero and Phase 0 actually changed
+
+**PR zero (`816eb87`).** Deleted `.github/workflows/firebase-hosting-merge.yml` outright rather than
+repairing it: it raced `firebase-hosting.yml` (both `push: [main]`, both `channelId: live`, same
+project), and the race was the *only* thing it contributed — the surviving workflow already does the
+job correctly. Added `FIREBASE_CLI_EXPERIMENTS: webframeworks` to the PR-preview workflow, which is
+what makes the preview URL a trustworthy test surface rather than a stock Firebase placeholder page.
+
+**Phase 0 (`3b8c6f0`).** Schema per §2, the six config groups per §4.1, the `/settings` "Waitlist &
+Tiers" tab per §4.2, `resolveEventPolicy`/`queueKeyOf` per §4.3/§3.8, five indexes per §2.6, and the
+two migration scripts (both refuse to run without credentials; the backfill is dry-run by default).
+
+Two things worth knowing that the plan does not say:
+
+- **`Event.callTime` became required (P12) in the same commit as the report script that finds events
+  missing it.** The type change is safe on read — a legacy doc with no `callTime` still parses; it is
+  the *editor* that now refuses to save without one. So the ordering constraint is softer than a
+  normal required-field migration: the report script informs a cleanup, it does not gate the deploy.
+- **`ResolvedEventPolicy` carries `maxOffersPerMember` even though `EventPolicyOverride` does not.**
+  Deliberate: "how many offers may one member burn" is a fairness rule about the *member*, and
+  letting a single event raise it would let that event consume a member's allowance everywhere else.
+  It is surfaced on the resolved type anyway so Phase 1's offer path reads **one** object and never
+  reaches past `resolveEventPolicy` into raw config — which is the entire point of that type.
+
+### 10.3 Discoveries — things the plan did not predict
+
+#### D1 — the consumer audit had a blind spot: server-side status filters
+
+§2.1 enumerated 25 client-side `ShiftRequest.status` comparisons across 8 files. It enumerated **no
+Firestore `where('status', …)` filters**, and there is one that matters:
+`subscribePendingRequests` (`app/lib/events.ts`) — the *only* cross-event request feed — filtered
+`where('status', '==', 'pending')` on the server.
+
+This is a different risk class from everything else in §2.1, and a worse one. A stale client-side
+comparison produces a visibly wrong list that any reviewer can trace by reading the code. A stale
+**query** never fetches the documents at all: Phase 1's manager waitlist panel would have rendered
+empty, permanently, and looked entirely correct while doing it. No client-side change could have
+recovered it, because the docs were never in the snapshot.
+
+Fixed by widening to `where('status', 'in', ['pending', 'waitlisted', 'offered'])`. That widening
+then has a **coupled consequence the audit also did not list** — three consumers read this feed and
+must now filter explicitly, because the feed no longer matches its own name:
+
+| Consumer | Why it must stay `pending`-only |
+|---|---|
+| `pendingCountForEvent` (`event-utils.ts`) | "Needs my decision" badge. A queue entry needs no manager decision (Q9), and an offer awaits the *member*. |
+| `app/events/page.tsx` Requests tab badge | Same count, second render site. |
+| `PendingRequestsInbox` (`app/events/page.tsx`) | Renders **Approve/Reject** — actions that are meaningless, and destructive, applied to a queue entry. |
+
+The last two were found during implementation, not by the audit; §2.1's table did not cover
+`events/page.tsx`'s own consumption of this feed at all. The function name was kept
+(`subscribePendingRequests`) since call sites exist, with a doc comment stating that the feed is
+broader than its name — renaming it is a Phase 1 cleanup, not a Phase 0 risk.
+
+**Rule this establishes for the remaining phases:** any audit of a widened union must grep the
+*query* layer (`where(`) as well as the comparison layer (`===`). The two fail differently, and only
+one of them fails loudly.
+
+#### D2 — `shiftStartAt` on the offer is not `Event.callTime`
+
+`EventTeam` carries an optional per-team `startTime`. So the instant a promoted member's shift
+actually begins is `team.startTime ?? event.callTime` — resolvable only once a team is known.
+
+Under **P13** a queued member has no team (`teamId: ''`) until promotion, so the request-level
+`shiftStartAt` denorm can only ever hold the event-level approximation. If §3.3's notice-classing
+runs on that approximation and the offered team starts **earlier** than the event call time, an
+offer can be classed `'long'` — and therefore stamped `binding: true`, carrying real no-show
+liability — on a shift that is genuinely inside the short-notice window. **P4 promises that cannot
+happen.** (The reverse error, a team starting later, only over-credits the member; harmless.)
+
+Fixed structurally rather than by a rule nobody would remember: `WaitlistOffer` now carries its own
+frozen `shiftStartAt: Timestamp`, alongside the rest of the frozen offer policy (P3). The type
+documents that `promoteNextFromWaitlist` **must** recompute it from the resolved team and derive
+`noticeClass`/`binding` from *that*, never from the queue-time approximation.
+
+**Consequence for §3.5:** the promotion algorithm now has an ordering constraint it did not have —
+resolve the team **before** classing notice, not after. Writing them in the other order reintroduces
+exactly this bug inside a transaction, where it is much harder to see.
+
+#### D3 — `pickArray` silently reverts opt-out config lists
+
+`applyOrgConfigDoc` merges the Firestore doc over defaults with a `pickArray(v, fallback)` helper
+that treats an **empty** array as "unset" and substitutes the default. That is right for the lists
+it was written for — an org with zero `locations` or zero `itemCategories` is a broken config, not
+an intentional one.
+
+It is wrong for every list added in §4.1, because those are **opt-out** lists where empty is a
+meaningful, intentional value:
+
+| List | What empty means | What `pickArray` would do |
+|---|---|---|
+| `shiftReminders.hoursBefore` | "send no reminders" | restore `[48, 12]` — reminders keep firing |
+| `shiftReminders.channels` | "deliver nowhere" | restore `['in_app']` |
+| `priorityTiers.defaultTiers` | "no priority window" | restore the shipped `veterans` tier |
+| `terms` | "not configured yet" | restore the `fa25/sp26/fa26` placeholders |
+
+To the admin this reads as *the settings page ignored my edit* — a **P11** violation, and the
+reminder case is the bad one, because the system keeps doing something after being told to stop.
+
+Fixed by adding `pickList` beside `pickArray` (`Array.isArray(v) ? v : fallback` — `undefined` still
+falls back, `[]` is honoured) and routing the four lists above through it. Every pre-existing list
+keeps `pickArray`; the two helpers now encode the distinction explicitly instead of leaving it to
+whoever adds the next config group.
+
+**Rule for later phases:** when adding an array to `OrgConfigDoc`, decide which of the two it is. If
+"none" is a state a user can legitimately want, it needs `pickList`.
+
+### 10.4 Corrections to earlier sections
+
+| Section | Correction |
+|---|---|
+| §2.1 | The 25-site table is **content-accurate but line-number-stale** — positions had drifted by the time the code was read. Trust the quoted code, not the `file:line`. It also **omits** `app/events/page.tsx`'s two consumptions of `subscribePendingRequests` (see D1) and every server-side `where('status', …)` filter. |
+| §2.1 | The `teamId: ''` sentinel now has a helper — `isUnassignedQueueEntry(request)` in `app/lib/events.ts`. The type's doc comment referenced it before it existed; it exists now. |
+| §9.5 | The `firestore.rules` banner cites `scripts/emulator/guard.cjs`; the file is `guard.ts`. Phase 0.5 rewrites that banner anyway. |
+| §4.1 | The nested-merge trap the section warns about is real and was hit — but the *empty-array* variant (D3), not the whole-object variant the section describes. Both now have guards. |
+
+### 10.5 Verification standing
+
+Per the repo's tiered policy, and stated plainly rather than implied:
+
+- **Run every phase:** `npx tsc --noEmit` (clean), `npx eslint` on touched files (zero new findings;
+  21 pre-existing, all confirmed away from edited lines).
+- **Run before calling a phase done:** `npm run build` (✅), `npm run test` (69/69 ✅).
+- **NOT yet run:** the `run-bmrc-logistics` emulator smoke driver. Phase 0 is therefore
+  **built and typechecked, not runtime-verified** — no one has driven the new `/settings` tab in a
+  browser. It is deferred to a single run covering all new surfaces at the end of Phase 3 rather
+  than one run per phase, since the driver is the expensive tier and Phase 0 changes no runtime
+  behaviour against existing data (nothing writes a `waitlisted`/`offered` doc yet, so every widened
+  filter is a no-op today).
+
+### 10.6 Process note — a real incident worth not repeating
+
+During Phase 0, `git stash` was run on the shared working tree to measure a lint baseline **while
+background agents were actively writing files**. The command timed out before its `stash pop`,
+leaving all in-flight work in `stash@{0}` while agents continued editing on top of a reverted tree.
+Everything was recovered (verified marker-by-marker, then committed as `3b8c6f0`), and the two
+pre-existing `main` stashes were never touched.
+
+Two rules came out of it, both of which apply to Phases 0.5–3:
+
+1. **Never `git stash` while concurrent agents hold the tree.** There is no isolation between them;
+   a stash is a tree-wide operation and every agent is a silent casualty.
+2. **A full-repo `npm run lint` is not a usable gate here** — it exceeds the command timeout, and the
+   repo carries a very large pre-existing baseline concentrated in `scripts/*.cjs`. Lint the touched
+   files. That is what produced the "zero new findings" number above, and it is a real number.
