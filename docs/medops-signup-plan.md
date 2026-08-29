@@ -3017,8 +3017,8 @@ disagree, this section is current and the plan section is historical.
 |---|---|---|---|
 | **PR zero** — CI deploy path | ✅ committed | `816eb87` on `chore/ci-hosting-fix` | All three §9.5 defects verified present, then fixed. |
 | **Phase 0** — schema + org config + consumer audit | ✅ committed | `3b8c6f0` on `feat/waitlist-p0-schema` | Build ✅, 69/69 tests ✅, `tsc` clean, zero new lint. |
-| **Phase 0.5** — Firestore rules split | ✅ committed | `<phase-0.5>` | Ruleset needed a fix the plan did not anticipate — **D4** below. |
-| **Phase 1** — waitlist queue | ⏳ pending | — | |
+| **Phase 0.5** — Firestore rules split | ✅ committed | `434a046` on `feat/waitlist-p05-rules` | Ruleset needed a fix the plan did not anticipate — **D4** below. |
+| **Phase 1** — waitlist queue | ⏳ in progress | — | |
 | **Phase 2** — priority tiers | ⏳ pending | — | |
 | **Phase 3** — in-app reminders | ⏳ pending | — | |
 | **Phase 4a/4b** | ⛔ out of scope | — | Excluded by agreement at build start. |
