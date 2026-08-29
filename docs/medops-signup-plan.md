@@ -25,6 +25,7 @@
 > | **D1** | §2.1's audit enumerated 25 **client-side** `===`/`!==` sites but **no Firestore `where('status', …)` filters**. `subscribePendingRequests` filters status *server-side*. | A different and worse risk class. Every client fix in the audit is recoverable by reading the code; an over-narrow **query** never fetches the docs at all, so Phase 1's manager queue panel would have rendered a plausible, silent, permanently-empty list. |
 > | **D2** | `EventTeam.startTime` per-team overrides mean an offered member's real shift start is **not** `Event.callTime`. | Classing notice from the event-level time can stamp `binding: true` on a shift that is genuinely inside the short-notice window — a direct **P4** violation with real no-show liability attached. |
 > | **D3** | `pickArray`'s "empty array means unset, use defaults" rule is wrong for the new **opt-out** config lists. | Deleting every reminder row would silently restore `[48, 12]` and keep firing reminders. Reads to the admin as "the settings page ignored my edit" — a **P11** violation. |
+> | **D4** | §8 Phase 0.5's ruleset denies **attendance** — the FTO check-in flow, self check-in, and the statpack-driven shift sweep. | It would have taken decisions.md **D-29** offline on deploy. The underlying cause generalises: this app's permissions are expressed over **arrays inside documents**, which Firestore rules cannot index into. |
 >
 > One thing the plan got right and is worth recording as such: §9.5's three CI defects were each
 > independently verified in the repo before PR zero touched them, and Phase 0.5's safety claim holds
@@ -3016,7 +3017,7 @@ disagree, this section is current and the plan section is historical.
 |---|---|---|---|
 | **PR zero** — CI deploy path | ✅ committed | `816eb87` on `chore/ci-hosting-fix` | All three §9.5 defects verified present, then fixed. |
 | **Phase 0** — schema + org config + consumer audit | ✅ committed | `3b8c6f0` on `feat/waitlist-p0-schema` | Build ✅, 69/69 tests ✅, `tsc` clean, zero new lint. |
-| **Phase 0.5** — Firestore rules split | ⏳ in progress | — | |
+| **Phase 0.5** — Firestore rules split | ✅ committed | `<phase-0.5>` | Ruleset needed a fix the plan did not anticipate — **D4** below. |
 | **Phase 1** — waitlist queue | ⏳ pending | — | |
 | **Phase 2** — priority tiers | ⏳ pending | — | |
 | **Phase 3** — in-app reminders | ⏳ pending | — | |
@@ -3132,13 +3133,58 @@ whoever adds the next config group.
 **Rule for later phases:** when adding an array to `OrgConfigDoc`, decide which of the two it is. If
 "none" is a state a user can legitimately want, it needs `pickList`.
 
+#### D4 — §8 Phase 0.5's ruleset breaks attendance in three ways
+
+The ruleset sketched in §8 Phase 0.5 closes the four holes it targets, and it would also have taken
+**attendance** offline — existing shipped behaviour, specified in decisions.md **D-29**. Found by
+reading the rule against the actual write paths rather than against the plan's description of them.
+
+The `allow update` branch requires `mine()` or `isManager()`, plus a status transition out of
+`offered`. Attendance satisfies neither:
+
+| # | Path | Why the rule denies it |
+|---|---|---|
+| 1 | The assigned **FTO checks in their team** (`checkInMember` -> `recordAttendance`) | An FTO is not a manager, and those are not their documents — `mine()` and `isManager()` both fail. |
+| 2 | Anyone checks in **themselves** | The member branch demands the write end at `cancelled`/`approved`/`declined` coming *from* `offered`. A check-in leaves an already-`approved` request `approved`. Denied. |
+| 3 | `endEventShifts` stamps `attendance.shiftEndAt` across a team | Called transitively by `logStatpackCheckOff` — i.e. by whichever **plain member** checks the statpack in, writing to other people's requests. |
+
+**Fix shipped:** an explicit carve-out permitting any signed-in user to make a write that touches
+**only** the `attendance` map:
+
+```js
+allow update: if isSignedIn() &&
+  request.resource.data.diff(resource.data).affectedKeys().hasOnly(['attendance']);
+```
+
+`affectedKeys()` compares top-level keys, so this covers both write shapes — `recordAttendance`'s
+whole-map write and `endEventShifts`' dotted `'attendance.shiftEndAt'` update.
+
+**Why it is not tighter, and what that costs.** Enforcing *"the FTO of this member's team"* needs the
+team's FTO uid, which lives inside the `teams[]` **array** on the event doc. Firestore rules cannot
+index into an array to find the element whose id matches `resource.data.teamId`. Making this
+enforceable means denormalizing the team FTO uid onto the request **and** moving the statpack-driven
+sweep somewhere trusted — a data-model change, not a rule tweak, and out of scope here.
+
+So the residual gap is real: a signed-in member can forge attendance on someone else's request. That
+is worth stating plainly, and also worth keeping in proportion — it is exactly as permissive as
+today (the whole collection is currently world-writable), it forges a *record* rather than granting
+a *shift*, and it is fully attributed via `attendance.recordedBy`. **None of the four holes this
+phase exists to close run through the carve-out.**
+
+**The general lesson**, which applies to any future rules work here: this app's permission model
+lives in `getAttendanceAccess()` and role checks in TypeScript, and much of it is expressed over
+**arrays inside documents** — team rosters, slots. Firestore rules cannot read that shape. Any rule
+written from the *intent* ("the FTO may check in their team") rather than from the *write paths*
+will deny real traffic. Write rules against grepped call sites, not against the design.
+
 ### 10.4 Corrections to earlier sections
 
 | Section | Correction |
 |---|---|
 | §2.1 | The 25-site table is **content-accurate but line-number-stale** — positions had drifted by the time the code was read. Trust the quoted code, not the `file:line`. It also **omits** `app/events/page.tsx`'s two consumptions of `subscribePendingRequests` (see D1) and every server-side `where('status', …)` filter. |
 | §2.1 | The `teamId: ''` sentinel now has a helper — `isUnassignedQueueEntry(request)` in `app/lib/events.ts`. The type's doc comment referenced it before it existed; it exists now. |
-| §9.5 | The `firestore.rules` banner cites `scripts/emulator/guard.cjs`; the file is `guard.ts`. Phase 0.5 rewrites that banner anyway. |
+| §9.5 | The `firestore.rules` banner cited `scripts/emulator/guard.cjs`; the file is `guard.ts`. Fixed in Phase 0.5, which moved that banner to `firestore.emulator.rules`. |
+| §8 Phase 0.5 | The exit criterion "the five emulator test scripts still pass" is **not fully met — and was not met before this phase either**. See §10.5: the failures are pre-existing and unrelated to rules. |
 | §4.1 | The nested-merge trap the section warns about is real and was hit — but the *empty-array* variant (D3), not the whole-object variant the section describes. Both now have guards. |
 
 ### 10.5 Verification standing
@@ -3148,6 +3194,29 @@ Per the repo's tiered policy, and stated plainly rather than implied:
 - **Run every phase:** `npx tsc --noEmit` (clean), `npx eslint` on touched files (zero new findings;
   21 pre-existing, all confirmed away from edited lines).
 - **Run before calling a phase done:** `npm run build` (✅), `npm run test` (69/69 ✅).
+**Phase 0.5 emulator results** (the exit criterion in §8, run for real). Recorded in full because
+"the tests pass" would not be true, and the useful fact is *which* failures are unrelated:
+
+| Script | Result |
+|---|---|
+| `test:events` | ✅ 62/62 |
+| `test:properties` | ✅ reference-model failures 0 |
+| `test:simulation` | ✅ |
+| `test:invariants` | ⚠️ 67 passed, **2 failed** — INV-2 and INV-10 |
+| `test:e2e` | ⚠️ 3 passed, **4 failed** (one flaky — it passed on rerun) |
+
+**Neither failure set is caused by the split, and no permission error appears anywhere.** The two
+invariant failures are precisely the repo's two documented deferred design gaps: INV-2 fails as
+`gauze: computeBagStock total (600) == Σ lot stock (0)`, which is **D-12** (box-tracked SKUs pool
+quantity onto `unopenedBoxes` with a zero-stock metadata batch standing in for the lot), and INV-10
+is **D-11** verbatim (no stock-pool axis separating class use from field use). Per CLAUDE.md both
+are stop-and-ask, not bugs to patch. The stable e2e failures are all in `sloppy-member-flows.spec.ts`
+and time out waiting on the `/audit` search box — a page no commit on this branch touches.
+
+The positive evidence that the split works: `test:invariants` completed 67 successful assertions,
+which requires successful unauthenticated reads and writes. A misrouted config would have failed at
+the first seed write, not at assertion 68.
+
 - **NOT yet run:** the `run-bmrc-logistics` emulator smoke driver. Phase 0 is therefore
   **built and typechecked, not runtime-verified** — no one has driven the new `/settings` tab in a
   browser. It is deferred to a single run covering all new surfaces at the end of Phase 3 rather

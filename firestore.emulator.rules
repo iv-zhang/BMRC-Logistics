@@ -1,0 +1,70 @@
+rules_version = '2';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EMULATOR-ONLY RULES.
+//
+// These rules are wide-open on purpose: they exist so the Firestore Local
+// Emulator Suite can run seed + integration + property tests without an auth
+// layer. They are NOT the production security model.
+//
+// Safety: the test harness only ever targets a `demo-*` project id
+// (see scripts/emulator/guard.ts). A `demo-*` project can never reach real
+// Google Cloud, so these permissive rules cannot expose production data.
+//
+// Do NOT deploy this file to a live project. It is reachable ONLY through
+// `firebase.emulator.json`, which every emulator npm script selects with
+// `--config firebase.emulator.json`. The production ruleset lives in
+// `firestore.rules` and is what `firebase deploy --only firestore` ships.
+//
+// Consequence: a passing emulator run does NOT prove the production rules
+// work — the harness never evaluates them. Test those in staging
+// (`npm run dev:staging`) or via a deliberate
+// `firebase emulators:exec --config firebase.json` run using the seeded
+// per-role logins.
+// ─────────────────────────────────────────────────────────────────────────────
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── dashboards (tableau-stats) ──────────────────────────────────────────
+    // NOTE: the catch-all `match /{document=**}` below already grants
+    // `allow read, write: if true` on every path, including `/dashboards/**`,
+    // and Firestore rules are additive (any matching `allow` grants access) —
+    // so this block does not currently *restrict* anything beyond what the
+    // catch-all already permits. It states the intended production posture
+    // for `dashboards` (personal docs owner-writable, published docs
+    // admin/QM-only) for whenever the wide-open catch-all above is scoped
+    // down for real deployment; see the file-level warning at the top of
+    // this file — none of it is meant to be deployed as-is today.
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdminOrQm() {
+      return isSignedIn() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'quartermaster'];
+    }
+
+    match /dashboards/{dashboardDocId} {
+      allow read: if isSignedIn();
+
+      // Personal doc (`<uid>__<key>`, `ownerUid` set): only its owner may
+      // create/update it. Published doc (`published__<key>`, `published:
+      // true`, no ownerUid): admin/quartermaster only.
+      allow create, update: if isSignedIn() &&
+        (
+          request.resource.data.ownerUid == request.auth.uid ||
+          (request.resource.data.published == true && isAdminOrQm())
+        );
+
+      allow delete: if isSignedIn() &&
+        (
+          resource.data.ownerUid == request.auth.uid ||
+          (resource.data.published == true && isAdminOrQm())
+        );
+    }
+
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}

@@ -39,6 +39,25 @@ for a clean seed. To reseed without restarting the emulator, run `npm run sandbo
 in another terminal while the emulator is up (or `npm run seed:roles` for just the
 role accounts).
 
+## Rules files and configuration
+
+There are two rules files. `firestore.rules` is the real production ruleset — it is what
+`firebase deploy --only firestore` ships. `firestore.emulator.rules` is the wide-open
+harness ruleset, which exists so the seed scripts and integration tests can run
+**unauthenticated**.
+
+Every emulator script passes `--config firebase.emulator.json`, and that flag is the only
+thing pointing the Firebase CLI at the permissive file. **If you run a bare
+`firebase emulators:exec` without it, you get the production rules**, and the
+unauthenticated seed/test scripts fail on permission-denied — which surfaces as a pile of
+confusing assertion failures, not as an obvious rules error. That is the single most
+useful thing to know about this split.
+
+Consequence: because the harness runs on the permissive file, a passing emulator run no
+longer proves the production rules are correct. Exercise those in staging
+(`npm run dev:staging`), or with a deliberate `firebase emulators:exec --config firebase.json`
+run using the seeded per-role logins — which is what those seeded roles are for.
+
 ## Cloud staging project
 
 A cloud staging project **is now available** for genuine per-role login testing on real Firebase:

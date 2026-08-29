@@ -1,39 +1,55 @@
 rules_version = '2';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// EMULATOR-ONLY RULES.
+// PRODUCTION RULES. This is the file `firebase deploy --only firestore` ships.
 //
-// These rules are wide-open on purpose: they exist so the Firestore Local
-// Emulator Suite can run seed + integration + property tests without an auth
-// layer. They are NOT the production security model.
+// The emulator does NOT use this file — the harness seeds and tests
+// unauthenticated, which these rules correctly deny. Every emulator npm script
+// passes `--config firebase.emulator.json`, which points at
+// `firestore.emulator.rules` (wide open, banner intact). See SANDBOX.md.
 //
-// Safety: the test harness only ever targets a `demo-*` project id
-// (see scripts/emulator/guard.cjs). A `demo-*` project can never reach real
-// Google Cloud, so these permissive rules cannot expose production data.
-// Do NOT deploy this file to a live project.
+// SCOPE, stated honestly: this is NOT a comprehensive security model. Every
+// collection except `shift_requests` is still wide open, exactly as before —
+// role enforcement for the rest of the app is UI-only and hardening it is a
+// separate project. `shift_requests` is carved out because the waitlist feature
+// is the first thing in this app where a forged write grants the attacker
+// something they want (a shift), rather than mislabeling an inventory item.
+//
+// DEPLOY NOTE: `firestore.indexes.json` ships in the same
+// `firebase deploy --only firestore`, and no CI workflow runs that command —
+// it is manual. Deploy indexes BEFORE the code that queries them, or the query
+// throws `failed-precondition` in production while the index builds.
 // ─────────────────────────────────────────────────────────────────────────────
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ── dashboards (tableau-stats) ──────────────────────────────────────────
-    // NOTE: the catch-all `match /{document=**}` below already grants
-    // `allow read, write: if true` on every path, including `/dashboards/**`,
-    // and Firestore rules are additive (any matching `allow` grants access) —
-    // so this block does not currently *restrict* anything beyond what the
-    // catch-all already permits. It states the intended production posture
-    // for `dashboards` (personal docs owner-writable, published docs
-    // admin/QM-only) for whenever the wide-open catch-all above is scoped
-    // down for real deployment; see the file-level warning at the top of
-    // this file — none of it is meant to be deployed as-is today.
     function isSignedIn() {
       return request.auth != null;
     }
 
-    function isAdminOrQm() {
-      return isSignedIn() &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'quartermaster'];
+    function userRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
     }
 
+    function isAdminOrQm() {
+      return isSignedIn() && userRole() in ['admin', 'quartermaster'];
+    }
+
+    // Event managers, per `isEventManagerRole` in app/lib/events.ts. medops is
+    // deliberately included here and deliberately NOT `isAdminOrQm` — see
+    // decisions.md D-13. Do not collapse the two.
+    function isEventManager() {
+      return isSignedIn() && userRole() in ['admin', 'quartermaster', 'medops'];
+    }
+
+    // ── dashboards (tableau-stats) ──────────────────────────────────────────
+    // NOTE: the catch-all at the bottom of this file still grants
+    // `read, write` on `/dashboards/**` — it was narrowed to exclude
+    // `shift_requests` only. Firestore rules are additive (a request is
+    // allowed if ANY matching `allow` grants it), so this block still does not
+    // *restrict* anything. It records the intended posture for `dashboards`
+    // (personal docs owner-writable, published docs admin/QM-only) for
+    // whenever the catch-all is narrowed further.
     match /dashboards/{dashboardDocId} {
       allow read: if isSignedIn();
 
@@ -53,8 +69,115 @@ service cloud.firestore {
         );
     }
 
-    match /{document=**} {
-      allow read, write: if true;
+    // ── shift_requests (waitlist plan §8 Phase 0.5) ─────────────────────────
+    // The ONLY collection excluded from the catch-all below, so this block is
+    // the sole authority on it and its denials are real.
+    //
+    // It closes the four holes the waitlist opens: self-approval, offer
+    // forgery, editing someone else's request, and accepting an expired offer.
+    // It does NOT enforce slot capacity — that lives in the promotion
+    // transaction, because a rule cannot cheaply count seats across documents.
+    match /shift_requests/{requestId} {
+
+      function mine() {
+        return isSignedIn() && resource.data.userId == request.auth.uid;
+      }
+
+      function unchanged(f) {
+        return request.resource.data[f] == resource.data[f];
+      }
+
+      // Which top-level keys this write actually modifies.
+      function touched() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+
+      allow read: if isSignedIn();
+
+      // A member may create only their own request, and only in a
+      // non-privileged state. `offer`/`commitmentBinding` are written by the
+      // promotion path (P3: frozen at offer time), never by the requester.
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.status in ['pending', 'waitlisted']
+        && !('offer' in request.resource.data)
+        && !('commitmentBinding' in request.resource.data);
+
+      // ── ATTENDANCE CARVE-OUT ────────────────────────────────────────────
+      // Any signed-in user may make a write that touches ONLY the
+      // `attendance` map. This is a deliberate, documented gap. Without it
+      // this ruleset breaks attendance entirely, which is existing shipped
+      // behaviour (decisions.md D-29), in three separate ways:
+      //
+      //   1. The assigned FTO checks in every member of THEIR team. An FTO is
+      //      not a manager, and those are not their documents — so both the
+      //      `mine()` branch and the `isEventManager()` branch deny it.
+      //   2. Even checking in YOURSELF is denied by the member branch below:
+      //      that branch requires the status to end at cancelled/approved/
+      //      declined coming FROM an `offered` state, and a check-in leaves an
+      //      already-`approved` request `approved`.
+      //   3. `endEventShifts` stamps `attendance.shiftEndAt` across a whole
+      //      team, and it is called transitively by `logStatpackCheckOff` —
+      //      i.e. by whichever plain member happens to check the statpack in.
+      //
+      // WHY IT IS NOT TIGHTER: enforcing "the FTO of this member's team" needs
+      // the team's FTO uid, which lives inside the `teams[]` ARRAY on the
+      // event doc. Firestore rules cannot index into an array to find the
+      // element whose id matches `resource.data.teamId`. Making this
+      // enforceable means denormalizing the team FTO uid onto the request and
+      // moving the statpack-driven sweep somewhere trusted — a data-model
+      // change, not a rule tweak.
+      //
+      // WHAT IT COSTS: a signed-in member can forge attendance on someone
+      // else's request. That is bad, but it is exactly as bad as today (the
+      // whole collection is currently world-writable), it forges a record
+      // rather than granting a shift, and it is fully attributed —
+      // `attendance.recordedBy` names the actor. None of the four holes this
+      // phase exists to close run through this carve-out.
+      //
+      // Note `touched()` compares TOP-LEVEL keys, so it correctly covers both
+      // write shapes: `recordAttendance`'s whole-map write and
+      // `endEventShifts`' dotted `'attendance.shiftEndAt'` update.
+      allow update: if isSignedIn() && touched().hasOnly(['attendance']);
+
+      // A member may respond to their own live offer, or withdraw. Never
+      // approve themselves, never re-price the offer, never move it to another
+      // event/role/person.
+      allow update: if mine()
+        && unchanged('userId') && unchanged('role') && unchanged('eventId')
+        && request.resource.data.status in ['cancelled', 'approved', 'declined']
+        && (resource.data.status == 'offered' || request.resource.data.status == 'cancelled')
+        // Accepting is legal only while the offer is still live.
+        && (request.resource.data.status != 'approved' ||
+            (resource.data.status == 'offered' &&
+             resource.data.offer.respondBy > request.time));
+
+      // Managers staff, approve, reject and retro-edit. `isEventManager`
+      // (not `isAdminOrQm`) because medops runs events — decisions.md D-13.
+      allow update, delete: if isEventManager();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // THE CATCH-ALL, narrowed.
+    //
+    // This replaces `match /{document=**} { allow read, write: if true; }`.
+    // That form matched `/shift_requests/{id}` too, and because rules are
+    // additive it would have granted every write the block above tries to
+    // deny — making that block decorative. Excluding the one collection here
+    // is what gives it teeth.
+    //
+    // WHY A TWO-SEGMENT WILDCARD IS SAFE HERE: `{coll}/{docId}` matches only
+    // top-level documents, and this app uses only top-level collections —
+    // 186 `collection(db, '…')` call sites across `app/`, and zero
+    // subcollection accesses (`collection(doc(` returns nothing).
+    //
+    // IF YOU EVER ADD A SUBCOLLECTION it will not match this rule and will be
+    // DENIED by default. That is the safe direction to fail, but it will look
+    // like an inexplicable permission error — so add an explicit match block
+    // for it rather than widening this one back to `{document=**}`.
+    // ─────────────────────────────────────────────────────────────────────────
+    match /{coll}/{docId} {
+      allow read, write: if coll != 'shift_requests';
     }
   }
 }
