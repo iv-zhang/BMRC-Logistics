@@ -12,6 +12,7 @@ import { SitesRoomsTab } from '@/app/components/settings/sites-rooms-tab';
 import { ItemCategoriesTab, ItemFamiliesTab, AssetCategoriesTab } from '@/app/components/settings/categories-tab';
 import { StatpackTypesTab, VehiclesTab } from '@/app/components/settings/statpacks-vehicles-tab';
 import { EventsVenuesTab } from '@/app/components/settings/events-tab';
+import { WaitlistTierTab } from '@/app/components/settings/waitlist-tier-tab';
 import { validateOrgConfig } from '@/app/components/settings/settings-utils';
 import { propagateFamilyRename } from '@/app/lib/item-naming';
 
@@ -28,6 +29,12 @@ function cloneConfig(cfg: {
   eventTypes: readonly string[];
   semesterStartDate: string;
   requireCertsForShiftSignup: boolean;
+  waitlist: OrgConfigDoc['waitlist'];
+  cancellationPolicy: OrgConfigDoc['cancellationPolicy'];
+  priorityTiers: OrgConfigDoc['priorityTiers'];
+  shiftReminders: OrgConfigDoc['shiftReminders'];
+  terms: OrgConfigDoc['terms'];
+  notificationDelivery: OrgConfigDoc['notificationDelivery'];
 }): OrgConfigDoc {
   const plain: OrgConfigDoc = {
     org: cfg.org,
@@ -42,6 +49,12 @@ function cloneConfig(cfg: {
     eventTypes: [...cfg.eventTypes],
     semesterStartDate: cfg.semesterStartDate,
     requireCertsForShiftSignup: cfg.requireCertsForShiftSignup,
+    waitlist: cfg.waitlist,
+    cancellationPolicy: cfg.cancellationPolicy,
+    priorityTiers: cfg.priorityTiers,
+    shiftReminders: cfg.shiftReminders,
+    terms: [...cfg.terms],
+    notificationDelivery: cfg.notificationDelivery,
   };
   return typeof structuredClone === 'function' ? structuredClone(plain) : JSON.parse(JSON.stringify(plain));
 }
@@ -284,8 +297,22 @@ export default function SettingsPage() {
               <EventsVenuesTab
                 venues={draft.venues}
                 eventTypes={draft.eventTypes}
-                semesterStartDate={draft.semesterStartDate}
+                terms={draft.terms}
                 requireCertsForShiftSignup={draft.requireCertsForShiftSignup}
+                onChange={(update) => updateDraft(update)}
+              />
+            </div>
+          </Tab>
+
+          <Tab key="waitlist" title="Waitlist & Tiers">
+            <div className="mt-4">
+              <WaitlistTierTab
+                waitlist={draft.waitlist}
+                cancellationPolicy={draft.cancellationPolicy}
+                priorityTiers={draft.priorityTiers}
+                shiftReminders={draft.shiftReminders}
+                notificationDelivery={draft.notificationDelivery}
+                eventTypes={draft.eventTypes}
                 onChange={(update) => updateDraft(update)}
               />
             </div>

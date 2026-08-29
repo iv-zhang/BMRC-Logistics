@@ -96,6 +96,13 @@ export default function HistoryPage() {
     if (!effectiveUid) return;
     const requestsQuery = query(collection(db, 'shift_requests'), where('userId', '==', effectiveUid));
     const unsub = onSnapshot(requestsQuery, (snapshot) => {
+      // [Phase 0 / waitlist plan §2.1] Leave this filter approved-only. §5.5
+      // renders waitlist outcomes (declined/expired/waitlisted) in a SEPARATE,
+      // non-punitive list — folding them in here would make a missed offer
+      // look like a rejected shift in a member's own history. That second
+      // list is Phase 1 scope (no waitlisted/offered docs exist yet); this
+      // approved-only list is unaffected by the widened union and needs no
+      // change beyond this note.
       const approved = snapshot.docs
         .map((doc) => ({ id: doc.id, ...(doc.data() as ShiftRequest) }))
         .filter((r) => r.status === 'approved')

@@ -24,7 +24,7 @@ import { useUserRole } from '@/app/hooks/useUserRole';
 import type { Statpack, User, AppNotification, ShiftRequest } from '@/app/types';
 import { subscribeUserNotifications, markNotificationRead } from '@/app/lib/notifications';
 import { subscribeMyRequests } from '@/app/lib/events';
-import { toJsDate, formatEventDate } from '@/app/components/events/event-utils';
+import { toJsDate, formatEventDate, shiftRequestStatusChip } from '@/app/components/events/event-utils';
 import {
   LogIn,
   LogOut,
@@ -215,14 +215,20 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
     return () => unsubPacks();
   }, [userData.id]);
 
-  // Upcoming shifts: this member's pending/approved shift requests, soonest first.
-  // Past-dated approved requests (already happened) are filtered out; undated
-  // requests (rare) are kept and sorted last.
+  // Upcoming shifts: this member's pending/approved/offered shift requests,
+  // soonest first. Past-dated approved requests (already happened) are
+  // filtered out; undated requests (rare) are kept and sorted last.
+  // [Phase 0 / waitlist plan §2.1] `offered` added — an unanswered offer is
+  // the single most time-critical thing a member can have, and this is the
+  // surface they actually look at (§5.2's offer-response entry point lands
+  // here in Phase 1). `waitlisted` is intentionally NOT included: a plain
+  // queue position isn't yet "upcoming" the way an offer or a confirmed seat
+  // is.
   useEffect(() => {
     const unsub = subscribeMyRequests(userData.id, (requests) => {
       const now = new Date();
       const upcoming = requests
-        .filter((r) => r.status === 'approved' || r.status === 'pending')
+        .filter((r) => r.status === 'approved' || r.status === 'pending' || r.status === 'offered')
         .filter((r) => {
           const d = toJsDate(r.eventDate);
           return !d || d >= now;
@@ -515,12 +521,16 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
                             {req.teamName} · {req.role} · {formatEventDate(req.eventDate)}
                           </p>
                         </div>
+                        {/* [Phase 0 / waitlist plan §2.1] Extended via the
+                            shared status→chip map (same fix as the event
+                            detail drawer) so an offer/queue entry doesn't
+                            render as a misleading amber "Requested". */}
                         <Chip
-                          color={req.status === 'approved' ? 'success' : 'warning'}
+                          color={shiftRequestStatusChip(req.status).color}
                           size="sm"
                           variant="flat"
                         >
-                          {req.status === 'approved' ? 'Confirmed' : 'Requested'}
+                          {shiftRequestStatusChip(req.status).label}
                         </Chip>
                       </div>
                     </CardBody>

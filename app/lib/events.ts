@@ -54,6 +54,9 @@ import {
   computeMinutesLate,
   computeMinutesEarly,
 } from '@/app/components/events/event-utils';
+// [Phase 0 / waitlist plan §4.3, §3.8] Used only by `resolveEventPolicy` below
+// — no existing function in this file reads org config.
+import { getOrgConfig, type OrgConfigDoc, type ResolvedEventPolicy } from '@/app/config/org-config';
 
 export interface EventActor {
   uid: string;
@@ -270,9 +273,13 @@ export async function requestShift(
       where('userId', '==', requester.uid),
     ),
   );
+  // [Phase 0 / waitlist plan §2.1] Widened beyond pending/approved: an open
+  // waitlisted or offered entry is also "active" and must block a duplicate
+  // request for the same event. Per-event queue key means one active request
+  // per (eventId, userId) regardless of team is exactly right here.
   const hasActive = existing.docs.some((d) => {
     const s = (d.data() as ShiftRequest).status;
-    return s === 'pending' || s === 'approved';
+    return s === 'pending' || s === 'approved' || s === 'waitlisted' || s === 'offered';
   });
   if (hasActive) throw new Error('You already have an active request for this event.');
 
@@ -428,6 +435,17 @@ export async function cancelRequest(request: ShiftRequest): Promise<void> {
   if (!request.id) throw new Error('Request id missing');
   const reqRef = doc(db, 'shift_requests', request.id);
 
+  // [Phase 0 / waitlist plan §2.1] This early-exit branch already covers
+  // every non-approved status, including the new `waitlisted`/`offered`
+  // ones, and today that's correct for BOTH: a waitlisted doc never held a
+  // TeamSlot, so there's nothing to free — just mark it cancelled. An
+  // offered doc is *also* correct today only because no code yet gives an
+  // offer a real hold on a TeamSlot (§3.5's soft-hold mechanism doesn't
+  // exist in this phase, and no `offered` doc exists in any DB yet). Once
+  // Phase 1 lands soft-held slots, cancelling an `offered` request must
+  // release that hold here — and this is also the hook where cancelling an
+  // `approved` seat should fire the promotion sweep (declining an `offered`
+  // entry must NOT re-trigger that sweep recursively in the same call).
   if (request.status !== 'approved') {
     await updateDoc(reqRef, { status: 'cancelled', decidedAt: serverTimestamp() });
     return;
@@ -496,6 +514,10 @@ export async function recordAttendance(
 ): Promise<void> {
   if (!request.id) throw new Error('Request id missing');
   if (!actor?.uid) throw new Error('Actor is required to record attendance');
+  // [Phase 0 / waitlist plan §2.1] Already correct as a plain `!== 'approved'`
+  // guard — attendance only ever applies to a seat someone actually holds;
+  // none of the new waitlist statuses (`waitlisted`/`offered`/`declined`/
+  // `expired`) ever have a shift to check into. Leave as-is.
   if (request.status !== 'approved') {
     throw new Error('Attendance can only be recorded for a confirmed member.');
   }
@@ -633,6 +655,9 @@ export async function endEventShifts(
   teamIds?: string[] | null,
 ): Promise<number> {
   if (!actor?.uid) throw new Error('Actor is required to end shifts');
+  // [Phase 0 / waitlist plan §2.1] Correct as-is — only an approved seat has
+  // a shift to end; waitlisted/offered/declined/expired requests were never
+  // checked in and have no `attendance.shiftEndAt` to stamp.
   const snap = await getDocs(
     query(
       collection(db, 'shift_requests'),
@@ -708,6 +733,10 @@ export function getMemberShiftStats(
     hoursThisSemester: 0,
   };
   for (const r of requests) {
+    // [Phase 0 / waitlist plan §2.1] Already correct — new statuses are
+    // excluded by construction, no change needed. Leave as a plain filter;
+    // the §3.4 `noShowNonBinding`/`lateCancellations` counters get added
+    // BESIDE this loop, not folded into this condition.
     if (r.status !== 'approved') continue;
     stats.shiftsAllTime += 1;
     const d = toJsDate(r.eventDate);
@@ -743,7 +772,14 @@ export function getMemberShiftStats(
   return stats;
 }
 
-/** Approved-request userIds for an event (audience = "people signed up"). */
+/**
+ * Approved-request userIds for an event (audience = "people signed up").
+ * [Phase 0 / waitlist plan §2.1] This defines the notification/broadcast
+ * audience. Left `approved`-only — whether an `offered` (softly holding a
+ * slot) or `waitlisted` member should also be counted as "signed up" for
+ * broadcast purposes is an open question explicitly deferred to Phase 1, not
+ * a bug to fix here.
+ */
 export async function getSignedUpUserIds(eventId: string): Promise<string[]> {
   const snap = await getDocs(
     query(
@@ -801,9 +837,24 @@ export function subscribeMyRequests(
   );
 }
 
-/** All pending requests across events (admin/medops inbox). */
+/**
+ * All pending, waitlisted, and offered requests across events — the only
+ * cross-event request feed. [Phase 0 / waitlist plan §2.1, orchestrator
+ * addition] No longer pending-only: it must also carry `waitlisted`/`offered`
+ * docs for Phase 1's manager waitlist panel. Widened from a single equality
+ * filter to `where('status','in',[...])` because a stale equality filter here
+ * fails silently — the query never fetches the new-status docs at all, so a
+ * consumer would render an empty-but-correct-looking list rather than a
+ * visibly wrong one. The exported name stays `subscribePendingRequests`
+ * (call sites still exist) even though the feed is broader than the name
+ * suggests; see `pendingCountForEvent` (event-utils.ts) for the guard that
+ * keeps the "needs my decision" badge counting pending-only off this feed.
+ */
 export function subscribePendingRequests(cb: (requests: ShiftRequest[]) => void): () => void {
-  const q = query(collection(db, 'shift_requests'), where('status', '==', 'pending'));
+  const q = query(
+    collection(db, 'shift_requests'),
+    where('status', 'in', ['pending', 'waitlisted', 'offered']),
+  );
   return onSnapshot(
     q,
     (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...(d.data() as ShiftRequest) }))),
@@ -812,4 +863,103 @@ export function subscribePendingRequests(cb: (requests: ShiftRequest[]) => void)
       cb([]);
     },
   );
+}
+
+// ---------------------------------------------------------------------------
+// [Phase 0 — waitlist plan §3.8, §4.3] Pure policy-resolution primitives.
+// No consumers yet in this phase; every later waitlist function (§3.5, §3.6,
+// `promoteNextFromWaitlist`, `getWaitlistPosition`, etc.) is required to route
+// through these rather than re-deriving org-config-vs-override or the queue
+// key inline, so there is exactly one place that knows either decision.
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve one event's fully-merged waitlist/cancellation/reminder policy:
+ * `DEFAULT_ORG_CONFIG` -> `org_settings/current` -> `Event.policy`, in that
+ * order, into a single object. Every consumer takes `ResolvedEventPolicy`,
+ * never raw config — until an offer is actually made, at which point the
+ * resolved values are frozen onto `offer.policy` (P3) and must NOT be
+ * re-derived from a later config change.
+ *
+ * AMBIGUITY CALL (plan not fully explicit here): `config.waitlist.enabled`
+ * (org-wide kill switch, §4.4) and `Event.waitlistEnabled` (the per-event UI
+ * switch, §2.2 — absent = ON) are two different toggles with two different
+ * defaults, and `EventPolicyOverride.waitlistEnabled` also exists as an
+ * "Advanced" override slot alongside them. Resolved here as: the org switch
+ * gates everything (off org-wide means off for every event, full stop),
+ * AND-ed with the per-event value, which is read from `event.policy` first
+ * (an explicit advanced override) and falls back to the plain top-level
+ * `event.waitlistEnabled` field, defaulting `true` per §2.2 when neither is
+ * set. This keeps `Event.waitlistEnabled`'s documented fail-open default
+ * intact while still letting an org-wide `waitlist.enabled: false` win.
+ */
+export function resolveEventPolicy(
+  event: Event,
+  config: OrgConfigDoc = getOrgConfig(),
+): ResolvedEventPolicy {
+  const w = config.waitlist;
+  const override = event.policy ?? {};
+  const eventLevelEnabled = override.waitlistEnabled ?? event.waitlistEnabled ?? true;
+
+  return {
+    waitlistEnabled: w.enabled && eventLevelEnabled,
+    scope: override.scope ?? w.scope,
+    honorTeamPreference: override.honorTeamPreference ?? w.honorTeamPreference,
+    autoPromote: override.autoPromote ?? w.autoPromote,
+    longNoticeThresholdHours: override.longNoticeThresholdHours ?? w.longNoticeThresholdHours,
+    longNoticeResponseWindowHours:
+      override.longNoticeResponseWindowHours ?? w.longNoticeResponseWindowHours,
+    shortNoticeResponseWindowHours:
+      override.shortNoticeResponseWindowHours ?? w.shortNoticeResponseWindowHours,
+    declinedOfferBehavior: override.declinedOfferBehavior ?? w.declinedOfferBehavior,
+    maxQueueLength: override.maxQueueLength ?? w.maxQueueLength,
+    // Org-wide only by design — see the field's doc comment on
+    // `ResolvedEventPolicy`; there is intentionally no `override` read here.
+    maxOffersPerMember: w.maxOffersPerMember,
+    cancellation: { ...config.cancellationPolicy, ...(override.cancellation ?? {}) },
+    reminderHoursBefore: override.reminderHoursBefore ?? config.shiftReminders.hoursBefore,
+  };
+}
+
+/**
+ * The single place the `(eventId, role)` queue key (P13, the default —
+ * `policy.scope === 'event'`) vs the legacy `(eventId, teamId, role)` key
+ * (`policy.scope === 'team'`, an opt-in restoring Revision 1's behaviour) is
+ * decided. `getWaitlistPosition` and every promotion-scan query must build
+ * their grouping key through this function, never inline, so the two scope
+ * modes can never drift apart.
+ *
+ * Takes a minimal `Pick` (not a full `ShiftRequest`) so it can be called
+ * before a request doc exists yet — e.g. to compute the key a not-yet-written
+ * queue entry would join — as well as against an already-loaded request.
+ */
+export function queueKeyOf(
+  request: Pick<ShiftRequest, 'eventId' | 'role' | 'teamId'>,
+  policy: Pick<ResolvedEventPolicy, 'scope'>,
+): string {
+  return policy.scope === 'team'
+    ? `${request.eventId}::${request.teamId}::${request.role}`
+    : `${request.eventId}::${request.role}`;
+}
+
+/**
+ * [Phase 0 / waitlist plan §2.1, P13] True when a request holds no team yet —
+ * the documented `teamId: ''` sentinel.
+ *
+ * `ShiftRequest.teamId` stays a required `string` so the ~dozen existing
+ * consumers keep compiling, which means "unassigned" is encoded as an empty
+ * string rather than `undefined`. Call this instead of writing `!request.teamId`
+ * inline: the falsy check reads as a possible bug (or gets "cleaned up" into a
+ * truthiness assumption) at every site, and if the sentinel ever changes there
+ * is exactly one place to change it.
+ *
+ * Note this is about *slot assignment*, not status: under
+ * `waitlist.scope === 'team'` a queued member IS grouped by a chosen team, so a
+ * `waitlisted` request can legitimately carry a real `teamId`. Never infer
+ * status from this predicate, or vice versa.
+ */
+export function isUnassignedQueueEntry(
+  request: Pick<ShiftRequest, 'teamId'>,
+): boolean {
+  return !request.teamId;
 }

@@ -1,4 +1,14 @@
 import type { FieldValue, Timestamp } from 'firebase/firestore';
+/**
+ * Type-only import from org-config: `EventPolicyOverride` is declared there
+ * (app/config/org-config.ts §4.3) alongside the org-config groups it mirrors
+ * (WaitlistConfig, CancellationPolicyConfig, ...) so the whole policy-shaped
+ * surface lives in one file. This is a type-only circular reference with
+ * org-config.ts (which type-imports `TierCriteria` from here) — safe under
+ * `isolatedModules`, since `import type` is fully erased at compile time and
+ * never participates in module evaluation order.
+ */
+import type { EventPolicyOverride } from '@/app/config/org-config';
 
 // --- PURCHASE TRACKING ---
 export interface PurchaseInfo {
@@ -118,6 +128,15 @@ export interface User {
   memberStatus?: 'new' | 'probationary' | 'general';
   /** Freeform term the member joined (e.g. "Fall 2025"). */
   joinedTerm?: string;
+  /**
+   * [Phase 0] Tenure anchor, DERIVED from `joinedTerm` via a configured term's
+   * `startDate` (`deriveJoinedOn`, app/lib/tenure.ts) — never parsed from
+   * freeform text. `joinedTerm` stays the display label; `joinedOn` is the
+   * only field tenure math (`minTenureDays`/`minSemesters`) may read. Absent =
+   * tenure unknown and MUST fail closed (never treated as zero or infinite
+   * tenure) — see `TierCriteria` in this file.
+   */
+  joinedOn?: Timestamp;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -195,6 +214,69 @@ export interface EventTeam {
 
 export type EventStatus = 'draft' | 'open' | 'closed' | 'cancelled';
 
+/**
+ * [Phase 0 / waitlist plan §3.7] Eligibility criteria for one staged-release
+ * tier window. Every SPECIFIED (non-undefined) criterion must hold when
+ * `combine` is `'all'` (default); with `combine: 'any'`, one satisfied
+ * criterion is enough. `{}` (no criteria specified) means "anyone, once this
+ * window opens" under either mode — a pure timing tier with no eligibility
+ * filter.
+ *
+ * `roles` is typed `User['role'][]` rather than a standalone `UserRole` alias
+ * — the codebase has no such alias today (the role union is inlined on
+ * `User.role`); introducing one is a real but out-of-scope cleanup (plan §2.2).
+ */
+export interface TierCriteria {
+  /** Role allowlist — omitted means "no role restriction" for this criterion. */
+  roles?: User['role'][];
+  /** Member experience tier — omitted means no restriction. */
+  memberStatus?: NonNullable<User['memberStatus']>[];
+  minCompletedShifts?: number;
+  /** Per-event-type minimums, e.g. `{ football: 2 }`. Keyed by eventType id. */
+  minShiftsByType?: Record<string, number>;
+  /** Fails closed (does not qualify) when `User.joinedOn` is absent. */
+  minTenureDays?: number;
+  /** Tenure in configured terms (app/config/org-config.ts `terms`) — the unit
+   *  MedOps actually thinks in. Also fails closed when `joinedOn` is absent. */
+  minSemesters?: number;
+  requireCommitteeMember?: boolean;
+  /** How the specified criteria combine. Default `'all'`. */
+  combine?: 'all' | 'any';
+}
+
+/**
+ * [Phase 0 / waitlist plan §2.2] One staged-release window on `EventAccessTier.tiers`,
+ * earliest-`opensAt`-first. A member's access opens at the earliest window
+ * whose criteria they satisfy (see `getTierAccess`, app/lib/events.ts), falling
+ * back to `EventAccessTier.generalOpensAt`.
+ */
+export interface TierWindow {
+  id: string;
+  /** Member-facing label for this window, e.g. "FTOs & 5+ shift members". */
+  label: string;
+  opensAt: Timestamp;
+  criteria: TierCriteria;
+}
+
+/**
+ * [Phase 0 / waitlist plan §2.2, P5] Tiered/staged-release signup for an event.
+ * A STAGED RELEASE WINDOW, not an eligibility gate: after `generalOpensAt`,
+ * everyone can sign up with no manual override, and an event may define any
+ * number of `tiers` (zero = a plain "opens on this date" event).
+ *
+ * Absent, or `enabled: false`, = untiered event, open to everyone immediately
+ * — the same behavior as every event that predates this field.
+ */
+export interface EventAccessTier {
+  enabled: boolean;
+  /** Ordered staged-release windows, earliest first. */
+  tiers: TierWindow[];
+  /** After this instant, signup is open to everyone — no override needed or possible. */
+  generalOpensAt: Timestamp;
+  /** Author-written explanation, rendered to a blocked member BEFORE they hit the restriction. */
+  rationale: string;
+}
+
 export interface Event {
   id?: string;
   name: string;
@@ -203,14 +285,58 @@ export interface Event {
   location?: string;
   /** Event day. */
   date: Timestamp | Date;
-  /** Call time as "HH:mm" (note: not necessarily Berkeley time). */
-  callTime?: string;
+  /**
+   * Call time as "HH:mm" (note: not necessarily Berkeley time).
+   *
+   * [Phase 0 / waitlist plan §2.2, P12] REQUIRED on every event going forward
+   * — notice class, reminders, lateness, and the external worker's bounded
+   * queries all derive from the shift's start instant. Enforcement is
+   * client-side only (event-editor-modal.tsx blocks save on empty; no server
+   * to reject it). Legacy events written before this phase may still lack it
+   * in Firestore — read paths must keep a null branch for that case, but it
+   * is now "legacy data" handling, not a supported state: such an event is
+   * excluded from auto-promotion and surfaced to managers as "needs a call
+   * time" rather than silently defaulted.
+   */
+  callTime: string;
   endTime?: string;
   description?: string;
   status: EventStatus;
   teams: EventTeam[];
   /** Whether a signup-open notification has been broadcast for this event. */
   notified?: boolean;
+  /**
+   * [Phase 0 / waitlist plan §2.2, P5] Staged-release tier config, prefilled
+   * from `org_settings.priorityTiers` at event creation and then owned by the
+   * event (non-retroactive — a later org-config retune does not move an
+   * already-published event's dates). Absent/`enabled: false` = untiered.
+   */
+  accessTier?: EventAccessTier;
+  /**
+   * [Phase 0 / waitlist plan §2.2] Per-event kill switch for whether a full
+   * team offers a waitlist at all, or just shows "Full." Kept as its own
+   * field (rather than folded into `policy`) because it's the one flag the
+   * event editor surfaces as a prominent switch and the UI reads it before
+   * any policy resolution happens.
+   *
+   * Absent = ON (waitlisting available) — deliberately the opposite polarity
+   * of the `hasFtoIntern`-style "undefined = off" precedent: waitlisting only
+   * activates on an already-full team and has no effect on an event with open
+   * slots, so there is no "don't retroactively sprout surface area" risk to
+   * guard against, whereas defaulting off would silently opt every
+   * pre-existing event out of the feature this whole plan is for.
+   */
+  waitlistEnabled?: boolean;
+  /**
+   * [Phase 0 / waitlist plan §2.2, §4.3, P11] Per-event escape hatch overriding
+   * `org_settings.waitlist` / `cancellationPolicy` / reminder hours for THIS
+   * event only. Every key optional; `undefined` (on the whole field or any key
+   * inside it) means "inherit org config." Nothing should read this field
+   * directly — always go through `resolveEventPolicy(event)`
+   * (app/lib/events.ts), which is the one place override-vs-default
+   * resolution happens.
+   */
+  policy?: EventPolicyOverride;
   createdBy: string;
   createdByName?: string;
   createdAt: Timestamp | Date | FieldValue;
@@ -220,7 +346,23 @@ export interface Event {
 /** BMRC self-reported experience ranking carried on a request (informational). */
 export type MemberRanking = 'FTO' | 'returning' | 'new';
 
-export type ShiftRequestStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
+/**
+ * [Phase 0 / waitlist plan §2.1, P1] Widened from the original 4 values to
+ * support the waitlist, which reuses `shift_requests` rather than a new
+ * collection. `waitlisted`/`offered` are the two "live" new states;
+ * `declined`/`expired` are terminal siblings of `rejected`/`cancelled` under
+ * the default policy (`waitlist.declinedOfferBehavior === 'terminal'`).
+ *
+ * CONSUMER AUDIT WARNING (plan §2.1): every existing `switch`/equality/filter
+ * site over this union was audited against the new values as part of this
+ * plan (see the plan's consumer table) — that audit is a SEPARATE workstream
+ * from this schema change and must not be re-litigated ad hoc. A `switch`
+ * over this type should use an `assertNever` default so the compiler
+ * enumerates any site that still needs a decision.
+ */
+export type ShiftRequestStatus =
+  | 'pending' | 'approved' | 'rejected' | 'cancelled'   // existing
+  | 'waitlisted' | 'offered' | 'declined' | 'expired';  // new (waitlist plan)
 
 /**
  * Attendance exceptions only — a normal attendance is represented by
@@ -268,6 +410,72 @@ export interface AttendanceRecord {
   recordedAt: Timestamp | Date | FieldValue;
 }
 
+/**
+ * [Phase 0 / waitlist plan §2.1, P3] One offer of a freed slot to a waitlisted
+ * member, embedded on `ShiftRequest.offer` (live) and appended to
+ * `ShiftRequest.offerHistory` (log) whenever it is superseded. `noticeClass`,
+ * `binding`, and the resolved `policy` snapshot are computed ONCE at offer
+ * time (from `resolveEventPolicy`) and FROZEN here — a later org-config or
+ * per-event policy retune must never retroactively change what a past offer
+ * meant to the person who accepted (or is still considering) it.
+ */
+export interface WaitlistOffer {
+  offeredAt: Timestamp;
+  /** Deadline for the member to accept/decline. */
+  respondBy: Timestamp;
+  /** Which notice-window bucket produced this offer (see org-config `waitlist.longNoticeThresholdHours`). */
+  noticeClass: 'long' | 'short';
+  /**
+   * Whether ACCEPTING this offer creates no-show liability. Computed ONCE at
+   * offer time from the resolved policy and FROZEN. See
+   * `ShiftRequest.commitmentBinding` for the current/actual liability state,
+   * which is a separate, mutable field set only at acceptance.
+   */
+  binding: boolean;
+  /**
+   * The resolved policy this offer was made under, frozen alongside it, so a
+   * reader can explain the offer months later without re-deriving it from
+   * today's config. See `resolveEventPolicy` (app/lib/events.ts).
+   */
+  policy: {
+    longNoticeThresholdHours: number;
+    responseWindowHours: number;
+    cancellationNoticeHours: number;
+    cancellationMode: 'ignore' | 'flag' | 'confirm' | 'block';
+  };
+  /** Which team's slot this offer is for — the queue itself is team-agnostic (P13). */
+  teamId: string;
+  teamName: string;
+  /**
+   * [Phase 0] The shift start instant `noticeClass` above was actually
+   * computed from, resolved for the offered team as
+   * `team.startTime ?? event.callTime` and frozen here with the rest of the
+   * offer (P3).
+   *
+   * This is NOT the same value as `ShiftRequest.shiftStartAt`, and the
+   * difference is load-bearing. `EventTeam` carries per-team `startTime`
+   * overrides, but under P13 a queued member has no team yet (`teamId: ''`),
+   * so the request-level `shiftStartAt` can only ever be the event-level
+   * approximation. A team is resolved at promotion time — and only then is the
+   * member's real shift start knowable.
+   *
+   * Computing `noticeClass` from the event-level value would break P4: if the
+   * offered team starts EARLIER than the event call time, an offer can be
+   * classed `'long'` — and therefore stamped `binding: true`, with real
+   * no-show liability — on a shift that is actually inside the short-notice
+   * window, which P4 promises can never happen. (The reverse error, a team
+   * starting later, only over-credits the member and is harmless.)
+   *
+   * So: `promoteNextFromWaitlist` MUST recompute this from the resolved team
+   * and derive `noticeClass`/`binding` from it, never from the queue-time
+   * approximation.
+   */
+  shiftStartAt: Timestamp;
+  offeredBy: string;
+  respondedAt?: Timestamp;
+  response?: 'accepted' | 'declined' | 'expired';
+}
+
 /** A member's request to fill a specific role on a specific team of an event. */
 export interface ShiftRequest {
   id?: string;
@@ -275,6 +483,18 @@ export interface ShiftRequest {
   eventName: string;
   /** Denormalized for list display / sorting. */
   eventDate?: Timestamp | Date;
+  /**
+   * [Phase 0 / waitlist plan §2.1, P13] For a waitlist entry (`status ===
+   * 'waitlisted'`), the queue is keyed on `(eventId, role)` — NOT team — so
+   * this field is written `''` (documented sentinel = "not yet assigned")
+   * until an offer is made, at which point the real team is filled in inside
+   * the same transaction that holds the slot. Stays required (rather than
+   * widened to `string | undefined`) so existing consumers keep compiling
+   * against the sentinel; check `isUnassignedQueueEntry(request)` rather than
+   * `!request.teamId` at call sites that care. RULE: filter by `status`
+   * before grouping by `teamId` — an unfiltered `groupBy(teamId)` over queue
+   * entries grows a phantom `''` group.
+   */
   teamId: string;
   teamName: string;
   /** Which slot type the member is applying for. */
@@ -297,15 +517,144 @@ export interface ShiftRequest {
   decidedAt?: Timestamp | Date | FieldValue;
   /** Set by the FTO/manager after the event (only on approved requests). */
   attendance?: AttendanceRecord;
+
+  // --- Waitlist / offer fields (Phase 0, waitlist plan §2.1) ---
+
+  /**
+   * Set ONCE, at the moment this request is written as `waitlisted` (either
+   * because no slot was open at request time, or because it fell back onto
+   * the queue). The SOLE ordering key: `getWaitlistPosition` sorts a queue's
+   * `waitlisted` requests ascending on this field. Never renumbered, never
+   * rewritten on a queue change — position is a read-time computation over N
+   * docs, not a stored rank. Absent on `pending`/`approved` requests (direct
+   * signups don't queue). A doc with `status === 'waitlisted'` and this field
+   * absent is a data-integrity bug (sort it last), not a silent default.
+   */
+  waitlistedAt?: Timestamp;
+  /**
+   * Set by the manager **Skip** action to deprioritize a queued member
+   * without removing them. `getWaitlistPosition` sorts by `(skippedAt == null
+   * ? 0 : 1)` FIRST, then ascending `waitlistedAt` — a skipped entry falls
+   * behind every non-skipped entry while keeping its original arrival time as
+   * the tie-break among other skipped entries. Clearing this field restores
+   * the member's original position (the "undo"). Absent = not skipped.
+   */
+  skippedAt?: Timestamp;
+  /**
+   * The member's optional soft team preference, captured at join time. Never
+   * removes them from the queue and never changes their position; how
+   * promotion treats it is governed by `waitlist.honorTeamPreference`
+   * (`'ignore' | 'soft' | 'strict'`, org-config). Absent = no preference =
+   * "any team", the permissive case under every mode.
+   */
+  preferredTeamId?: string;
+  /**
+   * Denormalized start instant of the shift this request is for (team
+   * `startTime` if set, else `event.callTime`, resolved against `event.date`).
+   * Written at request time and re-stamped whenever the event's date/call
+   * time changes (`updateEvent` must re-stamp it on every non-terminal
+   * request for that event, in the same batch — the same propagation
+   * obligation the location model carries for zone renames). Exists so the
+   * external sweep worker, the cancellation policy, and shift reminders can
+   * query/compare against the shift start without an event join. Absent =
+   * fall back to loading the event (correct but slow); the worker skips such
+   * docs rather than fanning out.
+   */
+  shiftStartAt?: Timestamp;
+  /**
+   * Denormalized `Event.eventType` at request time. Makes
+   * `MemberShiftStats.shiftsByType` and the `minShiftsByType` tier criterion
+   * derivable from a member's own `shift_requests` query with no event
+   * fan-out. Absent = "type unknown": counts toward `shiftsAllTime` but is
+   * EXCLUDED from every per-type bucket — never bucketed under a synthesized
+   * `'other'`, which would silently satisfy a `minShiftsByType` rule the
+   * member never actually met.
+   */
+  eventType?: string;
+  /**
+   * Present only while `status === 'offered'`, or as the final snapshot after
+   * it resolves to `approved` (accepted), `declined`, or `expired`. Never
+   * present on a plain `pending`/`waitlisted` doc.
+   */
+  offer?: WaitlistOffer;
+  /**
+   * Append-only log of every offer this request has received (oldest first),
+   * pushed to whenever `offer` is overwritten (e.g. offer 1 expires, entry
+   * requeues under `declinedOfferBehavior: 'requeue_back'`, offer 2 is made
+   * later). Bounded in practice by `waitlist.maxOffersPerMember`. Absent = no
+   * offer has ever been made on this request.
+   */
+  offerHistory?: WaitlistOffer[];
+  /**
+   * How many offers this member has been made for this event. Used by
+   * `waitlist.maxOffersPerMember` to cap the requeue loop when
+   * `declinedOfferBehavior === 'requeue_back'`. Absent = 0.
+   */
+  offerCount?: number;
+  /**
+   * [P4] Whether a no-show against THIS request is held against the member.
+   * Set explicitly at every relevant transition — never left to infer from
+   * `status` alone: `true` for a normal direct `approved` signup, or an
+   * `offer.noticeClass === 'long'` offer that is explicitly accepted; `false`
+   * for a `waitlisted`/unanswered-`offered` entry, any short-notice offer
+   * (even if accepted), or any terminal (`declined`/`expired`/`rejected`/
+   * `cancelled`) request.
+   *
+   * LEGACY-UNDEFINED ASYMMETRY (footgun, read this before touching this
+   * field): this field did not exist before this phase, so every pre-existing
+   * doc has it `undefined`. The read-side default is STATUS-CONDITIONAL, not
+   * a single default:
+   *   - `undefined` AND `status === 'approved'` -> treat as `true` (legacy
+   *     direct approvals predate waitlisting and were always binding in
+   *     practice; defaulting them non-binding would silently forgive existing
+   *     no-show liability on every historical record).
+   *   - `undefined` AND `status !== 'approved'` -> treat as `false` (no shift
+   *     to be liable for).
+   * Never read this as a flat `?? true` or `?? false` — both are wrong for
+   * half the doc population. Centralize the branch as a helper (e.g.
+   * `isCommitmentBinding(request)`) rather than inlining it at every call site.
+   */
+  commitmentBinding?: boolean;
+  /**
+   * Stamped by `cancelRequest` when the configured cancellation policy
+   * (`org_settings.cancellationPolicy`, possibly per-event overridden) is
+   * triggered. Absent = not flagged.
+   */
+  lateCancellation?: boolean;
+  /**
+   * Hours-before-shift the cancellation happened, stored alongside the flag
+   * because the THRESHOLD is configurable and per-event overridable — a flag
+   * alone can't tell a manager six weeks later whether "late" meant 48h or
+   * 12h on that particular event.
+   */
+  lateCancellationHours?: number;
 }
 
 // --- IN-APP NOTIFICATIONS ---
+/**
+ * [Phase 0 / waitlist plan §2.4] New values are purely additive — no existing
+ * doc holds them. No structural change to `AppNotification` itself: all four
+ * reuse the existing `link` field to deep-link to the event (e.g.
+ * `'/events?event=' + eventId`), same convention `requestShift`'s broadcast
+ * already uses.
+ *
+ * | Value | Fires when |
+ * |---|---|
+ * | `waitlist_offer` | A `waitlisted` entry transitions to `offered` — recipient is the offered member. |
+ * | `waitlist_promoted` | An accepted offer resolves into a filled slot (`offered` -> `approved`) — kept distinct from `waitlist_offer` so the feed reads as two events, matching the existing `request_approved` pattern for direct signups. |
+ * | `shift_reminder` | Config-driven pre-shift reminder per `org_settings.shiftReminders` — evaluated client-side on read, no scheduler. |
+ * | `tier_open` | A tiered event crosses `generalOpensAt` (or a member starts qualifying under a tier's `criteria`) and becomes signable for a previously-blocked member. |
+ */
 export type NotificationType =
   | 'event_open'
   | 'request_approved'
   | 'request_rejected'
   | 'broadcast'
-  | 'cert_expiring';
+  | 'cert_expiring'
+  | 'waitlist_offer'
+  | 'waitlist_promoted'
+  | 'shift_reminder'
+  | 'tier_open';
 
 export interface AppNotification {
   id?: string;

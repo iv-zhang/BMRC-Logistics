@@ -32,6 +32,7 @@ import {
   computeMinutesEarly,
   getAttendanceAccess,
   shiftHours,
+  shiftRequestStatusChip,
 } from './event-utils';
 import PanelShell from '@/app/components/panel-shell';
 
@@ -151,14 +152,36 @@ export default function EventDetailDrawer({
     return () => unsub();
   }, [event.id]);
 
+  // [Phase 0 / waitlist plan §2.1] Widened beyond pending/approved — a member
+  // with a live waitlisted or offered entry must see IT as their request (and
+  // the offer-response affordance, once Phase 1 adds it), not an "Request a
+  // slot" button that would create a duplicate. This is also the value the
+  // offer-response modal (§5.2) will key off.
   const myActiveRequest = useMemo(
-    () => requests.find((r) => r.userId === actor.uid && (r.status === 'pending' || r.status === 'approved')),
+    () =>
+      requests.find(
+        (r) =>
+          r.userId === actor.uid &&
+          (r.status === 'pending' || r.status === 'approved' || r.status === 'waitlisted' || r.status === 'offered'),
+      ),
     [requests, actor.uid],
   );
   const pending = useMemo(() => requests.filter((r) => r.status === 'pending'), [requests]);
   const approved = useMemo(() => requests.filter((r) => r.status === 'approved'), [requests]);
+  // [Phase 0 / waitlist plan §2.1] `waitlisted`/`offered` entries deliberately
+  // do NOT get folded into `pending` or `approved` above — they need a
+  // separate queue panel (§5.4) with different actions (promote/extend vs.
+  // approve/reject). Not built in Phase 0 (no such docs exist yet); this
+  // comment exists so nobody "fixes" the two filters above into `!==
+  // 'rejected' && !== 'cancelled'` and silently lands queue entries in the
+  // approve/reject inbox.
 
-  /** Whether the viewer's OWN approved request already has a check-in stamp. */
+  /**
+   * Whether the viewer's OWN approved request already has a check-in stamp.
+   * [Phase 0 / waitlist plan §2.1] `=== 'approved'` here is correct as-is —
+   * only an approved seat can ever be checked in, so widening `myActiveRequest`
+   * above to include waitlisted/offered doesn't change this gate.
+   */
   const viewerCheckedIn = !!(myActiveRequest?.status === 'approved' && myActiveRequest.attendance?.checkedInAt);
 
   const access = useMemo(
@@ -480,13 +503,19 @@ export default function EventDetailDrawer({
                       <div className="text-sm font-medium text-foreground">
                         {myActiveRequest.teamName} · {slotRoleLabel(myActiveRequest.role)}
                       </div>
+                      {/* [Phase 0 / waitlist plan §2.1] Extended from a binary
+                          approved/pending chip via the shared status→chip map
+                          so waitlisted/offered/declined/expired render neutral
+                          labels instead of falling into the amber "Requested"
+                          bucket. Phase 1 owns richer copy (queue position,
+                          offer countdown). */}
                       <Chip
                         size="sm"
                         variant="flat"
-                        color={myActiveRequest.status === 'approved' ? 'success' : 'warning'}
+                        color={shiftRequestStatusChip(myActiveRequest.status).color}
                         className="mt-1.5"
                       >
-                        {myActiveRequest.status === 'approved' ? 'Confirmed' : 'Requested'}
+                        {shiftRequestStatusChip(myActiveRequest.status).label}
                       </Chip>
                     </div>
                     <Button size="sm" variant="bordered" color="danger" onPress={handleWithdraw}>

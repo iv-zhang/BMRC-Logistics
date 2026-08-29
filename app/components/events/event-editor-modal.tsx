@@ -65,7 +65,9 @@ export default function EventEditorModal({ isOpen, onClose, event, actor, onSave
     setEventType(event?.eventType ?? '');
     setVenue(event?.venue ?? '');
     setLocation(event?.location ?? '');
-    setCallTime(event?.callTime ?? '');
+    // For new events, default to 08:00. For existing events (even legacy ones without
+    // callTime), use the stored value or empty string if missing.
+    setCallTime(event ? (event.callTime ?? '') : '08:00');
     setEndTime(event?.endTime ?? '');
     setDescription(event?.description ?? '');
     setStatus(event?.status ?? 'draft');
@@ -128,6 +130,10 @@ export default function EventEditorModal({ isOpen, onClose, event, actor, onSave
       setError('Event date is required');
       return;
     }
+    if (!callTime.trim()) {
+      setError('Call time is required — it sets when the shift starts, and drives reminders and lateness.');
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -137,7 +143,7 @@ export default function EventEditorModal({ isOpen, onClose, event, actor, onSave
         eventType: eventType || undefined,
         venue: venue || undefined,
         location: location || undefined,
-        callTime: callTime || undefined,
+        callTime,
         endTime: endTime || undefined,
         description: description || undefined,
         status,
@@ -198,7 +204,7 @@ export default function EventEditorModal({ isOpen, onClose, event, actor, onSave
               ))}
             </Select>
             <Input label="Location" placeholder="Address / area" value={location} onValueChange={setLocation} />
-            <Input label="Call time" type="time" value={callTime} onValueChange={setCallTime} />
+            <Input label="Call time" type="time" value={callTime} onValueChange={setCallTime} isRequired />
             <Input label="End time" type="time" value={endTime} onValueChange={setEndTime} />
           </div>
           <Textarea label="Description" value={description} onValueChange={setDescription} minRows={2} />

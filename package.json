@@ -13,6 +13,8 @@
     "migrate:normalize-inventory": "node ./scripts/normalize-inventory.cjs --dry-run",
     "migrate:item-naming": "node ./scripts/migrate-item-naming.cjs --dry-run",
     "migrate:tasks-to-team": "node ./scripts/migrate-tasks-to-team.js --dry-run",
+    "migrate:events-report-calltime": "node ./scripts/report-events-missing-calltime.cjs",
+    "migrate:backfill-request-denorms": "node ./scripts/backfill-request-denorms.cjs --dry-run",
     "emulator": "firebase emulators:start --only firestore --project demo-bmrc-logistics",
     "seed": "tsx ./scripts/emulator/seed-cli.ts",
     "test:invariants": "firebase emulators:exec --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx ./scripts/emulator/run-invariants.ts\"",

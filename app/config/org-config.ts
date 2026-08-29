@@ -28,7 +28,18 @@ import {
   getEventTypesRuntime,
   getSemesterStartRuntime,
   getRequireCertsRuntime,
+  getWaitlistRuntime,
+  getCancellationPolicyRuntime,
+  getPriorityTiersRuntime,
+  getShiftRemindersRuntime,
+  getTermsRuntime,
+  getNotificationDeliveryRuntime,
+  getRuntimeConfig,
 } from '@/app/lib/org-config-store';
+// Type-only — see the reciprocal `import type { EventPolicyOverride }` in
+// app/types.ts for why this circular type reference is safe under
+// `isolatedModules` (both sides are fully erased at compile time).
+import type { TierCriteria } from '@/app/types';
 
 // ---------------------------------------------------------------------------
 // Verification Field Definitions — what can be checked on an item
@@ -559,6 +570,247 @@ export const SEMESTER_START_DATE = '2026-01-01';
 export const REQUIRE_CERTS_FOR_SHIFT_SIGNUP = true;
 
 // ---------------------------------------------------------------------------
+// Waitlist / offer / cancellation / tiering / reminders / terms config
+// [Phase 0 — waitlist plan §4.1] Every policy number, mode, criterion, and
+// member-facing string for the waitlist feature is org-config data (P11) —
+// nothing about its behavior may be hardcoded. Config groups are nested
+// objects; see `applyOrgConfigDoc` (app/lib/org-config-store.ts) for the
+// nested-merge rule that keeps a partial `org_settings/current` doc from
+// wiping sibling defaults.
+// ---------------------------------------------------------------------------
+
+export interface WaitlistConfig {
+  enabled: boolean;
+  /** 'event' = one queue per role per event (P13, the default). 'team' = the
+   *  legacy per-team queue key, still reachable as an opt-in. */
+  scope: 'event' | 'team';
+  /** How a member's `preferredTeamId` affects promotion order. */
+  honorTeamPreference: 'ignore' | 'soft' | 'strict';
+  /** When false, a freed slot sits open until a manager sends the next offer by hand. */
+  autoPromote: boolean;
+  /** Offers made with more than this many hours' notice are "long notice" (binding on accept). */
+  longNoticeThresholdHours: number;
+  longNoticeResponseWindowHours: number;
+  shortNoticeResponseWindowHours: number;
+  /** Whether a declined/expired offer is terminal or returns to the back of the queue. */
+  declinedOfferBehavior: 'terminal' | 'requeue_back';
+  /** Caps the requeue loop; only meaningful with 'requeue_back'. */
+  maxOffersPerMember: number;
+  /** 0 = unlimited. A visible cap ("waitlist full") beats an invisible one. */
+  maxQueueLength: number;
+  /** Whether a member may still join a queue after the shift has started. */
+  allowQueueAfterShiftStart: boolean;
+  /** Member-facing copy, editable without a deploy. `{placeholder}` tokens are interpolated. */
+  copy: {
+    joinButtonLabel: string;
+    /** e.g. "#{position} in line" */
+    queuedLabel: string;
+    /** The binding warning shown before accepting a long-notice offer. */
+    offerLongNotice: string;
+    /** The no-penalty reassurance shown before responding to a short-notice offer. */
+    offerShortNotice: string;
+    /** e.g. "A team preference is a hint — you may be offered another." */
+    preferenceHint: string;
+  };
+}
+
+export interface CancellationPolicyConfig {
+  enabled: boolean;
+  noticeHours: number;
+  mode: 'ignore' | 'flag' | 'confirm' | 'block';
+  /** Whether the policy applies only to binding requests, or to every cancellation. */
+  appliesTo: 'binding' | 'all';
+  countsAgainstRecord: boolean;
+  /** `{hours}` interpolated. */
+  memberMessage: string;
+}
+
+/** One staged-release window as CONFIGURED (lead days relative to the event's
+ *  date, not absolute dates — the event editor resolves these to real
+ *  `Timestamp`s at creation time; see `TierWindow` in app/types.ts). */
+export interface DefaultTierWindow {
+  id: string;
+  label: string;
+  /** Days before `event.date` this window opens. Must exceed `defaultGeneralLeadDays`. */
+  leadDays: number;
+  /** Imported from app/types.ts — do NOT redeclare here. */
+  criteria: TierCriteria;
+}
+
+export interface PriorityTierConfig {
+  enabled: boolean;
+  /** Ordered list, earliest (largest `leadDays`) first. One entry reproduces
+   *  the simplest possible single-priority-window behavior. */
+  defaultTiers: DefaultTierWindow[];
+  /** Days before `event.date` that general signup opens for everyone. */
+  defaultGeneralLeadDays: number;
+  defaultRationale: string;
+}
+
+export interface ShiftReminderConfig {
+  enabled: boolean;
+  /** Send a reminder this many hours before the shift start. */
+  hoursBefore: number[];
+  /** In-app only for now; 'email' becomes selectable once the external sweep
+   *  worker (plan §6.4) is running. */
+  channels: ('in_app' | 'email')[];
+  /** `{event} {team} {role} {hours}` interpolated. */
+  template: string;
+}
+
+/** The org's academic terms. Absorbs the standalone `semesterStartDate`
+ *  setting — "the current term's `startDate`" is one concept, not two that
+ *  can disagree. */
+export interface TermDef {
+  /** e.g. 'fa25' */
+  id: string;
+  /** e.g. 'Fall 2025' — what `User.joinedTerm` stores, what the roster picker shows. */
+  label: string;
+  /** 'YYYY-MM-DD', the date `User.joinedOn` derives from. */
+  startDate: string;
+  endDate?: string;
+}
+
+/** Which notification channels exist at all, and who drives them. */
+export interface NotificationDeliveryConfig {
+  inApp: boolean;
+  email: {
+    enabled: boolean;
+    /** 'none' = in-app only (today). 'worker' = the free external clock
+     *  (plan §6.4). 'functions' = a paid (Blaze-plan) Cloud Functions sender. */
+    provider: 'none' | 'worker' | 'functions';
+    fromName: string;
+    replyTo: string;
+    /** Batch manager-facing sends into one email per N minutes. 0 = send individually. */
+    digestMinutes: number;
+  };
+  /** The zero-infrastructure fallback: a manager button that opens their mail client. */
+  allowManagerMailto: boolean;
+}
+
+export const WAITLIST_DEFAULTS: WaitlistConfig = {
+  enabled: true,
+  scope: 'event',
+  honorTeamPreference: 'soft',
+  autoPromote: true,
+  longNoticeThresholdHours: 24,
+  longNoticeResponseWindowHours: 12,
+  shortNoticeResponseWindowHours: 2,
+  declinedOfferBehavior: 'terminal',
+  maxOffersPerMember: 2,
+  maxQueueLength: 0,
+  allowQueueAfterShiftStart: false,
+  copy: {
+    joinButtonLabel: 'Join waitlist',
+    queuedLabel: '#{position} in line',
+    offerLongNotice:
+      'Accepting this shift commits you to it. The {cancelHours}-hour cancellation policy applies once you accept.',
+    offerShortNotice:
+      'This is a short-notice offer. You can decline for any reason with no penalty — short-notice slots never count against your attendance record.',
+    preferenceHint:
+      'A team preference is a hint, not a guarantee — you may be offered a different team, and you can decline for free.',
+  },
+};
+
+export const CANCELLATION_POLICY_DEFAULTS: CancellationPolicyConfig = {
+  enabled: true,
+  noticeHours: 48,
+  mode: 'confirm',
+  appliesTo: 'binding',
+  countsAgainstRecord: true,
+  memberMessage:
+    'This shift starts in under {hours} hours. Cancelling now is recorded as a late cancellation — please let your FTO know.',
+};
+
+export const PRIORITY_TIERS_DEFAULTS: PriorityTierConfig = {
+  enabled: true,
+  defaultTiers: [
+    { id: 'veterans', label: 'FTOs & experienced members', leadDays: 14,
+      criteria: { roles: ['FTO'], minCompletedShifts: 5, combine: 'any' } },
+  ],
+  defaultGeneralLeadDays: 7,
+  defaultRationale:
+    'FTOs and members with 5+ completed shifts can sign up first. Everyone else can sign up once general registration opens.',
+};
+
+export const SHIFT_REMINDERS_DEFAULTS: ShiftReminderConfig = {
+  enabled: true,
+  hoursBefore: [48, 12],
+  channels: ['in_app'],
+  template: 'You have a {role} shift at {event} in {hours} hours.',
+};
+
+export const TERMS_DEFAULTS: TermDef[] = [
+  // Seeded from the roster spreadsheet at setup; these are placeholders, not truth.
+  { id: 'fa25', label: 'Fall 2025',   startDate: '2025-08-20' },
+  { id: 'sp26', label: 'Spring 2026', startDate: '2026-01-13' },
+  { id: 'fa26', label: 'Fall 2026',   startDate: '2026-08-19' },
+];
+
+export const NOTIFICATION_DELIVERY_DEFAULTS: NotificationDeliveryConfig = {
+  inApp: true,
+  email: { enabled: false, provider: 'none', fromName: 'BMRC MedOps', replyTo: '', digestMinutes: 15 },
+  allowManagerMailto: true,
+};
+
+// ---------------------------------------------------------------------------
+// Per-event policy override + resolution (waitlist plan §4.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * The per-event escape hatch required by P11. Every key optional;
+ * `undefined` — on the whole `Event.policy` field or any key inside it —
+ * means "inherit org config." Nothing should read this shape directly:
+ * always go through `resolveEventPolicy(event)` (app/lib/events.ts), which is
+ * the one place that knows the resolution order.
+ *
+ * Two override mechanisms exist and are deliberately different in kind:
+ * `Event.accessTier` is a COPY taken once at event creation from
+ * `priorityTiers` (non-retroactive — see `EventAccessTier` in app/types.ts),
+ * whereas everything in `EventPolicyOverride` is a LIVE override, re-read on
+ * every call to `resolveEventPolicy` — until an offer is actually made, at
+ * which point the resolved values freeze onto `offer.policy` (P3).
+ */
+export interface EventPolicyOverride {
+  waitlistEnabled?: boolean;
+  scope?: 'event' | 'team';
+  honorTeamPreference?: 'ignore' | 'soft' | 'strict';
+  autoPromote?: boolean;
+  longNoticeThresholdHours?: number;
+  longNoticeResponseWindowHours?: number;
+  shortNoticeResponseWindowHours?: number;
+  declinedOfferBehavior?: 'terminal' | 'requeue_back';
+  maxQueueLength?: number;
+  cancellation?: Partial<CancellationPolicyConfig>;
+  reminderHoursBefore?: number[];
+}
+
+/**
+ * The fully-resolved policy for one event: `DEFAULT_ORG_CONFIG` ->
+ * `org_settings/current` -> `Event.policy` merged into one object, so every
+ * consumer takes this type rather than raw config — that is what keeps the
+ * number of places that know about overrides at exactly one
+ * (`resolveEventPolicy`, app/lib/events.ts).
+ */
+export interface ResolvedEventPolicy extends Required<Omit<EventPolicyOverride, 'cancellation' | 'reminderHoursBefore'>> {
+  cancellation: CancellationPolicyConfig;
+  reminderHoursBefore: number[];
+  /**
+   * [Phase 0] Org-wide only — deliberately absent from `EventPolicyOverride`,
+   * because "how many offers may one member burn" is a fairness rule about the
+   * member, not a property of any single event, and letting one event raise it
+   * would let that event consume a member's allowance for every other event.
+   *
+   * It is surfaced here anyway so that `resolveEventPolicy` remains the ONLY
+   * thing Phase 1's offer code has to read. Leaving it off would force the
+   * offer path to take `(policy, config)` and reach into raw config for this
+   * one field — exactly the split-source-of-truth the resolved-policy type
+   * exists to prevent.
+   */
+  maxOffersPerMember: number;
+}
+
+// ---------------------------------------------------------------------------
 // Runtime config document shape + defaults
 //
 // `OrgConfigDoc` is the admin-editable (v1) surface stored at Firestore doc
@@ -582,6 +834,18 @@ export type OrgConfigDoc = {
   semesterStartDate: string;
   /** Gate shift signup on valid EMT + CPR certs (default true). */
   requireCertsForShiftSignup: boolean;
+  /** [Phase 0 / waitlist plan §4.1] Waitlist/offer behavior. */
+  waitlist: WaitlistConfig;
+  /** [Phase 0 / waitlist plan §4.1] Late-cancellation policy. */
+  cancellationPolicy: CancellationPolicyConfig;
+  /** [Phase 0 / waitlist plan §4.1] Defaults new events prefill `accessTier` from (copied at creation, not live). */
+  priorityTiers: PriorityTierConfig;
+  /** [Phase 0 / waitlist plan §4.1] Pre-shift reminder config. */
+  shiftReminders: ShiftReminderConfig;
+  /** [Phase 0 / waitlist plan §4.1] The org's academic terms; absorbs `semesterStartDate` going forward. */
+  terms: TermDef[];
+  /** [Phase 0 / waitlist plan §4.1] Which notification channels exist and who drives them. */
+  notificationDelivery: NotificationDeliveryConfig;
 };
 
 export const DEFAULT_ORG_CONFIG: OrgConfigDoc = {
@@ -597,6 +861,12 @@ export const DEFAULT_ORG_CONFIG: OrgConfigDoc = {
   eventTypes: [...EVENT_TYPES],
   semesterStartDate: SEMESTER_START_DATE,
   requireCertsForShiftSignup: REQUIRE_CERTS_FOR_SHIFT_SIGNUP,
+  waitlist: WAITLIST_DEFAULTS,
+  cancellationPolicy: CANCELLATION_POLICY_DEFAULTS,
+  priorityTiers: PRIORITY_TIERS_DEFAULTS,
+  shiftReminders: SHIFT_REMINDERS_DEFAULTS,
+  terms: TERMS_DEFAULTS,
+  notificationDelivery: NOTIFICATION_DELIVERY_DEFAULTS,
 };
 
 // ---------------------------------------------------------------------------
@@ -695,8 +965,29 @@ export function getEventTypes(): string[] {
   return getEventTypesRuntime();
 }
 
-/** Current-semester start as a Date (local midnight). Invalid config → epoch. */
+/**
+ * [Phase 0 / waitlist plan §4.1] Current-semester start as a Date (local
+ * midnight), DERIVED from `terms` — the `startDate` of the term containing
+ * `now` (the latest configured term whose `startDate` is on/before today) —
+ * rather than its own stored field. `semesterStartDate` remains readable for
+ * one release as a fallback for an org that hasn't filled in `terms` yet; do
+ * not write to it any more.
+ */
 export function getSemesterStart(): Date {
+  const terms = getTermsRuntime();
+  if (terms.length > 0) {
+    const now = new Date();
+    const sorted = [...terms].sort((a, b) => a.startDate.localeCompare(b.startDate));
+    let current: TermDef | undefined;
+    for (const t of sorted) {
+      const d = new Date(`${t.startDate}T00:00:00`);
+      if (!Number.isNaN(d.getTime()) && d <= now) current = t;
+    }
+    const chosen = current ?? sorted[0];
+    const d = new Date(`${chosen.startDate}T00:00:00`);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  // Fallback for one release only — orgs that haven't filled in `terms` yet.
   const iso = getSemesterStartRuntime();
   const d = iso ? new Date(`${iso}T00:00:00`) : null;
   return d && !Number.isNaN(d.getTime()) ? d : new Date(0);
@@ -705,4 +996,50 @@ export function getSemesterStart(): Date {
 /** Whether shift signup is gated on valid EMT + CPR certs (runtime). */
 export function getRequireCertsForShiftSignup(): boolean {
   return getRequireCertsRuntime();
+}
+
+// ---------------------------------------------------------------------------
+// Waitlist / offer / cancellation / tiering / reminders / terms accessors
+// (runtime) — [Phase 0, waitlist plan §4.1]
+// ---------------------------------------------------------------------------
+
+/** Waitlist/offer behavior (runtime override, else defaults). */
+export function getWaitlistConfig(): WaitlistConfig {
+  return getWaitlistRuntime();
+}
+
+/** Late-cancellation policy (runtime override, else defaults). */
+export function getCancellationPolicy(): CancellationPolicyConfig {
+  return getCancellationPolicyRuntime();
+}
+
+/** Defaults new events prefill `accessTier` from at creation time (not live-linked afterward). */
+export function getPriorityTierConfig(): PriorityTierConfig {
+  return getPriorityTiersRuntime();
+}
+
+/** Pre-shift reminder config (runtime override, else defaults). */
+export function getShiftReminderConfig(): ShiftReminderConfig {
+  return getShiftRemindersRuntime();
+}
+
+/** The org's configured academic terms, ordered as saved (see `TermDef`). */
+export function getTerms(): TermDef[] {
+  return getTermsRuntime();
+}
+
+/** Which notification channels exist and who drives them (runtime override, else defaults). */
+export function getNotificationDelivery(): NotificationDeliveryConfig {
+  return getNotificationDeliveryRuntime();
+}
+
+/**
+ * The full live runtime config document (overrides merged over defaults).
+ * Exists so pure lib code that needs more than one config group in one call
+ * — chiefly `resolveEventPolicy` (app/lib/events.ts) — has a single named
+ * entry point rather than reaching into `org-config-store.ts` directly.
+ * Thin wrapper over `getRuntimeConfig()`.
+ */
+export function getOrgConfig(): OrgConfigDoc {
+  return getRuntimeConfig();
 }

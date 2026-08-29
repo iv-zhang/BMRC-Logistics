@@ -95,7 +95,12 @@ function requestsInScope(
     });
 }
 
-/** True iff the request attended: checked in and no exception (see domain rule above). */
+/**
+ * True iff the request attended: checked in and no exception (see domain rule above).
+ * [Phase 0 / waitlist plan §2.1] `=== 'approved'` here is already correct and
+ * must stay that way — a waitlisted/offered doc was never checked in, and
+ * counting one here would inflate every fill-rate tile on /stats.
+ */
 function isCheckedIn(r: ShiftRequest): boolean {
   return r.status === 'approved' && !r.attendance?.exception && !!r.attendance?.checkedInAt;
 }
@@ -178,6 +183,8 @@ export function attendanceFunnel(
   let noShow = 0;
   let excused = 0;
   for (const { r } of scoped) {
+    // [Phase 0 / waitlist plan §2.1] Already correct, must stay so — this
+    // funnel counts filled seats; a waitlisted/offered doc would inflate it.
     if (r.status !== 'approved') continue;
     approved += 1;
     if (r.attendance?.exception === 'no_show') noShow += 1;
@@ -279,6 +286,9 @@ export function participationByCohort(
   const scoped = requestsInScope(data, filters, tileId);
   const byCohort = new Map<string, { members: Set<string>; shifts: number }>();
   for (const { r } of scoped) {
+    // [Phase 0 / waitlist plan §2.1] Already correct, must stay so — "only
+    // approved requests count as a shift" (see doc comment above); a
+    // waitlisted/offered doc isn't a shift yet.
     if (r.status !== 'approved') continue;
     const label = formatMemberExperience(r.memberStatus, r.joinedTerm);
     const entry = byCohort.get(label) ?? { members: new Set<string>(), shifts: 0 };
@@ -372,6 +382,9 @@ export function staffingKpis(
   let totalHours = 0;
   const activeMembers = new Set<string>();
   for (const { r } of scoped) {
+    // [Phase 0 / waitlist plan §2.1] Already correct, must stay so — same
+    // reasoning as `isCheckedIn`/`attendanceFunnel` above: staffing metrics
+    // count filled seats, and a waitlisted/offered doc isn't one.
     if (r.status !== 'approved') continue;
     approved += 1;
     activeMembers.add(r.userId);

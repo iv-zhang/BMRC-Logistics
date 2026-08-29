@@ -20,6 +20,12 @@ import {
   type VerificationFieldDef,
   type OrgInfo,
   type VenueDef,
+  type WaitlistConfig,
+  type CancellationPolicyConfig,
+  type PriorityTierConfig,
+  type ShiftReminderConfig,
+  type TermDef,
+  type NotificationDeliveryConfig,
 } from '@/app/config/org-config';
 import {
   subscribeOrgConfig,
@@ -41,6 +47,18 @@ export interface OrgConfigResult {
   eventTypes: readonly string[];
   semesterStartDate: string;
   requireCertsForShiftSignup: boolean;
+  // [Phase 0 / waitlist plan §4.1] These six groups must be mirrored here, not
+  // only read through the lib getters: `/settings` seeds its editable draft from
+  // this hook, so a group missing from `OrgConfigResult` can only ever be
+  // rendered from DEFAULT_ORG_CONFIG — the admin would edit the shipped defaults
+  // on top of their own saved values and silently overwrite them on save. Any
+  // future addition to `OrgConfigDoc` needs the same three-line passthrough.
+  waitlist: WaitlistConfig;
+  cancellationPolicy: CancellationPolicyConfig;
+  priorityTiers: PriorityTierConfig;
+  shiftReminders: ShiftReminderConfig;
+  terms: TermDef[];
+  notificationDelivery: NotificationDeliveryConfig;
   /** True until the first Firestore snapshot resolves (defaults are used meanwhile). */
   loading: boolean;
   // Convenience lookups
@@ -74,6 +92,12 @@ function buildResult(cfg: OrgConfigDoc, loading: boolean): OrgConfigResult {
     eventTypes: cfg.eventTypes,
     semesterStartDate: cfg.semesterStartDate,
     requireCertsForShiftSignup: cfg.requireCertsForShiftSignup,
+    waitlist: cfg.waitlist,
+    cancellationPolicy: cfg.cancellationPolicy,
+    priorityTiers: cfg.priorityTiers,
+    shiftReminders: cfg.shiftReminders,
+    terms: cfg.terms,
+    notificationDelivery: cfg.notificationDelivery,
     loading,
     // Helper fns read the same runtime store the subscription updates, so they
     // stay in sync with the live config.

@@ -142,6 +142,16 @@ export default function EventsPage() {
   const openCount = events.filter((e) => e.status === 'open').length;
   const myConfirmedCount = myRequests.filter((r) => r.status === 'approved').length;
   const myPendingCount = myRequests.filter((r) => r.status === 'pending').length;
+  // [Phase 0 / waitlist plan §2.1] Without this the header undercounts a
+  // member's involvement once waitlisted/offered docs exist — today it's
+  // always 0 since no code writes those statuses yet. Neutral count only, no
+  // queue position breakdown (Phase 1).
+  const myQueueCount = myRequests.filter((r) => r.status === 'waitlisted' || r.status === 'offered').length;
+  // [Phase 0 / waitlist plan §2.1, orchestrator addition] `subscribePendingRequests`
+  // now also returns waitlisted/offered docs (for Phase 1's manager queue
+  // panel); the approve/reject inbox below only understands 'pending', so it
+  // must filter explicitly rather than trust the feed's old name.
+  const actionablePendingRequests = pendingRequests.filter((r) => r.status === 'pending');
 
   if (authLoading || loading) {
     return (
@@ -186,6 +196,13 @@ export default function EventsPage() {
                   <span className="text-xs text-warning/80 font-medium">requested</span>
                 </div>
               )}
+              {myQueueCount > 0 && (
+                <div className="flex items-center gap-2 bg-content2 border border-divider rounded-large px-3 py-1.5">
+                  <span className="w-2 h-2 rounded-sm bg-foreground-400 flex-none" />
+                  <span className="font-mono font-semibold tabular-nums text-foreground-500">{myQueueCount}</span>
+                  <span className="text-xs text-foreground-500 font-medium">waitlisted</span>
+                </div>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
@@ -199,13 +216,16 @@ export default function EventsPage() {
                   }`}
                 >
                   {icon} {label}
-                  {mode === 'requests' && pendingRequests.length > 0 && (
+                  {/* [Phase 0 / waitlist plan §2.1, orchestrator addition] Must
+                      use the filtered count, not `pendingRequests.length` —
+                      that feed now also carries waitlisted/offered docs. */}
+                  {mode === 'requests' && actionablePendingRequests.length > 0 && (
                     <span
                       className={`font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
                         viewMode === mode ? 'bg-white/20 text-white' : 'bg-danger-50 dark:bg-danger-900/20 text-danger'
                       }`}
                     >
-                      {pendingRequests.length}
+                      {actionablePendingRequests.length}
                     </span>
                   )}
                 </button>
@@ -249,8 +269,13 @@ export default function EventsPage() {
         )}
 
         {viewMode === 'requests' && canManage && (
+          // [Phase 0 / waitlist plan §2.1, orchestrator addition] This inbox
+          // only renders Approve/Reject actions, which are meaningless (and
+          // wrong) for a waitlisted/offered entry — feed it the filtered list,
+          // not the raw (now-widened) `pendingRequests`. Phase 1's queue panel
+          // is where waitlisted/offered entries belong (§5.4).
           <PendingRequestsInbox
-            requests={pendingRequests}
+            requests={actionablePendingRequests}
             actor={actor}
             decidingId={decidingId}
             setDecidingId={setDecidingId}

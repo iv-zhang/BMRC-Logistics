@@ -480,6 +480,8 @@ export default function RosterPage() {
 function ShiftStatsSection({ requests, semesterStart }: { requests: ShiftRequest[]; semesterStart: Date }) {
   const stats: MemberShiftStats = getMemberShiftStats(requests, semesterStart);
 
+  // [Phase 0 / waitlist plan §2.1] Already correct — this is a "recent
+  // shifts" list, and only an approved request was ever an actual shift.
   const recentShifts = requests
     .filter(r => r.status === 'approved')
     .map(r => ({ req: r, date: toJsDateLocal(r.eventDate) }))

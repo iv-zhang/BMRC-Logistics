@@ -4,7 +4,18 @@
  */
 
 import type { Timestamp, FieldValue } from 'firebase/firestore';
-import type { Event, EventTeam, ShiftRequest } from '@/app/types';
+import type { Event, EventTeam, ShiftRequest, ShiftRequestStatus } from '@/app/types';
+
+/**
+ * Exhaustiveness helper (plan §2.1, the widened-union consumer audit). Put
+ * `default: assertNever(x)` at the bottom of a `switch` over a closed union
+ * (e.g. `ShiftRequestStatus`) and the compiler will refuse to build if a
+ * future member of that union is added without updating this switch — a much
+ * stronger guarantee than re-running the audit's greps by hand.
+ */
+export function assertNever(x: never): never {
+  throw new Error(`Unhandled case: ${JSON.stringify(x)}`);
+}
 
 /**
  * Coerce a Firestore Timestamp / Date / FieldValue-ish value to a Date, or null.
@@ -50,24 +61,78 @@ export interface ViewerRelation {
   request?: ShiftRequest;
 }
 
-/** The viewer's most relevant active (pending/approved) request for this event, if any. */
+/**
+ * The viewer's most relevant LIVE request for this event, if any — one they
+ * currently hold or are waiting on: `pending`/`approved` (direct signup) or
+ * `waitlisted`/`offered` (queued). [Phase 0 / waitlist plan §2.1] Widened
+ * beyond pending/approved so a member with a live queue entry sees it on the
+ * card instead of an "Request a slot" button that would create a duplicate
+ * request. Terminal statuses (`rejected`/`cancelled`/`declined`/`expired`)
+ * are deliberately excluded — those are past outcomes, not something the
+ * member is currently waiting on.
+ */
 export function myActiveRequestForEvent(
   eventId: string | undefined,
   myRequests: ShiftRequest[],
 ): ShiftRequest | undefined {
   if (!eventId) return undefined;
-  return myRequests.find((r) => r.eventId === eventId && (r.status === 'pending' || r.status === 'approved'));
+  return myRequests.find(
+    (r) =>
+      r.eventId === eventId &&
+      (r.status === 'pending' || r.status === 'approved' || r.status === 'waitlisted' || r.status === 'offered'),
+  );
+}
+
+export interface StatusChip {
+  color: 'success' | 'warning' | 'default';
+  label: string;
+}
+
+/**
+ * [Phase 0 / waitlist plan §2.1] Neutral, static `ShiftRequestStatus` →
+ * chip mapping shared by every place a request renders as a color+label pair
+ * (this file's `getViewerRelation`, the event detail drawer, the member
+ * dashboard). The new waitlist statuses get plain placeholder copy only — no
+ * queue position ("Waitlisted #3"), no offer countdown, no promote/accept
+ * affordance. Phase 1 owns upgrading these once it has real queue data to
+ * show. The `default: assertNever` means a future addition to
+ * `ShiftRequestStatus` fails the build here instead of silently rendering as
+ * "Requested".
+ */
+export function shiftRequestStatusChip(status: ShiftRequestStatus): StatusChip {
+  switch (status) {
+    case 'approved':
+      return { color: 'success', label: 'Confirmed' };
+    case 'pending':
+      return { color: 'warning', label: 'Requested' };
+    case 'waitlisted':
+      return { color: 'default', label: 'Waitlisted' };
+    case 'offered':
+      return { color: 'warning', label: 'Offer pending' };
+    case 'declined':
+      return { color: 'default', label: 'Declined' };
+    case 'expired':
+      return { color: 'default', label: 'Expired' };
+    case 'rejected':
+      return { color: 'default', label: 'Not selected' };
+    case 'cancelled':
+      return { color: 'default', label: 'Cancelled' };
+    default:
+      return assertNever(status);
+  }
 }
 
 /**
  * Color-code an event by the viewer's relationship to it:
- * success = confirmed (approved request), warning = requested (pending),
- * primary = open and available, default = closed/draft/cancelled.
+ * success = confirmed (approved request), warning = requested (pending) or
+ * an offer awaiting response, default = queued/declined/expired, primary =
+ * open and available, default = closed/draft/cancelled.
  */
 export function getViewerRelation(event: Event, myRequests: ShiftRequest[]): ViewerRelation {
   const req = myActiveRequestForEvent(event.id, myRequests);
-  if (req?.status === 'approved') return { color: 'success', label: 'Confirmed', request: req };
-  if (req?.status === 'pending') return { color: 'warning', label: 'Requested', request: req };
+  if (req) {
+    return { ...shiftRequestStatusChip(req.status), request: req };
+  }
   if (event.status === 'open') return { color: 'primary', label: 'Available' };
   const label = event.status === 'draft' ? 'Draft' : event.status === 'cancelled' ? 'Cancelled' : 'Closed';
   return { color: 'default', label };
@@ -112,6 +177,17 @@ export function teamSummaryLines(teams: EventTeam[]): TeamSummary[] {
   }));
 }
 
+/**
+ * "Needs my decision" badge count. [Phase 0 / waitlist plan §2.1 + the
+ * orchestrator's added query-site note] Deliberately `pending`-only —
+ * `waitlisted`/`offered` entries need NO manager decision (Q9: queue
+ * placement is automatic, and an offer is awaiting the *member*'s response,
+ * not the manager's). `subscribePendingRequests` (app/lib/events.ts) was
+ * widened to also fetch `waitlisted`/`offered` docs (Phase 1 needs them for
+ * the queue panel), so this explicit `status === 'pending'` filter is now
+ * the ONLY thing keeping this badge accurate — do not "simplify" it to trust
+ * the feed being pending-only, because it no longer is.
+ */
 export function pendingCountForEvent(eventId: string | undefined, pending: ShiftRequest[]): number {
   if (!eventId) return 0;
   return pending.filter((r) => r.eventId === eventId && r.status === 'pending').length;
