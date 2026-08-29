@@ -22,8 +22,10 @@ import {
   rejectRequest,
   slotRoleLabel,
   resolveOfferState,
+  getMemberShiftStats,
   type EventActor,
 } from '@/app/lib/events';
+import { getSemesterStart } from '@/app/config/org-config';
 import type { Event, ShiftRequest } from '@/app/types';
 import EventCalendar from '@/app/components/events/event-calendar';
 import EventList from '@/app/components/events/event-list';
@@ -126,6 +128,17 @@ export default function EventsPage() {
     const t = setTimeout(() => setToast(null), 2500);
     return () => clearTimeout(t);
   }, [toast]);
+
+  // [Phase 2 / waitlist plan §5.3] The viewer's own shift stats, computed once
+  // per render and threaded down to the calendar/list/drawer for tier
+  // eligibility (`getTierAccess`) — those surfaces would otherwise each
+  // recompute the same aggregate per event. NOTE: until `myRequests` has
+  // loaded (`myRequestsLoaded` above), this is legitimately all-zero — that
+  // is the correct *conservative* reading for a shift-count criterion (it
+  // under-reports, so a member briefly sees "opens later" rather than a
+  // wrongly-granted signup button on first paint). Do not "fix" this into an
+  // optimistic default.
+  const viewerStats = useMemo(() => getMemberShiftStats(myRequests, getSemesterStart()), [myRequests]);
 
   // Keep the drawer's event in sync with live updates (e.g. an approval elsewhere).
   const liveSelectedEvent = useMemo(
@@ -288,6 +301,8 @@ export default function EventsPage() {
             pendingRequests={pendingRequests}
             canManage={canManage}
             onSelectEvent={setSelectedEvent}
+            viewerStats={viewerStats}
+            userData={userData}
           />
         )}
 
@@ -298,6 +313,8 @@ export default function EventsPage() {
             pendingRequests={pendingRequests}
             canManage={canManage}
             onSelectEvent={setSelectedEvent}
+            viewerStats={viewerStats}
+            userData={userData}
           />
         )}
 
@@ -335,6 +352,11 @@ export default function EventsPage() {
           onDelete={handleDelete}
           onNotify={() => setNotifyOpen(true)}
           onToast={notify}
+          // [Phase 2 / waitlist plan §5.3] The drawer's tier callout/signup-gate
+          // consumes this via `getTierAccess`. Owned by another Phase 2 agent —
+          // pass it regardless of whether the drawer's props interface has
+          // caught up yet.
+          viewerStats={viewerStats}
         />
       )}
 

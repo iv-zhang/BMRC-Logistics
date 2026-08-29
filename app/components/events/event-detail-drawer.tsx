@@ -21,6 +21,7 @@ import {
   LogOut,
   ChevronDown,
   Mail,
+  Lock,
 } from 'lucide-react';
 import { useOrgConfig } from '@/app/hooks/useOrgConfig';
 import {
@@ -47,7 +48,11 @@ import {
   isSlotHeld,
   isCommitmentBinding,
   resolveSlotRef,
+  getTierAccess,
+  EMPTY_SHIFT_STATS,
   type EventActor,
+  type TierAccess,
+  type MemberShiftStats,
 } from '@/app/lib/events';
 import type { Event, EventStatus, ShiftRequest, AttendanceRecord, User, SlotRole } from '@/app/types';
 import type { ResolvedEventPolicy } from '@/app/config/org-config';
@@ -162,6 +167,18 @@ function isWithinCancellationNoticeWindow(request: ShiftRequest, policy: Resolve
   return hoursUntilShift < cancellation.noticeHours;
 }
 
+/**
+ * [Phase 2 / waitlist plan §5.3] Compact "Oct 3" inline date form for the tier
+ * callout's viewer line and access-dates schedule — deliberately NOT
+ * `formatEventDate` (full weekday/year), which is overkill for a list of up
+ * to four dates. Mirrors the same `toLocaleDateString` call the calendar/list
+ * chip's tier logic uses so all three surfaces read identically.
+ */
+function formatShortDate(d: Date | null): string {
+  if (!d) return '';
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
 /** Compact "1h 42m" / "42m" / "Expired" countdown text for an offer's `respondBy`. */
 function formatCountdown(target: Date, now: Date): string {
   const ms = target.getTime() - now.getTime();
@@ -244,6 +261,13 @@ interface EventDetailDrawerProps {
   canManage: boolean;
   actor: EventActor;
   userData: User | null;
+  /**
+   * [Phase 2 / waitlist plan §3.7/§5.3] The viewer's own shift history, fed
+   * straight into `getTierAccess` for the tier callout below. Optional and
+   * defaulted to `EMPTY_SHIFT_STATS` so this drawer never crashes if the
+   * events-page wiring for this prop lands after this file does.
+   */
+  viewerStats?: MemberShiftStats;
   onClose: () => void;
   onEdit: () => void;
   onDelete: () => void;
@@ -256,6 +280,7 @@ export default function EventDetailDrawer({
   canManage,
   actor,
   userData,
+  viewerStats = EMPTY_SHIFT_STATS,
   onClose,
   onEdit,
   onDelete,
@@ -296,6 +321,39 @@ export default function EventDetailDrawer({
 
   /** §4.3 — resolved once per event so every TeamCard and the waitlist panel agree on scope/notice/cancellation policy. */
   const policy = useMemo(() => resolveEventPolicy(event), [event]);
+
+  /**
+   * [Phase 2 / waitlist plan §3.7/§5.3] Resolved once per drawer, exactly like
+   * `policy` above, so every `TeamCard` on this event agrees on the same
+   * eligibility read instead of each card re-deriving it against a slightly
+   * different `now`.
+   */
+  const tierAccess: TierAccess = useMemo(
+    () => getTierAccess(event, userData, viewerStats),
+    [event, userData, viewerStats],
+  );
+  const tierGeneralOpensAt = useMemo(
+    () => toJsDate(event.accessTier?.generalOpensAt),
+    [event.accessTier?.generalOpensAt],
+  );
+  // Rendered whenever the event is tiered AND general access hasn't opened
+  // yet — for EVERY viewer, managers included (§5.7): visibility of the
+  // policy is unconditional, only the button gating (team-card.tsx) bypasses
+  // for a manager.
+  const showTierCallout =
+    !!event.accessTier?.enabled && !!tierGeneralOpensAt && Date.now() < tierGeneralOpensAt.getTime();
+  const tierWindowsSorted = useMemo(() => {
+    const tiers = event.accessTier?.tiers ?? [];
+    return [...tiers].sort((a, b) => {
+      const da = toJsDate(a.opensAt)?.getTime() ?? Infinity;
+      const db = toJsDate(b.opensAt)?.getTime() ?? Infinity;
+      return da - db;
+    });
+  }, [event.accessTier?.tiers]);
+  // "See all access dates" disclosure — collapsed by default (§5.3): the
+  // viewer-specific line above it already answers the one question most
+  // members have, so the full schedule is opt-in detail.
+  const [showTierSchedule, setShowTierSchedule] = useState(false);
 
   // [Phase 0 / waitlist plan §2.1] Widened beyond pending/approved — a member
   // with a live waitlisted or offered entry must see IT as their request (and
@@ -741,6 +799,79 @@ export default function EventDetailDrawer({
             )}
           </div>
 
+          {/* [Phase 2 / waitlist plan §5.3] Tier callout — first thing a
+              viewer sees on open, ahead of the team slots, so a member hits
+              the explanation before they hit the restriction. */}
+          {showTierCallout && (
+            <div className="bg-secondary-50 dark:bg-secondary-900/20 border border-secondary/30 rounded-large p-3 mt-3">
+              <div className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+                <Lock size={13} className="text-secondary flex-none" />
+                Priority access window
+              </div>
+              {event.accessTier?.rationale && (
+                <p className="text-xs text-foreground-500 mt-1">{event.accessTier.rationale}</p>
+              )}
+              <p
+                className={`text-sm font-medium mt-2 ${
+                  tierAccess.eligible ? 'text-success-600 dark:text-success-400' : 'text-foreground-600'
+                }`}
+              >
+                {tierAccess.eligible
+                  ? '✓ Open to you now'
+                  : tierAccess.opensForYouAt
+                    ? `You can sign up from ${formatShortDate(tierAccess.opensForYouAt)}${
+                        tierAccess.matchedTier ? ` (${tierAccess.matchedTier.label})` : ''
+                      }`
+                    : `Opens to everyone ${formatShortDate(tierGeneralOpensAt)}`}
+              </p>
+              <button
+                type="button"
+                onClick={() => setShowTierSchedule((v) => !v)}
+                className="text-xs text-secondary hover:underline mt-2 inline-flex items-center gap-1"
+              >
+                {showTierSchedule ? 'Hide access dates' : 'See all access dates'}
+                <ChevronDown
+                  size={11}
+                  className={`transition-transform ${showTierSchedule ? 'rotate-180' : ''}`}
+                />
+              </button>
+              {showTierSchedule && (
+                <div className="flex flex-col gap-1 mt-2">
+                  {/* [§5.3] Windows already passed render struck-through/muted,
+                      never hidden, so the schedule doesn't silently reorder
+                      under a member who reopens the drawer later. */}
+                  {tierWindowsSorted.map((w) => {
+                    const opensAt = toJsDate(w.opensAt);
+                    const passed = !!opensAt && opensAt.getTime() <= Date.now();
+                    return (
+                      <div
+                        key={w.id}
+                        className={`text-xs flex items-center gap-2 ${
+                          passed ? 'line-through text-foreground-400' : 'text-foreground-500'
+                        }`}
+                      >
+                        <span className="font-mono w-12 flex-none">{formatShortDate(opensAt)}</span>
+                        <span>{w.label}</span>
+                      </div>
+                    );
+                  })}
+                  {tierGeneralOpensAt && (
+                    <div
+                      className={`text-xs flex items-center gap-2 ${
+                        Date.now() >= tierGeneralOpensAt.getTime()
+                          ? 'line-through text-foreground-400'
+                          : 'text-foreground-500'
+                      }`}
+                    >
+                      <span className="font-mono w-12 flex-none">{formatShortDate(tierGeneralOpensAt)}</span>
+                      <span>Everyone</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="flex flex-col gap-1.5 text-sm text-foreground-500 mt-3">
             <span className="inline-flex items-center gap-1.5">
               <CalendarDays size={13} /> {formatEventDate(event.date)}
@@ -865,6 +996,7 @@ export default function EventDetailDrawer({
                   myActiveRequest={myActiveRequest}
                   eventRequests={requests}
                   policy={policy}
+                  tierAccess={tierAccess}
                   onRequested={() => onToast(true, 'Request sent')}
                   onError={(msg) => onToast(false, msg)}
                 />

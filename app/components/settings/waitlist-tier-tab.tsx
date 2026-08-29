@@ -2,6 +2,8 @@
 import React from 'react';
 import { Input, Select, SelectItem, Button, Switch, Textarea, Checkbox, Chip } from '@heroui/react';
 import { Plus, Trash2, Info, Copy, ArrowUp, ArrowDown, AlertTriangle } from 'lucide-react';
+import { collection, getDocs } from 'firebase/firestore';
+import { db } from '@/firebase';
 import type {
   WaitlistConfig,
   CancellationPolicyConfig,
@@ -20,10 +22,22 @@ import { newId } from './settings-utils';
 // §4.1/§4.2). Everything here is org-config data, never hardcoded (P11): every
 // threshold, window, mode, and member-facing string below has a control.
 //
-// Tenure criteria (minSemesters / minTenureDays) render but stay disabled —
-// see the note above the tier list in PriorityTiersCard. §8 Phase 2 requires
-// the roster join-date backfill to run FIRST; enabling tenure rules against a
-// half-populated roster silently locks out real members.
+// [Phase 2 / waitlist plan §3.7, §8] Tenure criteria (minSemesters /
+// minTenureDays) are coverage-gated, not unconditionally disabled: this tab
+// reads the `users` collection once on mount (`useJoinDateCoverage`, a plain
+// getDocs — a one-shot advisory number, not live data) and unlocks the two
+// inputs only once enough of the roster has a `joinedOn` on file
+// (`MIN_JOIN_DATE_COVERAGE`, see comment at its definition for why 90%).
+// Below that bar the inputs stay disabled with an inline warning that states
+// the real N-of-M numbers and names the fix, in order: configure Terms
+// (Events & Venues tab) → run the `joinedOn` backfill
+// (`scripts/backfill-joined-on.cjs`) → tenure criteria unlock automatically.
+// A denied/failed roster read degrades to "coverage unknown" (inputs stay
+// disabled), never a thrown error — see `tenureGate`. Whatever the gate
+// state, an existing saved `minSemesters`/`minTenureDays` value is always
+// still *displayed* (disabled fields keep their bound value) and survives a
+// save of the surrounding form untouched — the gate only blocks new edits,
+// it never clears a policy that predates it or was hand-set anyway.
 // ---------------------------------------------------------------------------
 
 const ROLE_OPTIONS: { label: string; value: NonNullable<User['role']> }[] = [
@@ -305,13 +319,179 @@ function criteriaIsEmpty(c: TierCriteria): boolean {
   );
 }
 
+// ---------------------------------------------------------------------------
+// [Phase 2 / waitlist plan §3.7, §8] Roster join-date coverage gate for the
+// tenure criteria inputs (minSemesters / minTenureDays).
+// ---------------------------------------------------------------------------
+
+interface JoinDateCoverage {
+  status: 'loading' | 'ok' | 'error';
+  /** Every `users` doc — the roster page (`app/roster/page.tsx`) applies no
+   *  status/role filter when it reads this collection, so "members" here
+   *  means the same: every user doc, unfiltered. */
+  total: number;
+  /** Has `User.joinedOn` — the field tenure criteria actually read (§3.7:
+   *  `minTenureDays`/`minSemesters` both fail closed when it's absent). */
+  withJoinedOn: number;
+  /** Has `User.joinedTerm` (regardless of `joinedOn`) — lets the gate tell a
+   *  "nobody has entered a term yet" roster apart from a "terms are entered
+   *  but the backfill hasn't run" roster, so the warning can name the right
+   *  next step instead of always pointing at all three. */
+  withJoinedTerm: number;
+  /** Neither field set — this is the exact "N" in the required copy, "_N of
+   *  M members have no join term recorded_" (plan §8). */
+  withNeither: number;
+}
+
+/**
+ * One-shot roster read for the coverage gate below. A plain `getDocs`, not
+ * `onSnapshot` — this is an advisory number on a settings form, not a figure
+ * that needs to track roster edits live while the tab happens to be open.
+ *
+ * Tolerates a denied or failed read (e.g. a role without `users` access):
+ * degrades to `status: 'error'` rather than throwing, same per-dataset
+ * tolerance as `useStatsData` on /stats — the tab must never blank or crash
+ * over this, only leave the tenure inputs disabled with an explanation.
+ */
+function useJoinDateCoverage(): JoinDateCoverage {
+  const [coverage, setCoverage] = React.useState<JoinDateCoverage>({
+    status: 'loading',
+    total: 0,
+    withJoinedOn: 0,
+    withJoinedTerm: 0,
+    withNeither: 0,
+  });
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const snap = await getDocs(collection(db, 'users'));
+        if (cancelled) return;
+        let withJoinedOn = 0;
+        let withJoinedTerm = 0;
+        let withNeither = 0;
+        snap.docs.forEach((d) => {
+          const data = d.data() as Pick<User, 'joinedOn' | 'joinedTerm'>;
+          const hasOn = !!data.joinedOn;
+          const hasTerm = !!data.joinedTerm;
+          if (hasOn) withJoinedOn++;
+          if (hasTerm) withJoinedTerm++;
+          if (!hasOn && !hasTerm) withNeither++;
+        });
+        setCoverage({ status: 'ok', total: snap.size, withJoinedOn, withJoinedTerm, withNeither });
+      } catch (e) {
+        // Expected for a role without roster access — log once, don't throw or blank the tab.
+        console.warn('[waitlist-tier-tab] could not read "users" for join-date coverage', e);
+        if (!cancelled) setCoverage({ status: 'error', total: 0, withJoinedOn: 0, withJoinedTerm: 0, withNeither: 0 });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return coverage;
+}
+
+/**
+ * [Phase 2 / waitlist plan §3.7, §8] Coverage bar for unlocking the tenure
+ * inputs. `minTenureDays`/`minSemesters` fail CLOSED on a missing `joinedOn`
+ * (§3.7) — below this bar, enough of the roster would silently and
+ * invisibly fail a saved tenure rule that shipping it would misfire for a
+ * user-visible fraction of real members, which is exactly the failure this
+ * gate exists to prevent (§8: "the worst failure this feature can produce").
+ *
+ * The plan deliberately doesn't fix a number ("until coverage is adequate").
+ * 90% is the judgement call: it tolerates a handful of unrecoverable
+ * legacy/service accounts (an old alumnus doc, a shared equipment login)
+ * without blocking the feature indefinitely on 100% roster hygiene, while
+ * still requiring the backfill to have actually reached the bulk of the
+ * roster before a tenure rule can silently gate real members.
+ */
+const MIN_JOIN_DATE_COVERAGE = 0.9;
+
+interface TenureGate {
+  enabled: boolean;
+  message: string;
+}
+
+function tenureGate(coverage: JoinDateCoverage): TenureGate {
+  if (coverage.status === 'loading') {
+    return { enabled: false, message: 'Checking roster join-date coverage…' };
+  }
+  if (coverage.status === 'error') {
+    return {
+      enabled: false,
+      message:
+        'Roster coverage could not be checked (the users list failed to load — likely a permissions issue for this ' +
+        'role). Tenure criteria stay disabled until coverage can be verified.',
+    };
+  }
+  if (coverage.total === 0) {
+    return {
+      enabled: false,
+      message: 'No roster data found — tenure criteria stay disabled until there are members to check coverage against.',
+    };
+  }
+
+  // The gate measures `joinedOn` coverage, because that is the field the tenure
+  // criteria actually evaluate — so the headline number must report the SAME
+  // metric. Leading with the `joinedTerm` count (the plan's literal wording)
+  // reads as "0 of 40 members have no join term recorded" on a roster whose
+  // terms are filled in but whose backfill has not run — a disabled input with
+  // a statistic that looks like a pass. The join-term count is still surfaced,
+  // in the one branch where it is the actual blocker.
+  const missingJoinedOn = coverage.total - coverage.withJoinedOn;
+  const stat = `${missingJoinedOn} of ${coverage.total} members have no join date on file`;
+  const pctOn = coverage.withJoinedOn / coverage.total;
+
+  if (pctOn >= MIN_JOIN_DATE_COVERAGE) {
+    return {
+      enabled: true,
+      message: `${stat}. Coverage is adequate (${Math.round(pctOn * 100)}% of members have a join date on file) — tenure criteria are enabled below.`,
+    };
+  }
+
+  // Below the bar — name the specific next step rather than always listing all three.
+  if (coverage.withJoinedTerm === 0) {
+    return {
+      enabled: false,
+      message:
+        `${stat}, and ${coverage.withNeither} of ${coverage.total} members have no join term recorded either. `+
+        `The sequence starts at step 1: configure ` +
+        `Terms (Events & Venues tab), then set each member's joined term (Roster), then run the join-date backfill ` +
+        '(`scripts/backfill-joined-on.cjs`) — tenure criteria unlock once coverage clears the bar.',
+    };
+  }
+  if (coverage.withJoinedOn < coverage.withJoinedTerm) {
+    return {
+      enabled: false,
+      message:
+        `${stat}. Terms and join terms are entered for some members, but the join-date backfill (step 2) hasn't run ` +
+        `(or hasn't reached everyone) — run \`scripts/backfill-joined-on.cjs\` (dry-run first) to derive join dates, ` +
+        'then these inputs unlock automatically.',
+    };
+  }
+  return {
+    enabled: false,
+    message:
+      `${stat}. Coverage (${Math.round(pctOn * 100)}%) is below the ${Math.round(MIN_JOIN_DATE_COVERAGE * 100)}% ` +
+      'needed to trust a tenure rule roster-wide — confirm Terms are configured (Events & Venues tab), then fill in ' +
+      'the remaining members\' joined term and re-run the backfill.',
+  };
+}
+
 function CriteriaEditor({
   criteria,
   eventTypes,
+  tenureGate: gate,
   onChange,
 }: {
   criteria: TierCriteria;
   eventTypes: string[];
+  /** [Phase 2 / waitlist plan §3.7, §8] Roster coverage gate — see `tenureGate()`. */
+  tenureGate: TenureGate;
   onChange: (c: TierCriteria) => void;
 }) {
   const [newTypeKey, setNewTypeKey] = React.useState(eventTypes[0] ?? '');
@@ -426,7 +606,7 @@ function CriteriaEditor({
           type="number"
           min={0}
           label="Min semesters"
-          isDisabled
+          isDisabled={!gate.enabled}
           value={String(criteria.minSemesters ?? '')}
           onValueChange={(v) => set({ minSemesters: v === '' ? undefined : Number(v) || 0 })}
         />
@@ -435,7 +615,7 @@ function CriteriaEditor({
           type="number"
           min={0}
           label="Min tenure days"
-          isDisabled
+          isDisabled={!gate.enabled}
           value={String(criteria.minTenureDays ?? '')}
           onValueChange={(v) => set({ minTenureDays: v === '' ? undefined : Number(v) || 0 })}
         />
@@ -449,9 +629,11 @@ function CriteriaEditor({
           <SelectItem key="any">any of the above</SelectItem>
         </Select>
       </div>
-      <p className="text-[11px] text-foreground-400 -mt-1">
-        Tenure fields are disabled until the roster join-date backfill runs — see the note above.
-      </p>
+      {/* [Phase 2 / waitlist plan §8] Disabled or not, this always states the real coverage
+          numbers ("N of M members have no join term recorded") — see `tenureGate()` above. A
+          value saved here before the gate ever existed (or hand-edited while disabled) still
+          displays and still round-trips through a save; the gate only blocks new edits. */}
+      <p className="text-[11px] text-foreground-400 -mt-1">{gate.message}</p>
     </div>
   );
 }
@@ -459,6 +641,7 @@ function CriteriaEditor({
 function TierWindowRow({
   window,
   eventTypes,
+  tenureGate: gate,
   onChange,
   onDuplicate,
   onRemove,
@@ -467,6 +650,8 @@ function TierWindowRow({
 }: {
   window: DefaultTierWindow;
   eventTypes: string[];
+  /** [Phase 2 / waitlist plan §3.7, §8] Roster coverage gate — see `tenureGate()`. */
+  tenureGate: TenureGate;
   onChange: (patch: Partial<DefaultTierWindow>) => void;
   onDuplicate: () => void;
   onRemove: () => void;
@@ -499,7 +684,12 @@ function TierWindowRow({
         </div>
       </div>
 
-      <CriteriaEditor criteria={window.criteria} eventTypes={eventTypes} onChange={(criteria) => onChange({ criteria })} />
+      <CriteriaEditor
+        criteria={window.criteria}
+        eventTypes={eventTypes}
+        tenureGate={gate}
+        onChange={(criteria) => onChange({ criteria })}
+      />
 
       {criteriaIsEmpty(window.criteria) && (window.criteria.combine ?? 'all') === 'all' && (
         <InlineWarning>
@@ -530,6 +720,11 @@ function PriorityTiersCard({
   onChange: (v: PriorityTierConfig) => void;
 }) {
   const set = (patch: Partial<PriorityTierConfig>) => onChange({ ...value, ...patch });
+
+  // [Phase 2 / waitlist plan §3.7, §8] Roster coverage gate for the tenure inputs, shared by
+  // every window row below — it's a roster-wide figure, not a per-window one.
+  const coverage = useJoinDateCoverage();
+  const gate = tenureGate(coverage);
 
   const updateWindowAt = (idx: number, patch: Partial<DefaultTierWindow>) => {
     const next = [...value.defaultTiers];
@@ -585,9 +780,18 @@ function PriorityTiersCard({
 
       <div className={`flex flex-col gap-4 ${value.enabled ? '' : 'opacity-50 pointer-events-none'}`}>
         <WarningBanner>
-          Tenure-based criteria (min semesters / min tenure days) are shown but disabled below. Enabling them against a
-          half-populated roster would silently lock out real members with no join date on file — configure Terms
-          (Events &amp; Venues tab), run the roster join-date backfill, then enable tenure rules here.
+          {gate.enabled ? (
+            <>
+              Tenure-based criteria (min semesters / min tenure days) are enabled below. {gate.message}
+            </>
+          ) : (
+            <>
+              Tenure-based criteria (min semesters / min tenure days) are shown but disabled below until roster
+              join-date coverage is adequate. {gate.message} A tenure rule saved against a half-populated roster
+              silently locks out real members with no visible cause — that&apos;s the failure this gate exists to
+              prevent.
+            </>
+          )}
         </WarningBanner>
 
         <div className="flex flex-col gap-3">
@@ -596,6 +800,7 @@ function PriorityTiersCard({
               key={w.id}
               window={w}
               eventTypes={eventTypes}
+              tenureGate={gate}
               onChange={(patch) => updateWindowAt(idx, patch)}
               onDuplicate={() => duplicateWindowAt(idx)}
               onRemove={() => removeWindowAt(idx)}

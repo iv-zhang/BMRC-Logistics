@@ -6,9 +6,11 @@
  *  events with pending requests. */
 
 import { useMemo } from 'react';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
-import type { Event, ShiftRequest } from '@/app/types';
+import { ChevronLeft, ChevronRight, Lock } from 'lucide-react';
+import { Tooltip } from '@heroui/react';
+import type { Event, ShiftRequest, User } from '@/app/types';
 import { toJsDate, getViewerRelation, VIEWER_COLOR_PILL, pendingCountForEvent } from './event-utils';
+import { getTierAccess, type MemberShiftStats } from '@/app/lib/events';
 
 interface EventCalendarProps {
   month: Date;
@@ -18,6 +20,10 @@ interface EventCalendarProps {
   pendingRequests: ShiftRequest[];
   canManage: boolean;
   onSelectEvent: (event: Event) => void;
+  /** [Phase 2 / waitlist plan §5.3] The viewer's own shift stats, for the
+   *  priority-access chip's `getTierAccess` eligibility check below. */
+  viewerStats: MemberShiftStats;
+  userData: User | null;
 }
 
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -69,8 +75,15 @@ export default function EventCalendar({
   pendingRequests,
   canManage,
   onSelectEvent,
+  viewerStats,
+  userData,
 }: EventCalendarProps) {
   const weeks = useMemo(() => buildMonthGrid(month), [month]);
+  // [Phase 2 / waitlist plan §5.3, T3] One `now` per render — this component
+  // maps many events per cell, so `new Date()` must not be called inside that
+  // map. This deliberately does NOT live-update a stale tab as a tier window
+  // opens (P6: tier state is evaluated lazily on read, not pushed); no timer.
+  const now = new Date();
 
   const eventsByDay = useMemo(() => {
     const map = new Map<string, Event[]>();
@@ -152,6 +165,14 @@ export default function EventCalendar({
                       {dayEvents.slice(0, 3).map((ev) => {
                         const relation = getViewerRelation(ev, myRequests);
                         const pending = canManage ? pendingCountForEvent(ev.id, pendingRequests) : 0;
+                        // [Phase 2 / waitlist plan §5.3] Second, independent
+                        // chip — tier vs. "is this open to me" are different
+                        // axes, so this never merges into `relation.color`.
+                        // Disappears on its own once general access opens, no
+                        // stored dismissal state.
+                        const generalOpensAt = toJsDate(ev.accessTier?.generalOpensAt);
+                        const tierActive = !!ev.accessTier?.enabled && !!generalOpensAt && now < generalOpensAt;
+                        const tierEligible = tierActive && getTierAccess(ev, userData, viewerStats, now).eligible;
                         return (
                           <button
                             key={ev.id}
@@ -160,6 +181,18 @@ export default function EventCalendar({
                             className={`w-full text-left truncate text-[10px] font-semibold px-1.5 py-0.5 rounded flex items-center gap-1 ${VIEWER_COLOR_PILL[relation.color]}`}
                           >
                             <span className="truncate">{ev.name}</span>
+                            {tierActive && (
+                              // Calendar cells are too tight for the full
+                              // "Priority access" chip (T2 space decision) —
+                              // degrade to an icon-only lock, label in the
+                              // Tooltip.
+                              <Tooltip content="Priority access" size="sm" delay={300}>
+                                <Lock
+                                  size={9}
+                                  className={`flex-none ${tierEligible ? 'text-success' : 'text-secondary'}`}
+                                />
+                              </Tooltip>
+                            )}
                             {pending > 0 && <span className="w-1.5 h-1.5 rounded-full bg-danger flex-none" />}
                           </button>
                         );

@@ -44,10 +44,13 @@ import type {
   Event,
   EventTeam,
   EventStatus,
+  EventAccessTier,
   ShiftRequest,
   ShiftRequestStatus,
   SlotRole,
   TeamSlot,
+  TierCriteria,
+  TierWindow,
   User,
   AttendanceStatus,
   WaitlistOffer,
@@ -64,10 +67,16 @@ import {
 import {
   getOrgConfig,
   getCancellationPolicy,
+  getSemesterStart,
+  getTerms,
   type OrgConfigDoc,
   type ResolvedEventPolicy,
   type CancellationPolicyConfig,
 } from '@/app/config/org-config';
+// [Phase 2 / waitlist plan §3.7] Tenure math (fail-closed on missing
+// `joinedOn`) lives in its own leaf module — see that file's header for why
+// it must not import from here.
+import { tenureDays, completedTermsSince } from '@/app/lib/tenure';
 
 export interface EventActor {
   uid: string;
@@ -168,6 +177,19 @@ export interface CreateEventInput {
   description?: string;
   status?: EventStatus;
   teams?: EventTeam[];
+  /**
+   * [Phase 2 / waitlist plan §2.2, §3.7, T7] Staged-release tier config. Every
+   * `Timestamp` inside it (`generalOpensAt`, each `tiers[].opensAt`) must
+   * already be a real `Timestamp` (e.g. `Timestamp.fromDate(...)`) by the
+   * time it reaches here — NEVER a `serverTimestamp()` sentinel, which
+   * Firestore rejects inside an array element (`tiers` is an array); that was
+   * bug D12 in this build. `deepRemoveUndefined` (app/lib/audit.ts) preserves
+   * `Timestamp` instances as-is at any nesting depth, including inside
+   * `tiers[]`, so passing real Timestamps through is safe.
+   */
+  accessTier?: EventAccessTier;
+  /** [Phase 2 / waitlist plan §2.2, T7] Per-event waitlist kill switch. Absent = ON — see the field's doc comment on `Event` (app/types.ts) for why the default polarity is inverted from `hasFtoIntern`. */
+  waitlistEnabled?: boolean;
 }
 
 export async function createEvent(input: CreateEventInput, actor: EventActor) {
@@ -186,6 +208,8 @@ export async function createEvent(input: CreateEventInput, actor: EventActor) {
     description: input.description?.trim() || undefined,
     status: input.status || 'draft',
     teams,
+    accessTier: input.accessTier ?? undefined,
+    waitlistEnabled: input.waitlistEnabled ?? undefined,
     notified: false,
     createdBy: actor.uid,
     createdByName: actor.name,
@@ -234,6 +258,18 @@ export async function updateEvent(
   if (patch.status !== undefined) update.status = patch.status;
   if (patch.teams !== undefined) update.teams = patch.teams;
   if (patch.notified !== undefined) update.notified = patch.notified;
+  // [Phase 2 / waitlist plan §2.2, §3.7, T7] `accessTier`/`waitlistEnabled`
+  // pass through as-is (this function builds `update` by hand rather than
+  // via `deepRemoveUndefined`, same as every other field here — the
+  // `!== undefined` guard is what keeps an omitted key from clobbering the
+  // stored value). Real `Timestamp` instances nested inside `tiers[]` are
+  // fine for `updateDoc`; only a bare `serverTimestamp()` sentinel would be
+  // rejected inside an array element — see `CreateEventInput.accessTier`'s
+  // doc comment (that was bug D12). The caller (event-editor-modal.tsx) is
+  // responsible for converting picked dates to real Timestamps before this
+  // is called.
+  if (patch.accessTier !== undefined) update.accessTier = patch.accessTier;
+  if (patch.waitlistEnabled !== undefined) update.waitlistEnabled = patch.waitlistEnabled;
   await updateDoc(doc(db, 'events', eventId), update);
 
   if (patch.date !== undefined || patch.callTime !== undefined || patch.teams !== undefined) {
@@ -280,10 +316,38 @@ export async function deleteEvent(eventId: string) {
 // Requests
 // ---------------------------------------------------------------------------
 
-export interface ShiftRequester {
+/**
+ * [Phase 2 / waitlist plan §3.7] The minimal member shape tier criteria are
+ * evaluated against. `User` satisfies this structurally; `ShiftRequester`
+ * below is widened to extend it so the lib-side enforcement path
+ * (`requestShift`/`joinWaitlist`) can evaluate tier criteria against the same
+ * projection it already has in hand, with no extra fetch of the full `User`
+ * doc on the common (untiered-event) path.
+ */
+export interface TierSubject {
+  role?: string | null;
+  memberStatus?: User['memberStatus'];
+  joinedOn?: User['joinedOn'];
+  isCommitteeMember?: boolean;
+}
+
+/**
+ * [Phase 2 / waitlist plan §3.7 — DEFECT FOUND IN THIS PHASE] §3.7 specifies
+ * `meetsTierCriteria`/`getTierAccess` evaluated against a full `User`, but the
+ * only caller inside the lib enforcement path (`requestShift`) has ONLY ever
+ * received this `ShiftRequester` projection — which, before this phase,
+ * carried neither `joinedOn` nor `isCommitteeMember`. Left unwidened, EVERY
+ * `minTenureDays`/`minSemesters`/`requireCommitteeMember` criterion would have
+ * evaluated against `undefined` and failed closed for every member — a
+ * silent, total lockout on any tiered event using those criteria, and it
+ * would have typechecked cleanly since nothing in `requestShift` was ever
+ * declared to need these fields. Extending `TierSubject` here (and populating
+ * `joinedOn`/`isCommitteeMember` at every call site that builds a
+ * `ShiftRequester`) is the fix; see plan §10.3 for the discovery log entry.
+ */
+export interface ShiftRequester extends TierSubject {
   uid: string;
   name: string;
-  role?: string | null;
   certifications?: User['certifications'];
   /** Denormalized onto the created request. Missing is treated as 'general' (see `User.memberStatus`). */
   memberStatus?: User['memberStatus'];
@@ -310,6 +374,19 @@ export interface RequestShiftOptions {
 }
 
 /**
+ * [Phase 2 / waitlist plan §3.7, T5] One-time fetch of a member's own
+ * approved-shift history, for the tier-eligibility check inside
+ * `requestShift`. Only ever called when `event.accessTier?.enabled` is
+ * truthy — see that call site; every other signup path pays zero extra
+ * reads for tiering.
+ */
+async function getRequesterShiftStats(uid: string): Promise<MemberShiftStats> {
+  const snap = await getDocs(query(collection(db, 'shift_requests'), where('userId', '==', uid)));
+  const reqs = snap.docs.map((d) => ({ id: d.id, ...(d.data() as ShiftRequest) }));
+  return getMemberShiftStats(reqs, getSemesterStart());
+}
+
+/**
  * Create a member's request for a role on a team. Enforces: event open, cert
  * validity, role eligibility, and no duplicate active request for this event.
  *
@@ -332,6 +409,22 @@ export async function requestShift(
   opts?: RequestShiftOptions,
 ): Promise<void> {
   if (event.status !== 'open') throw new Error('This event is not open for signups.');
+  // [Phase 2 / waitlist plan §3.7, §5.3] Tier gate is the COARSEST guard —
+  // checked before certs/role, same ordering the UI uses, so a member who
+  // isn't in-window yet sees the real reason instead of an unrelated cert
+  // error. Skip the stats query entirely when the event isn't tiered (the
+  // overwhelmingly common case) so untiered events pay nothing extra.
+  // Managers bypass via `getTierAccess`'s own manager branch, so no special
+  // case is needed here.
+  if (event.accessTier?.enabled) {
+    const stats = await getRequesterShiftStats(requester.uid);
+    const access = getTierAccess(event, requester, stats);
+    if (!access.eligible) {
+      // Not `access.reason` — that is the author's rationale and names no date.
+      // §5.3: every blocked state names a date. See `describeTierBlock`.
+      throw new Error(describeTierBlock(access, event));
+    }
+  }
   if (!canSignUpForShifts(requester)) {
     throw new Error(getShiftBlockReason(requester) || 'Your certifications are not current.');
   }
@@ -1138,6 +1231,185 @@ export function getMemberShiftStats(
 }
 
 /**
+ * [Phase 2 / waitlist plan §3.7] A zeroed `MemberShiftStats` for callers that
+ * have no history loaded yet (e.g. a signup-eligibility check on an untiered
+ * event that never needs to query `shift_requests`). Deep-frozen, not merely
+ * `Object.freeze`d at the top level: freezing only the outer object would
+ * stop `EMPTY_SHIFT_STATS.shiftsAllTime = 1` but NOT
+ * `EMPTY_SHIFT_STATS.shiftsByType.football = 1` — the nested record would
+ * still be a live, shared, mutable object every caller of this constant
+ * points at, which is exactly the shape of bug D6 in this build (a resolver
+ * that silently resized a caller's live data through a shared reference).
+ * Freezing the nested `shiftsByType`/`shiftsByTypeSemester` records too turns
+ * that mistake into a thrown `TypeError` instead of silent cross-caller
+ * corruption.
+ */
+export const EMPTY_SHIFT_STATS: MemberShiftStats = Object.freeze({
+  shiftsAllTime: 0,
+  shiftsThisSemester: 0,
+  checkedIn: 0,
+  lateCount: 0,
+  totalMinutesLate: 0,
+  leftEarlyCount: 0,
+  noShow: 0,
+  excused: 0,
+  unrecorded: 0,
+  hoursAllTime: 0,
+  hoursThisSemester: 0,
+  noShowNonBinding: 0,
+  lateCancellations: 0,
+  shiftsByType: Object.freeze({}),
+  shiftsByTypeSemester: Object.freeze({}),
+}) as MemberShiftStats;
+
+/**
+ * [Phase 2 / waitlist plan §3.7] `TierAccess.phase`: `'closed'` = not yet
+ * eligible for any window and general access hasn't opened; `'priority'` =
+ * eligible now via a matched `TierWindow`, or matched-but-not-open-yet (see
+ * `eligible`); `'general'` = untiered, general access open, or a manager
+ * bypass.
+ */
+export interface TierAccess {
+  phase: 'closed' | 'priority' | 'general';
+  eligible: boolean;
+  /** The instant THIS member can sign up. Drives "you can sign up from Oct 3" copy. */
+  opensForYouAt: Date | null;
+  /** Which window granted it, for the badge label. */
+  matchedTier: TierWindow | null;
+  reason: string;
+}
+
+/**
+ * [Phase 2 / waitlist plan §3.7] Exactly the plan's reference implementation,
+ * with the bindings the plan pins:
+ *   - `roles`            -> `subject?.role`
+ *   - `minCompletedShifts` -> `stats.shiftsAllTime`
+ *   - `minShiftsByType`  -> `stats.shiftsByType?.[type] ?? 0`, per entry
+ *   - `minTenureDays`    -> `tenureDays(subject?.joinedOn, now)` (tenure.ts;
+ *     already returns -1 when absent, so this fails closed for free)
+ *   - `minSemesters`     -> `completedTermsSince(subject?.joinedOn, now, getTerms())`
+ *   - `requireCommitteeMember` -> `subject?.isCommitteeMember === true`
+ * `{}` (no criteria specified) -> `true` ("anyone, once the window opens"). A
+ * `null` subject fails every SPECIFIED criterion (fail-closed on every `?.`
+ * above reading `undefined`) but still returns `true` for `{}` — a pure
+ * timing tier has no eligibility filter to fail.
+ */
+export function meetsTierCriteria(
+  c: TierCriteria,
+  subject: TierSubject | null,
+  stats: MemberShiftStats,
+  now: Date,
+): boolean {
+  const checks: boolean[] = [];
+  if (c.roles?.length) checks.push(!!subject?.role && c.roles.includes(subject?.role as User['role']));
+  if (c.memberStatus?.length) checks.push(c.memberStatus.includes(subject?.memberStatus ?? 'general'));
+  if (c.minCompletedShifts != null) checks.push(stats.shiftsAllTime >= c.minCompletedShifts);
+  if (c.minShiftsByType) {
+    for (const [type, min] of Object.entries(c.minShiftsByType)) {
+      checks.push((stats.shiftsByType?.[type] ?? 0) >= min);
+    }
+  }
+  if (c.minTenureDays != null) checks.push(tenureDays(subject?.joinedOn, now) >= c.minTenureDays);
+  if (c.minSemesters != null) {
+    checks.push(completedTermsSince(subject?.joinedOn, now, getTerms()) >= c.minSemesters);
+  }
+  if (c.requireCommitteeMember) checks.push(subject?.isCommitteeMember === true);
+
+  if (checks.length === 0) return true; // {} = anyone, once the window opens
+  return c.combine === 'any' ? checks.some(Boolean) : checks.every(Boolean);
+}
+
+/**
+ * [Phase 2 / waitlist plan §3.7] A member's access opens at the EARLIEST
+ * `opensAt` among the windows whose criteria they satisfy, falling back to
+ * `generalOpensAt`. `now` defaults to `new Date()` (a param, not a hardcoded
+ * call, so callers/tests can pin it). Manager bypass: `isEventManagerRole`
+ * always reads as general/eligible with no window — event managers are never
+ * gated by their own tier config.
+ */
+export function getTierAccess(
+  event: Event,
+  subject: TierSubject | null,
+  stats: MemberShiftStats,
+  now: Date = new Date(),
+): TierAccess {
+  const tier = event.accessTier;
+  if (!tier?.enabled) {
+    return { phase: 'general', eligible: true, opensForYouAt: null, matchedTier: null, reason: '' };
+  }
+  if (isEventManagerRole(subject?.role)) {
+    return { phase: 'general', eligible: true, opensForYouAt: null, matchedTier: null, reason: 'Manager override.' };
+  }
+
+  const general = toJsDate(tier.generalOpensAt);
+  if (general && now.getTime() >= general.getTime()) {
+    return { phase: 'general', eligible: true, opensForYouAt: general, matchedTier: null, reason: '' };
+  }
+
+  // Earliest window this member qualifies for. A window with an unparseable
+  // `opensAt` is skipped (never crashes the sort) — `toJsDate` returning
+  // `null` for it means it can never win the ascending sort below, so
+  // filtering it out first is just avoiding a `null` in the comparator.
+  const matches = (tier.tiers ?? [])
+    .filter((w) => toJsDate(w.opensAt) !== null && meetsTierCriteria(w.criteria, subject, stats, now))
+    .sort((a, b) => toJsDate(a.opensAt)!.getTime() - toJsDate(b.opensAt)!.getTime());
+  const mine = matches[0] ?? null;
+  const opensForYouAt = mine ? toJsDate(mine.opensAt) : general;
+
+  if (mine && opensForYouAt && now.getTime() >= opensForYouAt.getTime()) {
+    return { phase: 'priority', eligible: true, opensForYouAt, matchedTier: mine, reason: '' };
+  }
+
+  return {
+    phase: mine ? 'priority' : 'closed',
+    eligible: false,
+    opensForYouAt,
+    matchedTier: mine,
+    reason: tier.rationale || 'Signups are not open to you yet.',
+  };
+}
+
+/** Compact inline date form for tier copy — "Oct 3". Deliberately not the long
+ *  weekday/year form `formatEventDate` uses, which is overkill for a one-line
+ *  reason (waitlist plan §5.3). */
+function formatTierDate(d: Date | null): string {
+  return d ? d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
+}
+
+/**
+ * [Phase 2 / waitlist plan §5.3] The single member-facing sentence for a
+ * blocked `TierAccess`, shared by the disabled signup control and by the
+ * error `requestShift` throws.
+ *
+ * It lives here rather than in `team-card.tsx` because the two must not drift:
+ * §5.3's rule is that EVERY blocked state names a date ("you're not eligible"
+ * is a dead end; "you can sign up from Oct 8" is an instruction), and the lib
+ * was throwing `TierAccess.reason` — which is the AUTHOR'S rationale text and
+ * names no date at all. A member who reaches the thrown error (a stale tab, a
+ * window that closed between render and press) got strictly less information
+ * than one who never pressed the button.
+ *
+ * The `matchedTier`-less `'priority'` branch is defensive: `getTierAccess`
+ * only reports `phase: 'priority'` when a window actually matched, so that
+ * combination is unreachable today — see §10.3 D16, which records that plan
+ * §5.3's button table lists it as a distinct row.
+ */
+export function describeTierBlock(access: TierAccess, event: Event): string {
+  const general = toJsDate(event.accessTier?.generalOpensAt);
+  if (access.phase === 'closed') {
+    return access.opensForYouAt
+      ? `Signup opens ${formatTierDate(access.opensForYouAt)}.`
+      : 'Signup is not open yet.';
+  }
+  if (access.opensForYouAt && access.matchedTier) {
+    return `You can sign up from ${formatTierDate(access.opensForYouAt)} (${access.matchedTier.label}).`;
+  }
+  return `This event is in priority signup until ${
+    general ? formatTierDate(general) : 'the general opening'
+  }. It opens to everyone then.`;
+}
+
+/**
  * Approved-request userIds for an event (audience = "people signed up").
  * [Phase 1 / waitlist plan §2.1, resolved] Left `approved`-only, by decision:
  * the broadcast audience is CONFIRMED people — a queued (`waitlisted`) or
@@ -1807,7 +2079,21 @@ export async function promoteNextFromWaitlist(
     if (!canSignUpForShifts(user)) continue;
     if (!canRequestRole(user.role, role)) continue;
     if (await hasActiveApprovalOnEvent(candidate.userId, event.id!)) continue;
-    // TODO(Phase 2): getTierAccess re-check per plan §3.5 step 3
+    // [Phase 2 / waitlist plan §3.5 step 3, §3.7] Tier re-check: a queued
+    // member whose window hasn't opened yet is SKIPPED, not offered and not
+    // dropped from the queue — `continue` to the next candidate is exactly
+    // that; this loop's existing eligibility checks above already establish
+    // "skip without mutating the doc" as the mechanism, so this reuses it
+    // rather than reaching for the separate manager-facing `skippedAt` field
+    // (`skipWaitlistEntry`), which is a persisted, explicit deprioritization
+    // action and not what a transient ineligibility re-check should write.
+    // `user` (fetched above) already satisfies `TierSubject` structurally.
+    // Skip the stats query entirely when the event isn't tiered.
+    if (event.accessTier?.enabled) {
+      const candidateStats = await getRequesterShiftStats(candidate.userId);
+      const access = getTierAccess(event, user, candidateStats);
+      if (!access.eligible) continue;
+    }
 
     // 4. Notice class — computed ONCE here from the RESOLVED TEAM (D2), then
     // frozen onto the offer (P3). See `computeNoticeClass`'s doc comment for

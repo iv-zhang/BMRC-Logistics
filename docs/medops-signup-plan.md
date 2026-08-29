@@ -1,8 +1,9 @@
 # MedOps Signup, Waitlist & Priority Access — Implementation Plan
 
-> **Status:** **In build. Revision 4.** PR zero and Phase 0 are committed locally (not pushed);
-> Phases 0.5 → 3 are in progress. See [§10 Implementation log](#10-implementation-log-r4) for what
-> has actually shipped and what the build discovered that the plan did not predict.
+> **Status:** **In build. Revision 4.** PR zero and Phases 0, 0.5 and 1 are committed locally (not
+> pushed); Phase 2 is feature-complete in the working tree and Phase 3 is not started. See
+> [§10 Implementation log](#10-implementation-log-r4) for what has actually shipped and what the
+> build discovered that the plan did not predict.
 > **Scope:** Extends the existing event / shift-signup system (`app/events`, `app/lib/events.ts`)
 > with a waitlist queue, tiered notice-based promotion, priority access windows for high-demand
 > events, tenure tracking, and reminder notifications.
@@ -3018,8 +3019,8 @@ disagree, this section is current and the plan section is historical.
 | **PR zero** — CI deploy path | ✅ committed | `816eb87` on `chore/ci-hosting-fix` | All three §9.5 defects verified present, then fixed. |
 | **Phase 0** — schema + org config + consumer audit | ✅ committed | `3b8c6f0` on `feat/waitlist-p0-schema` | Build ✅, 69/69 tests ✅, `tsc` clean, zero new lint. |
 | **Phase 0.5** — Firestore rules split | ✅ committed | `434a046` on `feat/waitlist-p05-rules` | Ruleset needed a fix the plan did not anticipate — **D4** below. |
-| **Phase 1** — waitlist queue | 🔨 feature-complete in the tree, uncommitted | — | Every row of the §8 Phase 1 table is written. The first end-to-end run of the new `evt-waitlist` suite found **two real bugs** — **D11** (accepting an EMT offer was impossible) and **D12** (every decline threw); both fixed, and `test:events` is now **146/146 across all 15 suites**. Discoveries **D5–D13** below. Not yet runtime-verified in a browser (see §10.5). |
-| **Phase 2** — priority tiers | ⏳ pending | — | |
+| **Phase 1** — waitlist queue | ✅ committed | `5ac86e7` on `feat/waitlist-p1-queue` | Every row of the §8 Phase 1 table is written. The first end-to-end run of the new `evt-waitlist` suite found **two real bugs** — **D11** (accepting an EMT offer was impossible) and **D12** (every decline threw); both fixed, and `test:events` is now **146/146 across all 15 suites**. Discoveries **D5–D13** below. Not yet runtime-verified in a browser (see §10.5). |
+| **Phase 2** — priority tiers | 🔨 feature-complete in the tree, uncommitted | — | Every row of the §8 Phase 2 table is written, plus the `/settings` tenure gate §8 only implies. Built by seven parallel agents on non-overlapping file sets against one pinned cross-file contract (§10.7). Discoveries **D14–D18** below. |
 | **Phase 3** — in-app reminders | ⏳ pending | — | |
 | **Phase 4a/4b** | ⛔ out of scope | — | Excluded by agreement at build start. |
 
@@ -3375,6 +3376,95 @@ indented, beneath any `ERROR` row. Kept out of the inline per-check output so a 
 exactly as it did before. This is a permanent improvement to the shared harness, not waitlist-specific
 — every suite in `run-events.ts`, `run-invariants.ts` and `run-properties.ts` inherits it.
 
+#### D14 — the tier gate evaluates a projection that cannot carry its own criteria
+
+§3.7 specifies `meetsTierCriteria(c, user, stats, now)` against a full `User`, and every UI surface
+does hold one. But the write path does not: `requestShift` receives a `ShiftRequester` — a
+deliberately narrow projection carrying `uid`, `name`, `role`, `certifications`, `memberStatus` and
+`joinedTerm`. It carried neither `joinedOn` nor `isCommitteeMember`.
+
+Three of the seven criteria therefore read `undefined`, and all three **fail closed** by design
+(§3.7 is explicit that a missing `joinedOn` must not qualify). So a `minTenureDays`, `minSemesters`
+or `requireCommitteeMember` window would have locked out **every member, including the ones it was
+written to admit** — while the button beside them stayed enabled, because the UI evaluates the same
+criteria against the full `User` and reaches the opposite answer. The member presses an enabled
+button and gets an error naming a date that has already passed.
+
+This is the worst shape a bug in this feature can take, and it typechecks perfectly: nothing
+declares those fields required, and fail-closed is the *correct* behaviour for genuinely missing
+data — it is only wrong when the data exists and the projection dropped it.
+
+Fixed in two places, and it needed both: `ShiftRequester extends TierSubject` (the type), and the
+two literals in `team-card.tsx` that actually build one now populate `joinedOn` and
+`isCommitteeMember` from `userData`. The type change alone is inert — optional fields nobody
+assigns. **The generalisable lesson: a permission projection is a place where "optional" and
+"absent" silently mean the same thing to the type checker and opposite things to the user.**
+
+#### D15 — the thrown error told the member less than the button did
+
+§5.3's governing rule for this phase is that **every blocked state names a date** — *"you're not
+eligible"* is a dead end, *"you can sign up from Oct 8"* is an instruction. The UI honours it.
+
+The lib did not. `getTierAccess` returns `reason: tier.rationale || 'Signups are not open to you
+yet.'` — the *author's* explanatory prose, which names no date — and `requestShift` threw exactly
+that. The member who reaches the thrown error is the one in the worst position (a stale tab, a
+window that closed between render and press) and got strictly less information than the member who
+never pressed the button at all.
+
+Fixed by hoisting the copy into one exported `describeTierBlock(access, event)` in `app/lib/events.ts`,
+used by both the disabled control and the throw. The point is not the sentence, it is that there is
+now exactly **one** of it: `team-card.tsx` had grown a private `tierDisabledReason` implementing
+§5.3's table, and a second implementation of a member-facing policy sentence is how the app ends up
+telling one person two different things about the same rule.
+
+#### D16 — one row of §5.3's button table is unreachable
+
+§5.3 tabulates four member-facing disabled states, including *"`phase: 'priority'`, `eligible: false`,
+no match"*. Under the shipped `getTierAccess` that combination cannot occur: the phase is computed as
+`mine ? 'priority' : 'closed'`, so "matched no window" is always `'closed'`, never `'priority'`.
+
+The behaviour is right and the plan's *copy* for that row is right — it is the row's **key** that is
+wrong. What the plan describes as "priority phase, no match" is what the code calls `'closed'`, and
+`'closed'` is exactly where that sentence belongs. Both `describeTierBlock` and the drawer keep a
+defensive branch for the combination anyway, since it costs one line and the alternative is an empty
+string if the phase semantics are ever widened. Recorded because a future reader comparing the table
+to the code will otherwise conclude one of them is broken.
+
+#### D17 — `updateEvent`'s patch semantics decide the tier save shape, not the read path
+
+The build brief offered a choice: when an author switches tiering off, save
+`accessTier: { enabled: false, … }` or omit the field, "whichever the read path handles cleanly".
+That framing was wrong, and following it would have shipped a bug.
+
+The read path handles both fine — everything is gated on `event.accessTier?.enabled`. The **write**
+path does not: `updateEvent` patches with `if (patch.accessTier !== undefined)`, so `undefined`
+means *"leave what is already there"*, not *"clear it"*. Omitting the field on **create** is
+harmless; omitting it on **edit** would leave a previously-tiered event's old `accessTier` intact
+while the editor's switch reads "off" — the author turns tiering off, saves, and the event stays
+tiered with no visible cause.
+
+The editor therefore always sends a concrete object. Worth stating because "just omit it when it's
+off" is the obvious simplification, and a future reader will reach for it.
+
+#### D18 — the settings coverage gate measured one field and reported another
+
+§8's sequencing constraint requires the tenure inputs to stay disabled until the roster's join dates
+are populated, with the warning *"N of M members have no join term recorded"* — the plan's own
+wording. But the criteria evaluate `joinedOn`, and `joinedOn` is *derived* from `joinedTerm` by a
+backfill that runs separately. The two diverge for exactly the duration of the sequence the gate
+exists to enforce.
+
+Gating on `joinedTerm` would unlock the inputs before the backfill ran (`joinedOn` still absent,
+every tenure rule failing closed — the lockout the gate exists to prevent). Gating on `joinedOn`
+while *reporting* the `joinedTerm` count produces a disabled input above the sentence "0 of 40
+members have no join term recorded" — a statistic that reads as a pass, next to a control that is
+off, with no stated cause.
+
+Resolved by gating on `joinedOn` (the field that determines correctness) and making the headline
+number report **that same metric**. The join-term count is still surfaced, but only in the one branch
+where it is the actual blocker — the step-1 case where nobody has a term recorded at all. **A gate
+whose stated reason is measured differently from its condition is not a warning, it is a riddle.**
+
 ### 10.4 Corrections to earlier sections
 
 | Section | Correction |
@@ -3392,6 +3482,13 @@ exactly as it did before. This is a permanent improvement to the shared harness,
 | §5.2 | Types `onDecided` as `(msg: string) => void`. The modal has to report success *and* failure, so the shipped contract is `(ok: boolean, msg: string) => void`, matching the `onToast(ok, msg)` idiom already used throughout the events UI. |
 | §5.4 | Identifies a soft-held slot by matching "an `offered` request whose `offer.teamId`/`offer.teamName` matches this team and role." That is ambiguous for EMT, where one team has several slots and several may be held at once. `TeamSlot.requestId` — which already exists for exactly this purpose — is the unambiguous key, and is what shipped. |
 | §5.4 | The panel header mock reads "N open slots across N teams". Force-promote operates at *team* granularity (`resolveSlotRef` picks the seat), so the shipped count is teams-with-an-open-slot: a team with two free EMT seats counts once, not twice. |
+| §3.7 | `meetsTierCriteria`/`getTierAccess` are specified against a full `User`. The write path only ever holds a `ShiftRequester`, which is a narrower projection — see **D14**. The shipped signatures take a `TierSubject`, the minimal shape both satisfy. |
+| §3.7 | The pseudocode sorts matched windows with `toJsDate(a.opensAt)!.getTime()`. A window with an unparseable `opensAt` makes that non-null assertion throw inside the comparator. Shipped code filters unparseable windows out before the sort. |
+| §5.3 | The signup-button table's "`phase: 'priority'`, not eligible, no match" row is unreachable — that state is `'closed'` under the shipped `getTierAccess`. The row's copy is right, its key is wrong. See **D16**. |
+| §5.3 | The section assumes each surface formats its own blocked-state sentence. There is now exactly one, `describeTierBlock` in `app/lib/events.ts`, shared by the UI and the thrown error. See **D15**. |
+| §8 Phase 2 | The sequencing constraint says the settings UI disables tenure inputs "until coverage is adequate" without fixing a number. Shipped bar: **90%** of members with a `joinedOn`, justified at `MIN_JOIN_DATE_COVERAGE`. The warning's headline number reports `joinedOn` coverage, not the `joinedTerm` count the section's wording names — see **D18**. |
+| §8 Phase 2 | The table lists the `joinedTerm` picker and the backfill but not the `/settings` tenure gate, which §3.7's sequencing blockquote requires. It shipped in this phase. |
+| §9.1 | "Each branches from `main`, not from the previous phase" did not survive contact: Phase 1 depends on Phase 0's schema and would not compile off `main`. The local branches are a linear stack (`chore/ci-hosting-fix` → p0 → p05 → p1 → p2). Independent shippability is preserved in *merge order*, not in branch topology. |
 
 ### 10.5 Verification standing
 
@@ -3464,6 +3561,39 @@ would have found D11 eventually, as "the Accept button doesn't work", with none 
   behaviour against existing data (nothing writes a `waitlisted`/`offered` doc yet, so every widened
   filter is a no-op today).
 
+**Phase 2 results.** `npx tsc --noEmit` clean; `npm run build` ✅; `npm run test` 69/69 ✅.
+
+Lint: **zero new findings.** The four `react-hooks/set-state-in-effect` errors on
+`app/events/page.tsx` are pre-existing — established by writing `git show HEAD:app/events/page.tsx`
+to a scratch file, linting *that*, and deleting it. The committed version reports the same four
+errors on the same four effects (only the line numbers shift). Recording the technique as well as
+the number, because it is the non-destructive answer to the question that provoked §10.7's
+`git stash` incident.
+
+**Phase 2 emulator results.** `npm run test:events` — **255 passed, 0 failed, 0 errored across 31
+suites**, up from Phase 1's 146/15. The new `evt-tiers` suite adds EVT-16…EVT-31: the untiered
+regression guard (the case that protects every event already in the database), earliest-matched-window
+ordering, the no-match fallback that must still name a date, P5's "after `generalOpensAt` everyone is
+in with no override", the manager bypass **including medops explicitly**, `combine` `all`/`any` plus
+`{}` under both, one suite per criterion with the boundary case asserted to PASS, tenure failing
+closed on a missing `joinedOn`, `requestShift`'s gate writing **no** document when it refuses, and
+`promoteNextFromWaitlist` skipping an ineligible queued member without dropping or reordering them.
+Shift-count criteria are driven from real approved `shift_requests` through `getMemberShiftStats`,
+never a hand-built stats object.
+
+One constraint the suite surfaced and documented rather than worked around: neither `requestShift`'s
+gate nor `promoteNextFromWaitlist` takes an injectable `now`, unlike `getTierAccess` itself. Staleness
+can therefore only be simulated by mutating the member (role, `memberStatus`, `joinedOn`), never by
+advancing time — so "the window opened while they waited" cannot be constructed in a test. That
+matches the existing cert-lapse precedent in the same function and is not a defect, but it bounds
+what these suites can prove.
+
+The `run-bmrc-logistics` smoke driver remains **not run**; Phase 2 is
+**built, typechecked and emulator-tested, not browser-verified**. Unlike Phase 0, Phase 2 *does*
+change behaviour against existing data — but only for events carrying an `accessTier` with
+`enabled: true`, and no such document exists yet, so every tier branch is inert on today's data
+until an author creates one in the event editor.
+
 ### 10.6 Process note — a real incident worth not repeating
 
 During Phase 0, `git stash` was run on the shared working tree to measure a lint baseline **while
@@ -3479,3 +3609,36 @@ Two rules came out of it, both of which apply to Phases 0.5–3:
 2. **A full-repo `npm run lint` is not a usable gate here** — it exceeds the command timeout, and the
    repo carries a very large pre-existing baseline concentrated in `scripts/*.cjs`. Lint the touched
    files. That is what produced the "zero new findings" number above, and it is a real number.
+
+### 10.7 Process — seven parallel agents against one pinned contract
+
+Phase 2 was built by seven subagents on **strictly non-overlapping file sets**, which is the repo's
+standing instruction (CLAUDE.md, "Workflow"). Two things made that work, and one did not.
+
+**What worked: pinning the cross-file contract before dispatch, not after.** The exact signatures of
+`TierAccess`, `getTierAccess`, `TierSubject`, `EMPTY_SHIFT_STATS` and the `viewerStats` prop were
+written into *every* brief, including the briefs of agents who would consume them hours before the
+agent that defined them had finished. Consumers coded against the contract and reported "this does
+not exist yet" as expected in-flight state rather than treating it as an error to work around. Every
+agent's report independently confirmed the landed signatures matched. The integration pass found
+**zero** contract drift; the only seams left were the two the contract could not express (D14's call
+sites, D15's shared copy), and both were known and assigned to the orchestrator in advance.
+
+**What worked: telling agents to report plan defects, not just completed work.** D16, D17 and D18
+were each found by the agent implementing the surface, not by review afterwards. An agent that is
+asked only "did you build it" reports success; one asked "what did the spec get wrong" reads the
+spec adversarially.
+
+**What did not work: the prohibition in §10.6 did not hold.** One agent ran `git stash` /
+`git stash pop` on the shared tree — mid-flight, with six other agents writing to it — to check
+whether four lint errors were pre-existing. It self-reported the violation, and the tree was verified
+intact afterwards (no new stash entries; the two pre-existing `main` stashes untouched; every
+in-flight file still carrying its modifications). No work was lost this time.
+
+That is luck, not process. §10.6 recorded this exact incident during Phase 0 and stated the rule; the
+rule was then written verbatim into all seven Phase 2 briefs; an agent did it anyway. **A prohibition
+in a brief is not a control.** The correct answer to "is this lint error pre-existing" never required
+touching the tree at all — `git show HEAD:<file>` into a scratch file, lint that, delete it, which is
+what the integration pass used to establish the zero-new-findings baseline. The durable fix is to put
+that recipe in the brief *next to* the prohibition, so the agent is denied the reason to reach for
+the dangerous tool rather than merely told not to.

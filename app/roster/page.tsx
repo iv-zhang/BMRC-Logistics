@@ -25,16 +25,17 @@ import {
   ModalHeader,
   ModalBody,
   ModalFooter,
-  Input,
 } from '@heroui/react';
 import { Users, ClipboardCheck, SquareKanban, Shield, CalendarClock, ListFilter, IdCard, Activity, Package, Boxes, CalendarDays, AlertTriangle } from 'lucide-react';
-import { collection, getDocs, doc, updateDoc } from 'firebase/firestore';
+import { collection, getDocs, doc, updateDoc, Timestamp } from 'firebase/firestore';
 import { db } from '@/firebase'; // Assuming your firebase config export
 import { useUserRole } from '@/app/hooks/useUserRole';
+import { useOrgConfig } from '@/app/hooks/useOrgConfig';
 import { getMemberCertStatuses } from '@/app/lib/certifications';
 import CertEditorModal from '@/app/components/cert-editor-modal';
 import { getMemberShiftStats, type MemberShiftStats } from '@/app/lib/events';
-import { getSemesterStart } from '@/app/config/org-config';
+import { getSemesterStart, type TermDef } from '@/app/config/org-config';
+import { deriveJoinedOn, findTerm } from '@/app/lib/tenure';
 import { getMemberActivity, type MemberActivityEntry } from '@/app/lib/member-activity';
 import type { User, ShiftRequest } from '@/app/types'; // Adjust path based on your folder structure
 
@@ -82,6 +83,12 @@ const MEMBER_STATUS_OPTIONS: Array<{ label: string; value: NonNullable<User['mem
   { label: 'General', value: 'general' },
 ];
 
+/** [Phase 2 / waitlist plan §2.3] Sentinel Select keys for the `joinedTerm`
+ *  picker — distinct from any real `TermDef.id` so they can't collide with a
+ *  configured term. */
+const JOINED_TERM_NONE_KEY = '__none__';
+const JOINED_TERM_LEGACY_KEY = '__legacy_unmatched__';
+
 /** Derive a display label/color for one shift's attendance record (check-in model, not the old status enum). */
 function attendanceLabelAndColor(attendance: ShiftRequest['attendance']): { label: string; color: RoleChipColor } {
   if (attendance?.exception === 'no_show') return { label: 'No-show', color: 'danger' };
@@ -96,6 +103,7 @@ function attendanceLabelAndColor(attendance: ShiftRequest['attendance']): { labe
 export default function RosterPage() {
   const router = useRouter();
   const { role, userData, loading: roleLoading } = useUserRole();
+  const { terms } = useOrgConfig();
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
@@ -249,20 +257,30 @@ export default function RosterPage() {
     }
   }, []);
 
-  const handleJoinedTermChange = React.useCallback(async (userId: string, term: string) => {
-    const trimmed = term.trim();
+  const handleJoinedTermChange = React.useCallback(async (userId: string, term: string | null) => {
     setUpdatingId(userId);
     try {
       const userRef = doc(db, 'users', userId);
-      await updateDoc(userRef, { joinedTerm: trimmed || null });
-      setUsers(prev => prev.map(u => u.id === userId ? { ...u, joinedTerm: trimmed || undefined } : u));
+      // [Phase 2 / waitlist plan §2.3] Saving joinedTerm also derives and
+      // writes joinedOn — the only field tenure math (`minTenureDays` /
+      // `minSemesters`) may read. Clearing the picker, or picking a label
+      // that resolves to no configured term, clears joinedOn too rather than
+      // leaving a stale anchor from a previous selection.
+      const anchor = term ? deriveJoinedOn(term, terms) : null;
+      await updateDoc(userRef, {
+        joinedTerm: term || null,
+        joinedOn: anchor ? Timestamp.fromDate(anchor) : null,
+      });
+      setUsers(prev => prev.map(u => u.id === userId
+        ? { ...u, joinedTerm: term || undefined, joinedOn: anchor ? Timestamp.fromDate(anchor) : undefined }
+        : u));
     } catch (error) {
       console.error('Error updating joined term:', error);
       alert('Failed to update joined term. Check console.');
     } finally {
       setUpdatingId(null);
     }
-  }, []);
+  }, [terms]);
 
   const handleCommitteeToggle = async (userId: string, currentValue: boolean) => {
     setUpdatingId(userId);
@@ -461,6 +479,7 @@ export default function RosterPage() {
           member={detailModalUser}
           requests={requestsByUser.get(detailModalUser.id) ?? []}
           semesterStart={semesterStart}
+          terms={terms}
           canEditAllRoles={canEditAllRoles}
           isMedOps={isMedOps}
           updatingId={updatingId}
@@ -639,6 +658,8 @@ interface MemberDetailModalProps {
   member: User;
   requests: ShiftRequest[];
   semesterStart: Date;
+  /** [Phase 2 / waitlist plan §2.3, §4.1] Configured academic terms, live via `useOrgConfig()`. */
+  terms: TermDef[];
   canEditAllRoles: boolean;
   isMedOps: boolean;
   updatingId: string | null;
@@ -646,7 +667,8 @@ interface MemberDetailModalProps {
   onCanAuditToggle: (userId: string, currentValue: boolean) => void;
   onCommitteeToggle: (userId: string, currentValue: boolean) => void;
   onMemberStatusChange: (userId: string, status: NonNullable<User['memberStatus']>) => void;
-  onJoinedTermChange: (userId: string, term: string) => void;
+  /** `null` clears both `joinedTerm` and the derived `joinedOn`. */
+  onJoinedTermChange: (userId: string, term: string | null) => void;
   onEditCerts: (user: User) => void;
 }
 
@@ -657,6 +679,7 @@ function MemberDetailModal({
   member,
   requests,
   semesterStart,
+  terms,
   canEditAllRoles,
   isMedOps,
   updatingId,
@@ -671,8 +694,23 @@ function MemberDetailModal({
   // Both admin/quartermaster and medops staff events, so both may set the
   // experience tier used to auto-fill shift requests (see team-card.tsx).
   const canEditMemberStatus = canEditAllRoles || isMedOps;
-  const [joinedTermDraft, setJoinedTermDraft] = React.useState(member.joinedTerm ?? '');
-  React.useEffect(() => setJoinedTermDraft(member.joinedTerm ?? ''), [member.id, member.joinedTerm]);
+
+  // [Phase 2 / waitlist plan §2.3] `joinedTerm` is a picker over the
+  // configured `terms`, not freeform text. A legacy value that matches no
+  // configured term (case/whitespace-insensitive match via `findTerm`, the
+  // same helper `deriveJoinedOn` uses) still has to be visible and selected
+  // — surfaced as an extra option rather than silently dropped, so opening
+  // this modal to change something else can never quietly erase it.
+  const matchedTerm = findTerm(member.joinedTerm, terms);
+  const hasLegacyTerm = !!member.joinedTerm && !matchedTerm;
+  const joinedTermSelectedKey = !member.joinedTerm
+    ? JOINED_TERM_NONE_KEY
+    : (matchedTerm ? matchedTerm.id : JOINED_TERM_LEGACY_KEY);
+  // Re-derived from the *current* term config on every render (not read from
+  // the stored `member.joinedOn`) so a config edit that would change the
+  // answer is visible here immediately, instead of the roster modal and
+  // tier-criteria evaluation quietly disagreeing about the same member.
+  const tenureAnchor = deriveJoinedOn(member.joinedTerm, terms);
 
   const certStatuses = getMemberCertStatuses(member);
   const emtColor = certStatuses.emt === 'valid' ? 'success' : certStatuses.emt === 'expired' ? 'danger' : 'default';
@@ -785,20 +823,50 @@ function MemberDetailModal({
                   </div>
                   <div>
                     <div className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400 mb-2">Joined Term</div>
-                    <Input
+                    <Select
                       aria-label="Joined term"
-                      placeholder="e.g. Fall 2025"
+                      selectedKeys={[joinedTermSelectedKey]}
                       className="max-w-xs"
                       size="sm"
                       isDisabled={isUpdating}
-                      value={joinedTermDraft}
-                      onValueChange={setJoinedTermDraft}
-                      onBlur={() => {
-                        if (joinedTermDraft !== (member.joinedTerm ?? '')) {
-                          onJoinedTermChange(member.id, joinedTermDraft);
+                      onChange={(e) => {
+                        const key = e.target.value;
+                        // No-op: re-selecting the unmatched legacy entry (it's
+                        // shown so it stays visible, not so it can be
+                        // "re-picked") changes nothing.
+                        if (!key || key === JOINED_TERM_LEGACY_KEY) return;
+                        if (key === JOINED_TERM_NONE_KEY) {
+                          onJoinedTermChange(member.id, null);
+                          return;
                         }
+                        const term = terms.find(t => t.id === key);
+                        if (term) onJoinedTermChange(member.id, term.label);
                       }}
-                    />
+                    >
+                      {[
+                        <SelectItem key={JOINED_TERM_NONE_KEY} textValue="None">—</SelectItem>,
+                        ...terms.map((t) => (
+                          <SelectItem key={t.id} textValue={t.label}>{t.label}</SelectItem>
+                        )),
+                        ...(hasLegacyTerm ? [
+                          <SelectItem key={JOINED_TERM_LEGACY_KEY} textValue={member.joinedTerm}>
+                            <div className="flex flex-col">
+                              <span>{member.joinedTerm}</span>
+                              <span className="text-[10px] text-foreground-400">Not a configured term</span>
+                            </div>
+                          </SelectItem>,
+                        ] : []),
+                      ]}
+                    </Select>
+                    {tenureAnchor ? (
+                      <p className="text-[11px] text-foreground-400 mt-1.5">
+                        Tenure anchor: {tenureAnchor.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                      </p>
+                    ) : (
+                      <p className="text-[11px] text-warning-600 dark:text-warning-400 mt-1.5 leading-snug">
+                        No tenure anchor — tier rules that use tenure will not match this member.
+                      </p>
+                    )}
                   </div>
                 </div>
               )}

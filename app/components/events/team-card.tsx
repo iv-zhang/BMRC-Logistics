@@ -13,6 +13,14 @@
  * queue is per EVENT + ROLE by default (`policy.scope === 'event'`), so a
  * queue entry for a role is shared across every team card on the event; see
  * `queueKeyOf` (app/lib/events.ts).
+ *
+ * [Phase 2 / waitlist plan §5.3] `tierAccess` (resolved once in the drawer,
+ * never re-derived per card) is a second gate ahead of BOTH the direct-request
+ * and waitlist-join affordances — `renderRequestControl` checks it before the
+ * cert-eligibility check and short-circuits with whichever disabled reason
+ * applies first, tier being the coarser restriction. A manager's `tierAccess`
+ * is always `eligible: true` (the bypass lives in `getTierAccess` itself), so
+ * this never blocks a manager.
  */
 
 import { useState } from 'react';
@@ -32,8 +40,10 @@ import {
   queueKeyOf,
   getWaitlistPosition,
   getShiftStartInstant,
+  describeTierBlock,
   type EventActor,
   type ShiftRequester,
+  type TierAccess,
 } from '@/app/lib/events';
 import { getWaitlistConfig, type ResolvedEventPolicy } from '@/app/config/org-config';
 import { canSignUpForShifts, getShiftBlockReason } from '@/app/lib/certifications';
@@ -52,6 +62,8 @@ interface TeamCardProps {
   eventRequests: ShiftRequest[];
   /** Resolved once per drawer by resolveEventPolicy(event), not per card. */
   policy: ResolvedEventPolicy;
+  /** Resolved once per drawer by getTierAccess(event, userData, viewerStats), not per card. */
+  tierAccess: TierAccess;
   onRequested: () => void;
   onError: (msg: string) => void;
 }
@@ -91,6 +103,7 @@ export default function TeamCard({
   myActiveRequest,
   eventRequests,
   policy,
+  tierAccess,
   onRequested,
   onError,
 }: TeamCardProps) {
@@ -119,6 +132,15 @@ export default function TeamCard({
   // [P11] Member-facing waitlist copy is config, never a code literal.
   const waitlistCopy = getWaitlistConfig().copy;
 
+  /**
+   * [Phase 2 / waitlist plan §5.3] `tierAccess.eligible` is already `true`
+   * unconditionally for a manager (the bypass lives in `getTierAccess`), so
+   * `tierOpen` doubles as "is this event open to THIS viewer's tier" for
+   * members and "always true" for managers with no separate role check here.
+   */
+  const tierOpen = tierAccess.eligible;
+  const tierReason = tierOpen ? null : describeTierBlock(tierAccess, event);
+
   const heldByFor = (slot: TeamSlot): string | undefined => {
     if (!canManage || slot.userId || !isSlotHeld(slot)) return undefined;
     const held = eventRequests.find((r) => r.id === slot.requestId && r.status === 'offered');
@@ -138,6 +160,15 @@ export default function TeamCard({
         certifications: userData?.certifications,
         memberStatus: userData?.memberStatus,
         joinedTerm: userData?.joinedTerm,
+        // [Phase 2 / waitlist plan §3.7] These two exist ONLY so the server-side
+        // tier gate in `requestShift` can evaluate `minTenureDays`,
+        // `minSemesters` and `requireCommitteeMember`. Those criteria fail
+        // CLOSED on a missing value, so omitting them here does not loosen the
+        // gate — it locks every member out of a tenure-gated event while the
+        // button beside them says they are eligible, because the UI reads the
+        // full `User` and only this projection is missing the fields.
+        joinedOn: userData?.joinedOn,
+        isCommitteeMember: userData?.isCommitteeMember,
       };
       await requestShift(event, team.id, role, requester, { note: note || undefined });
       setOpenControl(null);
@@ -161,6 +192,15 @@ export default function TeamCard({
         certifications: userData?.certifications,
         memberStatus: userData?.memberStatus,
         joinedTerm: userData?.joinedTerm,
+        // [Phase 2 / waitlist plan §3.7] These two exist ONLY so the server-side
+        // tier gate in `requestShift` can evaluate `minTenureDays`,
+        // `minSemesters` and `requireCommitteeMember`. Those criteria fail
+        // CLOSED on a missing value, so omitting them here does not loosen the
+        // gate — it locks every member out of a tenure-gated event while the
+        // button beside them says they are eligible, because the UI reads the
+        // full `User` and only this projection is missing the fields.
+        joinedOn: userData?.joinedOn,
+        isCommitteeMember: userData?.isCommitteeMember,
       };
       await joinWaitlist(event, role, requester, { note: note || undefined, preferredTeamId: team.id });
       setOpenControl(null);
@@ -204,11 +244,38 @@ export default function TeamCard({
     }
   };
 
+  /**
+   * [Phase 2 / waitlist plan §5.3] The tier-blocked disabled affordance —
+   * visually the exact same Tooltip+disabled-Button+reason-line pattern used
+   * for a cert block below, just a different reason string and button label
+   * (whichever button — direct request or waitlist join — would otherwise
+   * have appeared here).
+   */
+  const renderTierBlocked = (buttonLabel: string, color: 'primary' | 'warning') => {
+    const button = (
+      <Button size="sm" variant="flat" color={color} isDisabled className="w-full mt-1.5">
+        {buttonLabel}
+      </Button>
+    );
+    return (
+      <div className="mt-1.5 flex flex-col gap-1">
+        <Tooltip content={tierReason ?? ''}>{button}</Tooltip>
+        <p className="text-[11px] text-warning-600 dark:text-warning-400 leading-snug">{tierReason}</p>
+      </div>
+    );
+  };
+
   const renderRequestControl = (role: SlotRole, hasOpenSlot: boolean) => {
     if (!eventOpen || myActiveRequest) return null;
     if (!canRequestRole(userRole, role)) return null;
 
     if (hasOpenSlot) {
+      // [Phase 2 / waitlist plan §5.3] Tier gate checked BEFORE the cert gate
+      // below — it's the coarser restriction; no point telling someone their
+      // certs are fine when the event isn't even open to them yet.
+      if (!tierOpen) {
+        return renderTierBlocked(`Request ${slotRoleLabel(role)}`, 'primary');
+      }
       // --- Direct request — unchanged from pre-Phase-1 behavior ---
       if (openControl && openControl.role === role && openControl.mode === 'request') {
         return (
@@ -308,6 +375,15 @@ export default function TeamCard({
           </div>
         </div>
       );
+    }
+
+    // [Phase 2 / waitlist plan §5.3 T4] A member with no live queue entry yet
+    // is gated the same way a direct request is — joining is a back door into
+    // signup, so it can't be open before the tier is. An EXISTING entry
+    // (handled above) is never affected: viewing your position or leaving the
+    // queue always stays available.
+    if (!tierOpen) {
+      return renderTierBlocked(waitlistCopy.joinButtonLabel, 'warning');
     }
 
     const queueLength = eventRequests.filter(
