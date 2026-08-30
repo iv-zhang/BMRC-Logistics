@@ -140,6 +140,32 @@ service cloud.firestore {
       // `endEventShifts`' dotted `'attendance.shiftEndAt'` update.
       allow update: if isSignedIn() && touched().hasOnly(['attendance']);
 
+      // ── REMINDER STAMP CARVE-OUT (waitlist plan §8 Phase 3, §6.2/§6.6) ──
+      // A member may make a write that touches ONLY `remindersSent`.
+      //
+      // WHY IT IS NEEDED: there is no scheduler yet (plan P6/§6.2) — the
+      // member's OWN client is what notices a due reminder and emits it
+      // (`emitDueShiftReminders`, app/lib/events.ts), so it must also be the
+      // one that stamps its own idempotency key. Without this rule the
+      // member-update branch below denies it: that branch requires the write
+      // to END at `cancelled`/`approved`/`declined` and (except for
+      // cancellation) to come FROM `offered` — a reminder stamp on an
+      // already-`approved` request satisfies neither condition.
+      //
+      // WHY IT IS SAFE, unlike the attendance carve-out above: `mine()`
+      // restricts this to the member's own document, and
+      // `hasOnly(['remindersSent'])` restricts it to a single field that
+      // grants nothing — the worst a forger can do to themselves here is
+      // suppress their own reminder.
+      //
+      // This carve-out survives the Phase 4a swap unchanged: when the
+      // external sweep worker takes over emitting reminders, it stamps
+      // `remindersSent` with a service account (which bypasses these rules
+      // entirely), and this rule simply stops being the path actually used —
+      // it is not removed, since a client-side fallback / manual retry still
+      // needs it.
+      allow update: if mine() && touched().hasOnly(['remindersSent']);
+
       // A member may respond to their own live offer, or withdraw. Never
       // approve themselves, never re-price the offer, never move it to another
       // event/role/person.

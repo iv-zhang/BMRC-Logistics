@@ -8,5 +8,6 @@ import { runRegistered } from './harness';
 import './events/evt-shifts.test';
 import './events/evt-waitlist.test';
 import './events/evt-tiers.test';
+import './events/evt-reminders.test';
 
 await runRegistered();

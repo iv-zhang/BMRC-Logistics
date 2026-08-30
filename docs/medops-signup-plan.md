@@ -1,15 +1,30 @@
 # MedOps Signup, Waitlist & Priority Access — Implementation Plan
 
-> **Status:** **In build. Revision 4.** PR zero and Phases 0, 0.5 and 1 are committed locally (not
-> pushed); Phase 2 is feature-complete in the working tree and Phase 3 is not started. See
+> **Status:** **In build. Revision 5.** PR zero and Phases 0, 0.5, 1 and 2 are committed locally
+> (not pushed); Phase 3 is feature-complete in the working tree and paused for manual testing. See
 > [§10 Implementation log](#10-implementation-log-r4) for what has actually shipped and what the
 > build discovered that the plan did not predict.
 > **Scope:** Extends the existing event / shift-signup system (`app/events`, `app/lib/events.ts`)
 > with a waitlist queue, tiered notice-based promotion, priority access windows for high-demand
-> events, tenure tracking, and reminder notifications.
+> events, tenure tracking, reminder notifications, **[R5]** bulk event creation, and a copy-density
+> rule for the surfaces all of that added.
 > **Policy is settled.** The tiered-notice promotion model and the no-show rules in §3 are the
 > output of a resolved internal debate and are treated here as fixed requirements. This document
 > plans *how to build them against the current code*, not whether to.
+
+> ### Revision 5 — 2026-08-29 (walkthrough of the shipped Phase 1/2 surfaces)
+>
+> Two asks came out of driving the built UI. Neither changes policy, the state machine, or any
+> shipped write path — §3 is untouched.
+>
+> | Ask | What it becomes |
+> |---|---|
+> | **"There should be a way to mass add events easily."** | **§5.9** (bulk event creation), **§4.1's `eventTemplates`**, `Event.seriesId` (§2.2), and **Phase 5** in §8. A repeat-pattern generator *and* a paste-the-spreadsheet path, both feeding one reviewable grid, both writing through the existing `createEvent`. |
+> | **"The current events stuff is too wordy."** Specifically the standing explanation paragraphs under `Enable waitlist` and `Priority access tiers` in the event editor: *"the descriptions don't need to be there — maybe an info icon when the user hovers over it, there's a text popout that explains it. But no need to clutter the page with this stuff."* | **P15** + **§5.8**: a `FieldHint` info affordance replaces every standing explanatory paragraph on the manager-facing events and settings surfaces, with an explicit keep-rule for warnings, live state and typing instructions — and an explicit **member-facing exception**, because on those screens the copy *is* the feature (P4/§5.3). **Phase 3.5** does the sweep. |
+>
+> `seriesId` is the only new persisted field this revision adds, and it is optional, non-load-bearing
+> and read by nothing. Both new phases sit **off the critical path**: Phase 3.5 is a same-day UI
+> sweep, and Phase 5 depends on none of the waitlist work. Changes are marked **[R5]**.
 
 > ### Revision 4 — 2026-08-29 (build begins; three defects the plan missed)
 >
@@ -120,6 +135,8 @@ tweak — each has downstream consequences in at least two other sections.
 | **P12** **[R2]** | **`callTime` is required on every event at creation** (Q10) — not just waitlist-enabled ones. | Notice class, reminders, lateness and the external worker's bounded queries all derive from the shift's start instant. Making it optional pushes a null branch into five call sites to save one required field. |
 | **P13** **[R2]** | **The waitlist is per-event-per-role** (Q8). A member joins one queue per role per event; the *team* is an outcome of promotion, not part of the queue key. An optional `preferredTeamId` is a **soft hint**, honoured by a configurable strategy. | Matches member intent ("I want an EMT slot at this game"), and means a seat freeing on Team A reaches everyone waiting, not only the subset who happened to queue on Team A. |
 | **P14** **[R3]** | **No part of this feature is committed to `main`.** Every phase is a branch off `main`, verified locally against the emulator, pushed, and merged through a pull request (§9). | A push to `main` **deploys the live site automatically** (§9.5) — `main` is production, not an integration area. This is also the only reason the CI defects in §9.5 are in scope for this plan at all: they sit directly in the path between "the code is done" and "members can use it". |
+| **P15** **[R5]** | **On manager-facing surfaces, a field explains itself in its label or behind an info icon — never in a standing paragraph.** At most one line of always-visible helper text per *card*, reserved for text that must not be missable. Everything else moves into a `FieldHint` popover (§5.8). **Member-facing copy is exempt** — there, the explanation is the feature. | The editor and the six-card settings tab had grown a paragraph under every switch. Prose that is always on screen is prose nobody reads, and it pushes the actual controls below the fold, so the wordiness costs comprehension rather than adding it. Hover/focus/tap keeps the explanation one gesture away for whoever wants it and out of the way of whoever doesn't. The exemption exists because P4's non-binding reassurance and §5.3's pre-emptive tier explanation only work if they are *read*. |
+| **P16** **[R5]** | **Bulk creation writes through `createEvent`, once per event, with no second write path.** The generator's only job is to produce a list of `CreateEventInput`s and show them for review; it may not assemble its own payload, skip validation, or batch-write raw docs. | `createEvent` already owns required-field validation (P12's `callTime`), team defaults, actor stamping, and `deepRemoveUndefined`'s Timestamp handling — the exact area that produced bug **D12**. A parallel bulk writer becomes the second place all of that has to stay correct, and the one that gets it wrong silently, twenty events at a time. |
 
 ## 1. Summary of current state
 
@@ -494,6 +511,15 @@ reads this field directly — everything goes through `resolveEventPolicy(event)
 **`waitlistEnabled?: boolean`** on `Event` — per-event kill switch for whether a full team offers a waitlist at all, or just shows "Full." (Kept as its own field rather than folded into `policy` because it is the one flag the event editor surfaces as a prominent switch, and because the UI reads it before any policy resolution happens.)
 
 **Default when `undefined`: ON (waitlisting is available).** Rationale: the point of this whole feature is that oversubscribed high-demand events (the common case motivating this plan) get a queue instead of silently turning members away; defaulting off would mean every event created before this field existed — i.e. all of them — opts out until someone remembers to flip a per-event switch, which defeats the purpose for exactly the events most likely to benefit. This mirrors the `hasFtoIntern` precedent's *mechanism* (undefined has one fixed meaning, checked everywhere) but deliberately inverts its *polarity* — `hasFtoIntern` defaults off because it adds a slot type existing UIs don't expect, whereas waitlisting only activates on an already-full team and has no effect on an event with open slots, so there's no equivalent "don't retroactively sprout surface area" risk to guard against. Document this default at the field declaration site, not just here.
+
+**`seriesId?: string`** **[R5]** — stamped by bulk creation (§5.9): every event produced by one run
+shares one generated id; a hand-created event has none. It is a **grouping label and nothing more**.
+It lets the result panel say *"12 events created — undo"*, and it leaves the door open for an
+"edit the whole series" feature later without a migration. **Nothing branches on it.** No read path
+may require it, no query filters on it outside the undo action, and deleting one event of a series
+is legal and leaves the rest untouched. If a future change makes `seriesId` load-bearing, that is a
+new design decision (a live series entity — see §5.9's out-of-scope note), not an extension of this
+field.
 
 ### 2.3 `User` extensions (`app/types.ts:83-123`)
 
@@ -1115,7 +1141,8 @@ which is the entire point of publishing tiers rather than silently gating.
 | `meetsTierCriteria` | New **[R2]** | `(criteria, user, stats, now) => boolean` | §3.7 — the AND/OR criteria evaluator, exported for tests. |
 | `getMemberShiftStats` | Modified | unchanged | Add `noShowNonBinding`, `lateCancellations`, `shiftsByType`, `shiftsByTypeSemester` (§3.4). |
 | `deriveJoinedOn` / `completedTermsSince` | New **[R2]** | `(joinedTerm, terms) => Timestamp \| null` / `(joinedOn, now, terms) => number` | §2.3, §3.7 — term↔date mapping in one place (`app/lib/tenure.ts`), shared by the roster modal, the backfill script and tier evaluation. |
-| `flagEventNeedsCallTime` | New **[R2]** | `(eventId) => Promise<void>` | Surfaces a legacy event with no `callTime` as blocked-for-promotion rather than silently skipping it (§3.3, P12). |
+| `flagEventNeedsCallTime` | New **[R2]** | `(eventId) => Promise<void>` | Surfaces a legacy event with no `callTime` as blocked-for-promotion rather than silently skipping it (§3.3, P12). || `expandEventSeries` | New **[R5]** | `(spec: EventSeriesSpec, templates) => CreateEventInput[]` | §5.9 — **pure**. Expands a repeat pattern (or parsed spreadsheet rows) into fully-formed inputs with the chosen template applied, including per-row tier dates. No I/O, so the review grid renders exactly what will be written and the tests assert on the same values. Lives in `app/lib/event-series.ts`, not `events.ts` — it is creation-time convenience, not shift-request logic. |
+| `createEventsBulk` | New **[R5]** | `(inputs: CreateEventInput[], actor, opts?: { seriesId?: string }) => Promise<{ created: string[]; failed: { index: number; error: string }[] }>` | §5.9 — loops `createEvent` once per input (**P16**), collecting failures instead of aborting. Partial success is a **reported outcome, never a rollback**. |
 
 `requestShift`, `joinWaitlist` and `promoteNextFromWaitlist`'s eligibility branch all route through `getTierAccess` — a member blocked by a priority window must not be able to land on the waitlist either, since queueing during a window they don't qualify for would let them jump the line the moment the queue processes. Concretely: throw using `TierAccess.reason`, the same pattern as the existing `canSignUpForShifts` check (`events.ts:249-251`).
 
@@ -1381,6 +1408,48 @@ every array gets `pickArray`.** `defaultTiers` is an array *of objects* and is d
 all-or-nothing — element-wise merging a list the admin can reorder and delete produces resurrected
 zombie entries, which is worse than a stale list.
 
+**`eventTemplates`** **[R5]** — named presets, so "mass add" does not mean "fill the same eight
+fields twenty times". Required by §5.9 and useful on its own in the single-event editor:
+
+```ts
+export interface EventTemplateDef {
+  id: string;
+  name: string;                  // "Football home game"
+  eventType?: string;
+  venue?: string;
+  location?: string;
+  /** P12: a template with no callTime is invalid — the whole point is that it prefills one. */
+  callTime: string;
+  endTime?: string;
+  description?: string;
+  teams: { name: string; emtCount: number; hasFtoIntern: boolean }[];
+  waitlistEnabled?: boolean;
+  /**
+   * Lead days, NOT absolute dates — resolved per event against that event's own date
+   * at creation time (§5.9). Storing instants here would give a whole series one
+   * opening date, which is the single worst bug bulk creation can produce.
+   */
+  accessTierPreset?: {
+    windows: { label: string; leadDays: number; criteria: TierCriteria }[];
+    generalLeadDays: number;
+    rationale: string;
+  };
+}
+```
+
+**It goes on the existing "Events & Venues" settings tab**, beside `venues`/`eventTypes`/`terms` —
+templates describe org *structure* (what a football game looks like), not signup *policy*, so they
+do not belong on the Waitlist & Access tab. Getter `getEventTemplates()`.
+
+**Templates are copied at creation, never referenced.** Editing a template later does not touch
+events already created from it — the identical rule §4.3 applies to `accessTier`, and for the same
+reason: a config edit changes future behaviour, never a commitment already made to members.
+
+Validation: `name` non-empty and unique; at least one team; `emtCount` inside `clampEmtCount`;
+`callTime` present (P12); `generalLeadDays` and every `leadDays` `> 0`, with `leadDays >
+generalLeadDays` (the same rule §4.2's tier validation already applies, evaluated here in days
+rather than instants).
+
 ### 4.2 The settings UI
 
 **A sibling tab, not an extension of `EventsVenuesTab`.** `events-tab.tsx` is already 191 lines
@@ -1399,29 +1468,37 @@ naturally beside `semesterStartDate` (which it replaces) and is org structure, n
 existing merge-and-`saveOrgConfig(patch, actor)` path — no new plumbing.
 
 **Card layout** (`bg-content1 border border-divider rounded-large p-5` per card, matching
-`events-tab.tsx:61,113,156,172`). Six cards:
+`events-tab.tsx:61,113,156,172`). Six cards.
 
-**Card 1 — Waitlist**
+> **[R5] Read the sketches below under P15.** `ⓘ` marks a `FieldHint` (§5.8) — the sentence beside
+> it is the hint text, not on-screen copy. Text shown *without* `ⓘ` is deliberately always visible
+> and is covered by §5.8's keep rule (a warning, live state, or an instruction you need while
+> typing in the field). Revision 2 drafted these cards with an explanation under every control; the
+> sketches are updated in place rather than left as a second, wrong source of truth.
+
+**Card 1 — Waitlist** **[R5] (hints per P15)**
 ```
-[Switch] Enable waitlist
-  "When on, a member who requests a full slot joins a queue instead of being blocked."
+[Switch] Enable waitlist  ⓘ  When on, a member who requests a full slot joins a queue
+                              instead of being blocked.
 
-[Select] Queue scope            One queue per event (recommended) | One queue per team
-  "Per event means a seat freeing on any team reaches everyone waiting for that role."
-[Select] Team preference        Ignore | Honour when possible (recommended) | Strict
-  "Strict can leave a seat empty while someone waits for their preferred team."
+[Select] Queue scope      ⓘ  Per event means a seat freeing on any team reaches everyone
+                              waiting for that role.
+           One queue per event (recommended) | One queue per team
+[Select] Team preference  ⓘ  Strict can leave a seat empty while someone waits for their
+                              preferred team.
+           Ignore | Honour when possible (recommended) | Strict
 
-Input number  Long-notice threshold        endContent="hours"
-Input number  Long-notice response window  endContent="hours"
-Input number  Short-notice response window endContent="hours"
-  "Short-notice acceptance is never binding — a no-show on a short-notice pickup doesn't count
-   against them."
+Input number  Long-notice threshold        endContent="hours"  ⓘ
+Input number  Long-notice response window  endContent="hours"  ⓘ
+Input number  Short-notice response window endContent="hours"  ⓘ
+  ⚠ VISIBLE, not a hint: "Short-notice acceptance is never binding — a no-show on a
+    short-notice pickup doesn't count against them."   (keep rule 1: a policy promise)
 
-[Switch] Auto-promote from waitlist
+[Switch] Auto-promote from waitlist  ⓘ
 [Select] After a declined or expired offer   Remove from queue | Move to back of queue
 Input number  Max offers per member per event   (only enabled with 'Move to back')
-Input number  Max queue length                  0 = unlimited
-[Switch] Allow joining after the shift has started
+Input number  Max queue length                  0 = unlimited      ← visible (keep rule 3)
+[Switch] Allow joining after the shift has started  ⓘ
 ```
 
 **Card 2 — Cancellation policy** **[R2]**
@@ -1432,15 +1509,19 @@ Input number  Notice window                endContent="hours"     (default 48)
                 Do nothing | Flag for managers | Warn the member and flag (recommended) | Block the cancel
 [Select]      Applies to    Committed shifts only (recommended) | All confirmed shifts
 [Switch]      Count late cancellations on the member's record
-Textarea      Message shown to the member    ({hours} is replaced)
+Textarea      Message shown to the member    ({hours} is replaced)   ← visible (keep rule 3)
 
 Inline note under 'Block': "Blocking is enforced in the app only until Firestore rules ship
 (see Phase 0.5). A member with developer tools can still cancel."
+  ⚠ **[R5]** stays visible (keep rule 1) — a caveat hidden behind hover is a caveat that
+    has stopped working.
 ```
 
 **Card 3 — Priority access tiers** **[R2] (repeatable rows)**
 ```
-[Switch] Enable priority tiers
+[Switch] Enable priority tiers  ⓘ  Stage sign-up so members who meet a window's criteria
+                                    can sign up before everyone else. Off = open to
+                                    everyone immediately.
 
 Windows (drag to reorder; earliest first)
   ┌──────────────────────────────────────────────────────────────┐
@@ -1456,10 +1537,13 @@ Windows (drag to reorder; earliest first)
 
 Input number  General signup opens   [7] days before the event
 Textarea      Default rationale       (shown to members BEFORE they hit the restriction)
+                                      ← visible (keep rule 3: it tells the author what to write)
 ```
 The tenure inputs render **disabled with an inline warning** until `joinedOn` coverage is adequate
 (§3.7): *"12 of 74 members have no join term recorded — set their term on the roster before using
-tenure rules."* Coverage is a cheap count over the already-loaded roster.
+tenure rules."* Coverage is a cheap count over the already-loaded roster. **[R5]** That warning is
+live state, so it stays visible (keep rule 2) — a `FieldHint` implies static help, and this number
+changes as the roster is filled in.
 
 **Card 4 — Shift reminders**
 ```
@@ -1470,6 +1554,9 @@ Textarea    Message template  ({event} {team} {role} {hours})
 
 Note (always visible): "With no scheduler, in-app reminders appear when the member opens the app.
 Email requires the delivery worker in Card 6."
+  ⚠ **[R5]** the "always visible" here is now load-bearing (keep rule 1) — it is the one place
+    the product's central limitation is stated to the person configuring it.
+Message-template interpolation keys ({event} {team} {role} {hours}) also stay visible (keep rule 3).
 ```
 
 **Card 5 — Member-facing copy** **[R2]**
@@ -1484,6 +1571,8 @@ This card exists because the offer wording is the part of this feature most like
 rewording after the first real weekend, and it should not require a deploy. It is also the part
 most likely to be *wrongly* reworded — so put a visible warning above it: *"The short-notice message
 is a policy promise. Don't remove the 'no penalty' wording without changing the policy."*
+**[R5]** That warning is the canonical example of keep rule 1: it is precisely the text a hurried
+editor must not be able to skip, so it may never become a hint.
 
 **Card 6 — Notification delivery** **[R2]**
 ```
@@ -1496,6 +1585,7 @@ Input number  Digest manager emails every [15] minutes   (0 = send individually)
 
 Status line: "Email sender: not configured. In-app only." — read live so a MedOps officer can tell
 whether the worker is actually running (§6.4 writes a heartbeat doc; render its age here).
+  ⚠ **[R5]** live state — visible, never a hint (keep rule 2).
 ```
 
 **Validation** (inline, blocking save or at minimum a visible warning — must not silently accept an
@@ -1624,6 +1714,9 @@ list, the plan is wrong, not the officer.
 | Add next year's semester so join dates work | Settings → Events & Venues → Terms | No |
 | Change reminder offsets (48h/12h → 72h/24h/2h) | Card 4 | No |
 | Turn email on once the worker is running | Card 6 | No |
+| **[R5]** Define what a "Football home game" is once — teams, call time, venue, tier lead days | Settings → Events & Venues → Templates | No |
+| **[R5]** Create a whole season of events from the athletics spreadsheet | Events → New event ▾ → Add many → Paste | No |
+| **[R5]** Change the wording of a hint | — | **Yes** — hint text is UI copy, not policy copy. Member-facing policy copy stays configurable in Card 5; a manager-facing hint is code, same as a field label. |
 | Change **who may be a manager**, or what a manager may do | — | **Yes** — role semantics are code (D-13), deliberately |
 | Change the no-show / binding model itself (P4) | — | **Yes** — that is the policy this feature implements, not a setting |
 
@@ -2011,6 +2104,10 @@ scopes similarly by `effectiveUid`. Both must:
 | `app/settings/page.tsx` | modified | register the "Waitlist & Access" tab | `WaitlistTierTab` |
 | `app/components/settings/events-tab.tsx` | modified | **[R2]** `terms` editor replacing the standalone `semesterStartDate` field | `saveOrgConfig` (existing) |
 | `app/components/roster/member-detail-modal.tsx` | modified | **[R2]** `joinedTerm` becomes a term picker writing `joinedOn` via `deriveJoinedOn` (§2.3) | `getTerms`, `deriveJoinedOn` |
+| `app/components/field-hint.tsx` | **new [R5]** | the `ⓘ` affordance of §5.8 — HeroUI `Tooltip`, focusable button trigger, tap-toggle on touch, `Popover` for long text | HeroUI `Tooltip`/`Popover`, `lucide-react` `Info` |
+| `app/components/events/bulk-event-modal.tsx` | **new [R5]** | §5.9 — Repeat/Paste tabs, editable review grid, conflict flags, progress, `seriesId` undo | `expandEventSeries`, `createEventsBulk`, `getEventTemplates` |
+| `app/events/page.tsx` | modified **[R5]** | split `New event ▾ → Add many` (manager-gated by the existing `canManage`); mounts the bulk modal | `bulk-event-modal.tsx` |
+| `app/components/settings/events-tab.tsx` | modified **[R5]** | `eventTemplates` editor beside `venues`/`eventTypes`/`terms` (§4.1) | `saveOrgConfig` (existing) |
 
 ### 5.7 Empty/edge states
 
@@ -2062,6 +2159,172 @@ scopes similarly by `effectiveUid`. Both must:
 > P2 holds. The field is declared in §2.1. A second skip on an already-skipped entry is a no-op
 > (the manager should use **Remove** instead), and clearing `skippedAt` restores the original
 > position, which is the intended "undo".
+### 5.8 **[R5]** Copy density — `FieldHint`, not paragraphs (P15)
+
+The complaint, from the walkthrough of the shipped Phase 2 editor:
+
+> *"the current events stuff is too wordy. `Enable waitlist` — 'When a team fills up, members can
+> join a queue instead of seeing Full.' … the descriptions don't need to be there. Maybe an info
+> icon when the user hovers over it, there's a text popout that explains it? But no need to clutter
+> the page with this stuff."*
+
+It is a fair read of what happened: P11 ("nothing hardcoded") produced a lot of knobs, and each knob
+arrived with a sentence justifying it. Individually every sentence is defensible; stacked, they
+turned a form into an essay. `event-editor-modal.tsx:703-724` puts ~30 words of explanation on
+screen permanently, above the Teams section — which is the part of that modal a manager actually
+came to use.
+
+**The component.** `app/components/field-hint.tsx`, one small export, used everywhere:
+
+```tsx
+<FieldHint text="When a team fills up, members can join a queue instead of seeing “Full.”" />
+```
+
+- Renders a `lucide-react` `Info` at `size={13}` in `text-foreground-400` inside a HeroUI
+  `<Tooltip placement="top" size="sm" showArrow delay={200} closeDelay={0}>`. `Tooltip` is already
+  used in `roster/page.tsx:942` and `statpack-widget.tsx:242`, so this adds no dependency and no new
+  visual language — it is the pattern this app already has, applied consistently.
+- **The trigger is a real `<button type="button">`** with `aria-label={text}` and no `onPress`
+  navigation. HeroUI opens a tooltip on focus, so keyboard and screen-reader users get the same
+  text. Hover-only on a `<span>` would turn a wordiness fix into an accessibility regression.
+- **Tap must work.** HeroUI's `Tooltip` does not open on touch. Control it (`isOpen`/`onOpenChange`)
+  and toggle on press, closing on outside-press. Managers create and edit events on a phone; a hint
+  that only exists on desktop hover is a hint that is gone for the primary user.
+- Hints longer than ~140 characters render in a `<Popover>` instead, same trigger, so a long
+  explanation doesn't become an unreadable tooltip slab. Prefer shortening the text.
+- `<FieldHint>` sits **inline, immediately after the label text**, never on its own row — the whole
+  point is that the control collapses to one line.
+
+**The sweep — what changes, concretely:**
+
+| File | Today | After |
+|---|---|---|
+| `event-editor-modal.tsx:703-711` (`Enable waitlist`) | switch + `<p className="text-xs text-foreground-500 mt-1">` explanation | `Enable waitlist ⓘ` — one line; the same sentence becomes the hint |
+| `event-editor-modal.tsx:715-724` (`Priority access tiers`) | switch + two-sentence explanation | `Priority access tiers ⓘ` |
+| `event-editor-modal.tsx` (FTO intern switch) | two-line label with a `text-[10px]` sub-line inside the `Switch` | `FTO intern ⓘ` — and this one is a real win: it is repeated once *per team row* |
+| `event-editor-modal.tsx` (`Rationale` textarea) | `description="Shown to a member BEFORE they hit the restriction…"` | **unchanged** — keep rule 3 |
+| `waitlist-tier-tab.tsx` | 15 `description=` props + 4 explanatory `<p className="text-xs text-foreground-500">` blocks (counted 2026-08-29) | hints, minus the keepers marked in §4.2's sketches |
+| `team-card.tsx`, `event-detail-drawer.tsx` | member-facing explanatory lines | **mostly unchanged** — see the exception below |
+
+**The keep rule.** Three kinds of text stay on screen; everything else becomes a hint.
+
+1. **A warning or a policy promise.** Card 5's *"the short-notice message is a policy promise"*, the
+   *"Block is app-enforced only until rules ship"* note, the reminders card's *"there is no
+   scheduler"* note. A caveat behind hover is a caveat that has stopped working.
+2. **Live state.** The worker heartbeat line, the tenure-coverage count (*"12 of 74 members have no
+   join term recorded"*). These change; a hint implies static help, and a stale-looking hint reads
+   as decoration.
+3. **Instruction for what to type, read while typing.** Interpolation keys (`{hours}`,
+   `{event} {team} {role}`), conventions like `0 = unlimited`. Requiring a hover to know what to put
+   in the box you are already in is worse than the paragraph was.
+
+**The member-facing exception.** P15 governs *author* surfaces — the editor and settings, where the
+reader is configuring something and the screen is dense with controls they already understand. On
+member-facing surfaces the text **is** the feature, and moving it behind an icon breaks the feature:
+
+- §5.3 exists specifically so a member learns *why* they can't sign up yet and *when* they can,
+  **before** hitting the wall. Behind a hover, that is just a wall again.
+- P4's non-binding reassurance on a short-notice offer only protects anyone if it is read. The offer
+  modal's binding warning is the same in reverse.
+- A tier `rationale` is author-written for members; hiding it defeats the reason it is a required
+  field.
+
+So: do not move offer copy, the binding/no-penalty lines, the tier explanation, or a cert-block
+reason into a hint. If those read long, **shorten the sentence** — that is a copy edit, and Card 5
+makes most of them editable without a deploy anyway.
+
+**Do not delete the sentences.** Every one answers a real question; this changes where they live,
+not whether they exist. Two of them are also `notificationCopy` **config** (§4.1) — deleting those
+strings changes behaviour, not just layout.
+
+**How to tell it worked.** On a 390px-wide viewport, the event editor's "Waitlist & priority access"
+block fits without pushing the Teams section off screen, and the settings cards are scannable as a
+list of controls rather than a page of prose. No test asserts this; a before/after screenshot is the
+evidence (§8, Phase 3.5).
+
+### 5.9 **[R5]** Bulk event creation — "mass add"
+
+**The problem.** `EventEditorModal` creates exactly one event and is the only creation path
+(`events/page.tsx:283` → `createEvent`). A football season is ~7 home games; a semester of clinics
+or tabling shifts is dozens. Each one today is: open modal, retype the name, pick the type, pick the
+venue, retype the call time, rebuild the team layout, save. Between two home games the fields that
+actually differ are **the date and the name** — everything else is retyped. That is where the time
+goes, and it is also where the drift comes from: one game ends up with 3 EMTs and the next with 4
+because somebody clicked once too few.
+
+**Shape: one modal, two ways in, one review grid.** `app/components/events/bulk-event-modal.tsx`,
+opened from a split button on `/events` (`New event ▾ → Add many`), gated by the existing
+`canManage` (`isEventManagerRole`) — no new permission, no new role check.
+
+**Step 1 — what to create.** Two tabs, because there are genuinely two situations:
+
+- **Repeat.** Pick a template (§4.1 `eventTemplates`), then a pattern: *every* `[1 ▾]` week(s) on
+  `[Sat ×] [Sun ×]`, from `[date]` to `[date]` — or a plain list of hand-picked dates off a mini
+  calendar, which covers an irregular schedule without pretending it is a recurrence rule. Names
+  come from a token pattern: `"{type} vs TBD — {date:MMM d}"`, with `{n}` for the index
+  (`Clinic shift {n}`).
+- **Paste.** A textarea that takes TSV/CSV pasted straight out of the season spreadsheet — which is
+  where these dates already live, and the reason this feature is being asked for. A header row maps
+  columns onto fields; unmapped columns are ignored **with a visible list of what was ignored**, so
+  a silently dropped "Notes" column can't look like a successful import. Missing fields fall back to
+  the selected template.
+
+**Step 2 — review. This step is not skippable.** An editable grid, one row per event: date, name,
+type, venue, call time, end time, teams (compact, `1× FTO+3`), status. Row-level edit and delete.
+Above it a summary line, and **conflict flags** computed client-side against the already-loaded
+`events` feed — no extra reads:
+
+- **Duplicate** — an existing event with the same date *and* name (amber: *"already exists?"*).
+  Warn, never block: a doubleheader is real.
+- **Same day** — another event that day (grey, informational).
+- **Invalid** — no `callTime` (P12), unparsed date, or empty name (red). Blocks **that row only**;
+  the rest still create.
+
+Rows default to `status: 'draft'`, so a bulk run cannot accidentally open signup on twenty events at
+once; the confirm button carries a `[Create as draft ▾ | Create as published]` choice.
+
+**Step 3 — create.** `createEventsBulk` (§3.8) calls `createEvent` once per row (**P16**) with a
+progress line (*"Creating 7 of 12…"*). Failures are **collected, not thrown**: the result panel
+lists what was created and what failed with the reason, and failed rows stay in the grid for a
+retry. **No transaction, no rollback** — 12 of 14 created is a good outcome that a rollback would
+throw away, and per-event `addDoc` is exactly what the single-event path already does.
+
+**Undo, not rollback.** The result panel offers **"Undo — delete these 12 events"** while the modal
+is open. It works off `createEventsBulk`'s returned `created: string[]` — **deleting by id, not by
+querying `seriesId`** — so it needs no index and cannot possibly reach an event from an earlier run.
+Each delete is still guarded: `status === 'draft'` **and** zero `shift_requests` for that event, both
+checkable against feeds the page already has. That guard is not politeness — the moment a member
+signs up, the event has stopped being scaffolding, and a bulk-undo that deletes someone's shift is a
+far worse bug than the mis-click it was meant to fix. Skipped events are named in the panel
+(*"2 kept — members have already signed up"*), never silently left behind.
+
+`seriesId` (§2.2) is written for a different reason: so a manager looking at these events **next
+week** can still tell they came from one run. Undo does not depend on it.
+
+**Deliberately out of scope.** No recurring-event *entity* (a live `event_series` doc that keeps
+regenerating), no "edit the whole series", no iCal/ESO import. Bulk add is a **creation-time
+convenience that produces ordinary, independent events** — the same relationship `createEmptyTeam`
+has to a team. A live series entity would put a second owner on every field of an event, and §3's
+promotion, tier and attendance logic all assume an event is self-contained. `seriesId` is left
+behind so that decision stays reachable without a migration; until then, nothing reads it.
+
+**Interaction with waitlist and tiers — the one place this can be subtly wrong.** Tier windows are
+stored as absolute `Timestamp`s **per event** (§4.3), so the generator computes them per row from
+*that row's* date and the template's lead days. It must never copy one row's `opensAt` across the
+series: the failure mode is twelve events that all open for signup on the same day, which looks
+fine in the grid and is only discovered by members. This gets an explicit test — expand a 4-week
+series from a template with `generalLeadDays: 7` and assert four **distinct** `generalOpensAt`
+values, each 7 days before its own event's date.
+
+**Two more traps worth naming before someone hits them:**
+
+- **Local time, not UTC arithmetic.** Reuse `parseDateInputValue` / `toJsDate`; do **not** advance a
+  week with `new Date(t + 7*864e5)`. Across a DST boundary that shifts an event by an hour, which
+  moves `callTime`-derived notice classing and, at a month end, the day itself.
+- **Bulk means bulk failure.** `createEvent` throws on a missing name or date; twenty of those in a
+  loop with no per-row result panel produces one generic toast and no idea which rows landed. The
+  `failed[]` array in the return type is the whole reason the signature isn't `Promise<void>`.
+
 ## 6. Notification and reminder implementation
 
 **Hard constraint (verified, restated plainly):** `next.config.ts:5` sets `output: 'export'` —
@@ -2514,6 +2777,11 @@ never be built. A new **Phase 0.5** lands minimum-viable Firestore rules (Q6) *b
 goes live, because the waitlist is the first feature where a member's own client writes a status that
 grants them something.
 
+**[R5] Two more phases, both off the critical path.** **Phase 3.5** (copy-density sweep, §5.8) and
+**Phase 5** (bulk event creation, §5.9) came out of the Revision 5 walkthrough. Neither touches
+request state, promotion, or policy; 3.5 is pure UI and 5 depends on nothing in Phases 1–4b. They
+are numbered where they fit the story, not where they must be built.
+
 Each phase is independently shippable and independently useful. Nothing here requires big-bang
 delivery.
 
@@ -2536,6 +2804,12 @@ Phase 0   (schema + config plumbing + callTime + terms)
            │        ▲                            │
            │        └── needs terms + joinedOn backfill ONLY if minSemesters/minTenureDays is used
            └──▶ Phase 3 (in-app reminders + history surfaces) ─┘
+                     └──▶ Phase 3.5 (copy-density sweep)   ◀── [R5] pure UI; needs only P2/P3's
+                                                                surfaces to exist
+
+Phase 5   (bulk event creation)                            ◀── [R5] independent of ALL of the above.
+   └── needs only §4.1 `eventTemplates` + `createEvent`.        Can ship first if a season's
+                                                                schedule is due.
 ```
 
 Phase 1 and Phase 2 are **independent of each other** — both depend only on Phase 0/0.5. If priority
@@ -2766,6 +3040,27 @@ Small, high-value, still zero infrastructure.
 
 ---
 
+### Phase 3.5 — Copy-density sweep **[R5]**
+
+Pure UI. No schema, no lib, no config. Implements P15 via §5.8's component, sweep table, keep rule,
+and member-facing exception. Small enough to ride in Phase 3's branch if that has not merged;
+otherwise `feat/waitlist-p35-copy-density`.
+
+| Work | Files |
+|---|---|
+| `FieldHint` — tooltip + focusable button trigger + tap toggle + `Popover` for long text | `app/components/field-hint.tsx` (new) |
+| Editor sweep: the two switch paragraphs, the per-team FTO-intern sub-line | `app/components/events/event-editor-modal.tsx` |
+| Settings sweep: 15 `description=` props + 4 helper `<p>` blocks, minus the keepers marked in §4.2 | `app/components/settings/waitlist-tier-tab.tsx` |
+| Audit the remaining event surfaces against the keep rule **and the member-facing exception** — most of this file's copy should survive untouched | `team-card.tsx`, `event-detail-drawer.tsx`, `waitlist-offer-modal.tsx` |
+
+**Verification is by eye at 390px**, since the whole claim is about density: the editor's "Waitlist &
+priority access" block must not push Teams off screen. Attach before/after screenshots to the PR —
+no automated test can assert "this reads as a form, not an essay". The one thing a reviewer must
+check by hand is that **no sentence was deleted**, only relocated (and that no member-facing
+sentence moved at all).
+
+---
+
 ### Phase 4a — Free external clock + email **[R2] (Q1's answer)**
 
 The phase that turns lazy evaluation into a real clock, on the Spark plan, with no card.
@@ -2797,6 +3092,29 @@ billing budget alert set **the same day**, before any function code ships. Expec
 
 ---
 
+### Phase 5 — Bulk event creation **[R5]**
+
+**Gated on nothing in Phases 1–4b.** It touches no request state, no promotion, no policy — only
+`createEvent`, one config group, and a new modal. Build it before, during, or after the waitlist
+work; if the loudest pain in a given week is "I have to type in the whole football season by hand",
+it should jump the queue.
+
+| Work | Files |
+|---|---|
+| `eventTemplates` config group + defaults + `getEventTemplates()` + runtime merge | `app/config/org-config.ts`, `app/lib/org-config-store.ts` |
+| Template editor on the existing Events & Venues tab | `app/components/settings/events-tab.tsx` |
+| `Event.seriesId` (optional, read by nothing but the undo action) | `app/types.ts` |
+| `expandEventSeries` (pure) + `EventSeriesSpec` + the paste parser | `app/lib/event-series.ts` (new) |
+| `createEventsBulk` (loops `createEvent`, collects failures — P16) | `app/lib/events.ts` |
+| Bulk modal: Repeat/Paste tabs, review grid, conflict flags, progress, `seriesId` undo | `app/components/events/bulk-event-modal.tsx` (new) |
+| Split `New event ▾ / Add many` button, manager-gated by the existing `canManage` | `app/events/page.tsx` |
+| Tests: expansion across a DST boundary and a month end, **distinct per-row tier dates**, paste parsing incl. ignored columns, partial-failure result shape | `scripts/emulator/events/evt-bulk.test.ts` (new) |
+
+Build `expandEventSeries` **first and test it headless** — it is pure, it is where every date bug
+will live, and having it green makes the modal a rendering problem rather than a debugging one.
+
+---
+
 ### What to build first, in one line
 
 **[R3] PR zero (§9.5), then Phase 0, then 0.5, then whichever of Phase 1 or Phase 2 matches the more
@@ -2805,6 +3123,11 @@ signup is a scramble. Defer 4a until the lazy-evaluation limitation is demonstra
 practice, and 4b until someone actually wants to put a card on the project. PR zero is first because
 until the deploy path is fixed, "merged to `main`" and "live for members" are not the same statement —
 and one of the two workflows that currently define production publishes a blank page.
+
+**[R5]** Both new phases are cheap and neither blocks anything: run **Phase 3.5** as a same-day
+sweep whenever Phase 3's surfaces settle, and pull **Phase 5** forward ahead of the rest the moment
+a real schedule needs entering — it is the only phase in this plan that saves a MedOps officer time
+on day one rather than saving a member frustration on a full team.
 
 ---
 
@@ -3020,9 +3343,11 @@ disagree, this section is current and the plan section is historical.
 | **Phase 0** — schema + org config + consumer audit | ✅ committed | `3b8c6f0` on `feat/waitlist-p0-schema` | Build ✅, 69/69 tests ✅, `tsc` clean, zero new lint. |
 | **Phase 0.5** — Firestore rules split | ✅ committed | `434a046` on `feat/waitlist-p05-rules` | Ruleset needed a fix the plan did not anticipate — **D4** below. |
 | **Phase 1** — waitlist queue | ✅ committed | `5ac86e7` on `feat/waitlist-p1-queue` | Every row of the §8 Phase 1 table is written. The first end-to-end run of the new `evt-waitlist` suite found **two real bugs** — **D11** (accepting an EMT offer was impossible) and **D12** (every decline threw); both fixed, and `test:events` is now **146/146 across all 15 suites**. Discoveries **D5–D13** below. Not yet runtime-verified in a browser (see §10.5). |
-| **Phase 2** — priority tiers | 🔨 feature-complete in the tree, uncommitted | — | Every row of the §8 Phase 2 table is written, plus the `/settings` tenure gate §8 only implies. Built by seven parallel agents on non-overlapping file sets against one pinned cross-file contract (§10.7). Discoveries **D14–D18** below. |
-| **Phase 3** — in-app reminders | ⏳ pending | — | |
+| **Phase 2** — priority tiers | ✅ committed | `cbe542f` on `feat/waitlist-p2-tiers` | Every row of the §8 Phase 2 table is written, plus the `/settings` tenure gate §8 only implies. Built by seven parallel agents on non-overlapping file sets against one pinned cross-file contract (§10.7). Discoveries **D14–D18** below. |
+| **Phase 3** — in-app reminders + history surfaces | 🔨 feature-complete in the tree, uncommitted | — | Branch `feat/waitlist-p3-reminders`. Every row of the §8 Phase 3 list is written, plus the notification-bell work §8 does not mention. Built by seven parallel agents on non-overlapping file sets against one pinned contract, the same method as Phase 2 (§10.7). Discoveries **D19–D22** below. **Paused here for manual testing** — see §10.8. |
+| **Phase 3.5** — copy-density sweep **[R5]** | ⬜ not started | — | Added by Revision 5 (P15, §5.8). Pure UI; may ride in Phase 3's branch if that has not merged. |
 | **Phase 4a/4b** | ⛔ out of scope | — | Excluded by agreement at build start. |
+| **Phase 5** — bulk event creation **[R5]** | ⬜ not started | — | Added by Revision 5 (§5.9). Independent of every other phase; pull forward if a season's schedule needs entering. |
 
 **Nothing is pushed.** Every commit is local. P14's "open a PR into `origin/main`" is deferred to an
 explicit instruction; P14's actual prohibition — never commit *to* `main` — is honoured.
@@ -3050,6 +3375,50 @@ Two things worth knowing that the plan does not say:
   letting a single event raise it would let that event consume a member's allowance everywhere else.
   It is surfaced on the resolved type anyway so Phase 1's offer path reads **one** object and never
   reaches past `resolveEventPolicy` into raw config — which is the entire point of that type.
+
+### 10.2b What Phase 3 actually changed
+
+Nine files, no new page and no new collection — Phase 3 is entirely additive to surfaces that
+already existed.
+
+**The lib seam** (`app/lib/events.ts`, `app/types.ts`, `firestore.rules`). `ShiftRequest` gains
+`remindersSent?: number[]`. `MemberShiftStats` gains four counters (`waitlistPending`,
+`offersOutstanding`, `offersDeclined`, `offersExpired`), counted in a second pass that is *not*
+gated on `status === 'approved'` — the same shape the `lateCancellations` pass established in
+Phase 1. Six new exports implement the reminder logic: `requestShiftStart`,
+`computeDueShiftReminders`, `selectShiftReminderBanner`, `formatShiftReminder`,
+`emitDueShiftReminders`, and the `DueShiftReminder` type. `firestore.rules` gains one narrow
+carve-out (**D19**).
+
+**Two things worth knowing that the plan does not say:**
+
+- **The banner and the notification are deliberately different mechanisms**, not one feature with
+  two renderers. `selectShiftReminderBanner` ignores `remindersSent` and re-derives on every tick,
+  so an imminent shift stays on the dashboard for as long as it is imminent. `emitDueShiftReminders`
+  is stamped and fires once per (request, offset). Collapsing them — which §6.2's "since their last
+  visit" phrasing invites — would make the banner vanish on the second page load while the shift is
+  still hours away.
+- **The send is ordered notification-first, stamp-second, and that ordering is a choice.** If the
+  stamp fails after a successful send, the member sees the reminder twice. If it were stamped first
+  and the send failed, they would never see it at all. For a reminder, a duplicate is a nuisance and
+  a miss is the whole failure mode the feature exists to prevent, so the loop takes the nuisance.
+  Each reminder is wrapped in its own `try`/`catch`, so one failure never stops the rest, and the
+  function is documented never-throws — a member with a denied stamp still gets a working dashboard.
+
+**Surfaces.** The member dashboard grows the banner (above "Shift Offers", since a confirmed
+imminent shift outranks an offer) plus a latched best-effort emit on load. `/profile` and the
+`/roster` member modal each grow a neutral "Waitlist & Offers" group, a "Shifts by type" group
+(so a `minShiftsByType` tier criterion is auditable by the people it applies to), and a
+late-cancellation tally in the *attendance* group where it belongs. `/history` grows a
+"Waitlist & Offers" card. The notification bell grows a per-type icon/colour map.
+
+**One integration seam the briefs could not express, fixed by hand afterwards:** `/history`
+classified its rows off the raw `status` while the new stat counters resolved through
+`resolveOfferState`. Two surfaces would have disagreed about the same document — history showing
+"Offer outstanding" for an offer the profile counted as expired, on an offer the member could no
+longer accept. History now resolves it the same way. This is the generic hazard of the lazy
+evaluation model (P6): **every new read of `ShiftRequest.status` is a place the raw value and the
+resolved value can diverge**, and there is no type-level pressure to notice.
 
 ### 10.3 Discoveries — things the plan did not predict
 
@@ -3465,6 +3834,107 @@ number report **that same metric**. The join-term count is still surfaced, but o
 where it is the actual blocker — the step-1 case where nobody has a term recorded at all. **A gate
 whose stated reason is measured differently from its condition is not a warning, it is a riddle.**
 
+#### D19 — §6.6's idempotency stamp is denied by §8 Phase 0.5's own ruleset
+
+§6.6 puts the reminder dedupe key on the request — `remindersSent?: number[]` on
+`ShiftRequest` — and §6.2 puts the *emission* on the member's own client, because P6 says there is
+no scheduler. Those two sentences were written in different revisions and never checked against
+each other, or against the rules Phase 0.5 shipped in between them.
+
+They do not compose. The production `shift_requests` block has exactly three `allow update`
+branches, and a member stamping `remindersSent` on their own approved request satisfies none of
+them:
+
+| Branch | Why it denies the stamp |
+|---|---|
+| `touched().hasOnly(['attendance'])` | The write touches `remindersSent`, not `attendance`. |
+| the `mine()` member branch | It requires the write to **end** at `cancelled`/`approved`/`declined` *and* (except for a cancellation) to come **from** `offered`. A reminder stamp leaves an already-`approved` request `approved`, which fails the `resource.data.status == 'offered'` half. |
+| `isEventManager()` | The member is not a manager. |
+
+So the feature would have shipped as: reminders work perfectly in the emulator (wide-open rules),
+and in production every stamp write throws `permission-denied` — silently, since the emit is
+deliberately best-effort. The visible symptom would not be "reminders are broken"; it would be
+**the same reminder notification reappearing in the bell on every dashboard load, forever**, which
+reads as a UI bug in a completely different part of the app.
+
+Fixed by a fourth carve-out, `allow update: if mine() && touched().hasOnly(['remindersSent'])`.
+It is narrow in the way the attendance carve-out above it is not: `mine()` binds it to the actor's
+own document, and the single permitted field grants nothing — the worst a forger can do to
+themselves is suppress their own reminder. It also survives the Phase 4a swap unchanged, since the
+worker stamps with a service account and simply stops using this path.
+
+The generalisable lesson, and the reason this is written up rather than just fixed: **Phase 0.5
+turned `shift_requests` into the one collection in this app where a plan section can be wrong about
+whether a write is even possible.** Every later phase that adds a field to that collection now owes
+a rules check, and "the emulator is green" is no longer evidence — the emulator harness runs against
+`firestore.emulator.rules`, which is wide open by design. Phase 3 is the first phase to inherit that
+obligation and it nearly missed it.
+
+#### D20 — §5.5's profile block is unreachable for exactly the member it was written for
+
+§5.5 specifies a waitlist/offer stat block on `/profile`, and specifies it well: separate group,
+neutral tone, never folded into the attendance strip. What it does not do is look at the card it
+is being added to. The Volunteer Record card has always opened with an early return:
+
+```ts
+!shiftStats || shiftStats.shiftsAllTime === 0
+  ? "No shifts on record yet. Sign up for an event on the Shifts board…"
+  : …
+```
+
+`shiftsAllTime` counts approved requests only. So a member whose entire relationship with the
+feature is "I joined a waitlist and I am waiting" has `shiftsAllTime === 0`, hits the early return,
+and sees a card telling them they have never signed up for anything — with the queue entry they are
+actively waiting on rendered nowhere on the page.
+
+That is the exact member §5.5 exists to serve, and it is also the worst possible audience for that
+sentence: a new member, in their first week, being told by the app that their signup did not
+register. Widened to `shiftsAllTime === 0 && !hasWaitlistOrOfferActivity`.
+
+The pattern is worth naming because it will recur in Phase 4a: **an additive stat is not additive if
+an existing empty-state gate is computed from the old stats.** Every surface that grew a new counter
+this phase had to be checked for a guard upstream of it, not just a slot to render it in.
+
+#### D21 — adding per-type emphasis to the notification bell silently deleted read state
+
+The bell had one visual axis before Phase 3: unread rows got a dot and a tint, read rows got
+neither, and `waitlist_offer` got a permanent warning treatment on top. Phase 3 replaced that with a
+`Record<NotificationType, …>` map giving each type an icon and, for four of the nine, a permanent
+background — then wrote the row background as `style.bgClass || (unread ? tint : '')` and dropped
+the dot in favour of the always-present icon.
+
+Both halves of that are individually reasonable and together they erase the read/unread distinction
+for `waitlist_offer`, `waitlist_promoted`, `request_approved` and `cert_expiring`: the permanent
+background wins the `||`, the tint never applies, the dot is gone, and an unread row is pixel-
+identical to a read one. On the one surface in the app whose entire purpose is showing you what you
+have not seen yet.
+
+Fixed by making the two axes independent rather than alternatives — the dot is rendered on the icon
+regardless of background, so type emphasis and read state can never compete for the same pixels.
+
+The generalisable version, since this build keeps producing instances of it: **when a surface has
+one visual channel encoding one fact, adding a second fact to that channel deletes the first.** D21
+is that in colour; §10.4's `AttendanceChips` note is the same mistake avoided in advance for the
+waitlist statuses, which is presumably why the plan was careful there and silent here.
+
+#### D22 — an unchecked `Record` lookup over historical data is a crash, not a type error
+
+The same map made the bell's presentation exhaustive at compile time, which was the point: adding a
+tenth `NotificationType` should fail the build here rather than silently render a plain row. But
+`NOTIFICATION_STYLES[notification.type]` is indexed with a value that came out of **Firestore**, and
+TypeScript's exhaustiveness guarantee covers the union as declared, not the strings actually present
+in a collection written by every previous build of this app.
+
+A `notifications` doc carrying a retired or not-yet-known `type` returns `undefined`, and the very
+next line reads `style.Icon`. That is not a degraded row — it throws inside `.map()` and takes the
+entire popover down, for every notification the user has, until the offending doc ages out of the
+50-row window.
+
+Fixed with a `?? NOTIFICATION_STYLES.broadcast` fallback. Worth recording as a class rather than a
+one-off: this codebase has several `Record<Union, …>` lookups keyed on persisted string fields
+(status→chip maps, role→label maps), and every one of them is a total function only if the database
+agrees with the current type declaration. It does not have to.
+
 ### 10.4 Corrections to earlier sections
 
 | Section | Correction |
@@ -3489,6 +3959,14 @@ whose stated reason is measured differently from its condition is not a warning,
 | §8 Phase 2 | The sequencing constraint says the settings UI disables tenure inputs "until coverage is adequate" without fixing a number. Shipped bar: **90%** of members with a `joinedOn`, justified at `MIN_JOIN_DATE_COVERAGE`. The warning's headline number reports `joinedOn` coverage, not the `joinedTerm` count the section's wording names — see **D18**. |
 | §8 Phase 2 | The table lists the `joinedTerm` picker and the backfill but not the `/settings` tenure gate, which §3.7's sequencing blockquote requires. It shipped in this phase. |
 | §9.1 | "Each branches from `main`, not from the previous phase" did not survive contact: Phase 1 depends on Phase 0's schema and would not compile off `main`. The local branches are a linear stack (`chore/ci-hosting-fix` → p0 → p05 → p1 → p2). Independent shippability is preserved in *merge order*, not in branch topology. |
+| §6.6 | Names the reminder dedupe stamp `remindersSent?: number[]` and puts it on the request. Shipped as specified — but the section does not mention that Phase 0.5's rules deny that write. See **D19**. |
+| §6.2 | Says the banner renders "if a due offset was crossed **since their last visit**", which implies the banner is gated on the same stamp as the send. Shipped deliberately un-gated: `selectShiftReminderBanner` ignores `remindersSent` entirely. Gating them together would make the banner vanish on the second page load while the shift is still hours away — the opposite of the section's own stated intent ("your dashboard tells you when you're about to work, if you look"). The stamp governs the **notification**; the banner is a fact displayed while true. |
+| §6.2 / §2.4 | Neither section says how many reminders a member who opens the app late should get. With `hoursBefore: [48, 12]` and a first visit 3h out, both offsets are "crossed". Shipped rule: the **smallest crossed unsent offset only**, one per request — a member who was away does not get a backlog of stale reminders in one burst. |
+| §5.5 | Names three new stat fields (`waitlistPending`, `offersDeclined`, `offersExpired`) but its own item 1 asks for a tally of `waitlisted` **and** `offered` entries, which those three cannot express. Shipped with a fourth, `offersOutstanding`. |
+| §5.5 | Assumes the four counters can be read off `status` alone. `offersExpired` must resolve through `resolveOfferState` — an `offered` doc past its `respondBy` that no lazy sweep has rewritten is expired in fact, and counting it as outstanding would show a member an offer they can no longer accept. Same lazy-evaluation rule Phase 1 established for the dashboard (P6). |
+| §5.5 | Specifies the profile stat block without noticing the card's pre-existing `shiftsAllTime === 0` early return, which makes the block unreachable for a member with a queue entry and no shifts. See **D20**. |
+| §8 Phase 3 | The phase table does not mention the notification bell, but `shift_reminder` becomes the first type Phase 3 actually emits, and the bell had no per-type presentation. Shipped in this phase; it produced **D21** and **D22**. |
+| §4.1 | The contract for this phase named the reminder config getter `getShiftReminders()` from `org-config-store`. No such export exists — the wrapper is `getShiftReminderConfig()` in `app/config/org-config`, which is the layer every other config read in `events.ts` already goes through. Cosmetic, but recorded because the same wrong name appears in §6.2's prose. |
 
 ### 10.5 Verification standing
 
@@ -3594,6 +4072,52 @@ change behaviour against existing data — but only for events carrying an `acce
 `enabled: true`, and no such document exists yet, so every tier branch is inert on today's data
 until an author creates one in the event editor.
 
+**Phase 3 results.** `npx tsc --noEmit` clean; `npm run build` ✅; `npm run test` 69/69 ✅. Lint:
+**zero new findings** across all seven touched files, each baselined the non-destructive way
+(`git show HEAD:<file>` into a scratch copy, lint that, delete it) rather than by touching the tree —
+the recipe §10.7 said should have been in the brief next to the prohibition. It was, this time, and
+no agent reached for `git stash`.
+
+**Phase 3 emulator results.** `npm run test:events` — **314 passed, 0 failed, 0 errored across 40
+suites**, up from Phase 2's 255/31. The new `evt-reminders` suite adds EVT-32…EVT-40 and contributes
+62 checks.
+
+Unlike Phase 1 — where the first run of a new suite found two real product bugs — **every EVT-32…40
+assertion passed on the first run.** That is worth being honest about rather than claiming as
+vindication: the difference is not that Phase 3 was written more carefully, it is that Phase 3's
+logic is overwhelmingly *pure functions over data the caller supplies*, while Phase 1's bugs (D11,
+D12) both lived in transactional writes against Firestore's own constraints. A suite finds what the
+code can get wrong, and pure selectors have a much smaller surface to get wrong. The corollary is
+that a green `evt-reminders` says much less about Phase 3 than a green `evt-waitlist` said about
+Phase 1 — the risk in this phase moved into the two places these tests structurally cannot reach:
+the production ruleset (**D19**) and the visual/copy judgements of §5.5 and P4.
+
+What the suite does pin down, and what would otherwise be untestable claims:
+
+| Suite | What it protects |
+|---|---|
+| EVT-32 | `requestShiftStart` prefers the team-aware `shiftStartAt` over `eventDate` — **D2**, the reason a reminder does not fire at the wrong hour on the events most likely to carry a team override. |
+| EVT-33 | One reminder per request, not one per crossed offset. The anti-spam guarantee, asserted on array *length*. |
+| EVT-34 | `remindersSent` is a real idempotency key, proven at both the field level and by counting `notifications` docs across two full emit passes. |
+| EVT-35 | Only `approved` requests are reminded — no reminder for a shift the member does not have. |
+| EVT-36 | An empty `hoursBefore` genuinely suppresses reminders — **D3**, the config-opt-out regression. |
+| EVT-37 | The banner survives the stamp. The §6.2 design point most likely to be "simplified" away by a future refactor. |
+| EVT-38 | An unrecognized `{placeholder}` in an admin-edited template degrades visibly instead of vanishing (P11). |
+| EVT-39 | The four new counters, driven through the real promotion path — **and** asserted not to move `shiftsAllTime`, `noShow` or `lateCount`. That last line is P4 in executable form. |
+| EVT-40 | A past-due, un-swept offer counts as expired, because the stats read `resolveOfferState` rather than raw `status` (P6). |
+
+One structural detail the suite surfaced, recorded so the next person writing team-capacity tests
+does not lose an hour to it: `createEmptyTeam` clamps EMT slots to `MIN_EMTS = 2`, so a team can
+never have fewer than two EMT seats — every "team is full, so the next request queues" scenario
+needs **two** filler approvals, not one.
+
+The `run-bmrc-logistics` smoke driver remains **not run**. Phase 3 is
+**built, typechecked and emulator-tested, not browser-verified** — and unlike Phases 0 and 2, its
+behaviour is *not* inert on existing data: any member with an approved upcoming shift will see the
+banner and receive a `shift_reminder` the first time they open the dashboard after deploy. That is
+the intended behaviour, but it means Phase 3 is the first phase since Phase 1 where "no such
+document exists yet" is not available as a safety argument. See §10.8.
+
 ### 10.6 Process note — a real incident worth not repeating
 
 During Phase 0, `git stash` was run on the shared working tree to measure a lint baseline **while
@@ -3642,3 +4166,56 @@ touching the tree at all — `git show HEAD:<file>` into a scratch file, lint th
 what the integration pass used to establish the zero-new-findings baseline. The durable fix is to put
 that recipe in the brief *next to* the prohibition, so the agent is denied the reason to reach for
 the dangerous tool rather than merely told not to.
+
+### 10.8 Manual testing — what to drive, and what the app cannot show you yet
+
+Phase 3 is paused here deliberately: it is the first phase whose main deliverable is a *feeling*
+(does the reminder arrive at a sensible moment, does a declined offer read as blameless) rather than
+a state transition, and no assertion settles that. Run it on the emulator sandbox —
+`npm run dev:sandbox`, logins `admin@` / `qm@` / `member@` / `fto@` / `medops@bmrc.test`, password
+`test1234` — which cannot touch the real project.
+
+**What is straightforward to test today**
+
+| Surface | How to reach it | What to look for |
+|---|---|---|
+| `/profile` → Record tab | sign in as `member@` | The "Waitlist & Offers" group is visually *separate* from the attendance chips and reads neutral. "Shifts by type" is present when the member has typed shifts. |
+| `/roster` → click a member | `admin@`, `qm@` or `medops@` | Same two groups in the detail modal. Ask yourself the real question: **if you were staffing an event and saw this card, would the waitlist chips make you think less of this person?** If yes, the colour or the wording is wrong, regardless of what the spec says. |
+| `/history` | `member@` | The "Waitlist & Offers" card renders below Shift History, with neutral chips. |
+| Notification bell | any role | Per-type icons; an unread row is still visibly unread on *every* type (that is **D21**). |
+
+**What takes setup, and is the part actually worth your time**
+
+The reminder banner needs an **approved** shift request whose start is inside the largest configured
+`hoursBefore` (default 48h) and still in the future. The fastest route: as a manager, create an event
+with a `callTime` ~10 hours out, approve `member@` onto a team, then load `/dashboard` as that
+member. Expect the banner above "Shift Offers", one `shift_reminder` in the bell, and — on a second
+page load — **the banner still there and no second bell entry**. That divergence is the whole design
+(§10.2b); if the banner disappears on reload, something has re-coupled it to `remindersSent`.
+
+Then go to `/settings` → "Waitlist & Access" → the reminders card and change `hoursBefore`, the
+template, or toggle the feature off, and reload the dashboard. Every one of those must visibly move
+the banner, because P11 says none of it is hardcoded. **Deleting every reminder row must actually
+stop reminders** — that is discovery **D3**, and it is the single most likely thing to regress
+silently.
+
+**Four things you should know are not testable this way, so their absence is not a bug:**
+
+1. **`tier_open` has no emitter.** Its bell row exists ahead of the lazy-sweep code that will
+   produce it (Phase 4a). You will never see one.
+2. **`remindersSent` is unrestricted on the emulator.** The harness runs against
+   `firestore.emulator.rules`, which is wide open — so the carve-out of **D19** is *not* exercised by
+   anything you do locally. The production ruleset is the artifact that matters and it is deployed
+   manually (§9.6). A green sandbox says nothing about whether that write is permitted live.
+3. **There is still no clock.** A member who never opens the app gets no reminder. That is P6, it is
+   stated in the settings copy on purpose, and it does not change until Phase 4a.
+4. **Offer expiry is lazy.** An offer past its `respondBy` keeps `status: 'offered'` in Firestore
+   until some client sweeps it; every Phase 3 surface now resolves it through `resolveOfferState`
+   on read, so the UI is right even when the document is stale. If you inspect the raw doc and it
+   disagrees with the screen, the screen is correct.
+
+**The judgement call to bring back.** Every waitlist/offer surface in this phase is neutral by
+policy (P4) — no red, no "missed", no fault. That was decided in the abstract. Seeing it on a real
+roster card is the first chance to check whether "neutral" reads as *reassuring* or as *evasive* to
+someone who genuinely did decline three offers in a row. If a manager needs to see that pattern to
+staff well, the fix is a deliberate change to P4's presentation rules — a re-plan, not a colour tweak.

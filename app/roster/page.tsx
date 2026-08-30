@@ -554,8 +554,73 @@ function ShiftStatsSection({ requests, semesterStart }: { requests: ShiftRequest
             <span className="font-mono font-semibold tabular-nums text-foreground">{stats.unrecorded}</span>
             <span className="text-xs text-foreground-400">unrecorded</span>
           </div>
+          {stats.lateCancellations > 0 && (
+            <div className="flex items-center gap-2 bg-content1 border border-divider rounded-large px-3 py-1.5">
+              <span className="font-mono font-semibold tabular-nums text-foreground">{stats.lateCancellations}</span>
+              <span className="text-xs text-foreground-400">late cancellations</span>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* [Phase 3 / waitlist plan §8 Phase 3, Q4] Per-type shift tallies for auditing tier rules. */}
+      {Object.keys(stats.shiftsByType).length > 0 && (
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400 mb-2">Shifts by Type</div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {Object.entries(stats.shiftsByType)
+              .sort(([nameA, countA], [nameB, countB]) => {
+                // Sort by count descending, then name ascending
+                if (countB !== countA) return countB - countA;
+                return nameA.localeCompare(nameB);
+              })
+              .map(([type, count]) => {
+                const semesterCount = stats.shiftsByTypeSemester[type] ?? 0;
+                return (
+                  <div key={type} className="flex items-center gap-2 bg-content1 border border-divider rounded-large px-3 py-1.5">
+                    <span className="font-mono font-semibold tabular-nums text-foreground">{count}</span>
+                    <span className="text-xs text-foreground-400">
+                      {type}{semesterCount > 0 ? ` (${semesterCount} this term)` : ''}
+                    </span>
+                  </div>
+                );
+              })}
+          </div>
+        </div>
+      )}
+
+      {/* [Phase 3 / waitlist plan §5.5, P4] Waitlist and offer state — neutral, never fault. */}
+      {(stats.waitlistPending > 0 || stats.offersOutstanding > 0 || stats.offersDeclined > 0 || stats.offersExpired > 0) && (
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400 mb-2">Waitlist & Offers</div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {stats.waitlistPending > 0 && (
+              <div className="flex items-center gap-2 bg-content1 border border-divider rounded-large px-3 py-1.5">
+                <span className="font-mono font-semibold tabular-nums text-foreground">{stats.waitlistPending}</span>
+                <span className="text-xs text-foreground-400">on the waitlist</span>
+              </div>
+            )}
+            {stats.offersOutstanding > 0 && (
+              <div className="flex items-center gap-2 bg-content1 border border-divider rounded-large px-3 py-1.5">
+                <span className="font-mono font-semibold tabular-nums text-foreground">{stats.offersOutstanding}</span>
+                <span className="text-xs text-foreground-400">offers outstanding</span>
+              </div>
+            )}
+            {stats.offersDeclined > 0 && (
+              <div className="flex items-center gap-2 bg-content1 border border-divider rounded-large px-3 py-1.5">
+                <span className="font-mono font-semibold tabular-nums text-foreground">{stats.offersDeclined}</span>
+                <span className="text-xs text-foreground-400">offers declined</span>
+              </div>
+            )}
+            {stats.offersExpired > 0 && (
+              <div className="flex items-center gap-2 bg-content1 border border-divider rounded-large px-3 py-1.5">
+                <span className="font-mono font-semibold tabular-nums text-foreground">{stats.offersExpired}</span>
+                <span className="text-xs text-foreground-400">offers expired</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       <div>
         <div className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400 mb-2">Recent Shifts</div>

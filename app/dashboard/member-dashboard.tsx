@@ -23,9 +23,18 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
+import { useOrgConfig } from '@/app/hooks/useOrgConfig';
 import type { Statpack, User, AppNotification, ShiftRequest, Event } from '@/app/types';
 import { subscribeUserNotifications, markNotificationRead } from '@/app/lib/notifications';
-import { subscribeMyRequests, resolveOfferState } from '@/app/lib/events';
+import {
+  subscribeMyRequests,
+  resolveOfferState,
+  slotRoleLabel,
+  selectShiftReminderBanner,
+  computeDueShiftReminders,
+  emitDueShiftReminders,
+  formatShiftReminder,
+} from '@/app/lib/events';
 import { toJsDate, formatEventDate, shiftRequestStatusChip } from '@/app/components/events/event-utils';
 import WaitlistOfferModal from '@/app/components/events/waitlist-offer-modal';
 import {
@@ -40,6 +49,7 @@ import {
   CalendarDays,
   History,
   Users,
+  Clock,
 } from 'lucide-react';
 
 interface InventorySnapshot {
@@ -89,10 +99,22 @@ function formatOfferCountdown(msRemaining: number): string {
 export default function MemberDashboard({ userData }: MemberDashboardProps) {
   const router = useRouter();
   const { role } = useUserRole();
+  const { shiftReminders } = useOrgConfig();
   const [assignedPacks, setAssignedPacks] = useState<Statpack[]>([]);
   const [loading, setLoading] = useState(true);
   const [upcomingShifts, setUpcomingShifts] = useState<ShiftRequest[]>([]);
   const [shiftsLoading, setShiftsLoading] = useState(true);
+  // [Phase 3 / waitlist plan §6.2, §8] The full live request feed from the
+  // same `subscribeMyRequests` listener that produces `upcomingShifts` /
+  // `shiftOffers` below — kept separately (rather than a second
+  // subscription) because the reminder banner/emit need statuses
+  // (`waitlisted`, terminal) that `upcomingShifts` deliberately filters out.
+  const [allRequests, setAllRequests] = useState<ShiftRequest[]>([]);
+  // [Phase 3 / waitlist plan §6.2] Once-per-mount latch so the best-effort
+  // emit doesn't re-fire every time the live request feed emits a new
+  // snapshot (it would, without this, since `allRequests` changes identity
+  // on every update).
+  const reminderEmittedRef = useRef(false);
   // [Phase 1 / waitlist plan §5.2 Surface A] Outstanding offers, rendered in
   // their own "Shift Offers" section above "Upcoming Shifts" rather than
   // folded into that list — see the filter comment further down.
@@ -101,6 +123,10 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
   const fetchedOfferEventIdsRef = useRef<Set<string>>(new Set());
   const [selectedOffer, setSelectedOffer] = useState<ShiftRequest | null>(null);
   const [offerCountdownNow, setOfferCountdownNow] = useState(() => new Date());
+  // [Phase 3 / waitlist plan §6.2] Separate, coarser ticker for the reminder
+  // banner's hours figure — 60s is plenty at hours granularity, so this does
+  // not compete with the 1s offer-countdown ticker above.
+  const [reminderNow, setReminderNow] = useState(() => new Date());
   const [lowStockItems, setLowStockItems] = useState<any[]>([]);
   const [expiringItems, setExpiringItems] = useState<any[]>([]);
   const [purchaseHistoryMap, setPurchaseHistoryMap] = useState<Record<string, any[]>>({});
@@ -267,6 +293,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
   useEffect(() => {
     const unsub = subscribeMyRequests(userData.id, (requests) => {
       const now = new Date();
+      setAllRequests(requests);
       const upcoming = requests
         .filter((r) => r.status === 'approved' || r.status === 'pending')
         .filter((r) => {
@@ -341,6 +368,39 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
     const id = setInterval(() => setOfferCountdownNow(new Date()), 1000);
     return () => clearInterval(id);
   }, [shiftOffers.length]);
+
+  // [Phase 3 / waitlist plan §6.2] Reminder-banner ticker — 60s cadence
+  // (hours-granularity headline doesn't need second-level freshness) and only
+  // runs while there's at least one live request to watch.
+  useEffect(() => {
+    if (allRequests.length === 0) return;
+    const id = setInterval(() => setReminderNow(new Date()), 60_000);
+    return () => clearInterval(id);
+  }, [allRequests.length]);
+
+  // [Phase 3 / waitlist plan §6.2] The banner is a FACT displayed while true
+  // (independent of `remindersSent`), not a one-shot send — recomputed from
+  // the live feed on every tick/update, never persisted to local state.
+  const reminderDue = useMemo(
+    () => selectShiftReminderBanner(allRequests, reminderNow, shiftReminders),
+    [allRequests, reminderNow, shiftReminders],
+  );
+
+  // [Phase 3 / waitlist plan §6.2, §6.6] Best-effort emit, once per mount,
+  // after the request feed has loaded. Idempotent server-side via
+  // `remindersSent`; the ref latch here just stops a redundant call on every
+  // re-render/live snapshot. Never throws — `emitDueShiftReminders` itself is
+  // documented never-throws, but the `.catch` is cheap insurance so a denied
+  // write can never break this dashboard.
+  useEffect(() => {
+    if (reminderEmittedRef.current) return;
+    if (shiftsLoading) return;
+    reminderEmittedRef.current = true;
+    const due = computeDueShiftReminders(allRequests, new Date(), shiftReminders);
+    if (due.length > 0) {
+      emitDueShiftReminders(due, { uid: userData.id, name: userData.fullName || 'Unknown' }).catch(() => {});
+    }
+  }, [shiftsLoading, allRequests, shiftReminders, userData.id, userData.fullName]);
 
   const formatTimestamp = (date: Date) => {
     const now = new Date();
@@ -582,6 +642,52 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
             </CardBody>
           </Card>
         </section>
+
+        {/* Pre-shift Reminder Banner — [Phase 3 / waitlist plan §6.2, §8]
+            Client-computed from the viewer's own live shift-request feed via
+            `selectShiftReminderBanner`; renders nothing at all when nothing
+            is imminent — no empty-state placeholder. Placed above "Shift
+            Offers" because an imminent confirmed shift is the single most
+            actionable thing on this page. Deliberately NOT dismissible: it
+            disappears on its own when the shift starts, and a dismissed
+            banner that can't come back is worse than one that lingers. */}
+        {reminderDue && (
+          <div className="flex flex-col gap-1.5">
+            <Card
+              isPressable
+              className="bg-primary-50 dark:bg-primary-900/20 border border-primary/30 rounded-large w-full"
+              onPress={() => reminderDue.request.eventId && router.push(`/events?event=${reminderDue.request.eventId}`)}
+            >
+              <CardBody className="py-2 md:py-3 px-3 md:px-4">
+                <div className="flex items-start gap-2 md:gap-3">
+                  <Clock size={20} className="text-primary flex-none mt-0.5" />
+                  <div className="flex-1 min-w-0">
+                    <h4 className="font-semibold text-sm md:text-base truncate">
+                      {reminderDue.request.eventName}
+                    </h4>
+                    <p className="text-xs text-foreground-500">
+                      {reminderDue.request.teamName ? `${reminderDue.request.teamName} · ` : ''}
+                      {slotRoleLabel(reminderDue.request.role)} ·{' '}
+                      {reminderDue.shiftStart.toLocaleString(undefined, {
+                        weekday: 'short',
+                        month: 'short',
+                        day: 'numeric',
+                        hour: 'numeric',
+                        minute: '2-digit',
+                      })}
+                    </p>
+                    <p className="text-sm text-primary-700 dark:text-primary-300 mt-1">
+                      {formatShiftReminder(shiftReminders.template, reminderDue)}
+                    </p>
+                  </div>
+                </div>
+              </CardBody>
+            </Card>
+            <p className="text-foreground-400 text-xs px-1">
+              Shown when you open the app — there are no push notifications yet.
+            </p>
+          </div>
+        )}
 
         {/* Shift Offers Section — [Phase 1 / waitlist plan §5.2 Surface A]
             Deliberately its own section above "Upcoming Shifts", not folded

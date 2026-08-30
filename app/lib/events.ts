@@ -33,6 +33,7 @@ import {
   writeBatch,
   serverTimestamp,
   Timestamp,
+  arrayUnion,
   type FieldValue,
   type Transaction,
 } from 'firebase/firestore';
@@ -69,9 +70,20 @@ import {
   getCancellationPolicy,
   getSemesterStart,
   getTerms,
+  // [Phase 3 / waitlist plan §6.2, §6.6] The plan's prose calls this getter
+  // `getShiftReminders()` and sources it from `@/app/lib/org-config-store`.
+  // Neither is right: the raw runtime getter is `getShiftRemindersRuntime`,
+  // and every other org-config read in this file (getOrgConfig /
+  // getCancellationPolicy / getSemesterStart / getTerms) goes through the
+  // `@/app/config/org-config` wrapper rather than the raw runtime layer. This
+  // uses the equivalent wrapper to match that convention. Recorded in the
+  // plan's §10.4 corrections table so the prose gets fixed rather than
+  // re-followed.
+  getShiftReminderConfig,
   type OrgConfigDoc,
   type ResolvedEventPolicy,
   type CancellationPolicyConfig,
+  type ShiftReminderConfig,
 } from '@/app/config/org-config';
 // [Phase 2 / waitlist plan §3.7] Tenure math (fail-closed on missing
 // `joinedOn`) lives in its own leaf module — see that file's header for why
@@ -1126,6 +1138,14 @@ export interface MemberShiftStats {
   shiftsByType: Record<string, number>;
   /** Same as `shiftsByType`, scoped to the current term. */
   shiftsByTypeSemester: Record<string, number>;
+  /** [Phase 3 / §5.5] `status === 'waitlisted'` entries. NEVER summed into `shiftsAllTime`. */
+  waitlistPending: number;
+  /** [Phase 3 / §5.5] Live outstanding offers — `status === 'offered'` that `resolveOfferState` still calls `'offered'`. */
+  offersOutstanding: number;
+  /** [Phase 3 / §5.5] `status === 'declined'`. Neutral: P4 makes every non-accepted offer non-binding. */
+  offersDeclined: number;
+  /** [Phase 3 / §5.5] `status === 'expired'`, plus `offered` docs past `respondBy` that no sweep has rewritten yet. */
+  offersExpired: number;
 }
 
 function toJsDate(value: unknown): Date | null {
@@ -1145,6 +1165,12 @@ export function getMemberShiftStats(
   requests: ShiftRequest[],
   semesterStart: Date,
 ): MemberShiftStats {
+  // [Phase 3 / §5.5] Captured once — used only by the waitlist/offer counting
+  // pass below (via `resolveOfferState`) so an `offered` doc past its
+  // `respondBy` with no sweep yet still counts as expired. Not threaded into
+  // the exported signature — several call sites (incl. app/lib/stats/staffing.ts)
+  // depend on the existing two-argument shape.
+  const now = new Date();
   const stats: MemberShiftStats = {
     shiftsAllTime: 0,
     shiftsThisSemester: 0,
@@ -1161,6 +1187,10 @@ export function getMemberShiftStats(
     lateCancellations: 0,
     shiftsByType: {},
     shiftsByTypeSemester: {},
+    waitlistPending: 0,
+    offersOutstanding: 0,
+    offersDeclined: 0,
+    offersExpired: 0,
   };
   for (const r of requests) {
     // [Phase 0 / waitlist plan §2.1] Already correct — new statuses are
@@ -1227,6 +1257,26 @@ export function getMemberShiftStats(
     }
   }
 
+  // [Phase 3 / §5.5] Third pass, same flat list, same "NOT gated on
+  // status === 'approved'" shape as the `lateCancellations` pass above —
+  // waitlist/offer states are never `approved`, so the main loop always
+  // `continue`s past them. `offersExpired` also catches a still-`offered` doc
+  // whose `respondBy` has passed but which no lazy sweep has rewritten yet
+  // (`resolveOfferState`) — that offer is expired in fact, and counting it as
+  // outstanding would be wrong.
+  for (const r of requests) {
+    if (r.status === 'waitlisted') {
+      stats.waitlistPending += 1;
+    } else if (r.status === 'offered') {
+      if (resolveOfferState(r, now) === 'expired') stats.offersExpired += 1;
+      else stats.offersOutstanding += 1;
+    } else if (r.status === 'declined') {
+      stats.offersDeclined += 1;
+    } else if (r.status === 'expired') {
+      stats.offersExpired += 1;
+    }
+  }
+
   return stats;
 }
 
@@ -1260,6 +1310,10 @@ export const EMPTY_SHIFT_STATS: MemberShiftStats = Object.freeze({
   lateCancellations: 0,
   shiftsByType: Object.freeze({}),
   shiftsByTypeSemester: Object.freeze({}),
+  waitlistPending: 0,
+  offersOutstanding: 0,
+  offersDeclined: 0,
+  offersExpired: 0,
 }) as MemberShiftStats;
 
 /**
@@ -2427,4 +2481,186 @@ export async function removeWaitlistEntry(request: ShiftRequest, actor: EventAct
   if (request.status === 'offered' && liveEventFresh) {
     await promoteNextFromWaitlist(liveEventFresh, request.teamId, request.role, actor);
   }
+}
+
+// ---------------------------------------------------------------------------
+// [Phase 3 — waitlist plan §6.2, §6.6] Shift reminders: pure due-computation
+// + banner-selection primitives, then the best-effort emit path that stamps
+// `remindersSent` for idempotency. Nothing below re-derives the shift start
+// instant inline — route through `requestShiftStart` (the request-level
+// analogue of `getShiftStartInstant`, which needs a live `Event`/`EventTeam`
+// this code does not have).
+// ---------------------------------------------------------------------------
+
+/**
+ * The instant this request's shift starts: the denormalized
+ * `ShiftRequest.shiftStartAt` (already team-`startTime`-aware — plan D2) when
+ * present, else `eventDate`. Null when neither parses.
+ */
+export function requestShiftStart(
+  request: Pick<ShiftRequest, 'shiftStartAt' | 'eventDate'>,
+): Date | null {
+  return toJsDate(request.shiftStartAt) ?? toJsDate(request.eventDate ?? null);
+}
+
+export interface DueShiftReminder {
+  request: ShiftRequest;
+  /** The configured offset from `shiftReminders.hoursBefore` that has been crossed. */
+  hoursBefore: number;
+  /** Whole hours remaining until `shiftStart`, floored at 0. */
+  hoursUntil: number;
+  shiftStart: Date;
+}
+
+/**
+ * [Phase 3 / §6.2, §6.6] `hoursBefore` is admin-edited data — it may be in any
+ * order, and may contain duplicates or non-numbers. Every reminder function
+ * below routes through this rather than trusting the raw config array:
+ * filters to finite positive numbers, dedupes, and sorts ascending so
+ * "smallest crossed offset" is simply "first match".
+ */
+function sanitizedReminderOffsets(hoursBefore: number[] | undefined): number[] {
+  return Array.from(
+    new Set((hoursBefore ?? []).filter((h) => Number.isFinite(h) && h > 0)),
+  ).sort((a, b) => a - b);
+}
+
+/**
+ * [§6.2, §6.6] Which reminder offsets are due for this member's own APPROVED
+ * upcoming shifts right now, and not already in `remindersSent`. Pure — no
+ * reads, no writes, no `Date.now()` (takes `now`). Returns [] when
+ * `config.enabled` is false, when `hoursBefore` is empty, or when
+ * `channels` does not include `'in_app'`.
+ *
+ * A request yields the SINGLE most specific due offset (the smallest
+ * `hoursBefore` whose window has been crossed and which has not been sent),
+ * never one entry per crossed offset — a member who first opens the app 3h
+ * before a shift gets the 12h reminder once, not the 48h AND the 12h.
+ * `config` defaults to `getShiftReminderConfig()`.
+ */
+export function computeDueShiftReminders(
+  requests: ShiftRequest[],
+  now: Date,
+  config: ShiftReminderConfig = getShiftReminderConfig(),
+): DueShiftReminder[] {
+  if (!config.enabled) return [];
+  if (!config.channels?.includes('in_app')) return [];
+  const offsets = sanitizedReminderOffsets(config.hoursBefore);
+  if (offsets.length === 0) return [];
+
+  const due: DueShiftReminder[] = [];
+  for (const r of requests) {
+    if (r.status !== 'approved') continue;
+    const shiftStart = requestShiftStart(r);
+    if (!shiftStart) continue;
+    if (shiftStart.getTime() <= now.getTime()) continue; // already past
+    const hoursUntilRaw = (shiftStart.getTime() - now.getTime()) / 3_600_000;
+    const sent = new Set(r.remindersSent ?? []);
+    // `offsets` is ascending, so the first crossed-and-unsent offset is the
+    // smallest — exactly the "single most specific due offset" the contract
+    // requires, with no extra sort needed here.
+    const hoursBefore = offsets.find((h) => hoursUntilRaw <= h && !sent.has(h));
+    if (hoursBefore === undefined) continue;
+    due.push({
+      request: r,
+      hoursBefore,
+      hoursUntil: Math.max(0, Math.floor(hoursUntilRaw)),
+      shiftStart,
+    });
+  }
+  return due;
+}
+
+/**
+ * [§6.2] The banner selector: the viewer's single most imminent APPROVED
+ * shift whose start is inside the largest configured `hoursBefore` offset and
+ * still in the future. Independent of `remindersSent` — the banner is a fact
+ * displayed while true, not a one-shot send, so it keeps showing as the shift
+ * approaches. Null when reminders are disabled or nothing is imminent.
+ */
+export function selectShiftReminderBanner(
+  requests: ShiftRequest[],
+  now: Date,
+  config: ShiftReminderConfig = getShiftReminderConfig(),
+): DueShiftReminder | null {
+  if (!config.enabled) return null;
+  if (!config.channels?.includes('in_app')) return null;
+  const offsets = sanitizedReminderOffsets(config.hoursBefore);
+  if (offsets.length === 0) return null;
+  const maxOffset = offsets[offsets.length - 1];
+
+  let best: DueShiftReminder | null = null;
+  for (const r of requests) {
+    if (r.status !== 'approved') continue;
+    const shiftStart = requestShiftStart(r);
+    if (!shiftStart) continue;
+    if (shiftStart.getTime() <= now.getTime()) continue;
+    const hoursUntilRaw = (shiftStart.getTime() - now.getTime()) / 3_600_000;
+    if (hoursUntilRaw > maxOffset) continue; // not inside the window yet
+    if (best && shiftStart.getTime() >= best.shiftStart.getTime()) continue;
+    // Most specific = smallest offset whose window this shift is inside.
+    const hoursBefore = offsets.find((h) => hoursUntilRaw <= h) ?? maxOffset;
+    best = {
+      request: r,
+      hoursBefore,
+      hoursUntil: Math.max(0, Math.floor(hoursUntilRaw)),
+      shiftStart,
+    };
+  }
+  return best;
+}
+
+/** `{event}` `{team}` `{role}` `{hours}` interpolation over `config.template`. Unknown placeholders are left as-is. */
+export function formatShiftReminder(template: string, due: DueShiftReminder): string {
+  return template.replace(/\{(\w+)\}/g, (match, key: string) => {
+    switch (key) {
+      case 'event':
+        return due.request.eventName;
+      case 'team':
+        return due.request.teamName || '';
+      case 'role':
+        return slotRoleLabel(due.request.role);
+      case 'hours':
+        return String(due.hoursUntil);
+      default:
+        return match; // leave unrecognized placeholders untouched
+    }
+  });
+}
+
+/**
+ * [§6.2, §6.6] Best-effort: for each due reminder, write ONE `shift_reminder`
+ * notification to the request's own `userId` and stamp the offset into
+ * `remindersSent` via `arrayUnion`. Returns how many were sent. NEVER THROWS —
+ * a member whose reminder stamp is denied must still get a working dashboard.
+ * Safe to call on every dashboard load; `remindersSent` makes it idempotent.
+ */
+export async function emitDueShiftReminders(
+  due: DueShiftReminder[],
+  actor?: { uid: string; name: string },
+): Promise<number> {
+  const config = getShiftReminderConfig();
+  let sentCount = 0;
+  for (const item of due) {
+    if (!item.request.id) continue;
+    try {
+      await createNotification(
+        item.request.userId,
+        {
+          type: 'shift_reminder',
+          title: `Shift in ${item.hoursUntil} hours`,
+          body: formatShiftReminder(config.template, item),
+          link: '/events?event=' + item.request.eventId,
+        },
+        actor,
+      );
+      await updateDoc(doc(db, 'shift_requests', item.request.id), {
+        remindersSent: arrayUnion(item.hoursBefore),
+      });
+      sentCount += 1;
+    } catch (e) {
+      console.error('emitDueShiftReminders: reminder failed for request', item.request.id, e);
+    }
+  }
+  return sentCount;
 }

@@ -114,6 +114,15 @@ export default function ProfilePage() {
     () => (shiftRequests ? getMemberShiftStats(shiftRequests, semesterStart) : null),
     [shiftRequests, semesterStart],
   );
+  // [Phase 3 / waitlist plan §5.5] A member can be actively queued or holding
+  // an offer with zero approved shifts to date — the Volunteer Record's
+  // "no shifts on record yet" empty state must not hide that activity.
+  const hasWaitlistOrOfferActivity = !!shiftStats && (
+    shiftStats.waitlistPending > 0 ||
+    shiftStats.offersOutstanding > 0 ||
+    shiftStats.offersDeclined > 0 ||
+    shiftStats.offersExpired > 0
+  );
 
   if (loading) {
     return (
@@ -357,7 +366,7 @@ export default function ProfilePage() {
                 <div className="flex justify-center py-4">
                   <Spinner size="sm" color="primary" />
                 </div>
-              ) : !shiftStats || shiftStats.shiftsAllTime === 0 ? (
+              ) : !shiftStats || (shiftStats.shiftsAllTime === 0 && !hasWaitlistOrOfferActivity) ? (
                 <p className="text-sm text-foreground-400">
                   No shifts on record yet. Sign up for an event on the Shifts board to start building your volunteer record.
                 </p>
@@ -401,7 +410,87 @@ export default function ProfilePage() {
                       <span className="font-mono font-semibold tabular-nums text-foreground">{shiftStats.excused}</span>
                       <span className="text-xs text-foreground-400">excused</span>
                     </div>
+                    {/* [Phase 3 / waitlist plan §5.5, R2] Late cancellations are a real
+                        record of a commitment the member actually held (unlike the
+                        waitlist/offer group below), so they stay in the attendance
+                        group — but only when the org has opted `cancellationPolicy
+                        .countsAgainstRecord` in, which `lateCancellations` is already
+                        gated on upstream. */}
+                    {shiftStats.lateCancellations > 0 && (
+                      <div className="flex items-center gap-2 bg-warning-50 dark:bg-warning-900/20 border border-warning/30 rounded-large px-3 py-1.5">
+                        <span className="w-2 h-2 rounded-sm bg-warning flex-none" />
+                        <span className="font-mono font-semibold tabular-nums text-warning">{shiftStats.lateCancellations}</span>
+                        <span className="text-xs text-warning/80 font-medium">
+                          late cancellation{shiftStats.lateCancellations === 1 ? '' : 's'}
+                        </span>
+                      </div>
+                    )}
                   </div>
+
+                  {/* [Phase 3 / waitlist plan §5.5] Waitlist/offer stats live in their
+                      own visually separate group — never merged into the attendance
+                      strip above, which is specifically about shifts the member
+                      actually held. Neutral tone only: no danger/warning color, no
+                      ✗/⚠ icon, and copy never implies fault (P4: queueing and an
+                      unaccepted offer carry no liability). */}
+                  {(shiftStats.waitlistPending > 0 || shiftStats.offersOutstanding > 0 || shiftStats.offersDeclined > 0 || shiftStats.offersExpired > 0) && (
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400 mb-2">Waitlist & Offers</div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {shiftStats.waitlistPending > 0 && (
+                          <div className="flex items-center gap-2 bg-content2 border border-divider rounded-large px-3 py-1.5">
+                            <span className="font-mono font-semibold tabular-nums text-foreground">{shiftStats.waitlistPending}</span>
+                            <span className="text-xs text-foreground-400">on the waitlist</span>
+                          </div>
+                        )}
+                        {shiftStats.offersOutstanding > 0 && (
+                          <div className="flex items-center gap-2 bg-content2 border border-divider rounded-large px-3 py-1.5">
+                            <span className="font-mono font-semibold tabular-nums text-foreground">{shiftStats.offersOutstanding}</span>
+                            <span className="text-xs text-foreground-400">offers outstanding</span>
+                          </div>
+                        )}
+                        {shiftStats.offersDeclined > 0 && (
+                          <div className="flex items-center gap-2 bg-content1 border border-divider rounded-large px-3 py-1.5">
+                            <span className="font-mono font-semibold tabular-nums text-foreground">{shiftStats.offersDeclined}</span>
+                            <span className="text-xs text-foreground-400">offers declined</span>
+                          </div>
+                        )}
+                        {shiftStats.offersExpired > 0 && (
+                          <div className="flex items-center gap-2 bg-content1 border border-divider rounded-large px-3 py-1.5">
+                            <span className="font-mono font-semibold tabular-nums text-foreground">{shiftStats.offersExpired}</span>
+                            <span className="text-xs text-foreground-400">offers expired</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* [Phase 3 / waitlist plan §8 Phase 3, R2, Q4] Per-type shift
+                      tallies so a member can verify a tier criterion written in terms
+                      of shift types. Never synthesize an "Other" bucket for requests
+                      with no denormalized `eventType` — see the field's doc comment
+                      on `MemberShiftStats.shiftsByType` in app/types.ts /
+                      app/lib/events.ts. */}
+                  {Object.keys(shiftStats.shiftsByType).length > 0 && (
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400 mb-2">Shifts by type</div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {Object.entries(shiftStats.shiftsByType)
+                          .sort(([typeA, countA], [typeB, countB]) => countB - countA || typeA.localeCompare(typeB))
+                          .map(([type, count]) => {
+                            const semesterCount = shiftStats.shiftsByTypeSemester[type] ?? 0;
+                            return (
+                              <div key={type} className="flex items-center gap-2 bg-content2 border border-divider rounded-large px-3 py-1.5">
+                                <span className="text-xs text-foreground-400">{type}</span>
+                                <span className="font-mono font-semibold tabular-nums text-foreground">
+                                  {count}{semesterCount > 0 ? ` (${semesterCount} this term)` : ''}
+                                </span>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

@@ -10,10 +10,85 @@ import {
   Card,
   CardBody,
 } from '@heroui/react';
-import { Bell, X, Clock } from 'lucide-react';
+import { Bell, X, Clock, CheckCircle, AlertTriangle, Unlock } from 'lucide-react';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { subscribeUserNotifications, markNotificationRead, markAllRead } from '@/app/lib/notifications';
-import type { AppNotification } from '@/app/types';
+import type { AppNotification, NotificationType } from '@/app/types';
+
+/**
+ * [Phase 3 / waitlist plan §2.4] Per-type presentation mapping for notifications.
+ * Each type gets an icon and color; background emphasis applied for time-critical
+ * or important outcomes. Uses Record<NotificationType, ...> to enforce exhaustiveness:
+ * adding a new member to the union will be a compile error here.
+ *
+ * tier_open currently has no emitter in the codebase (Phase 3 does not add one;
+ * lazy-sweep in Phase 4), so its row is defined here ahead of the code that will
+ * produce it.
+ */
+interface NotificationStyle {
+  Icon: React.ComponentType<{ size: number; className: string }>;
+  color: string;
+  /** Permanent emphasis for a semantically urgent type. When absent the row
+   *  falls back to the unread tint. Either way the unread DOT is rendered
+   *  separately — see `notificationStyle`'s caller. */
+  bgClass?: string;
+}
+
+const NOTIFICATION_STYLES: Record<NotificationType, NotificationStyle> = {
+  waitlist_offer: {
+    Icon: Clock,
+    color: 'text-warning',
+    bgClass: 'bg-warning-50/60 dark:bg-warning-900/20',
+  },
+  waitlist_promoted: {
+    Icon: CheckCircle,
+    color: 'text-success',
+    bgClass: 'bg-success-50/60 dark:bg-success-900/20',
+  },
+  shift_reminder: {
+    Icon: Clock,
+    color: 'text-primary',
+  },
+  tier_open: {
+    Icon: Unlock,
+    color: 'text-primary',
+  },
+  cert_expiring: {
+    Icon: AlertTriangle,
+    color: 'text-warning',
+    bgClass: 'bg-warning-50/60 dark:bg-warning-900/20',
+  },
+  request_rejected: {
+    Icon: X,
+    color: 'text-foreground-400',
+  },
+  request_approved: {
+    Icon: CheckCircle,
+    color: 'text-success',
+    bgClass: 'bg-success-50/60 dark:bg-success-900/20',
+  },
+  event_open: {
+    Icon: Bell,
+    color: 'text-primary',
+  },
+  broadcast: {
+    Icon: Bell,
+    color: 'text-primary',
+  },
+};
+
+/**
+ * [Phase 3] The lookup is deliberately NOT `NOTIFICATION_STYLES[type]` bare.
+ * `notifications` is historical data: a doc written by an older build (or by a
+ * future one, if a deploy lands mid-session) can carry a `type` string that is
+ * not in today's union, and TypeScript cannot check what came out of Firestore.
+ * An unchecked index would hand back `undefined` and crash the whole popover on
+ * `style.Icon` — taking the entire bell down over one unrecognized row. Fall
+ * back to the plain `broadcast` treatment instead.
+ */
+function notificationStyle(type: NotificationType): NotificationStyle {
+  return NOTIFICATION_STYLES[type] ?? NOTIFICATION_STYLES.broadcast;
+}
 
 export default function NotificationBell() {
   const router = useRouter();
@@ -126,34 +201,36 @@ export default function NotificationBell() {
           ) : (
             <div className="divide-y divide-divider">
               {notifications.map((notification) => {
-                // [Phase 1 / waitlist plan §5.2] `waitlist_offer` is the one
-                // notification type carrying a hard deadline (offer.respondBy
-                // can be as little as 2h out) — give it a distinct warning
-                // treatment so it doesn't blend into the generic feed. The
-                // bell had no type→icon/color mapping before this, so the
-                // other new types (`waitlist_promoted`, `shift_reminder`,
-                // `tier_open`) intentionally render as plain rows for now.
-                const isOffer = notification.type === 'waitlist_offer';
+                const style = notificationStyle(notification.type);
+                // Apply type's background if present; otherwise use unread logic
+                const bgClass =
+                  style.bgClass || (!notification.read ? 'bg-primary-50/50 dark:bg-primary-900/10' : '');
+                const Icon = style.Icon;
+                // [Phase 3] The unread DOT is rendered independently of the
+                // background, not as an alternative to it. Before Phase 3 the
+                // dot WAS the unread signal for every type except
+                // `waitlist_offer`; once four types gained a permanent
+                // `bgClass`, tying the signal to the background alone made an
+                // unread `request_approved`/`cert_expiring`/`waitlist_*` row
+                // pixel-identical to a read one — silently deleting read state
+                // from the surface whose entire job is to show it.
+                const showUnreadDot = !notification.read;
                 return (
                   <button
                     key={notification.id}
                     onClick={() => handleNotificationClick(notification)}
-                    className={`w-full text-left px-4 py-3 hover:bg-content2 transition-colors ${
-                      isOffer
-                        ? 'bg-warning-50/60 dark:bg-warning-900/20'
-                        : !notification.read
-                          ? 'bg-primary-50/50 dark:bg-primary-900/10'
-                          : ''
-                    }`}
+                    className={`w-full text-left px-4 py-3 hover:bg-content2 transition-colors ${bgClass}`}
                   >
                     <div className="flex gap-2 items-start">
-                      {isOffer ? (
-                        <Clock size={14} className="text-warning flex-none mt-0.5" />
-                      ) : (
-                        !notification.read && (
-                          <span className="w-2 h-2 rounded-full bg-primary flex-none mt-1.5" />
-                        )
-                      )}
+                      <span className="relative flex-none mt-0.5">
+                        <Icon size={14} className={`${style.color} block`} />
+                        {showUnreadDot && (
+                          <span
+                            aria-label="Unread"
+                            className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-primary ring-1 ring-content1"
+                          />
+                        )}
+                      </span>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-semibold text-foreground leading-tight">
                           {notification.title}

@@ -589,6 +589,18 @@ export interface ShiftRequest {
    */
   shiftStartAt?: Timestamp;
   /**
+   * [Phase 3 / waitlist plan §6.6] Reminder offsets (hours-before-shift, from
+   * `shiftReminders.hoursBefore`) already EMITTED as a `shift_reminder`
+   * notification for this request. Idempotency key: an offset present here is
+   * never re-sent, which is what stops the 48h and 12h reminders from
+   * repeating on every dashboard load — and what makes the Phase 4a worker
+   * safe, since a poller has no before/after trigger condition to lean on.
+   * Absent = nothing sent yet. NOT a record of whether the member SAW it, and
+   * deliberately NOT what drives the dashboard banner (the banner is a fact
+   * displayed while true, not a one-shot send — see `selectShiftReminderBanner`).
+   */
+  remindersSent?: number[];
+  /**
    * Denormalized `Event.eventType` at request time. Makes
    * `MemberShiftStats.shiftsByType` and the `minShiftsByType` tier criterion
    * derivable from a member's own `shift_requests` query with no event
