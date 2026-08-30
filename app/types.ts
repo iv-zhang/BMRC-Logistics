@@ -355,6 +355,16 @@ export interface Event {
    */
   waitlistEnabled?: boolean;
   /**
+   * [Phase 5 / waitlist plan §5.9, §2.2, R5] Opaque tag shared by every event
+   * created in one bulk run, so a manager looking at these next week can still
+   * tell they came from one batch. Optional, non-load-bearing, and **read by
+   * nothing** — in particular the bulk UNDO deletes by id, never by querying
+   * this field, so undo needs no index and cannot reach an earlier run's events.
+   * A `seriesId` is NOT a live series entity: these are ordinary, independent
+   * events (see §5.9 "Deliberately out of scope").
+   */
+  seriesId?: string;
+  /**
    * [Phase 0 / waitlist plan §2.2, §4.3, P11] Per-event escape hatch overriding
    * `org_settings.waitlist` / `cancellationPolicy` / reminder hours for THIS
    * event only. Every key optional; `undefined` (on the whole field or any key

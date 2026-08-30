@@ -3113,6 +3113,18 @@ it should jump the queue.
 Build `expandEventSeries` **first and test it headless** — it is pure, it is where every date bug
 will live, and having it green makes the modal a rendering problem rather than a debugging one.
 
+**[Build note, 2026-08-30] The phase ships in two commits, 5a then 5b**, on that instruction's
+logic taken one step further:
+
+| | Scope | Why the seam is here |
+|---|---|---|
+| **5a — headless core** | `eventTemplates` config + getters + validation, `Event.seriesId`, `app/lib/event-series.ts` (expansion, name tokens, paste parser, per-row tier resolution, conflict diagnosis), `createEventsBulk` + `deleteBulkCreatedEvents`, and `evt-bulk.test.ts`. **No UI file is touched.** | Everything that can be wrong *silently* lives here, and all of it is testable without a browser. It is also where the **`EventTemplateDef` shape** is fixed — and that shape dictates the whole settings editor and half the bulk modal, so it is the cheapest possible moment to change one's mind about it. |
+| **5b — the surfaces** | Template editor on `events-tab.tsx`, `bulk-event-modal.tsx`, the split `New event ▾ / Add many` button on `events/page.tsx`. | Pure rendering against a contract already proven green. |
+
+The stop between them is deliberate and is for **review of the template shape**, not for QA: 5a has
+no screen to look at. Reviewing 5b's grid is the point at which a wrong `EventTemplateDef` has
+already been built on top of twice.
+
 ---
 
 ### What to build first, in one line
@@ -3347,7 +3359,8 @@ disagree, this section is current and the plan section is historical.
 | **Phase 3** — in-app reminders + history surfaces | ✅ committed **and pushed** | `3b0f796` on `feat/waitlist-p3-reminders` | Every row of the §8 Phase 3 list is written, plus the notification-bell work §8 does not mention. Built by seven parallel agents on non-overlapping file sets against one pinned contract, the same method as Phase 2 (§10.7). Discoveries **D19–D22** below. |
 | **Phase 3.5** — copy-density sweep **[R5]** | ✅ committed **and pushed**; one follow-up fix | `c66b2cd` + `1ca5f18` on `feat/waitlist-p3-reminders` | Rode in Phase 3's branch, as §8 allowed. `FieldHint` + the editor and settings sweeps; the member-facing audit correctly changed **nothing** (**D24**). Discoveries **D23–D26** below. **Paused here for manual testing** — see §10.8. Manual testing immediately found **D27**: the `FieldHint` trigger was a `<button>` nested inside HeroUI `Select`/`Input` labels, a hydration error. Fixed. |
 | **Phase 4a/4b** | ⛔ out of scope | — | Excluded by agreement at build start. |
-| **Phase 5** — bulk event creation **[R5]** | ⬜ not started | — | Added by Revision 5 (§5.9). Independent of every other phase; pull forward if a season's schedule needs entering. |
+| **Phase 5a** — bulk creation, headless core **[R5]** | 🟡 in build | — | Added by Revision 5 (§5.9); split 5a/5b at build time (see §8 Phase 5). Config + `event-series.ts` + `createEventsBulk`/`deleteBulkCreatedEvents` + `evt-bulk.test.ts`. No UI. Built by three parallel agents against one pinned contract, the §10.7 method. |
+| **Phase 5b** — bulk creation, surfaces **[R5]** | ⬜ not started | — | Template editor, bulk modal, split button. Gated on a review of 5a's `EventTemplateDef` shape. |
 
 **Now pushed, on explicit instruction (2026-08-29):** *"make commits and push to the branch on
 GitHub regularly to keep versions and easy record keeping in case something breaks."* The whole local
@@ -4424,6 +4437,20 @@ claim, and it is only visible when the screen is narrow.
 | Settings | `admin@`/`qm@` → `/settings` → "Waitlist & Access" | Cards read as a **list of controls**. Every field keeps its normal HeroUI label (**D23** — if any label looks like a different size or weight from the one beside it, that regression is back). Clicking a field's label text should focus the field. |
 | Hints on touch | any of the above, at 390px | **Tap an `ⓘ`.** It must open. Tap elsewhere: it must close. A hint that only works on desktop hover is a deleted sentence for a manager on a phone. |
 | Keyboard | any of the above | `Tab` to an `ⓘ`. It must take focus visibly and show its text on focus alone, without a mouse. |
+
+**Phase 3.5 follow-up — the D27 fix (2026-08-30).** The hint trigger changed from a `<button>` to a
+`<span role="button" tabIndex={0}>`. Nothing about the *copy* moved, so the table above is unchanged,
+but the affordance itself now needs re-driving on every input method, because a role-based button is
+exactly the kind of thing that regresses silently:
+
+| Check | Where | Pass condition |
+|---|---|---|
+| **No console errors** | `/settings` → "Waitlist & Access", devtools console open, hard reload | Zero React errors. Previously two per render, both *"`<button>` cannot be a descendant of `<button>`"*. This is the whole fix. |
+| **Tap the ⓘ on a `Select`** | "Queue scope" or "Team preference", 390px viewport | The tooltip opens **and the dropdown does not**. Before the fix the tap fell through to the trigger and opened the list *behind* the tooltip. |
+| **Tap the ⓘ on an `Input`** | "Long-notice threshold", "Notice window" | The tooltip opens and the number field does **not** take focus / pull up the keyboard. |
+| **Keyboard** | `Tab` through the card | Each ⓘ takes focus with a visible ring, shows its text on focus alone, and `Enter`/`Space` toggles it. |
+| **Label click still focuses the field** | click the words "Queue scope", not the ⓘ | The control focuses/opens as it always did — the fix must not have broken the label. |
+| **Hover** | desktop | Unchanged: hover opens, leaving closes. |
 
 **What must still be on screen after the sweep** (if any of these are now behind an `ⓘ`, that is a
 bug, not a preference — see §5.8's keep rule):

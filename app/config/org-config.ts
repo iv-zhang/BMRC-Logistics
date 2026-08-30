@@ -557,6 +557,66 @@ export const EVENT_TYPES: string[] = [
 ];
 
 /**
+ * [Phase 5 / waitlist plan §4.1, §5.9] One team slot-shape inside a bulk
+ * event-creation template — mirrors the shape `createEmptyTeam` builds, but
+ * as data an admin edits rather than code.
+ */
+export interface EventTemplateTeamDef {
+  name: string;
+  emtCount: number;
+  hasFtoIntern: boolean;
+}
+
+/** One staged-release window in a template, as LEAD DAYS — resolved against
+ *  an individual event's own date at creation time (`resolveAccessTierForDate`
+ *  in `app/lib/event-series.ts`), never stored as an absolute date. */
+export interface EventTemplateTierWindowDef {
+  label: string;
+  /** Days BEFORE the event date that this window opens. > 0. */
+  leadDays: number;
+  /** Imported from app/types.ts — do NOT redeclare here. */
+  criteria: TierCriteria;
+}
+
+/** A template's `priorityTiers`-shaped preset, in lead days (see `EventTemplateDef.accessTierPreset`). */
+export interface EventTemplateAccessTierPreset {
+  windows: EventTemplateTierWindowDef[];
+  /** Days before the event date that signup opens to everyone. > 0. */
+  generalLeadDays: number;
+  rationale: string;
+}
+
+/**
+ * [Phase 5 / waitlist plan §4.1, §5.9] A reusable event skeleton for bulk
+ * creation — a manager applies one to a batch of dates (`app/lib/event-series.ts`
+ * `expandEventSeries`) instead of retyping the same team/time shape every week.
+ * Templates hold no dates of their own; `accessTierPreset` is lead days, not
+ * instants, for the same reason — one absolute date on a template would give
+ * every event in a whole series the same tier-opening moment (§5.9).
+ */
+export interface EventTemplateDef {
+  id: string;
+  /** Unique, non-empty. */
+  name: string;
+  eventType?: string;
+  venue?: string;
+  location?: string;
+  /** P12: required — prefilling one is the point of a template. "HH:mm". */
+  callTime: string;
+  endTime?: string;
+  description?: string;
+  /** At least one. */
+  teams: EventTemplateTeamDef[];
+  waitlistEnabled?: boolean;
+  /**
+   * LEAD DAYS, never absolute dates — resolved per event against that event's
+   * own date at creation time. Storing instants here would give a whole series
+   * one opening date, the single worst bug bulk creation can produce (§5.9).
+   */
+  accessTierPreset?: EventTemplateAccessTierPreset;
+}
+
+/**
  * Start of the current semester (ISO 'YYYY-MM-DD'). "This semester" shift stats
  * count events on/after this date. Admin bumps it each new term at /settings.
  */
@@ -832,6 +892,9 @@ export type OrgConfigDoc = {
   thresholds: ThresholdConfig;
   venues: VenueDef[];
   eventTypes: string[];
+  /** [Phase 5 / waitlist plan §4.1] Reusable bulk-event-creation templates.
+   *  Empty by default — see `DEFAULT_ORG_CONFIG` for why no example ships. */
+  eventTemplates: EventTemplateDef[];
   /** ISO 'YYYY-MM-DD' start of the current semester (for shift stats). */
   semesterStartDate: string;
   /** Gate shift signup on valid EMT + CPR certs (default true). */
@@ -861,6 +924,10 @@ export const DEFAULT_ORG_CONFIG: OrgConfigDoc = {
   thresholds: THRESHOLDS,
   venues: VENUES,
   eventTypes: [...EVENT_TYPES],
+  // [Phase 5 / waitlist plan §4.1] No seeded example: a seeded "Football home
+  // game" would presume this org's schedule, and the settings editor's "Add
+  // template" button (Phase 5b) creates a blank one anyway.
+  eventTemplates: [],
   semesterStartDate: SEMESTER_START_DATE,
   requireCertsForShiftSignup: REQUIRE_CERTS_FOR_SHIFT_SIGNUP,
   waitlist: WAITLIST_DEFAULTS,
