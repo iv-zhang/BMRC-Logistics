@@ -3344,13 +3344,21 @@ disagree, this section is current and the plan section is historical.
 | **Phase 0.5** — Firestore rules split | ✅ committed | `434a046` on `feat/waitlist-p05-rules` | Ruleset needed a fix the plan did not anticipate — **D4** below. |
 | **Phase 1** — waitlist queue | ✅ committed | `5ac86e7` on `feat/waitlist-p1-queue` | Every row of the §8 Phase 1 table is written. The first end-to-end run of the new `evt-waitlist` suite found **two real bugs** — **D11** (accepting an EMT offer was impossible) and **D12** (every decline threw); both fixed, and `test:events` is now **146/146 across all 15 suites**. Discoveries **D5–D13** below. Not yet runtime-verified in a browser (see §10.5). |
 | **Phase 2** — priority tiers | ✅ committed | `cbe542f` on `feat/waitlist-p2-tiers` | Every row of the §8 Phase 2 table is written, plus the `/settings` tenure gate §8 only implies. Built by seven parallel agents on non-overlapping file sets against one pinned cross-file contract (§10.7). Discoveries **D14–D18** below. |
-| **Phase 3** — in-app reminders + history surfaces | 🔨 feature-complete in the tree, uncommitted | — | Branch `feat/waitlist-p3-reminders`. Every row of the §8 Phase 3 list is written, plus the notification-bell work §8 does not mention. Built by seven parallel agents on non-overlapping file sets against one pinned contract, the same method as Phase 2 (§10.7). Discoveries **D19–D22** below. **Paused here for manual testing** — see §10.8. |
-| **Phase 3.5** — copy-density sweep **[R5]** | ⬜ not started | — | Added by Revision 5 (P15, §5.8). Pure UI; may ride in Phase 3's branch if that has not merged. |
+| **Phase 3** — in-app reminders + history surfaces | ✅ committed **and pushed** | `3b0f796` on `feat/waitlist-p3-reminders` | Every row of the §8 Phase 3 list is written, plus the notification-bell work §8 does not mention. Built by seven parallel agents on non-overlapping file sets against one pinned contract, the same method as Phase 2 (§10.7). Discoveries **D19–D22** below. |
+| **Phase 3.5** — copy-density sweep **[R5]** | ✅ committed **and pushed** | `PLACEHOLDER35` on `feat/waitlist-p3-reminders` | Rode in Phase 3's branch, as §8 allowed. `FieldHint` + the editor and settings sweeps; the member-facing audit correctly changed **nothing** (**D24**). Discoveries **D23–D26** below. **Paused here for manual testing** — see §10.8. |
 | **Phase 4a/4b** | ⛔ out of scope | — | Excluded by agreement at build start. |
 | **Phase 5** — bulk event creation **[R5]** | ⬜ not started | — | Added by Revision 5 (§5.9). Independent of every other phase; pull forward if a season's schedule needs entering. |
 
-**Nothing is pushed.** Every commit is local. P14's "open a PR into `origin/main`" is deferred to an
-explicit instruction; P14's actual prohibition — never commit *to* `main` — is honoured.
+**Now pushed, on explicit instruction (2026-08-29):** *"make commits and push to the branch on
+GitHub regularly to keep versions and easy record keeping in case something breaks."* The whole local
+stack — PR zero through Phase 3.5 — went up as `feat/waitlist-p3-reminders` on `origin`. This changes
+the recovery story materially: before, an accident on this working tree lost every phase since PR
+zero, because the only copy of five phases was one un-backed-up local branch.
+
+**No PR is open.** P14's "open a PR into `origin/main`" is still deferred to an explicit instruction,
+and P14's actual prohibition — never commit *to* `main` — is honoured. Pushing a feature branch is
+not a merge; nothing reaches `main`, and §9.6 still applies (rules and indexes do **not** deploy with
+a push, and this branch changes `firestore.rules`).
 
 ### 10.2 What PR zero and Phase 0 actually changed
 
@@ -3419,6 +3427,39 @@ classified its rows off the raw `status` while the new stat counters resolved th
 longer accept. History now resolves it the same way. This is the generic hazard of the lazy
 evaluation model (P6): **every new read of `ShiftRequest.status` is a place the raw value and the
 resolved value can diverge**, and there is no type-level pressure to notice.
+
+### 10.2c What Phase 3.5 actually changed
+
+Three files — one new component and two author-facing surfaces — plus an audit of three
+member-facing files that deliberately produced **no diff at all**.
+
+**The component.** `app/components/field-hint.tsx`: an inline `ⓘ` (lucide `Info`, size 13) in a
+HeroUI `Tooltip`, upgrading to a `Popover` past 140 characters. Three details are load-bearing and
+should survive any future tidy-up:
+
+- **The trigger is a real `<button type="button">` with an `aria-label`.** HeroUI opens on focus, so
+  keyboard and screen-reader users get the same sentence a mouse user gets. A hover-only `<span>`
+  would have turned a wordiness fix into an accessibility regression — the fix would have *removed*
+  text from those users rather than relocating it.
+- **`isOpen` is controlled, and the trigger toggles it on click.** HeroUI's `Tooltip` does not open
+  on touch. Managers create and edit events on a phone, so an uncontrolled tooltip would have made
+  every hint in this phase invisible to the primary user of the surface it was added to.
+- **The keep rule and the member-facing exception are written into the file's header comment**, not
+  just into §5.8. The component is the place a future contributor meets this feature, and "don't put
+  a policy promise in here" needs to be legible at the call site.
+
+**The sweeps.** `event-editor-modal.tsx`: three spots, of which the per-team **FTO intern** sub-line
+is the real win — it repeated once per team row, so a four-team event rendered it four times. Its
+`FieldHint` sits as a **sibling of** the `<Switch>`, not a child: a `<button>` inside a HeroUI
+`Switch`'s label is a nested interactive element, and clicking the hint would have toggled the
+switch. `waitlist-tier-tab.tsx`: ten sentences moved to hints, **nine `description=` props and every
+warning banner deliberately left on screen** by the keep rule.
+
+**What did not change, and why that is the finding.** `team-card.tsx`, `event-detail-drawer.tsx` and
+`waitlist-offer-modal.tsx` were audited line by line against the keep rule and the member-facing
+exception. **Zero lines qualified** — see **D24**. The audit is recorded rather than silently
+skipped, because "we looked and correctly changed nothing" and "we never looked" are indistinguishable
+in a diff.
 
 ### 10.3 Discoveries — things the plan did not predict
 
@@ -3935,6 +3976,80 @@ one-off: this codebase has several `Record<Union, …>` lookups keyed on persist
 (status→chip maps, role→label maps), and every one of them is a total function only if the database
 agrees with the current type declaration. It does not have to.
 
+#### D23 — a *factual* claim in an agent brief is as load-bearing as an instruction
+
+The Phase 3.5 brief for the settings sweep told the agent, in the orchestrator's own words:
+*"HeroUI's `label` prop takes a string, not a node — so where the control uses `label="…"`, you
+cannot inline a hint into it,"* and then prescribed a workaround: drop the native `label`, add an
+`aria-label`, and hand-roll a `<p>` label row above each control.
+
+**The claim is false.** `label` is typed `label?: ReactNode`
+(`node_modules/@react-types/shared/src/labelable.d.ts:21`, inherited by both `Input` and `Select`).
+The correct conversion was always a one-line change:
+
+```tsx
+label={<>Queue scope <FieldHint text="Per event means a seat freeing on any team…" /></>}
+```
+
+The agent did exactly what it was told, competently, and reported no problem — because from inside
+the brief there was no problem. The cost only shows up on screen: **six controls got a hand-rolled
+`text-xs font-semibold` label while their grid neighbours kept HeroUI's native one**, so a
+two-column form had two different label styles in adjacent cells, mismatched row heights, and — the
+part no screenshot shows — a lost `<label for>` association, meaning clicking the label text no
+longer focused the input. A density fix had quietly become a restyle and a small accessibility
+regression. Caught in the integration pass by checking the type before accepting the diff, and
+reverted by a follow-up agent to the fragment form above.
+
+The generalisable point, and the reason this sits next to §10.7's process notes: the parallel-agent
+method works by **pinning a contract before dispatch**, and that contract carries *facts* as well as
+*instructions*. An agent will push back on an instruction it cannot carry out; it has no way to push
+back on a false premise, and every agent given that premise inherits the same defect at once. So the
+discipline that applies to a pinned signature applies to a pinned API claim: **verify it against the
+`.d.ts` before writing it into a brief**, exactly as §10.7 verified `TierAccess` before dispatch. Two
+minutes of `grep` in `node_modules` would have saved a full agent round-trip.
+
+#### D24 — the member-facing audit's correct output was an empty diff
+
+§5.8's sweep table predicted `team-card.tsx` / `event-detail-drawer.tsx` / `waitlist-offer-modal.tsx`
+would be *"mostly unchanged."* The audit found they should be **entirely** unchanged: every piece of
+explanatory prose in all three is protected either by the keep rule (a warning, live state, or an
+instruction read while typing) or by the member-facing exception (on a member surface, the text *is*
+the feature — §5.3's pre-emptive explanation, P4's non-binding reassurance, a tier `rationale`).
+
+One borderline was correctly declined rather than forced: the drawer's *"Auto-promotion is off for
+this event — freed slots wait for you."* is manager-only and is a plain explanation, so it passes two
+of the three candidate tests — but it is a **standalone callout with an `Info` icon, not a label on a
+control**, and `FieldHint` is specified to sit inline after a label, never on its own row. There was
+nowhere to put the hint. If that line ever gains an auto-promotion toggle beside it, it becomes a
+candidate; today it is not one.
+
+This is recorded because a zero-line diff is invisible in `git log`, and "audited, nothing qualified"
+and "never audited" look identical six months later.
+
+#### D25 — §4.2's card sketches show a `ⓘ` on two switches that have no sentence to hide
+
+Card 1's *"Allow joining after the shift has started"* and Card 3's *"Enable priority tiers"* both
+carry a `ⓘ` in §4.2's mockups, implying hint text. In the shipped component **neither switch has any
+explanatory sentence at all** — just a bare title `<p>`. There is nothing to relocate.
+
+The sweep agent correctly refused to invent copy to fill the sketch (the phase's hard rule is
+*relocate, never delete* — and by symmetry, never fabricate). So this is left as an open decision
+rather than silently resolved either way: **either write the two missing sentences, or drop the `ⓘ`
+from §4.2's sketches.** Whoever picks it up should know it predates this phase; the sketch was
+drafted against an earlier shape of the component.
+
+#### D26 — one of the 15 counted `description=` props falls in neither list
+
+§5.8 counts *"15 `description=` props + 4 explanatory `<p>` blocks"* in `waitlist-tier-tab.tsx`, and
+that count is **exactly right** — it verified against the file on 2026-08-29. But the line-by-line
+guidance derived from §4.2 covers only 14 of them: *"Cancelling inside this window counts as a late
+cancellation."* (the cancellation card's notice window) appears in neither the keeper list nor the
+fair-game list. It was resolved by analogy — a plain explanation on a manager-only numeric field,
+therefore convertible — and that is almost certainly right, but it was an inference, not a reading.
+
+Recorded as a spec-coverage gap rather than a bug: an accurate *count* is not the same as complete
+*coverage*, and the count being right is what made the gap easy to miss.
+
 ### 10.4 Corrections to earlier sections
 
 | Section | Correction |
@@ -3967,6 +4082,10 @@ agrees with the current type declaration. It does not have to.
 | §5.5 | Specifies the profile stat block without noticing the card's pre-existing `shiftsAllTime === 0` early return, which makes the block unreachable for a member with a queue entry and no shifts. See **D20**. |
 | §8 Phase 3 | The phase table does not mention the notification bell, but `shift_reminder` becomes the first type Phase 3 actually emits, and the bell had no per-type presentation. Shipped in this phase; it produced **D21** and **D22**. |
 | §4.1 | The contract for this phase named the reminder config getter `getShiftReminders()` from `org-config-store`. No such export exists — the wrapper is `getShiftReminderConfig()` in `app/config/org-config`, which is the layer every other config read in `events.ts` already goes through. Cosmetic, but recorded because the same wrong name appears in §6.2's prose. |
+| §10.5 | The standing claim *"`npx tsc --noEmit` (clean)"* is **not literally true and never was on this branch.** `tsc` reports **5 pre-existing errors**, all in `app/lib/__tests__/o2-validation.test.ts` and `o2-checkout-integration.test.ts`, which `import { … } from 'vitest'` — a package that is not in `package.json` and never has been. They arrived in commit `129f7ec`, long before this work, and no suite runs those files. The honest phrasing, used from Phase 3.5 onward, is *"clean apart from 5 pre-existing errors in two orphaned vitest files"*, and the gate every agent is given is `npx tsc --noEmit 2>&1 \| grep -v '__tests__'`. Worth fixing or deleting those two files separately; out of scope here. |
+| §5.8 | Cites `event-editor-modal.tsx:703-724` for the two switch paragraphs. Line numbers held (the switch markup really was at 703–711), but the transformation has a consequence the section does not mention: collapsing a two-line label to one line makes the block's `items-start` + `mt-0.5` switch offset wrong, so both containers moved to `items-center`. Cosmetic, but it is a required part of the change, not an optional tidy. |
+| §5.8 | Says `FieldHint` *"sits inline, immediately after the label text"* without noting that on a HeroUI `Switch` the label is the component's **child**, so an inline hint would nest a `<button>` inside the switch's clickable label and toggle the switch when tapped. On a `Switch`, the hint goes **beside** the component, not inside it. |
+| §5.8 | The sweep table omits `waitlist-tier-tab.tsx`'s line-by-line detail and defers to §4.2, whose sketches have two gaps of their own — see **D25** and **D26**. |
 
 ### 10.5 Verification standing
 
@@ -4118,6 +4237,30 @@ banner and receive a `shift_reminder` the first time they open the dashboard aft
 the intended behaviour, but it means Phase 3 is the first phase since Phase 1 where "no such
 document exists yet" is not available as a safety argument. See §10.8.
 
+**Phase 3.5 results.** `npx tsc --noEmit` clean (apart from the 5 pre-existing vitest errors recorded
+in §10.4); `npx eslint` on all three touched files — **zero findings, not merely zero new ones**;
+`npm run build` ✅; `npm run test` 69/69 ✅.
+
+**`npm run test:events` was deliberately NOT re-run**, and that is a claim rather than an omission:
+Phase 3.5 touches three files, all of them presentational (`field-hint.tsx`, `event-editor-modal.tsx`,
+`waitlist-tier-tab.tsx`). It changes no file under `app/lib/`, no type, no rule and no config
+default, so there is no path by which it can move an assertion in a suite that never renders a
+component. The standing figure is Phase 3's **314 passed / 0 failed / 0 errored across 40 suites**.
+
+**The one verification this phase actually needs, no automated tier can supply.** The entire claim of
+Phase 3.5 is *"this reads as a form, not an essay"* — and there is no assertion for that. §8's stated
+exit criterion is **by eye at 390px**: the event editor's "Waitlist & priority access" block must not
+push the Teams section off screen, and the settings cards must scan as a list of controls rather than
+a page of prose. Until someone has looked at it on a narrow viewport, this phase is **built,
+typechecked and lint-clean, with its actual deliverable unverified** — a stronger caveat than the
+usual "not browser-verified", because for Phases 1–3 the browser was checking an implementation whose
+logic the suites had already pinned, whereas here the browser *is* the test.
+
+A second thing only a human can check, and the reason `FieldHint` is controlled: **tap the ⓘ on a
+phone-width viewport.** If a hint opens on desktop hover but not on tap, every sentence this phase
+moved has been deleted for the primary user of the surface it was moved on, and nothing in `tsc`,
+lint, the build or the suites would say a word about it.
+
 ### 10.6 Process note — a real incident worth not repeating
 
 During Phase 0, `git stash` was run on the shared working tree to measure a lint baseline **while
@@ -4152,6 +4295,20 @@ sites, D15's shared copy), and both were known and assigned to the orchestrator 
 were each found by the agent implementing the surface, not by review afterwards. An agent that is
 asked only "did you build it" reports success; one asked "what did the spec get wrong" reads the
 spec adversarially.
+
+**Phase 3.5 addendum: the contract can carry a false *fact*, and no agent will catch it.** Phase 3.5
+used the same method at smaller scale — three agents, non-overlapping files, one pinned `FieldHint`
+signature — and the signature held perfectly. What did not hold was an *assertion* in the brief:
+"HeroUI's `label` prop takes a string." It does not, and the agent built a careful workaround for a
+constraint that does not exist, reporting success because from inside the brief it had succeeded
+(**D23**). §10.7's lesson was *pin the contract before dispatch*; the amendment is that a contract
+contains facts as well as signatures, and **a fact gets verified the same way a signature does** —
+against the `.d.ts`, before it is written into anyone's brief. An agent will tell you an instruction
+is impossible. It cannot tell you a premise is wrong.
+
+The other half worked as designed: the member-facing audit was dispatched with "zero edits is a
+correct and expected outcome," and it returned zero edits with its reasoning (**D24**). An agent told
+only to *sweep* would have found something to sweep.
 
 **What did not work: the prohibition in §10.6 did not hold.** One agent ran `git stash` /
 `git stash pop` on the shared tree — mid-flight, with six other agents writing to it — to check
@@ -4198,6 +4355,39 @@ template, or toggle the feature off, and reload the dashboard. Every one of thos
 the banner, because P11 says none of it is hardcoded. **Deleting every reminder row must actually
 stop reminders** — that is discovery **D3**, and it is the single most likely thing to regress
 silently.
+
+**Phase 3.5 — the copy-density sweep (added after the pause; this is the part with no test behind it)**
+
+Do this on a **390px-wide viewport** (browser devtools → iPhone-ish width). Density is the entire
+claim, and it is only visible when the screen is narrow.
+
+| Surface | How to reach it | What to look for |
+|---|---|---|
+| Event editor | `admin@` / `qm@` / `medops@` → `/events` → New event | The "Waitlist & priority access" block is **three one-line rows**, not three paragraphs, and does **not** push the Teams section off screen. Each `ⓘ` still tells you what the switch does. |
+| Per-team FTO intern | same modal, scroll to Teams, add 3–4 teams | The "Supervised trainee — not counted toward headcount" sub-line is gone from every row and lives on one `ⓘ`. With four teams that is four paragraphs removed. **Tap the `ⓘ`, then tap the switch** — they must be independent; the hint must not toggle the switch. |
+| Settings | `admin@`/`qm@` → `/settings` → "Waitlist & Access" | Cards read as a **list of controls**. Every field keeps its normal HeroUI label (**D23** — if any label looks like a different size or weight from the one beside it, that regression is back). Clicking a field's label text should focus the field. |
+| Hints on touch | any of the above, at 390px | **Tap an `ⓘ`.** It must open. Tap elsewhere: it must close. A hint that only works on desktop hover is a deleted sentence for a manager on a phone. |
+| Keyboard | any of the above | `Tab` to an `ⓘ`. It must take focus visibly and show its text on focus alone, without a mouse. |
+
+**What must still be on screen after the sweep** (if any of these are now behind an `ⓘ`, that is a
+bug, not a preference — see §5.8's keep rule):
+
+- Every amber warning banner in `/settings` → "Waitlist & Access", including *"the short-notice
+  message is a policy promise"*, the *"Block is app-enforced only until rules ship"* note, and the
+  reminders card's *"there is no scheduler"* note.
+- Anything with `{braces}` in it — `{hours}`, `{position}`, `{event} {team} {role}` — and the
+  `0 = unlimited` / `0 = send individually` conventions. You need those while typing in the box.
+- The tenure-coverage count and the delivery status line. Those are live numbers, not help text.
+- **Every member-facing sentence, everywhere** — the offer modal's binding warning and no-penalty
+  reassurance, the tier rationale, any cert-block reason. Phase 3.5 changed **nothing** on
+  `team-card` / `event-detail-drawer` / `waitlist-offer-modal` (**D24**); if any of that copy has
+  moved or shortened, something went wrong.
+
+**The judgement call to bring back from this phase.** §5.8 is a bet that these sentences were noise
+*for a manager who already understands the feature*. Read the editor as someone opening it for the
+**first** time. If a switch is now genuinely unclear without hovering, the honest fix is to put that
+one sentence back on screen — the keep rule already has room for it — not to accept a form you can't
+read. Name the specific switch; a per-control decision is cheap, another sweep is not.
 
 **Four things you should know are not testable this way, so their absence is not a bug:**
 

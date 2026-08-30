@@ -14,6 +14,7 @@ import type {
 } from '@/app/config/org-config';
 import { WAITLIST_DEFAULTS } from '@/app/config/org-config';
 import type { TierCriteria, User } from '@/app/types';
+import { FieldHint } from '@/app/components/field-hint';
 import { newId } from './settings-utils';
 
 // ---------------------------------------------------------------------------
@@ -99,30 +100,26 @@ function WaitlistCard({ value, onChange }: { value: WaitlistConfig; onChange: (v
 
       <div className="flex items-start gap-3 mb-4">
         <Switch isSelected={value.enabled} onValueChange={(v) => set({ enabled: v })} size="sm" className="mt-0.5" />
-        <div className="flex-1">
-          <p className="text-sm font-medium text-foreground">Enable waitlist</p>
-          <p className="text-xs text-foreground-500 mt-1">
-            When on, a member who requests a full slot joins a queue instead of being blocked.
-          </p>
-        </div>
+        <p className="text-sm font-medium text-foreground">
+          Enable waitlist
+          <FieldHint text="When on, a member who requests a full slot joins a queue instead of being blocked." />
+        </p>
       </div>
 
       <div className={`grid grid-cols-1 md:grid-cols-2 gap-4 ${value.enabled ? '' : 'opacity-50 pointer-events-none'}`}>
         <Select
-          label="Queue scope"
+          label={<>Queue scope <FieldHint text="Per event means a seat freeing on any team reaches everyone waiting for that role." /></>}
           selectedKeys={[value.scope]}
           onChange={(e) => e.target.value && set({ scope: e.target.value as WaitlistConfig['scope'] })}
-          description="Per event means a seat freeing on any team reaches everyone waiting for that role."
         >
           <SelectItem key="event">One queue per event (recommended)</SelectItem>
           <SelectItem key="team">One queue per team</SelectItem>
         </Select>
 
         <Select
-          label="Team preference"
+          label={<>Team preference <FieldHint text="Strict can leave a seat empty while someone waits for their preferred team." /></>}
           selectedKeys={[value.honorTeamPreference]}
           onChange={(e) => e.target.value && set({ honorTeamPreference: e.target.value as WaitlistConfig['honorTeamPreference'] })}
-          description="Strict can leave a seat empty while someone waits for their preferred team."
         >
           <SelectItem key="ignore">Ignore</SelectItem>
           <SelectItem key="soft">Honour when possible (recommended)</SelectItem>
@@ -132,8 +129,7 @@ function WaitlistCard({ value, onChange }: { value: WaitlistConfig; onChange: (v
         <Input
           type="number"
           min={0}
-          label="Long-notice threshold"
-          description="Offers made with more notice than this are binding on accept."
+          label={<>Long-notice threshold <FieldHint text="Offers made with more notice than this are binding on accept." /></>}
           value={String(value.longNoticeThresholdHours)}
           onValueChange={(v) => set({ longNoticeThresholdHours: Number(v) || 0 })}
           endContent={<span className="text-foreground-400 text-xs">hours</span>}
@@ -151,8 +147,7 @@ function WaitlistCard({ value, onChange }: { value: WaitlistConfig; onChange: (v
         <Input
           type="number"
           min={0}
-          label="Short-notice response window"
-          description="Short-notice acceptance is never binding — a no-show on a short-notice pickup doesn't count against them."
+          label={<>Short-notice response window <FieldHint text="Short-notice acceptance is never binding — a no-show on a short-notice pickup doesn't count against them." /></>}
           value={String(value.shortNoticeResponseWindowHours)}
           onValueChange={(v) => set({ shortNoticeResponseWindowHours: Number(v) || 0 })}
           endContent={<span className="text-foreground-400 text-xs">hours</span>}
@@ -168,12 +163,10 @@ function WaitlistCard({ value, onChange }: { value: WaitlistConfig; onChange: (v
       <div className={`flex flex-col gap-4 mt-4 pt-4 border-t border-divider ${value.enabled ? '' : 'opacity-50 pointer-events-none'}`}>
         <div className="flex items-start gap-3">
           <Switch isSelected={value.autoPromote} onValueChange={(v) => set({ autoPromote: v })} size="sm" className="mt-0.5" />
-          <div className="flex-1">
-            <p className="text-sm font-medium text-foreground">Auto-promote from waitlist</p>
-            <p className="text-xs text-foreground-500 mt-1">
-              When off, a freed slot sits open until a manager sends the next offer by hand.
-            </p>
-          </div>
+          <p className="text-sm font-medium text-foreground">
+            Auto-promote from waitlist
+            <FieldHint text="When off, a freed slot sits open until a manager sends the next offer by hand." />
+          </p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -189,9 +182,8 @@ function WaitlistCard({ value, onChange }: { value: WaitlistConfig; onChange: (v
           <Input
             type="number"
             min={0}
-            label="Max offers per member per event"
+            label={<>Max offers per member per event <FieldHint text={value.declinedOfferBehavior !== 'requeue_back' ? 'Only applies with "Move to back of queue."' : 'Caps the requeue loop.'} /></>}
             isDisabled={value.declinedOfferBehavior !== 'requeue_back'}
-            description={value.declinedOfferBehavior !== 'requeue_back' ? 'Only applies with "Move to back of queue."' : 'Caps the requeue loop.'}
             value={String(value.maxOffersPerMember)}
             onValueChange={(v) => set({ maxOffersPerMember: Number(v) || 0 })}
           />
@@ -250,8 +242,7 @@ function CancellationCard({
           <Input
             type="number"
             min={0}
-            label="Notice window"
-            description="Cancelling inside this window counts as a late cancellation."
+            label={<>Notice window <FieldHint text="Cancelling inside this window counts as a late cancellation." /></>}
             value={String(value.noticeHours)}
             onValueChange={(v) => set({ noticeHours: Number(v) || 0 })}
             endContent={<span className="text-foreground-400 text-xs">hours</span>}
@@ -1034,10 +1025,10 @@ function NotificationDeliveryCard({
       <div className="flex flex-col gap-4">
         <div className="flex items-start gap-3">
           <Switch isSelected={value.inApp} isDisabled size="sm" className="mt-0.5" />
-          <div>
-            <p className="text-sm font-medium text-foreground">In-app notifications</p>
-            <p className="text-xs text-foreground-500 mt-1">Always on — the bell is the only guaranteed channel.</p>
-          </div>
+          <p className="text-sm font-medium text-foreground">
+            In-app notifications
+            <FieldHint text="Always on — the bell is the only guaranteed channel." />
+          </p>
         </div>
 
         <div className="flex items-start gap-3">
@@ -1070,10 +1061,10 @@ function NotificationDeliveryCard({
 
         <div className="flex items-start gap-3 pt-2 border-t border-divider">
           <Switch isSelected={value.allowManagerMailto} onValueChange={(v) => set({ allowManagerMailto: v })} size="sm" className="mt-0.5" />
-          <div>
-            <p className="text-sm font-medium text-foreground">Show managers a &quot;email the queue&quot; button</p>
-            <p className="text-xs text-foreground-500 mt-1">Opens their own mail client — no infrastructure required.</p>
-          </div>
+          <p className="text-sm font-medium text-foreground">
+            Show managers a &quot;email the queue&quot; button
+            <FieldHint text="Opens their own mail client — no infrastructure required." />
+          </p>
         </div>
 
         <div className="bg-content2 rounded-large px-3 py-2 text-xs text-foreground-500">

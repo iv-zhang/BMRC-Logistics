@@ -13,6 +13,7 @@ import {
 import { Plus, Trash2, Minus, ArrowUp, ArrowDown, AlertTriangle } from 'lucide-react';
 import { createEvent, updateEvent, createEmptyTeam, resizeEmtSlots, clampEmtCount, type EventActor } from '@/app/lib/events';
 import { useOrgConfig } from '@/app/hooks/useOrgConfig';
+import { FieldHint } from '@/app/components/field-hint';
 import type { Event, EventTeam, EventStatus, EventAccessTier, TierWindow, TierCriteria } from '@/app/types';
 import { toJsDate } from './event-utils';
 
@@ -700,26 +701,21 @@ export default function EventEditorModal({ isOpen, onClose, event, actor, onSave
               Waitlist &amp; priority access
             </span>
 
-            <div className="flex items-start gap-3">
-              <Switch isSelected={waitlistOn} onValueChange={setWaitlistOn} size="sm" className="mt-0.5" />
-              <div className="flex-1">
-                <p className="text-sm font-medium text-foreground">Enable waitlist</p>
-                <p className="text-xs text-foreground-500 mt-1">
-                  When a team fills up, members can join a queue instead of seeing &quot;Full.&quot;
-                </p>
-              </div>
+            <div className="flex items-center gap-3">
+              <Switch isSelected={waitlistOn} onValueChange={setWaitlistOn} size="sm" />
+              <p className="text-sm font-medium text-foreground">
+                Enable waitlist
+                <FieldHint text='When a team fills up, members can join a queue instead of seeing "Full."' />
+              </p>
             </div>
 
             <div className="flex flex-col gap-3 pt-3 border-t border-divider">
-              <div className="flex items-start gap-3">
-                <Switch isSelected={tierEnabled} onValueChange={handleTierEnabledChange} size="sm" className="mt-0.5" />
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-foreground">Priority access tiers</p>
-                  <p className="text-xs text-foreground-500 mt-1">
-                    Stage sign-up so members who meet a window&apos;s criteria can sign up before everyone else. Off = open
-                    to everyone immediately.
-                  </p>
-                </div>
+              <div className="flex items-center gap-3">
+                <Switch isSelected={tierEnabled} onValueChange={handleTierEnabledChange} size="sm" />
+                <p className="text-sm font-medium text-foreground">
+                  Priority access tiers
+                  <FieldHint text="Stage sign-up so members who meet a window's criteria can sign up before everyone else. Off = open to everyone immediately." />
+                </p>
               </div>
 
               {tierEnabled && (
@@ -804,13 +800,9 @@ export default function EventEditorModal({ isOpen, onClose, event, actor, onSave
                     onValueChange={(on) => toggleFtoIntern(team.id, on)}
                     aria-label="FTO intern"
                   >
-                    <span className="text-xs text-foreground-500">
-                      FTO intern
-                      <span className="block text-[10px] text-foreground-400 leading-tight">
-                        Supervised trainee — not counted toward headcount
-                      </span>
-                    </span>
+                    <span className="text-xs text-foreground-500">FTO intern</span>
                   </Switch>
+                  <FieldHint text="Supervised trainee — not counted toward headcount" />
                 </div>
                 <Button
                   size="sm"
