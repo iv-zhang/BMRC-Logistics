@@ -29,7 +29,26 @@ Firebase environment variables are required in `.env.local` (`NEXT_PUBLIC_FIREBA
 2. **Implement approved changes via Sonnet and/or Haiku subagents at low and/or medium effort whenever possible**, to maximize token efficiency — reserve the top-tier model for planning, cross-file reasoning, and the integration/verification pass. Split work across subagents on **strictly non-overlapping file sets** so parallel runs are safe; the orchestrator handles any intentional cross-file seams itself after the agents land.
 3. Match effort to difficulty: Haiku/low for mechanical edits (mechanical refactors, wiring, copy, obvious fixes), Sonnet/medium for logic with local reasoning. Escalate only when a subagent reports it can't complete the task within scope.
 
-**Never commit or push unless the user explicitly asks.** Make and verify changes in the working tree and report what changed; leave `git commit`/`git push` for an explicit instruction. This overrides any default "commit when done" behavior.
+**Commit and push to the feature branch as you go — never to `main`.** (Standing instruction from
+Ivan, 2026-08-30; supersedes the earlier "never commit or push unless explicitly asked" rule, which
+cost a real recovery story: for five phases the only copy of the work was one un-backed-up local
+branch.) The habit is:
+
+- **Work on a feature branch off `main`**, never on `main` itself. If the current branch is `main`,
+  branch first.
+- **Commit at every completed, verified unit of work** — a phase, a sub-phase, a self-contained fix.
+  A commit is a fallback point, so the tree must be typechecked and lint-clean at that point
+  (see the verification table below). Do not batch a day's work into one commit.
+- **Push the branch after each commit** (`git push -u origin <branch>`), so the remote is never more
+  than one unit of work behind the local tree. Pushing a feature branch is not a merge.
+- **Never `git commit` on `main`, never force-push, and never open or merge a PR** without an
+  explicit instruction. Those remain opt-in.
+- **Write the commit message for the fallback reader**: what changed, and why, not just where.
+- **Documentation lands in the same commit as the code it describes.** If a change alters a design
+  decision, add it to [decisions.md](decisions.md); if it invalidates an invariant, update
+  [invariants.md](invariants.md); if it belongs to an in-flight plan (e.g.
+  `docs/medops-signup-plan.md`), update that plan's implementation log — including what the plan got
+  *wrong* — before committing. A discovery recorded only in a chat transcript is a discovery lost.
 
 **Verification is tiered — do not run the expensive tier by default.** The emulator smoke driver (`run-bmrc-logistics` skill) boots Firebase emulators, a dev server, and Playwright; it burns a large number of tokens per run. Run it **only immediately before a commit**, or when the user explicitly asks to see the app driven.
 

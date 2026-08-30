@@ -3345,7 +3345,7 @@ disagree, this section is current and the plan section is historical.
 | **Phase 1** — waitlist queue | ✅ committed | `5ac86e7` on `feat/waitlist-p1-queue` | Every row of the §8 Phase 1 table is written. The first end-to-end run of the new `evt-waitlist` suite found **two real bugs** — **D11** (accepting an EMT offer was impossible) and **D12** (every decline threw); both fixed, and `test:events` is now **146/146 across all 15 suites**. Discoveries **D5–D13** below. Not yet runtime-verified in a browser (see §10.5). |
 | **Phase 2** — priority tiers | ✅ committed | `cbe542f` on `feat/waitlist-p2-tiers` | Every row of the §8 Phase 2 table is written, plus the `/settings` tenure gate §8 only implies. Built by seven parallel agents on non-overlapping file sets against one pinned cross-file contract (§10.7). Discoveries **D14–D18** below. |
 | **Phase 3** — in-app reminders + history surfaces | ✅ committed **and pushed** | `3b0f796` on `feat/waitlist-p3-reminders` | Every row of the §8 Phase 3 list is written, plus the notification-bell work §8 does not mention. Built by seven parallel agents on non-overlapping file sets against one pinned contract, the same method as Phase 2 (§10.7). Discoveries **D19–D22** below. |
-| **Phase 3.5** — copy-density sweep **[R5]** | ✅ committed **and pushed** | `c66b2cd` on `feat/waitlist-p3-reminders` | Rode in Phase 3's branch, as §8 allowed. `FieldHint` + the editor and settings sweeps; the member-facing audit correctly changed **nothing** (**D24**). Discoveries **D23–D26** below. **Paused here for manual testing** — see §10.8. |
+| **Phase 3.5** — copy-density sweep **[R5]** | ✅ committed **and pushed**; one follow-up fix | `c66b2cd` + ``9b08abc`` on `feat/waitlist-p3-reminders` | Rode in Phase 3's branch, as §8 allowed. `FieldHint` + the editor and settings sweeps; the member-facing audit correctly changed **nothing** (**D24**). Discoveries **D23–D26** below. **Paused here for manual testing** — see §10.8. Manual testing immediately found **D27**: the `FieldHint` trigger was a `<button>` nested inside HeroUI `Select`/`Input` labels, a hydration error. Fixed. |
 | **Phase 4a/4b** | ⛔ out of scope | — | Excluded by agreement at build start. |
 | **Phase 5** — bulk event creation **[R5]** | ⬜ not started | — | Added by Revision 5 (§5.9). Independent of every other phase; pull forward if a season's schedule needs entering. |
 
@@ -4050,6 +4050,61 @@ therefore convertible — and that is almost certainly right, but it was an infe
 Recorded as a spec-coverage gap rather than a bug: an accurate *count* is not the same as complete
 *coverage*, and the count being right is what made the gap easy to miss.
 
+#### D27 — the `<button>` trigger that made §5.8's own fix a hydration error
+
+**Found by running the app, not by reading it** (2026-08-30). `/settings` → "Waitlist & Access"
+threw two React console errors on every render:
+
+```
+In HTML, <button> cannot be a descendant of <button>. This will cause a hydration error.
+  at FieldHint (app/components/field-hint.tsx:60)
+  at WaitlistCard (app/components/settings/waitlist-tier-tab.tsx:110)
+```
+
+**Cause.** §10.2c records, as a deliberate and load-bearing choice, that *"the trigger is a real
+`<button type="button">`"* — chosen for accessibility, and correct on that axis. But a field hint's
+natural home is beside the field's **label**, and both HeroUI controls the sweep touched put a label
+somewhere a `<button>` may not go:
+
+| Control | Where the label renders | Why a `<button>` is illegal there |
+|---|---|---|
+| `Select` | **inside** the trigger, which is itself a `<button>` (`select` renders `labelContent` inside `Component` unless `labelPlacement` is `outside*`) | `<button>` inside `<button>` — React's `validateDOMNesting` reports it, and it is a real hydration mismatch |
+| `Input` / `Textarea` | inside a real `<label>` | `<label>`'s content model forbids labelable descendants, and `<button>` is one. **React does not warn about this one** — same defect, silent |
+
+Two Selects (`Queue scope`, `Team preference`) produced the visible error; four Inputs carried the
+silent variant. The Switch case was already known and avoided (§10.4's last-but-two row) — the
+lesson is that avoiding it *on a Switch* was treated as the whole of the problem, when the switch was
+only the instance that happened to be noticed.
+
+**Fix.** The trigger is now a `<span role="button" tabIndex={0}>` with an `Enter`/`Space` handler.
+`<span>` is not "interactive content" in the HTML content model, so it is valid inside both a
+`<button>` and a `<label>`, while the role, tabindex, `aria-label` and key handler keep it a button
+for assistive tech — the accessibility property §10.2c was protecting is preserved in full. No call
+site changed.
+
+**Two things the fix had to get right that the original did not:**
+
+- **The click must `stopPropagation()`.** Without it the gesture reaches the host control: tapping
+  the ⓘ inside an `Input` label focuses the field, and inside a `Select` trigger it opens the
+  dropdown *behind* the tooltip. This was a live bug on every hinted `Select`, independent of the
+  nesting error.
+- **The manual toggle belongs to the Tooltip branch only.** `PopoverTrigger` clones its child with
+  react-aria press handlers that already toggle the popover, so a hint over 140 characters was
+  toggling twice per tap and therefore **never opened on touch** — precisely the failure the
+  controlled `isOpen` was added to prevent, reintroduced by the mechanism meant to prevent it. No
+  shipped hint is currently past the threshold, so this was latent rather than observed.
+
+**The generalisable finding.** §10.2c's three "load-bearing details" were each argued on their own
+merits and each held on that axis. What none of them was checked against is the **host** — the
+element the component would be rendered *inside*. A component designed to live in other components'
+labels has its content model dictated by those labels, and a design note that says "this must be a
+real `<button>`" is a claim about a context the author does not control. The a11y argument was
+right; its conclusion did not follow.
+
+**And a process point worth stating flatly:** this shipped in a phase whose §10.5 entry reads "not
+runtime-verified in a browser", and it is exactly the class of defect nothing but a browser finds.
+`tsc` and `eslint` are both clean on the broken code, and no test renders a HeroUI `Select`.
+
 ### 10.4 Corrections to earlier sections
 
 | Section | Correction |
@@ -4086,6 +4141,7 @@ Recorded as a spec-coverage gap rather than a bug: an accurate *count* is not th
 | §5.8 | Cites `event-editor-modal.tsx:703-724` for the two switch paragraphs. Line numbers held (the switch markup really was at 703–711), but the transformation has a consequence the section does not mention: collapsing a two-line label to one line makes the block's `items-start` + `mt-0.5` switch offset wrong, so both containers moved to `items-center`. Cosmetic, but it is a required part of the change, not an optional tidy. |
 | §5.8 | Says `FieldHint` *"sits inline, immediately after the label text"* without noting that on a HeroUI `Switch` the label is the component's **child**, so an inline hint would nest a `<button>` inside the switch's clickable label and toggle the switch when tapped. On a `Switch`, the hint goes **beside** the component, not inside it. |
 | §5.8 | The sweep table omits `waitlist-tier-tab.tsx`'s line-by-line detail and defers to §4.2, whose sketches have two gaps of their own — see **D25** and **D26**. |
+| §10.2c | *"The trigger is a real `<button type="button">`"* is recorded there as load-bearing. It was **wrong** and shipped a hydration error on `/settings`; the trigger is now a `<span role="button" tabIndex={0}>`. The *accessibility* claim that paragraph makes still holds and is still the reason the trigger is focusable — only the element changed. See **D27**. |
 
 ### 10.5 Verification standing
 

@@ -21,10 +21,27 @@
  * (§5.3's pre-emptive explanation, P4's non-binding reassurance, a tier
  * `rationale`). Do not hide those. If they read long, shorten the sentence.
  *
- * Accessibility is why the trigger is a real <button> rather than a <span>:
+ * Accessibility is why the trigger is focusable and carries an `aria-label`:
  * HeroUI opens on focus, so keyboard and screen-reader users get the same text
  * a mouse user gets. `isOpen` is controlled so a TAP works too — HeroUI's
  * Tooltip does not open on touch, and managers create events on a phone.
+ *
+ * The trigger is a `<span role="button" tabIndex={0}>` and NOT a real
+ * `<button>`. That is load-bearing, not a style choice (see §10.3 D27):
+ *
+ *   - A hint belongs beside a field's LABEL, and HeroUI renders a `Select`'s
+ *     label *inside* the trigger `<button>`. `<button>` inside `<button>` is
+ *     illegal HTML and React reports it as a hydration error.
+ *   - An `Input`'s label is a real `<label>`, whose content model forbids
+ *     labelable descendants — a `<button>` is one. Same bug, no warning.
+ *   - `<span>` is not "interactive content" per the HTML content model, so it
+ *     is valid in both places, while `role="button"` + `tabIndex` + a keyboard
+ *     handler keep it a button for assistive tech.
+ *
+ * The click handler also stops propagation: without it, tapping the ⓘ inside a
+ * label focuses the field, and inside a `Select` trigger it opens the dropdown
+ * behind the tooltip. Any future refactor that reaches for `<button>` here
+ * reintroduces both bugs at once.
  */
 
 import React from 'react';
@@ -54,17 +71,40 @@ export interface FieldHintProps {
 export function FieldHint({ text, ariaLabel, className = '' }: FieldHintProps) {
   const [isOpen, setIsOpen] = React.useState(false);
   const label = ariaLabel ?? text;
-  const triggerClass = `inline-flex items-center align-middle ml-1 text-foreground-400 hover:text-foreground-600 outline-none focus-visible:ring-2 focus-visible:ring-focus rounded-full ${className}`;
+  const triggerClass = `inline-flex items-center align-middle ml-1 cursor-help text-foreground-400 hover:text-foreground-600 outline-none focus-visible:ring-2 focus-visible:ring-focus rounded-full ${className}`;
 
-  const trigger = (
-    <button
-      type="button"
+  // Toggle on click/Enter/Space, and never let the gesture reach the field this
+  // hint is labelling (see the header comment).
+  const toggle = (e: React.SyntheticEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsOpen((v) => !v);
+  };
+
+  /**
+   * `PopoverTrigger` clones its child with react-aria press handlers that
+   * already toggle the popover, so the manual `toggle` must be attached ONLY in
+   * the Tooltip branch — a Tooltip never opens on press, which is the whole
+   * reason `isOpen` is controlled. Attaching it in both branches makes the two
+   * toggles cancel and the popover never opens on tap.
+   */
+  const renderTrigger = (withToggle: boolean) => (
+    <span
+      role="button"
+      tabIndex={0}
       aria-label={label}
       className={triggerClass}
-      onClick={() => setIsOpen((v) => !v)}
+      onClick={withToggle ? toggle : undefined}
+      onKeyDown={
+        withToggle
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') toggle(e);
+            }
+          : undefined
+      }
     >
       <Info size={13} aria-hidden="true" />
-    </button>
+    </span>
   );
 
   // Long copy in a tooltip is a wall of text pinned to the cursor. Prefer
@@ -72,7 +112,7 @@ export function FieldHint({ text, ariaLabel, className = '' }: FieldHintProps) {
   if (text.length > POPOVER_THRESHOLD) {
     return (
       <Popover placement="top" showArrow isOpen={isOpen} onOpenChange={setIsOpen} size="sm">
-        <PopoverTrigger>{trigger}</PopoverTrigger>
+        <PopoverTrigger>{renderTrigger(false)}</PopoverTrigger>
         <PopoverContent>
           <p className="text-xs text-foreground-600 max-w-[260px] py-2">{text}</p>
         </PopoverContent>
@@ -91,7 +131,7 @@ export function FieldHint({ text, ariaLabel, className = '' }: FieldHintProps) {
       isOpen={isOpen}
       onOpenChange={setIsOpen}
     >
-      {trigger}
+      {renderTrigger(true)}
     </Tooltip>
   );
 }
