@@ -20,6 +20,7 @@ import {
   type VerificationFieldDef,
   type OrgInfo,
   type VenueDef,
+  type EventTemplateDef,
   type WaitlistConfig,
   type CancellationPolicyConfig,
   type PriorityTierConfig,
@@ -45,6 +46,8 @@ export interface OrgConfigResult {
   itemFamilies: readonly string[];
   venues: VenueDef[];
   eventTypes: readonly string[];
+  /** [Phase 5a / waitlist plan §4.1, R5] The passthrough the comment below demands. */
+  eventTemplates: EventTemplateDef[];
   semesterStartDate: string;
   requireCertsForShiftSignup: boolean;
   // [Phase 0 / waitlist plan §4.1] These six groups must be mirrored here, not
@@ -90,6 +93,7 @@ function buildResult(cfg: OrgConfigDoc, loading: boolean): OrgConfigResult {
     itemFamilies: cfg.itemFamilies,
     venues: cfg.venues,
     eventTypes: cfg.eventTypes,
+    eventTemplates: cfg.eventTemplates,
     semesterStartDate: cfg.semesterStartDate,
     requireCertsForShiftSignup: cfg.requireCertsForShiftSignup,
     waitlist: cfg.waitlist,

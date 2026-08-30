@@ -31,6 +31,7 @@ import {
   type VehicleDef,
   type OrgInfo,
   type VenueDef,
+  type EventTemplateDef,
   type WaitlistConfig,
   type CancellationPolicyConfig,
   type PriorityTierConfig,
@@ -119,6 +120,13 @@ export function applyOrgConfigDoc(data: Partial<OrgConfigDoc> | undefined): void
     thresholds: { ...d.thresholds, ...(data.thresholds ?? {}) },
     venues: pickArray(data.venues, d.venues),
     eventTypes: pickArray(data.eventTypes, d.eventTypes),
+    // [Phase 5 / waitlist plan §4.1] pickList, NOT pickArray: this is an
+    // opt-out, admin-authored list. If the admin deletes every template they
+    // mean zero — pickArray's "empty means unset, use defaults" rule would
+    // resurrect whatever defaults ship later (discovery D3). A no-op today
+    // (the default is `[]`), pinned now so a future seeded default can't
+    // silently reintroduce the bug.
+    eventTemplates: pickList(data.eventTemplates, d.eventTemplates),
     semesterStartDate: data.semesterStartDate || d.semesterStartDate,
     requireCertsForShiftSignup:
       typeof data.requireCertsForShiftSignup === 'boolean'
@@ -197,6 +205,10 @@ export function getVenuesRuntime(): VenueDef[] {
 
 export function getEventTypesRuntime(): string[] {
   return getRuntimeConfig().eventTypes;
+}
+
+export function getEventTemplatesRuntime(): EventTemplateDef[] {
+  return getRuntimeConfig().eventTemplates;
 }
 
 export function getSemesterStartRuntime(): string {

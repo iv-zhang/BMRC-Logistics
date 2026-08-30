@@ -27,6 +27,7 @@ import {
   getDocs,
   query,
   where,
+  limit,
   orderBy,
   onSnapshot,
   runTransaction,
@@ -202,6 +203,8 @@ export interface CreateEventInput {
   accessTier?: EventAccessTier;
   /** [Phase 2 / waitlist plan §2.2, T7] Per-event waitlist kill switch. Absent = ON — see the field's doc comment on `Event` (app/types.ts) for why the default polarity is inverted from `hasFtoIntern`. */
   waitlistEnabled?: boolean;
+  /** [Phase 5 / waitlist plan §5.9, R5] See `Event.seriesId`'s doc comment (app/types.ts). Passed through as-is; absent on a single-event create. */
+  seriesId?: string;
 }
 
 export async function createEvent(input: CreateEventInput, actor: EventActor) {
@@ -222,6 +225,7 @@ export async function createEvent(input: CreateEventInput, actor: EventActor) {
     teams,
     accessTier: input.accessTier ?? undefined,
     waitlistEnabled: input.waitlistEnabled ?? undefined,
+    seriesId: input.seriesId || undefined,
     notified: false,
     createdBy: actor.uid,
     createdByName: actor.name,
@@ -322,6 +326,99 @@ export async function setEventStatus(eventId: string, status: EventStatus) {
 
 export async function deleteEvent(eventId: string) {
   await deleteDoc(doc(db, 'events', eventId));
+}
+
+// ---------------------------------------------------------------------------
+// Bulk creation ("mass add" — [Phase 5 / waitlist plan §5.9, R5])
+// ---------------------------------------------------------------------------
+
+export interface BulkCreateRow { key: string; input: CreateEventInput }
+
+export interface BulkCreateResult {
+  created: { key: string; id: string; name: string }[];
+  failed: { key: string; name: string; error: string }[];
+  seriesId: string;
+}
+
+/**
+ * Creates one event per row via `createEvent` (P16 — the single-event write path
+ * stays the only write path). Failures are COLLECTED, never thrown: 12 of 14
+ * created is a good outcome a rollback would throw away (§5.9). Never rejects.
+ * Generates a `seriesId` when `opts.seriesId` is absent and stamps every row.
+ */
+export async function createEventsBulk(
+  rows: BulkCreateRow[],
+  actor: EventActor,
+  opts?: { seriesId?: string; onProgress?: (done: number, total: number) => void },
+): Promise<BulkCreateResult> {
+  const seriesId = opts?.seriesId || `series_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const total = rows.length;
+  const created: BulkCreateResult['created'] = [];
+  const failed: BulkCreateResult['failed'] = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    try {
+      const ref = await createEvent({ ...row.input, seriesId }, actor);
+      created.push({ key: row.key, id: ref.id, name: row.input.name });
+    } catch (e) {
+      failed.push({
+        key: row.key,
+        name: row.input.name,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+    opts?.onProgress?.(i + 1, total);
+  }
+
+  return { created, failed, seriesId };
+}
+
+/**
+ * Bulk UNDO. Deletes BY ID — never by querying `seriesId` — so it cannot reach an
+ * event from an earlier run and needs no index. Each delete is guarded: the event
+ * must still exist, still be `status === 'draft'`, and have ZERO `shift_requests`.
+ * The moment a member signs up the event has stopped being scaffolding, and an undo
+ * that deletes someone's shift is far worse than the mis-click it undoes (§5.9).
+ * Skipped events come back in `kept` with a reason so they are never silently left.
+ * Never rejects.
+ */
+export async function deleteBulkCreatedEvents(
+  ids: string[],
+): Promise<{ deleted: string[]; kept: { id: string; name: string; reason: string }[] }> {
+  const deleted: string[] = [];
+  const kept: { id: string; name: string; reason: string }[] = [];
+
+  for (const id of ids) {
+    try {
+      const snap = await getDoc(doc(db, 'events', id));
+      if (!snap.exists()) {
+        kept.push({ id, name: '(deleted)', reason: 'Event no longer exists.' });
+        continue;
+      }
+      const event = snap.data() as Event;
+      const name = event.name ?? '(unnamed)';
+      if (event.status !== 'draft') {
+        kept.push({ id, name, reason: 'Event is no longer a draft — no longer safe to bulk-undo.' });
+        continue;
+      }
+      const reqsSnap = await getDocs(
+        query(collection(db, 'shift_requests'), where('eventId', '==', id), limit(1)),
+      );
+      if (!reqsSnap.empty) {
+        kept.push({ id, name, reason: 'Members have already signed up for this event.' });
+        continue;
+      }
+      // Reuse the single-event delete path rather than a raw `deleteDoc` —
+      // same "one write path" reasoning as `createEventsBulk` above.
+      await deleteEvent(id);
+      deleted.push(id);
+    } catch (e) {
+      kept.push({ id, name: '(unknown)', reason: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  return { deleted, kept };
 }
 
 // ---------------------------------------------------------------------------

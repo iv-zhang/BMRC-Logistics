@@ -9,5 +9,6 @@ import './events/evt-shifts.test';
 import './events/evt-waitlist.test';
 import './events/evt-tiers.test';
 import './events/evt-reminders.test';
+import './events/evt-bulk.test';
 
 await runRegistered();

@@ -27,6 +27,7 @@ function cloneConfig(cfg: {
   thresholds: OrgConfigDoc['thresholds'];
   venues: OrgConfigDoc['venues'];
   eventTypes: readonly string[];
+  eventTemplates: OrgConfigDoc['eventTemplates'];
   semesterStartDate: string;
   requireCertsForShiftSignup: boolean;
   waitlist: OrgConfigDoc['waitlist'];
@@ -47,6 +48,7 @@ function cloneConfig(cfg: {
     thresholds: cfg.thresholds,
     venues: cfg.venues,
     eventTypes: [...cfg.eventTypes],
+    eventTemplates: cfg.eventTemplates,
     semesterStartDate: cfg.semesterStartDate,
     requireCertsForShiftSignup: cfg.requireCertsForShiftSignup,
     waitlist: cfg.waitlist,

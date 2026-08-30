@@ -26,6 +26,7 @@ import {
   getVehiclesRuntime,
   getVenuesRuntime,
   getEventTypesRuntime,
+  getEventTemplatesRuntime,
   getSemesterStartRuntime,
   getRequireCertsRuntime,
   getWaitlistRuntime,
@@ -1032,6 +1033,71 @@ export function getVenueByName(name: string): VenueDef | undefined {
 /** Configured event-type options. */
 export function getEventTypes(): string[] {
   return getEventTypesRuntime();
+}
+
+/** [Phase 5 / waitlist plan §4.1] Reusable bulk-event-creation templates (runtime override, else defaults — empty by default). */
+export function getEventTemplates(): EventTemplateDef[] {
+  return getEventTemplatesRuntime();
+}
+
+/** Look up one bulk-creation template by id. */
+export function getEventTemplate(id: string): EventTemplateDef | undefined {
+  return getEventTemplatesRuntime().find(t => t.id === id);
+}
+
+/**
+ * [Phase 5 / waitlist plan §4.1, §5.9] Pure validation for one template
+ * against its siblings — used by the Settings UI (Phase 5b) before save, and
+ * safe to call from `event-series.ts`/tests since it has no I/O. Empty array
+ * = valid.
+ *
+ * The 2–4 EMT bound is inlined rather than imported: `app/lib/events.ts`
+ * owns `clampEmtCount` as the source of truth for that bound at write time,
+ * but org-config must not depend on lib (lib already depends on org-config —
+ * importing back would cycle). This is a read-time mirror of the same rule.
+ */
+export function validateEventTemplate(t: EventTemplateDef, all: EventTemplateDef[]): string[] {
+  const problems: string[] = [];
+
+  const name = t.name.trim();
+  if (!name) {
+    problems.push('Name is required.');
+  } else if (all.some(o => o.id !== t.id && o.name.trim().toLowerCase() === name.toLowerCase())) {
+    problems.push(`Another template is already named "${name}".`);
+  }
+
+  if (!t.teams || t.teams.length === 0) {
+    problems.push('At least one team is required.');
+  } else {
+    t.teams.forEach((team, i) => {
+      // Inlined 2–4 bound — see the doc comment above; `clampEmtCount` in
+      // app/lib/events.ts is the source of truth this mirrors.
+      if (team.emtCount < 2 || team.emtCount > 4) {
+        problems.push(`Team ${i + 1} ("${team.name || 'unnamed'}"): EMT count must be 2–4.`);
+      }
+    });
+  }
+
+  if (!t.callTime.trim()) {
+    problems.push('Call time is required.');
+  }
+
+  if (t.accessTierPreset) {
+    const { generalLeadDays, windows } = t.accessTierPreset;
+    if (!(generalLeadDays > 0)) {
+      problems.push('General access lead days must be greater than 0.');
+    }
+    windows.forEach((w, i) => {
+      const label = w.label || `#${i + 1}`;
+      if (!(w.leadDays > 0)) {
+        problems.push(`Tier window "${label}": lead days must be greater than 0.`);
+      } else if (!(w.leadDays > generalLeadDays)) {
+        problems.push(`Tier window "${label}" must open before general access (lead days must exceed general access lead days).`);
+      }
+    });
+  }
+
+  return problems;
 }
 
 /**

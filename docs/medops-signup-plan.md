@@ -3359,8 +3359,8 @@ disagree, this section is current and the plan section is historical.
 | **Phase 3** — in-app reminders + history surfaces | ✅ committed **and pushed** | `3b0f796` on `feat/waitlist-p3-reminders` | Every row of the §8 Phase 3 list is written, plus the notification-bell work §8 does not mention. Built by seven parallel agents on non-overlapping file sets against one pinned contract, the same method as Phase 2 (§10.7). Discoveries **D19–D22** below. |
 | **Phase 3.5** — copy-density sweep **[R5]** | ✅ committed **and pushed**; one follow-up fix | `c66b2cd` + `1ca5f18` on `feat/waitlist-p3-reminders` | Rode in Phase 3's branch, as §8 allowed. `FieldHint` + the editor and settings sweeps; the member-facing audit correctly changed **nothing** (**D24**). Discoveries **D23–D26** below. **Paused here for manual testing** — see §10.8. Manual testing immediately found **D27**: the `FieldHint` trigger was a `<button>` nested inside HeroUI `Select`/`Input` labels, a hydration error. Fixed. |
 | **Phase 4a/4b** | ⛔ out of scope | — | Excluded by agreement at build start. |
-| **Phase 5a** — bulk creation, headless core **[R5]** | 🟡 in build | — | Added by Revision 5 (§5.9); split 5a/5b at build time (see §8 Phase 5). Config + `event-series.ts` + `createEventsBulk`/`deleteBulkCreatedEvents` + `evt-bulk.test.ts`. No UI. Built by three parallel agents against one pinned contract, the §10.7 method. |
-| **Phase 5b** — bulk creation, surfaces **[R5]** | ⬜ not started | — | Template editor, bulk modal, split button. Gated on a review of 5a's `EventTemplateDef` shape. |
+| **Phase 5a** — bulk creation, headless core **[R5]** | ✅ committed | `PENDING_SHA` on `feat/waitlist-p3-reminders` | Added by Revision 5 (§5.9); split 5a/5b at build time (see §8 Phase 5). Config + `event-series.ts` + `createEventsBulk`/`deleteBulkCreatedEvents` + `evt-bulk.test.ts`. **No UI file is touched.** Built by three parallel agents against one pinned contract, the §10.7 method; the integration pass found and fixed **two real defects the agents' own green suites did not catch between them** — **D28** (a name-token contract split across two agents) and **D29** (a mirrored clamp that drifted at exactly one input). `test:events` is now **608/608 across 20 suites**. **Stop for review of the `EventTemplateDef` shape** before 5b, per §8. |
+| **Phase 5b** — bulk creation, surfaces **[R5]** | ⬜ not started | — | Template editor, bulk modal, split button. Gated on a review of 5a's `EventTemplateDef` shape (§10.2d lists the three decisions that review is actually about). |
 
 **Now pushed, on explicit instruction (2026-08-29):** *"make commits and push to the branch on
 GitHub regularly to keep versions and easy record keeping in case something breaks."* The whole local
@@ -3473,6 +3473,63 @@ warning banner deliberately left on screen** by the keep rule.
 exception. **Zero lines qualified** — see **D24**. The audit is recorded rather than silently
 skipped, because "we looked and correctly changed nothing" and "we never looked" are indistinguishable
 in a diff.
+
+### 10.2d What Phase 5a actually changed
+
+Six files touched, two new. **No UI file is in the diff** — that is the definition of the 5a/5b
+seam, and it held: `app/events/page.tsx` and `app/components/settings/events-tab.tsx` are both
+untouched.
+
+**The config group.** `EventTemplateDef` + `EventTemplateTeamDef` + `EventTemplateTierWindowDef` +
+`EventTemplateAccessTierPreset` in `app/config/org-config.ts`, with `getEventTemplates()`,
+`getEventTemplate(id)`, and a pure `validateEventTemplate(t, all)` that the 5b editor calls before
+save. Default is `[]` — no seeded example, because a seeded "Football home game" would presume this
+org's schedule and 5b's "Add template" button creates a blank one anyway.
+
+Three shape decisions are the reason §8 put the review gate here rather than after 5b:
+
+- **`accessTierPreset` is LEAD DAYS, never instants.** This is the whole ballgame. §5.9 names
+  "twelve events that all open for signup on the same day" as the worst bug bulk creation can
+  produce, and storing an absolute `opensAt` on a *template* produces exactly that, silently — it
+  looks correct in the review grid and is discovered by members. `resolveAccessTierForDate` resolves
+  the lead days against each row's **own** date inside the per-row `.map`, and EVT-BULK-04 asserts
+  four distinct `generalOpensAt` values across a 4-week series rather than trusting the reading.
+- **A template holds no dates at all.** Not a start date, not a recurrence. Dates come from the
+  `EventSeriesSpec` or the paste; the template is purely the *shape* that gets repeated. This is
+  what keeps §5.9's "deliberately out of scope" line honest — a template with dates on it is a
+  recurring-event entity wearing a different hat.
+- **`teams` is `{name, emtCount, hasFtoIntern}`, not `EventTeam[]`.** A template stores the team
+  *layout*; real `EventTeam`s with slot arrays and unique ids are built per event at conversion time
+  by `draftRowToCreateInput`. Storing `EventTeam[]` on a template would put slot ids in org config
+  and let every event in a series share them.
+
+**`eventTemplates` uses `pickList`, not `pickArray`** in `applyOrgConfigDoc` — an admin who deletes
+every template means zero, and `pickArray`'s "empty means unset, fall back to defaults" rule would
+resurrect a future seeded default (that is **D3**, applied pre-emptively). A no-op today, since the
+default is already `[]`; pinned now so it cannot become one later.
+
+**The pure core.** `app/lib/event-series.ts` (594 lines, **no I/O** — no `db`, no `addDoc`, nothing
+async). `expandEventSeries`, `formatSeriesName`, `resolveAccessTierForDate`, `parsePastedEvents`,
+`diagnoseDraftRows`, `draftRowToCreateInput`, plus local-time `startOfDay`/`addDays`. Two properties
+worth protecting:
+
+- **Import direction is one-way and enforced by a comment that explains itself.** `events.ts` may
+  import this module; this module takes only `import type { CreateEventInput }` back, which
+  `isolatedModules` erases at compile time, so there is no runtime edge. Both the 2–4 `emtCount`
+  bound (`clampEmtCount`) and the team-building shape (`createEmptyTeam`) are therefore *mirrored*
+  inline rather than imported, and both say so at the mirror.
+- **All day arithmetic is local-time.** `addDays` goes through the local-time `Date` constructor,
+  never `t + n*864e5`. EVT-BULK-01 runs a series across a genuine DST spring-forward boundary and
+  EVT-BULK-02 across a month end; both assert exact 7-calendar-day spacing at local midnight.
+
+**The write path.** `createEventsBulk(rows, actor, opts)` loops `createEvent` (P16 — the
+single-event path stays the only write path), **collects** failures instead of throwing, reports
+`onProgress(done, total)`, and stamps one shared generated `seriesId`. `deleteBulkCreatedEvents(ids)`
+is the undo: deletes **by id**, never by querying `seriesId`, and each delete is independently
+guarded on `status === 'draft'` **and** zero `shift_requests`, returning every skipped event in
+`kept[]` with a reason. Neither function ever rejects.
+
+**`Event.seriesId`** is written and read by nothing but the undo path, exactly as §5.9 specifies.
 
 ### 10.3 Discoveries — things the plan did not predict
 
@@ -4118,6 +4175,83 @@ right; its conclusion did not follow.
 runtime-verified in a browser", and it is exactly the class of defect nothing but a browser finds.
 `tsc` and `eslint` are both clean on the broken code, and no test renders a HeroUI `Select`.
 
+#### D28 — two agents, one unstated `+ 1`, and the test that predicted its own failure
+
+Phase 5a's three parallel agents were given one pinned contract (§10.7's method). The contract
+specified `formatSeriesName`'s **tokens** but never said whether `ctx.index` was the 0-based array
+position or an already-1-based ordinal. Both agents noticed the hole and resolved it in opposite
+directions:
+
+| | Choice | Result |
+|---|---|---|
+| The implementing agent | `index` is already 1-based; `{n}` renders `String(ctx.index)`, and `expandEventSeries` passes `i + 1` | Correct end-to-end. Every shipped name was right. |
+| The test agent | `index` is the 0-based array position; `{n}` renders `index + 1` | EVT-BULK-05 failed 3 of 10 checks on the first full run. |
+
+**The failure was not a bug.** `expandEventSeries` → `formatSeriesName` produced `Clinic shift 1`
+for the first row either way; the only thing broken was the contract *between* the two halves, and
+it was broken in the one place a caller other than `expandEventSeries` would meet it.
+
+**What makes this worth an entry** is that the test agent wrote its own disagreement into the file
+before running anything:
+
+> *"A note on interpreting the contract where it left an implementation detail unstated:
+> `formatSeriesName`'s `ctx.index` is read here as the 0-based array position … If the implementing
+> agent chose to have callers pass an already-1-based `index`, EVT-BULK-05 will fail on exactly that
+> point and nothing else; flagged in the phase report either way."*
+
+That paragraph converted a mysterious red suite into a decision with two labelled options, in the
+five seconds it took to read it. It is the cheapest artifact in this phase and it should be a
+standing instruction: **when a brief leaves a detail unstated, an agent that picks a reading must
+record the reading and name the test that will fail if the other half picked differently.**
+
+**Resolution — the impl side moved, not the test.** `ctx.index` is now the 0-based array position
+and `formatSeriesName` does the `+ 1` internally; `expandEventSeries` passes a bare `i`. The
+arithmetic lives in one place on purpose. The alternative — every call site passes `i + 1` — makes
+each future caller (Phase 5b's live name preview, first among them) a place to forget it, and an
+off-by-one in an event **name** is not a crash: it renders, it looks plausible, and it is only
+caught by a manager reading the grid closely. A blind-written test that passes is also worth more
+than one edited to match the code it was meant to check.
+
+#### D29 — a mirrored constant drifted at exactly one input, and `||` was the reason
+
+`event-series.ts` may not take a *value* import from `events.ts` (§10.2d — the direction is one-way),
+so `buildTeamFromDef` **mirrors** `clampEmtCount`'s 2–4 bound inline, saying so in its doc comment.
+The mirror was wrong at one input:
+
+```ts
+// the mirror                                  // the real clampEmtCount
+Math.max(2, Math.min(4,                        if (!Number.isFinite(n)) return 3;
+  Math.round(def.emtCount) || 3))              return Math.max(2, Math.min(4, Math.round(n)));
+```
+
+`Math.round(0)` is `0`, which is **falsy**, so `|| 3` fired *before* the clamp ever ran. Every other
+input agreed — `1→2`, `5→4`, `2.6→3`, `-10→2`, `NaN→3`, all identical — and only `0` diverged:
+**3 through the bulk path, 2 through the event editor**, from the same saved template.
+
+**Why `||` and not `??`.** The author wanted "an unset `emtCount` means 3". `??` expresses that (only
+`null`/`undefined` take the default); `||` also swallows `0`, and `0` is not unset — it is a number a
+manager typed into a field. The fix restores the intended shape by branching on `Number.isFinite`,
+which is what `clampEmtCount` itself does, making the two byte-for-byte equivalent.
+
+**The finding is about mirrors, not about `||`.** A copy justified by "we can't import this" is a
+promise to keep two expressions equal forever, kept by nobody. Two things now hold that promise:
+`buildTeamFromDef`'s comment states the rule it mirrors *and* names the input that broke, and
+**EVT-BULK-13 asserts the mirror against the real `clampEmtCount` for every case** rather than
+against a hand-written expected value — so the next drift fails a test instead of shipping.
+
+**Left for the 5a review gate, deliberately unfixed:** the structural alternative is to move
+`clampEmtCount` (three pure lines, no Firestore) somewhere both modules may import, deleting the
+mirror rather than policing it. That touches `events.ts`'s exports and is a refactor, not a bug fix,
+so it is a decision for review — not something to slip into this commit. The narrow bug is fixed
+either way.
+
+**How it was found.** Not by reading the code — by a test agent told to *"determine the ACTUAL
+behavior by reading the code and assert that … if the real behavior disagrees with the function's own
+doc comment, still assert the real behavior, and say so."* It wrote a passing suite pinning the wrong
+value and reported the disagreement in prose. That instruction is worth reusing verbatim: an agent
+told to assert intent writes a failing test and stops, while an agent told to assert reality *and
+report the gap* produces both a green suite and the bug report.
+
 ### 10.4 Corrections to earlier sections
 
 | Section | Correction |
@@ -4329,6 +4463,43 @@ A second thing only a human can check, and the reason `FieldHint` is controlled:
 phone-width viewport.** If a hint opens on desktop hover but not on tap, every sentence this phase
 moved has been deleted for the primary user of the surface it was moved on, and nothing in `tsc`,
 lint, the build or the suites would say a word about it.
+
+**Phase 5a results.** `npx tsc --noEmit` clean; `npx eslint` clean on all eight touched files;
+`npm run build` ✅; `npm run test` 69/69 ✅; `npm run test:events` — **608 passed, 0 failed, 0 errored
+across 20 suites**, up from Phase 3's 314/40. `evt-bulk` contributes EVT-BULK-01…15.
+
+The number that matters here is not 608, it is **two**: the three parallel agents each returned a
+green suite, and the integration pass still found two real defects (**D28**, **D29**) that no
+individual agent's tests could have caught, because both live in the *seams between* agents rather
+than inside any one file. That is the second phase in a row where §10.7's method produced correct
+parts and an incorrect whole, and it should be read as the standing cost of the method rather than
+as bad luck.
+
+| Suite | What it protects |
+|---|---|
+| EVT-BULK-01/02 | Local-time day arithmetic across a real DST spring-forward and a month end. The trap §5.9 names first, asserted rather than reasoned about. |
+| EVT-BULK-03 | `everyNWeeks` + multi-weekday expansion; explicit `dates` beat a recurrence; same-day duplicates collapse. |
+| EVT-BULK-04 | **The worst bug bulk creation can produce**: four distinct `generalOpensAt` values across a 4-week series, each 7 days before its *own* row's date — not one shared instant. |
+| EVT-BULK-05 | Every name token, and an unrecognized one surviving **verbatim** rather than blanking (P11, same rule as EVT-38). This is the suite that caught **D28**. |
+| EVT-BULK-06 | Paste parsing; header matching is case/space/underscore-insensitive; an unmapped column is *reported*, never silently dropped. |
+| EVT-BULK-07 | `duplicate`/`sameDay` are informational and never block ("a doubleheader is real"); only a missing date, name, or `callTime` blocks, and blocks **that row alone**. |
+| EVT-BULK-08/09 | `createEventsBulk` writes N real docs under one shared `seriesId` with `onProgress` firing N times — and a bad row lands in `failed[]` while every other row still creates. The `failed[]` contract §5.9 calls "the whole reason the signature isn't `Promise<void>`". |
+| EVT-BULK-10 | The undo guard, both halves proven independently: a draft-with-a-request is kept, a published event is kept, and a kept event is genuinely untouched on re-read. |
+| EVT-BULK-11…14 | `draftRowToCreateInput` — the seam 5b calls once per row. The blocked-row throw, team ids unique **within** an event and **across** the batch, full passthrough, and the clamp mirror (**D29**). |
+| EVT-BULK-15 | The whole 5a chain end to end against the emulator — expand → diagnose → convert → create → **re-read from Firestore** — with per-row distinct tier instants asserted on the stored documents, not on the in-memory rows. |
+
+**One known-untested path.** `parsePastedEvents` accepts an `opts.namePattern` used to fill a blank
+`name` column, and **no suite exercises it** — every `namePattern` assertion in the file goes through
+`expandEventSeries` instead. It is also the path whose row index D28's fix had to correct (the header
+is line 0, so the first data row is `li = 1` and must be passed as `li - 1`). That correction is
+therefore reasoned, not proven. It is reachable only from 5b's Paste tab with a name pattern set, so
+it should get a suite when that tab is built rather than a synthetic one now.
+
+- **NOT run:** the `run-bmrc-logistics` smoke driver. Phase 5a is **built, typechecked and
+  emulator-tested, not browser-verified** — and unusually, that caveat is close to meaningless here:
+  5a adds **no UI**, so there is no screen to drive. Every line of it is either pure or a direct
+  Firestore write, and both are exactly what the 20 suites cover. The browser tier genuinely begins
+  at 5b.
 
 ### 10.6 Process note — a real incident worth not repeating
 
