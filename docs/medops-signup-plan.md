@@ -3359,7 +3359,7 @@ disagree, this section is current and the plan section is historical.
 | **Phase 3** — in-app reminders + history surfaces | ✅ committed **and pushed** | `3b0f796` on `feat/waitlist-p3-reminders` | Every row of the §8 Phase 3 list is written, plus the notification-bell work §8 does not mention. Built by seven parallel agents on non-overlapping file sets against one pinned contract, the same method as Phase 2 (§10.7). Discoveries **D19–D22** below. |
 | **Phase 3.5** — copy-density sweep **[R5]** | ✅ committed **and pushed**; one follow-up fix | `c66b2cd` + `1ca5f18` on `feat/waitlist-p3-reminders` | Rode in Phase 3's branch, as §8 allowed. `FieldHint` + the editor and settings sweeps; the member-facing audit correctly changed **nothing** (**D24**). Discoveries **D23–D26** below. **Paused here for manual testing** — see §10.8. Manual testing immediately found **D27**: the `FieldHint` trigger was a `<button>` nested inside HeroUI `Select`/`Input` labels, a hydration error. Fixed. |
 | **Phase 4a/4b** | ⛔ out of scope | — | Excluded by agreement at build start. |
-| **Phase 5a** — bulk creation, headless core **[R5]** | ✅ committed | `PENDING_SHA` on `feat/waitlist-p3-reminders` | Added by Revision 5 (§5.9); split 5a/5b at build time (see §8 Phase 5). Config + `event-series.ts` + `createEventsBulk`/`deleteBulkCreatedEvents` + `evt-bulk.test.ts`. **No UI file is touched.** Built by three parallel agents against one pinned contract, the §10.7 method; the integration pass found and fixed **two real defects the agents' own green suites did not catch between them** — **D28** (a name-token contract split across two agents) and **D29** (a mirrored clamp that drifted at exactly one input). `test:events` is now **608/608 across 20 suites**. **Stop for review of the `EventTemplateDef` shape** before 5b, per §8. |
+| **Phase 5a** — bulk creation, headless core **[R5]** | ✅ committed | `5f96ea7` on `feat/waitlist-p3-reminders` | Added by Revision 5 (§5.9); split 5a/5b at build time (see §8 Phase 5). Config + `event-series.ts` + `createEventsBulk`/`deleteBulkCreatedEvents` + `evt-bulk.test.ts`. **No UI file is touched.** Built by three parallel agents against one pinned contract, the §10.7 method; the integration pass found and fixed **two real defects the agents' own green suites did not catch between them** — **D28** (a name-token contract split across two agents) and **D29** (a mirrored clamp that drifted at exactly one input). `test:events` is now **608/608 across 20 suites**. **Stop for review of the `EventTemplateDef` shape** before 5b, per §8. |
 | **Phase 5b** — bulk creation, surfaces **[R5]** | ⬜ not started | — | Template editor, bulk modal, split button. Gated on a review of 5a's `EventTemplateDef` shape (§10.2d lists the three decisions that review is actually about). |
 
 **Now pushed, on explicit instruction (2026-08-29):** *"make commits and push to the branch on
@@ -3367,6 +3367,12 @@ GitHub regularly to keep versions and easy record keeping in case something brea
 stack — PR zero through Phase 3.5 — went up as `feat/waitlist-p3-reminders` on `origin`. This changes
 the recovery story materially: before, an accident on this working tree lost every phase since PR
 zero, because the only copy of five phases was one un-backed-up local branch.
+
+**Paused after Phase 5a (2026-08-30) for the review gate §8 built into this phase.** The stop is
+not for QA — 5a has no screen. It is for a decision about **`EventTemplateDef`'s shape** (§10.2d
+lists the three choices worth arguing with) plus the one structural question D29 raised, because 5b
+builds the settings editor and half the bulk modal directly on that shape, and a wrong field is
+cheapest to change now.
 
 **No PR is open.** P14's "open a PR into `origin/main`" is still deferred to an explicit instruction,
 and P14's actual prohibition — never commit *to* `main` — is honoured. Pushing a feature branch is
