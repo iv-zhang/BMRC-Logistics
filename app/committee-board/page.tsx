@@ -76,6 +76,7 @@ import { TASK_STATUS_CFG } from '@/app/components/task-status-badge';
 import BuyListPanel from '@/app/components/buy-list-panel';
 import PanelShell from '@/app/components/panel-shell';
 import type { TeamTask, TeamTaskStatus, TeamTaskOwner, TeamSubtask, User } from '@/app/types';
+import { toDateInputValue } from '@/app/lib/date-input';
 
 const STATUS_ORDER: TeamTaskStatus[] = ['backlog', 'this_cycle', 'in_progress', 'blocked', 'done'];
 type BoardView = 'board' | 'buylist';
@@ -86,13 +87,6 @@ const PRIORITY_CHIP_COLOR: Record<string, 'default' | 'primary' | 'warning' | 'd
   high: 'warning',
   urgent: 'danger',
 };
-
-/** Format a Date as yyyy-MM-dd in local time (toISOString would shift the day across timezones). */
-function toDateInputValue(d: Date): string {
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${m}-${day}`;
-}
 
 function isOverdue(task: TeamTask): boolean {
   if (!task.dueDate || task.status === 'done') return false;

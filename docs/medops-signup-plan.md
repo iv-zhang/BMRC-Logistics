@@ -4443,6 +4443,41 @@ copy of a component is not a type error. It was caught by the agent's own report
 a copy, in a build where reports are read. That is the second time in this build that an agent's
 prose was the load-bearing artifact (**D23**, **D29**).
 
+#### D31 — the third copy in one phase, and the rule that finally came out of it
+
+D30's fix had barely landed when the bulk-modal agent's report disclosed the same thing again:
+`parseDateInputValue` is an unexported helper in `event-editor-modal.tsx`, the modal needed it, the
+modal could not edit that file, so it copied it — and said so in a comment. Auditing the neighbourhood
+found `toDateInputValue` duplicated **three** times (both event modals plus `committee-board/page.tsx`,
+the last predating this phase entirely).
+
+Both helpers exist to defend the same bug: `new Date("2026-09-05")` parses as **UTC midnight** and
+`toISOString()` formats in UTC, either of which moves the calendar day by one in this timezone. Five
+copies of a timezone guard is a bad place to keep a promise nobody is checking. They now live in
+`app/lib/date-input.ts`.
+
+**One near-miss worth recording.** The obvious next step — "there are two `addDays` too, merge those"
+— would have been a real bug. `event-editor-modal.tsx`'s does `new Date(d)` then `setDate(...)`,
+**preserving the time of day**; `event-series.ts`'s builds `new Date(y, m, d + n)`, which **zeroes it
+to local midnight**. They are not the same function wearing two hats; they are two functions that
+happen to share a name, and unifying them would have been a behaviour change disguised as a cleanup.
+Duplicate-looking code is not automatically duplicate code, and the check is cheap: read both, then
+merge.
+
+**The rule, now stated once instead of rediscovered three times.** Every one of D29, D30 and D31 has
+the identical shape: *an export boundary became a correctness boundary because the agent that needed
+the symbol had no standing to export it.* The fix is not vigilance, it is a brief that removes the
+option — **"if what you need is not importable, stop and report it; do not copy it."** An agent told
+that turns a silent divergence into a five-minute orchestrator decision. An agent told "reuse it if
+you can, copy it if you can't" will copy it, correctly follow its instructions, and leave the drift
+for whoever finds it later. Twice out of three times here, that was the same integration pass; once,
+it was a shipped bug.
+
+Note also what did *not* catch any of the three: `tsc`, eslint and 608 green tests were clean through
+all of them. A faithful-looking copy is not a type error. All three were caught by an agent writing
+down what it had done — which is now the third time in this build that an agent's **prose** was the
+load-bearing artifact (**D23**, **D29**, and this).
+
 ### 10.4 Corrections to earlier sections
 
 | Section | Correction |
@@ -4480,6 +4515,31 @@ prose was the load-bearing artifact (**D23**, **D29**).
 | §5.8 | Says `FieldHint` *"sits inline, immediately after the label text"* without noting that on a HeroUI `Switch` the label is the component's **child**, so an inline hint would nest a `<button>` inside the switch's clickable label and toggle the switch when tapped. On a `Switch`, the hint goes **beside** the component, not inside it. |
 | §5.8 | The sweep table omits `waitlist-tier-tab.tsx`'s line-by-line detail and defers to §4.2, whose sketches have two gaps of their own — see **D25** and **D26**. |
 | §10.2c | *"The trigger is a real `<button type="button">`"* is recorded there as load-bearing. It was **wrong** and shipped a hydration error on `/settings`; the trigger is now a `<span role="button" tabIndex={0}>`. The *accessibility* claim that paragraph makes still holds and is still the reason the trigger is focusable — only the element changed. See **D27**. |
+
+#### D32 — the orchestrator's own contract carried a false statement about D27's fix
+
+The Phase 5b agent contract included, as a hard rule: *"never nest a `FieldHint` inside a HeroUI
+`Select`/`Input` `label` prop."* That is **wrong, and it inverts the reason D27's fix exists.**
+
+`field-hint.tsx`'s own header explains it: the trigger was changed from a `<button>` to a
+`<span role="button" tabIndex={0}>` **precisely so** the hint could sit inside a `Select` trigger or
+an `Input`'s `<label>`, both of which forbid a nested `<button>` by the HTML content model. A
+`<span>` is not interactive content, so it is valid in both places. `waitlist-tier-tab.tsx` does
+exactly this at six call sites and has since Phase 3.5.
+
+The correct rule is narrower than the one the contract stated: **a real `<button>` may not go
+there; `FieldHint` may.** The one genuine exception is a HeroUI `Switch`, whose label is its
+*children* — an inline hint there is inside the switch's own click target, so it goes beside the
+component instead. That half of the rule was right; the half about `Select`/`Input` was not.
+
+No code was harmed: the agent that received the rule used `endContent` on its one hinted `Input`,
+which is fine, and reported the discrepancy rather than following it silently. But this is
+**D23 pointed at the orchestrator** — *a factual claim in an agent brief is as load-bearing as an
+instruction*, and this one was a claim about a fix made three commits earlier, written from memory
+instead of from the file. A brief that overstates a restriction produces worse code just as reliably
+as one that understates it; the difference is that nobody files a bug about a fix that was avoided
+unnecessarily. It was caught only because the brief also asked every agent to report anything it got
+factually wrong — which is now demonstrably the highest-yield line in the contract.
 
 ### 10.5 Verification standing
 
@@ -4755,6 +4815,26 @@ what the integration pass used to establish the zero-new-findings baseline. The 
 that recipe in the brief *next to* the prohibition, so the agent is denied the reason to reach for
 the dangerous tool rather than merely told not to.
 
+**[Phase 5b] The one rule this method was missing, added after paying for it three times.** §10.7
+as written says nothing about what an agent should do when the symbol it needs is *not exported* from
+a file outside its set. Phase 5b answered that question three times by accident — **D29** (a clamp),
+**D30** (a criteria editor, which arrived already missing a safety gate), **D31** (two date helpers,
+five copies) — and every brief that produced a copy had said some version of *"reuse it if you can,
+copy it if you can't."* That instruction is the defect. It converts an export boundary into a
+correctness boundary and hands the decision to the one participant with no standing to fix it.
+
+The rule now reads: **if what you need is not importable, stop and report it — do not copy it.**
+The orchestrator owns export boundaries, because the orchestrator is the only one who can see both
+sides. Cost of the copy: three integration-pass fixes and one shipped bug. Cost of the report: about
+five minutes each.
+
+Worth noting for a fourth phase built this way: none of the three was caught by `tsc`, eslint, or 608
+green tests, all of which stayed clean throughout. All three were caught by an agent **writing down
+what it had done** — and one of them (**D32**) was a factual error in the orchestrator's own contract,
+surfaced only because every brief ends by asking the agent to report anything the brief got wrong.
+That line has now paid for itself more than any other line in the contract, and it should be in every
+brief.
+
 ### 10.8 Manual testing — what to drive, and what the app cannot show you yet
 
 Phase 3 is paused here deliberately: it is the first phase whose main deliverable is a *feeling*
@@ -4894,6 +4974,12 @@ real project.
 **Known not-testable here.** A template with an `accessTierPreset` only visibly does anything once
 tiers are enabled org-wide; with the feature off, the rows still carry their resolved dates but no
 surface reads them. That is not a bug in 5b.
+
+**One correction to §10.8's Phase 3.5 table, from D32.** That table is right, but the rule people
+have been repeating from it is not: a `FieldHint` **may** sit inside a `Select`/`Input` label — the
+span-trigger change in D27 is what made that safe, and it is the reason the trigger is a span. The
+placement that is still forbidden is inside a `Switch`'s children, because there the label *is* the
+click target. When re-driving hints, check both cases; only one of them is a bug.
 
 **The judgement call to bring back.** The review grid is the whole safety story — it is the only
 thing standing between a mis-typed pattern and twenty wrong events. Open it with twelve rows on a

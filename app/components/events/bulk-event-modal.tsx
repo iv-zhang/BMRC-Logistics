@@ -69,6 +69,7 @@ import {
 } from '@/app/lib/events';
 import type { Event, EventStatus } from '@/app/types';
 import type { EventTemplateDef, EventTemplateTeamDef } from '@/app/config/org-config';
+import { parseDateInputValue, toDateInputValue } from '@/app/lib/date-input';
 
 // ---------------------------------------------------------------------------
 // Pinned public contract — agent C wires against this exactly.
@@ -88,24 +89,6 @@ export interface BulkEventModalProps {
 // ---------------------------------------------------------------------------
 // Local pure helpers
 // ---------------------------------------------------------------------------
-
-/** Parse a "YYYY-MM-DD" `<input type="date">` value as a local calendar day
- *  (never `new Date(str)`, which parses as UTC and can shift the day).
- *  Duplicated from `event-editor-modal.tsx` rather than imported — that
- *  function isn't exported, and this file may only touch its own path (see
- *  the P5b cross-file contract). Kept identical on purpose. */
-function parseDateInputValue(v: string): Date | null {
-  const [y, m, d] = v.split('-').map(Number);
-  if (!y || !m || !d) return null;
-  return new Date(y, m - 1, d);
-}
-
-function toDateInputValue(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
 
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DEFAULT_NAME_PATTERN = '{type} — {date:MMM d}';

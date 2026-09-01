@@ -16,6 +16,7 @@ import { useOrgConfig } from '@/app/hooks/useOrgConfig';
 import { FieldHint } from '@/app/components/field-hint';
 import type { Event, EventTeam, EventStatus, EventAccessTier, TierWindow, TierCriteria } from '@/app/types';
 import { toJsDate } from './event-utils';
+import { parseDateInputValue, toDateInputValue } from '@/app/lib/date-input';
 
 interface EventEditorModalProps {
   isOpen: boolean;
@@ -32,21 +33,6 @@ const STATUS_OPTIONS: { key: EventStatus; label: string }[] = [
   { key: 'closed', label: 'Closed' },
   { key: 'cancelled', label: 'Cancelled' },
 ];
-
-function toDateInputValue(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-/** Parse a "YYYY-MM-DD" `<input type="date">` value as a local calendar day
- *  (never `new Date(str)`, which parses as UTC and can shift the day). */
-function parseDateInputValue(v: string): Date | null {
-  const [y, m, d] = v.split('-').map(Number);
-  if (!y || !m || !d) return null;
-  return new Date(y, m - 1, d);
-}
 
 function addDays(d: Date, delta: number): Date {
   const r = new Date(d);
