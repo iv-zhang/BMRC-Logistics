@@ -81,6 +81,14 @@ import {
   // plan's §10.4 corrections table so the prose gets fixed rather than
   // re-followed.
   getShiftReminderConfig,
+  // [D29] The 2–4 EMT-count bound + its clamp now live in org-config (the
+  // bottom-most module every consumer already depends on) instead of being
+  // defined here and mirrored elsewhere. Re-exported below so every existing
+  // importer of these four names from `events.ts` keeps working unchanged.
+  MIN_EMTS,
+  MAX_EMTS,
+  DEFAULT_EMTS,
+  clampEmtCount,
   type OrgConfigDoc,
   type ResolvedEventPolicy,
   type CancellationPolicyConfig,
@@ -97,9 +105,9 @@ export interface EventActor {
   role?: string;
 }
 
-export const MIN_EMTS = 2;
-export const MAX_EMTS = 4;
-export const DEFAULT_EMTS = 3;
+// [D29] MIN_EMTS/MAX_EMTS/DEFAULT_EMTS are re-exported below (imported from
+// org-config above), not redefined here — see the import comment.
+export { MIN_EMTS, MAX_EMTS, DEFAULT_EMTS, clampEmtCount };
 
 /** Roles that may create/edit/staff events. NOT the same as `isAdmin`. */
 export function isEventManagerRole(role?: string | null): boolean {
@@ -127,11 +135,6 @@ export function slotRoleLabel(slotRole: SlotRole): string {
 // ---------------------------------------------------------------------------
 // Pure team helpers (shared by the editor UI so the 2–4 invariant stays honest)
 // ---------------------------------------------------------------------------
-
-export function clampEmtCount(n: number): number {
-  if (!Number.isFinite(n)) return DEFAULT_EMTS;
-  return Math.max(MIN_EMTS, Math.min(MAX_EMTS, Math.round(n)));
-}
 
 function emptySlot(): TeamSlot {
   return {};

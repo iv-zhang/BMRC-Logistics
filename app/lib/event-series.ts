@@ -20,10 +20,11 @@
 
 import { Timestamp } from 'firebase/firestore';
 import type { EventAccessTier, EventTeam, TeamSlot, TierWindow } from '@/app/types';
-import type {
-  EventTemplateDef,
-  EventTemplateTeamDef,
-  EventTemplateAccessTierPreset,
+import {
+  clampEmtCount,
+  type EventTemplateDef,
+  type EventTemplateTeamDef,
+  type EventTemplateAccessTierPreset,
 } from '@/app/config/org-config';
 import type { CreateEventInput } from '@/app/lib/events';
 
@@ -554,19 +555,19 @@ let teamIdSeq = 0;
 /**
  * Mirrors `createEmptyTeam`'s shape (`app/lib/events.ts`) — deliberately not
  * imported from there (see this file's header: no value import back into
- * `events.ts`'s module, to keep the dependency one-way). Clamps `emtCount`
- * to `app/lib/events.ts`'s `clampEmtCount` 2–4 bound inline for the same
- * reason `validateEventTemplate` (org-config.ts) inlines it.
+ * `events.ts`'s module, to keep the dependency one-way). The EMT-count bound
+ * is NOT mirrored, though: `clampEmtCount` is imported as a value from
+ * `app/config/org-config` (D29) — that is a downward import, not a cycle,
+ * so there is exactly one copy of the 2–4 rule left to drift. A hand-copied
+ * inline version of this clamp (`Math.round(x) || 3`) previously shipped
+ * here and silently disagreed with the real `clampEmtCount` at `emtCount: 0`
+ * (0 is falsy, so `|| 3` took the default branch instead of clamping to 2) —
+ * that bug is exactly why the bound moved to org-config instead of being
+ * re-mirrored correctly.
  */
 function buildTeamFromDef(def: EventTemplateTeamDef): EventTeam {
   teamIdSeq += 1;
-  // Byte-for-byte the same rule as `clampEmtCount` (app/lib/events.ts):
-  // non-finite -> the 3-EMT default, otherwise round then clamp to 2-4. The
-  // earlier `Math.round(x) || 3` was NOT that rule: 0 is falsy, so it took the
-  // default branch and yielded 3 where `clampEmtCount(0)` yields 2 (D29).
-  const emtCount = Number.isFinite(def.emtCount)
-    ? Math.max(2, Math.min(4, Math.round(def.emtCount)))
-    : 3;
+  const emtCount = clampEmtCount(def.emtCount);
   return {
     id: `team_${Date.now()}_${teamIdSeq}`,
     name: def.name,

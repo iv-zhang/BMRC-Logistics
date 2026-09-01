@@ -568,6 +568,35 @@ export interface EventTemplateTeamDef {
   hasFtoIntern: boolean;
 }
 
+/**
+ * [D29] The 2–4 EMT-count bound for `EventTemplateTeamDef.emtCount` /
+ * `EventTeam.emtCount`, and its clamp. This lives here — the bottom-most
+ * module every consumer (`app/lib/events.ts`, `app/lib/event-series.ts`, and
+ * this file's own `validateEventTemplate`) already depends on — specifically
+ * so those consumers can import the one copy instead of each mirroring it.
+ * A mirrored copy in `event-series.ts` drifted from this rule once
+ * (`Math.round(0) || 3` treated 0 as falsy and yielded 3 where the real
+ * clamp yields 2) and shipped a real bug; see decisions.md D29.
+ *
+ * `app/lib/events.ts` re-exports all four names so existing importers of
+ * `MIN_EMTS`/`MAX_EMTS`/`DEFAULT_EMTS`/`clampEmtCount` from that file are
+ * unaffected.
+ *
+ * NOTE: these are plain code constants, NOT admin-editable org config — they
+ * are intentionally not part of `OrgConfigDoc`, are never written to the
+ * `org_settings/current` Firestore doc, and must not be surfaced in
+ * `/settings`. That is why they sit here, beside the type they bound,
+ * instead of inside `DEFAULT_ORG_CONFIG` below.
+ */
+export const MIN_EMTS = 2;
+export const MAX_EMTS = 4;
+export const DEFAULT_EMTS = 3;
+
+export function clampEmtCount(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_EMTS;
+  return Math.max(MIN_EMTS, Math.min(MAX_EMTS, Math.round(n)));
+}
+
 /** One staged-release window in a template, as LEAD DAYS — resolved against
  *  an individual event's own date at creation time (`resolveAccessTierForDate`
  *  in `app/lib/event-series.ts`), never stored as an absolute date. */
@@ -1051,10 +1080,8 @@ export function getEventTemplate(id: string): EventTemplateDef | undefined {
  * safe to call from `event-series.ts`/tests since it has no I/O. Empty array
  * = valid.
  *
- * The 2–4 EMT bound is inlined rather than imported: `app/lib/events.ts`
- * owns `clampEmtCount` as the source of truth for that bound at write time,
- * but org-config must not depend on lib (lib already depends on org-config —
- * importing back would cycle). This is a read-time mirror of the same rule.
+ * The 2–4 EMT bound uses `MIN_EMTS`/`MAX_EMTS`, defined above in this same
+ * file (D29) — no inlining or mirroring needed since both live here.
  */
 export function validateEventTemplate(t: EventTemplateDef, all: EventTemplateDef[]): string[] {
   const problems: string[] = [];
@@ -1070,10 +1097,8 @@ export function validateEventTemplate(t: EventTemplateDef, all: EventTemplateDef
     problems.push('At least one team is required.');
   } else {
     t.teams.forEach((team, i) => {
-      // Inlined 2–4 bound — see the doc comment above; `clampEmtCount` in
-      // app/lib/events.ts is the source of truth this mirrors.
-      if (team.emtCount < 2 || team.emtCount > 4) {
-        problems.push(`Team ${i + 1} ("${team.name || 'unnamed'}"): EMT count must be 2–4.`);
+      if (team.emtCount < MIN_EMTS || team.emtCount > MAX_EMTS) {
+        problems.push(`Team ${i + 1} ("${team.name || 'unnamed'}"): EMT count must be ${MIN_EMTS}–${MAX_EMTS}.`);
       }
     });
   }

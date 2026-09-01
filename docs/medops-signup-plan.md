@@ -3360,7 +3360,7 @@ disagree, this section is current and the plan section is historical.
 | **Phase 3.5** — copy-density sweep **[R5]** | ✅ committed **and pushed**; one follow-up fix | `c66b2cd` + `1ca5f18` on `feat/waitlist-p3-reminders` | Rode in Phase 3's branch, as §8 allowed. `FieldHint` + the editor and settings sweeps; the member-facing audit correctly changed **nothing** (**D24**). Discoveries **D23–D26** below. **Paused here for manual testing** — see §10.8. Manual testing immediately found **D27**: the `FieldHint` trigger was a `<button>` nested inside HeroUI `Select`/`Input` labels, a hydration error. Fixed. |
 | **Phase 4a/4b** | ⛔ out of scope | — | Excluded by agreement at build start. |
 | **Phase 5a** — bulk creation, headless core **[R5]** | ✅ committed | `5f96ea7` on `feat/waitlist-p3-reminders` | Added by Revision 5 (§5.9); split 5a/5b at build time (see §8 Phase 5). Config + `event-series.ts` + `createEventsBulk`/`deleteBulkCreatedEvents` + `evt-bulk.test.ts`. **No UI file is touched.** Built by three parallel agents against one pinned contract, the §10.7 method; the integration pass found and fixed **two real defects the agents' own green suites did not catch between them** — **D28** (a name-token contract split across two agents) and **D29** (a mirrored clamp that drifted at exactly one input). `test:events` is now **608/608 across 20 suites**. **Stop for review of the `EventTemplateDef` shape** before 5b, per §8. |
-| **Phase 5b** — bulk creation, surfaces **[R5]** | ⬜ not started | — | Template editor, bulk modal, split button. Gated on a review of 5a's `EventTemplateDef` shape (§10.2d lists the three decisions that review is actually about). |
+| **Phase 5b** — bulk creation, surfaces **[R5]** | 🔨 in progress (2026-08-31) | — | Template editor, bulk modal, split button. **The 5a review gate is cleared — §10.2e records the four rulings.** Three `EventTemplateDef` decisions reaffirmed unchanged; D29's structural question decided the other way (the `clampEmtCount` mirrors are being deleted, as 5b's first change). Built by four parallel agents on non-overlapping file sets against one pinned contract, the §10.7 method. |
 
 **Now pushed, on explicit instruction (2026-08-29):** *"make commits and push to the branch on
 GitHub regularly to keep versions and easy record keeping in case something breaks."* The whole local
@@ -3373,6 +3373,10 @@ not for QA — 5a has no screen. It is for a decision about **`EventTemplateDef`
 lists the three choices worth arguing with) plus the one structural question D29 raised, because 5b
 builds the settings editor and half the bulk modal directly on that shape, and a wrong field is
 cheapest to change now.
+
+**Gate cleared 2026-08-31 — see §10.2e for the four rulings.** Three of `EventTemplateDef`'s
+decisions were reaffirmed unchanged; D29's structural question was decided the other way and is
+being implemented as 5b's first change. 5b proceeds.
 
 **No PR is open.** P14's "open a PR into `origin/main`" is still deferred to an explicit instruction,
 and P14's actual prohibition — never commit *to* `main` — is honoured. Pushing a feature branch is
@@ -3536,6 +3540,68 @@ guarded on `status === 'draft'` **and** zero `shift_requests`, returning every s
 `kept[]` with a reason. Neither function ever rejects.
 
 **`Event.seriesId`** is written and read by nothing but the undo path, exactly as §5.9 specifies.
+
+### 10.2e The Phase 5a review gate — four rulings *(2026-08-31)*
+
+§8 put a stop between 5a and 5b for a review of **`EventTemplateDef`'s shape**, on the reasoning
+that the shape dictates the whole settings editor and half the bulk modal, so it is cheapest to
+change before either exists. The review happened; here is what it decided and why, so that the next
+person to disagree argues with a recorded position rather than a silence.
+
+**Ruling 1 — `accessTierPreset` stays LEAD DAYS. Unchanged.** This was never really in doubt; it is
+recorded so it cannot be quietly undone. An absolute `opensAt` on a template produces §5.9's named
+worst-case bug — twelve events that all open for signup on the same day — and produces it
+*silently*: the review grid looks right, and members discover it. What makes lead days safe is not
+the storage format by itself but that `resolveAccessTierForDate` is called **inside the per-row
+`.map`**, once per row, against that row's own date. EVT-BULK-04 pins that by asserting four
+*distinct* `generalOpensAt` values across a 4-week series rather than asserting the reading of any
+one of them. 5b inherits one obligation from this: **an inline edit to a row's date in the review
+grid must re-resolve that row's tier**, not carry the old one forward — the same bug through a
+different door.
+
+**Ruling 2 — a template holds no dates. Unchanged.** Not a start date, not a recurrence. Dates come
+from the `EventSeriesSpec` or the paste. The argument for adding one is real and should be named:
+"every home game is a Saturday at 17:00" *feels* like template data. It is rejected because a
+template that carries a recurrence is a recurring-event entity wearing a different hat, and §5.9
+puts that explicitly out of scope for a reason — a live series entity would put a second owner on
+every field of an event, and §3's promotion, tier and attendance logic all assume an event is
+self-contained. The weekday/time convenience belongs in the bulk modal's Repeat tab, which is
+per-run state, not persisted org config.
+
+**Ruling 3 — `teams` stays `{name, emtCount, hasFtoIntern}`, not `EventTeam[]`. Unchanged.** A
+template stores the team *layout*; real `EventTeam`s with slot arrays and unique ids are built per
+event at conversion time by `draftRowToCreateInput`. Storing `EventTeam[]` would put slot ids in
+org config and let every event in a series share them — and shared slot ids are not a cosmetic
+problem, because `TeamSlot.requestId` is the key the soft-hold and force-promote paths match on
+(§10.4's §5.4 correction).
+
+**Ruling 4 — D29's structural question is decided the other way: delete the mirrors.** This is the
+only ruling that changes code. D29 left `clampEmtCount`'s 2–4 bound copied into three places, with
+the copies justified by import-direction rules:
+
+| Where | Why it was a copy |
+|---|---|
+| `app/lib/events.ts` | the real one |
+| `app/lib/event-series.ts` (`buildTeamFromDef`) | may not value-import `events.ts` — the direction is one-way |
+| `app/config/org-config.ts` (`validateEventTemplate`) | org-config must not depend on `app/lib` — that would cycle |
+
+Both justifications are true, and both are answered by the same move: put the bound in
+**`app/config/org-config.ts`**, which is the bottom-most module and which all three consumers
+already depend on. Every import is then in-direction and no cycle is possible. `events.ts`
+re-exports the four symbols so no existing call site changes.
+
+The reason to spend a refactor on three lines is that D29 is a *demonstrated* failure, not a
+hypothetical one: the mirror drifted at exactly one input (`0`), and the divergence was invisible
+because every other input agreed. A comment saying "keep these equal" is a promise kept by nobody.
+EVT-BULK-13, which asserts the mirror against the real `clampEmtCount` for every case, stays — it
+becomes trivially true, and it costs nothing to leave a test that fails loudly if someone
+reintroduces a copy.
+
+Note what this ruling does **not** do: `MIN_EMTS`/`MAX_EMTS`/`DEFAULT_EMTS` move into
+`org-config.ts` as plain code constants. They do **not** join `OrgConfigDoc`, do not reach the
+Firestore doc, and do not appear in `/settings`. The 2–4 bound is a rule about what an EMT team
+*is* in this org's protocol, not a knob — and the file is the DEFAULTS/type source as well as the
+config surface, so living there implies nothing about editability.
 
 ### 10.3 Discoveries — things the plan did not predict
 

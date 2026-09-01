@@ -795,7 +795,7 @@ defineInvariant('EVT-BULK-12', 'draftRowToCreateInput builds one real EventTeam 
 // hand-written expectation. emtCount:0 is the case that actually drifted — see
 // D29 in docs/medops-signup-plan.md.
 // ─────────────────────────────────────────────────────────────────────────────
-defineInvariant('EVT-BULK-13', "draftRowToCreateInput's inline EMT clamp is byte-for-byte equivalent to app/lib/events.ts's real clampEmtCount for EVERY input, emtCount:0 included — the bulk path and the single-event editor path can never produce different team sizes from the same number (D29)", async (t) => {
+defineInvariant('EVT-BULK-13', "draftRowToCreateInput's EMT clamp is byte-for-byte equivalent to clampEmtCount for EVERY input, emtCount:0 included — the bulk path and the single-event editor path can never produce different team sizes from the same number. Trivially true since Phase 5b deleted the inline mirror and both now call the one copy in org-config; kept so that reintroducing a mirror fails loudly (D29)", async (t) => {
   const D = localDay(2027, 4, 5);
 
   const buildWithEmtCount = (emtCount: number): number => {
