@@ -301,6 +301,7 @@ export default function SettingsPage() {
                 eventTypes={draft.eventTypes}
                 terms={draft.terms}
                 requireCertsForShiftSignup={draft.requireCertsForShiftSignup}
+                eventTemplates={draft.eventTemplates}
                 onChange={(update) => updateDraft(update)}
               />
             </div>

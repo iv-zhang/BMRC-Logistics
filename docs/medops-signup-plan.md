@@ -3360,7 +3360,7 @@ disagree, this section is current and the plan section is historical.
 | **Phase 3.5** — copy-density sweep **[R5]** | ✅ committed **and pushed**; one follow-up fix | `c66b2cd` + `1ca5f18` on `feat/waitlist-p3-reminders` | Rode in Phase 3's branch, as §8 allowed. `FieldHint` + the editor and settings sweeps; the member-facing audit correctly changed **nothing** (**D24**). Discoveries **D23–D26** below. **Paused here for manual testing** — see §10.8. Manual testing immediately found **D27**: the `FieldHint` trigger was a `<button>` nested inside HeroUI `Select`/`Input` labels, a hydration error. Fixed. |
 | **Phase 4a/4b** | ⛔ out of scope | — | Excluded by agreement at build start. |
 | **Phase 5a** — bulk creation, headless core **[R5]** | ✅ committed | `5f96ea7` on `feat/waitlist-p3-reminders` | Added by Revision 5 (§5.9); split 5a/5b at build time (see §8 Phase 5). Config + `event-series.ts` + `createEventsBulk`/`deleteBulkCreatedEvents` + `evt-bulk.test.ts`. **No UI file is touched.** Built by three parallel agents against one pinned contract, the §10.7 method; the integration pass found and fixed **two real defects the agents' own green suites did not catch between them** — **D28** (a name-token contract split across two agents) and **D29** (a mirrored clamp that drifted at exactly one input). `test:events` is now **608/608 across 20 suites**. **Stop for review of the `EventTemplateDef` shape** before 5b, per §8. |
-| **Phase 5b** — bulk creation, surfaces **[R5]** | 🔨 in progress (2026-08-31) | — | Template editor, bulk modal, split button. **The 5a review gate is cleared — §10.2e records the four rulings.** Three `EventTemplateDef` decisions reaffirmed unchanged; D29's structural question decided the other way (the `clampEmtCount` mirrors are being deleted, as 5b's first change). Built by four parallel agents on non-overlapping file sets against one pinned contract, the §10.7 method. |
+| **Phase 5b** — bulk creation, surfaces **[R5]** | ✅ committed **and pushed** | `d76e7cf` + (this commit) on `feat/waitlist-p3-reminders` | Template editor, bulk modal, split button. **The 5a review gate is cleared — §10.2e records the four rulings.** Three `EventTemplateDef` decisions reaffirmed unchanged; D29's structural question decided the other way (the `clampEmtCount` mirrors deleted, as 5b's first change). Built by four parallel agents on non-overlapping file sets against one pinned contract, the §10.7 method. The integration pass found **D30** — the phase that deleted a mirror grew a new one, and the new copy had already dropped the tenure gate — fixed by a fifth agent extracting the shared `CriteriaEditor`. Build ✅, `tsc` clean, `test:events` **608/608 across 20 suites**. **Not runtime-verified — no browser has opened this feature; see §10.9 for what to drive.** |
 
 **Now pushed, on explicit instruction (2026-08-29):** *"make commits and push to the branch on
 GitHub regularly to keep versions and easy record keeping in case something breaks."* The whole local
@@ -3602,6 +3602,80 @@ Note what this ruling does **not** do: `MIN_EMTS`/`MAX_EMTS`/`DEFAULT_EMTS` move
 Firestore doc, and do not appear in `/settings`. The 2–4 bound is a rule about what an EMT team
 *is* in this org's protocol, not a knob — and the file is the DEFAULTS/type source as well as the
 config surface, so living there implies nothing about editability.
+
+### 10.2f What Phase 5b actually changed
+
+Six files touched, two new. 5b is the surfaces half of the phase — everything here renders against
+a contract 5a already proved green (608/608), which is exactly what the 5a/5b seam was for.
+
+**The split button** (`app/events/page.tsx`). `New event` keeps its behaviour and its label; a
+`ButtonGroup` adds a chevron `Dropdown` whose one item is **Add many**. It sits inside the existing
+`{canManage && …}` gate — **no new permission and no new role check**, per §5.9. The diff is ~35
+lines and touches nothing else in the 508-line file.
+
+**The template editor** (`app/components/settings/events-tab.tsx`, +~650 lines). An "Event
+Templates" section on the existing Events & Venues tab, in that file's established idiom. Templates
+are collapsed by default behind a HeroUI `Accordion`, each header carrying the name, a compact shape
+summary (`1× FTO+3 · 17:00 · Memorial Stadium`), and an amber issue-count chip when
+`validateEventTemplate` returns problems. Three decisions in it worth recording:
+
+- **The "Remove template" button is in the accordion *body*, not the header.** A HeroUI accordion
+  header renders as a real `<button>`, and nesting a `<Button>` inside it is the same
+  button-inside-button hydration error **D27** shipped on `/settings` three commits ago. That is now
+  a recognised failure class in this codebase rather than a bug rediscovered each time.
+- **`waitlistEnabled` keeps the fail-open polarity** the rest of the stack uses — absent means ON
+  (`event.waitlistEnabled ?? true` in `events.ts`, mirrored by the event editor). A new template
+  leaves the field *unset* rather than writing `true`, so the default flows through
+  `draftRowToCreateInput` to `Event.waitlistEnabled` unchanged. The switch is labelled "Enable
+  waitlist", never "Disable" — a switch whose off position is the default is a switch people
+  misread.
+- **Every tier input is labelled in days, never as a date**, and there is no date picker anywhere in
+  the preset editor. This is §5.9's worst-case bug defended at the UI layer as well as the storage
+  layer.
+
+**The bulk modal** (`app/components/events/bulk-event-modal.tsx`, new, 968 lines). Repeat/Paste
+tabs, the non-skippable review grid, conflict flags from `diagnoseDraftRows`, per-row edit and
+delete, a draft/published choice on the confirm control, live progress, a result panel, retry of
+failed rows, and the id-based undo. Two properties it had to get right, both verified by reading the
+shipped code rather than trusting the brief:
+
+- **An inline date edit re-resolves that row's `accessTier` from its own new date.** `updateRowDate`
+  calls `resolveAccessTierForDate` again for the single row that changed rather than carrying the
+  old tier forward. This is §5.9's named worst-case bug arriving through a second door that §5.9
+  does not mention: 5a's per-row `.map` guarantees the *initial* expansion is correct, and says
+  nothing about what happens when a manager fixes a typo'd date in the grid afterwards.
+- **The retry threads the existing `seriesId` through.** `runBatch` passes `seriesId: seriesIdState`
+  into `createEventsBulk`, which uses `opts?.seriesId || <generated>`; the first run generates one
+  and stores it, and the retry reuses it. Without that, a run with one failure would scatter one
+  logical batch across two `seriesId`s — and since `seriesId` exists *only* so a manager can tell
+  next week that these events came from one run (§5.9), a split id defeats the field's entire
+  purpose while leaving every other behaviour looking correct.
+- **Undo's id list is exactly this session's creations.** `created` is component state, reset on
+  open and appended to only inside `runBatch`. `deleteBulkCreatedEvents` takes those ids directly —
+  never a `seriesId` query — so it cannot reach an earlier run, and `kept[]` entries are named in
+  the panel with their reason rather than silently skipped.
+
+**The D29 refactor**, which §10.2e ruling 4 ordered, rode in first: `MIN_EMTS`/`MAX_EMTS`/
+`DEFAULT_EMTS`/`clampEmtCount` now live in `app/config/org-config.ts` and are re-exported from
+`app/lib/events.ts`, so no call site changed. Both mirrors are gone. EVT-BULK-13 still passes and
+was kept deliberately — it is now trivially true, and it costs nothing to leave a test that fails
+loudly if someone reintroduces a copy. Its description was updated; it still said "inline clamp".
+
+**The shared criteria editor.** `app/components/settings/criteria-editor.tsx` is new, and is the
+resolution of **D30**: `CriteriaEditor`, `useJoinDateCoverage`, `tenureGate` and their types moved
+out of `waitlist-tier-tab.tsx` (which sheds 345 lines and is otherwise behaviourally unchanged) so
+both settings tabs import one copy. `toggleInArray` moved with them and is exported too — it is used
+by `ShiftRemindersCard` as well, and moving it without exporting would have forced a duplicate
+definition, which is the exact pattern being removed. The template editor now resolves the roster
+gate **once** at the `EventsVenuesTab` level and threads it down, matching the "it's a roster-wide
+figure, not a per-window one" reasoning already recorded at the `waitlist-tier-tab.tsx` call site.
+
+**One deliberate non-change.** `validateOrgConfig` (`settings-utils.ts`) still does not gate Save on
+template validity, so a template with no call time or no teams can be saved. That matches the Terms
+section's existing soft-warning behaviour, and it is safe here for a specific reason: a broken
+template cannot produce a broken *event*, because every row it generates fails `diagnoseDraftRows`'s
+`invalid` check and is blocked in the review grid before anything is written. The warning is where a
+manager can act on it; the block is where it would do damage.
 
 ### 10.3 Discoveries — things the plan did not predict
 
@@ -4324,6 +4398,51 @@ value and reported the disagreement in prose. That instruction is worth reusing 
 told to assert intent writes a failing test and stops, while an agent told to assert reality *and
 report the gap* produces both a green suite and the bug report.
 
+#### D30 — the phase that deleted a mirror grew a new one, in the same commit
+
+§10.2e ruling 4 deleted `clampEmtCount`'s copies on the reasoning that *a copy justified by "we
+can't import this" is a promise to keep two expressions equal forever, kept by nobody*. While that
+refactor was running, a parallel agent building the template editor created a new copy of exactly
+that kind — and it was already wrong when it landed.
+
+`waitlist-tier-tab.tsx` defines `CriteriaEditor` as an **unexported** module-scope function. The
+agent building `events-tab.tsx` needed a `TierCriteria` editor, was told to reuse the existing one,
+found it was not exported, was scoped out of the file that defines it, and did the only thing left:
+copied it as `TemplateCriteriaEditor`. It said so plainly in a header comment and flagged the
+consequence in its report, which is the reason this was caught in the integration pass rather than
+by a member months later.
+
+**The copy was not faithful, and the missing piece was the safety one.** The original takes a
+`tenureGate: TenureGate` prop and uses it to disable the `minSemesters` / `minTenureDays` inputs
+while roster join-date coverage is below `MIN_JOIN_DATE_COVERAGE` (90% — **D18**), showing an
+explanatory message instead. The copy omitted the prop entirely, because the gate's machinery
+(`useJoinDateCoverage`, `tenureGate`) lives in the file the agent could not touch and reproducing
+~130 lines of it looked like scope creep. So in the template editor those inputs were always
+enabled: a manager could set a tenure criterion on a template against a roster with no join dates
+and get a rule that silently matches nobody — the exact failure the gate exists to prevent,
+reintroduced two phases after it was fixed.
+
+**The fix is the one D29 already argued for**: `CriteriaEditor`, `useJoinDateCoverage`, `tenureGate`
+and their types moved into `app/components/settings/criteria-editor.tsx`, imported by both tabs. The
+gate is resolved **once** per roster — it is a roster-wide figure, not a per-template or per-window
+one — and `tenureGate` is a **required** prop, not an optional one, specifically so a future third
+call site cannot silently reacquire the same gap by omitting it.
+
+**What is actually worth learning here.** The agent followed its brief correctly at every step; the
+brief said "reuse it if it's exported, otherwise mirror it", and mirroring was the honest answer to
+the question it was asked. The defect is in the instruction, not the execution. **"Reuse it if you
+can, copy it if you can't" is not a safe instruction to give an agent scoped to a subset of files** —
+it converts an export boundary into a correctness boundary, and the agent has no standing to fix the
+export. The better instruction is *"if the thing you need is not importable, stop and report that —
+do not copy it"*, which turns a silent divergence into a five-minute orchestrator decision. The
+parallel-agent method in §10.7 is otherwise unchanged; this is one line added to how the briefs are
+written.
+
+Worth noting what caught it: not a test, and not `tsc` — both were green, because a faithful-looking
+copy of a component is not a type error. It was caught by the agent's own report saying it had made
+a copy, in a build where reports are read. That is the second time in this build that an agent's
+prose was the load-bearing artifact (**D23**, **D29**).
+
 ### 10.4 Corrections to earlier sections
 
 | Section | Correction |
@@ -4735,3 +4854,48 @@ policy (P4) — no red, no "missed", no fault. That was decided in the abstract.
 roster card is the first chance to check whether "neutral" reads as *reassuring* or as *evasive* to
 someone who genuinely did decline three offers in a row. If a manager needs to see that pattern to
 staff well, the fix is a deliberate change to P4's presentation rules — a re-plan, not a colour tweak.
+
+---
+
+### 10.9 Manual testing — Phase 5b (bulk creation, the surfaces)
+
+5a had no screen, so this is the first time any of bulk creation is drivable. Everything below is
+**built, typechecked, lint-clean, `npm run build`-green and 608/608 on `test:events`, but not
+runtime-verified** — no browser has opened this feature. Run it on the emulator sandbox
+(`npm run dev:sandbox`, `admin@`/`qm@`/`medops@bmrc.test`, password `test1234`), never against the
+real project.
+
+**Do the settings half first** — the modal's Repeat tab is far less interesting with no template.
+
+| Surface | How to reach it | What to look for |
+|---|---|---|
+| Template editor | `admin@`/`qm@` → `/settings` → Events & Venues → Event Templates | "Add template" creates one blank and **expanded**. Header shows name + shape summary (`1× FTO+3 · 17:00 · Memorial Stadium`). Collapse/expand works. |
+| Remove template | same, expand a template | The remove button is in the **body**, not the accordion header. If it is in the header, that is a `<button>` inside a `<button>` — the D27 failure class — and it must move back. |
+| Validation | clear the call time, or delete every team | An amber issue chip appears on the header and the reasons list under the body. Save is **not** blocked — that is deliberate (see §10.2f); confirm it saves and reloads. |
+| Tenure gate | expand → Staged signup release → add a window | With a roster under 90% join-date coverage, `minSemesters`/`minTenureDays` must be **disabled with a message** — the same gate the Priority Access Tiers card shows. **This is the D30 fix; if those inputs are editable here, the regression is back.** |
+| Lead days, not dates | anywhere in Staged signup release | There must be **no date picker** in this section, and every label must read in days ("Opens N days before the event"). Tap the `ⓘ` on the toggle; it must open on touch and on `Tab` focus alone. |
+
+**Then the modal.**
+
+| Check | How | Pass condition |
+|---|---|---|
+| The split button | `/events` as a manager | `New event` still opens the single-event editor unchanged. The chevron opens a menu with **Add many**. As `member@`, **neither** appears. |
+| Repeat → recurrence | pick a template, every 1 week, Sat, over ~4 weeks | Four rows, correct dates, correct weekday. Name preview updates as you type the pattern. |
+| Repeat → hand-picked dates | switch to picking dates | Dates win over the recurrence — the grid shows exactly the days you picked. |
+| **Distinct tier dates** | use a template with `generalLeadDays: 7`, expand 4 weeks | Each row's signup-opens date is **7 days before its own event date** — four different dates. One shared date across the series is §5.9's worst-case bug. |
+| **Re-resolution on edit** | in the grid, change one row's date by a week | *That row's* tier date moves with it, and **no other row changes.** This is the same bug through a second door and it is the single most likely thing to regress. |
+| Paste | paste a TSV block with a junk "Notes" column | Rows parse; the ignored column is **named on screen**. A silently dropped column is the failure this check exists for. |
+| Conflict flags | make one row duplicate an existing event, one row share a day, one row blank its name | duplicate = amber and **still creatable**; sameDay = grey; blank name = red and **blocks that row only** — the others still create. |
+| Draft default | create a batch, then look at `/events` | Events are **draft**, not published — signup is not open. Then try the "Create as published" choice explicitly. |
+| Partial failure | force one row to fail | The result panel names which failed and why; failed rows stay in the grid; **Retry** re-runs only those. |
+| Undo, the guarded case | create a batch as draft, sign a member up for one event, then Undo | The signed-up event is **kept**, named, with a reason. Everything else is deleted. An undo that deletes someone's shift is far worse than the mis-click it undoes. |
+| Undo, seriesId | create, retry a failure, then inspect the events | All of them — including the retried ones — share **one** `seriesId`. A retry that starts a new series defeats the field's only purpose. |
+
+**Known not-testable here.** A template with an `accessTierPreset` only visibly does anything once
+tiers are enabled org-wide; with the feature off, the rows still carry their resolved dates but no
+surface reads them. That is not a bug in 5b.
+
+**The judgement call to bring back.** The review grid is the whole safety story — it is the only
+thing standing between a mis-typed pattern and twenty wrong events. Open it with twelve rows on a
+laptop and ask whether you could actually *notice* one wrong date in it. If the answer is no, the
+grid needs the fix, not the generator.

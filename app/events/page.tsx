@@ -9,8 +9,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Spinner, Button } from '@heroui/react';
-import { CalendarDays, LayoutList, Inbox, Plus, Check } from 'lucide-react';
+import { Spinner, Button, ButtonGroup, Dropdown, DropdownTrigger, DropdownMenu, DropdownItem } from '@heroui/react';
+import { CalendarDays, LayoutList, Inbox, Plus, Check, ChevronDown } from 'lucide-react';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import {
   subscribeEvents,
@@ -31,6 +31,7 @@ import EventCalendar from '@/app/components/events/event-calendar';
 import EventList from '@/app/components/events/event-list';
 import EventDetailDrawer from '@/app/components/events/event-detail-drawer';
 import EventEditorModal from '@/app/components/events/event-editor-modal';
+import BulkEventModal from '@/app/components/events/bulk-event-modal';
 import NotifyModal from '@/app/components/events/notify-modal';
 import WaitlistOfferModal from '@/app/components/events/waitlist-offer-modal';
 
@@ -73,6 +74,7 @@ export default function EventsPage() {
   });
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
   const [editingEvent, setEditingEvent] = useState<Event | null>(null);
   const [notifyOpen, setNotifyOpen] = useState(false);
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -278,16 +280,34 @@ export default function EventsPage() {
               ))}
             </div>
             {canManage && (
-              <Button
-                color="primary"
-                startContent={<Plus size={15} />}
-                onPress={() => {
-                  setEditingEvent(null);
-                  setEditorOpen(true);
-                }}
-              >
-                New event
-              </Button>
+              <ButtonGroup>
+                <Button
+                  color="primary"
+                  startContent={<Plus size={15} />}
+                  onPress={() => {
+                    setEditingEvent(null);
+                    setEditorOpen(true);
+                  }}
+                >
+                  New event
+                </Button>
+                <Dropdown>
+                  <DropdownTrigger>
+                    <Button color="primary" isIconOnly aria-label="More ways to create events">
+                      <ChevronDown size={15} />
+                    </Button>
+                  </DropdownTrigger>
+                  <DropdownMenu aria-label="Event creation options">
+                    <DropdownItem
+                      key="bulk"
+                      description="Create a whole season or semester at once"
+                      onPress={() => setBulkOpen(true)}
+                    >
+                      Add many
+                    </DropdownItem>
+                  </DropdownMenu>
+                </Dropdown>
+              </ButtonGroup>
             )}
           </div>
         </div>
@@ -367,6 +387,14 @@ export default function EventsPage() {
         actor={actor}
         onSaved={(msg) => notify(true, msg)}
         onError={(msg) => notify(false, msg)}
+      />
+
+      <BulkEventModal
+        isOpen={bulkOpen}
+        onClose={() => setBulkOpen(false)}
+        events={events}
+        actor={actor}
+        onDone={(ok: boolean, msg: string) => notify(ok, msg)}
       />
 
       <NotifyModal
