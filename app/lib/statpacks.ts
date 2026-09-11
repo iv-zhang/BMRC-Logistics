@@ -1,9 +1,11 @@
 'use client';
 
-import { collection, doc, getDoc, setDoc, serverTimestamp, query, where, getDocs, writeBatch } from 'firebase/firestore';
+import { collection, doc, getDoc, setDoc, updateDoc, serverTimestamp, query, where, getDocs, writeBatch } from 'firebase/firestore';
 import { db } from '@/firebase';
-import type { Statpack } from '@/app/types';
+import type { Statpack, StatpackShortageSnapshot } from '@/app/types';
 import { computeStatpackAssetValue } from '@/app/lib/inventory';
+import { getPackShortages } from '@/app/lib/statpack-shortages';
+import { recordAuditEvent, deepRemoveUndefined } from '@/app/lib/audit';
 
 /**
  * Duplicate a statpack: create a copy with new ID, sanitized timestamps, and " (copy)" suffix
@@ -137,6 +139,82 @@ export async function saveStatpackContents(
   batch.update(doc(db, 'statpacks', id), payload);
   batch.set(doc(collection(db, 'statpack_logs')), logPayload);
   await batch.commit();
+}
+
+/**
+ * Admin manual "mark Ready" override for a pack that derived `Restock Needed`
+ * (e.g. an item counted at 0, which partial shortages no longer trigger) when
+ * the crew is about to roll and the missing item isn't critical. Stamps who
+ * overrode it, when, and a snapshot of what was short at the time so the
+ * decision is auditable after the fact.
+ *
+ * One-shot by design: the very next `logStatpackCheckOff` (checkout, checkin,
+ * or audit) clears `readyOverride` back to null regardless of what status
+ * that check-off derives, so a stale override can never mask a NEW problem.
+ *
+ * Refuses on:
+ *  - a checked-out pack (nothing to mark ready — it's in use),
+ *  - `Expired Items`/`CRITICAL - EXPIRED ITEMS` status (expired/recalled
+ *    stock must be physically replaced, never overridden away),
+ *  - a pack that's already `Ready` (nothing to override).
+ */
+export async function overrideStatpackReady(
+  pack: Statpack,
+  actor: { uid: string; name: string },
+  note?: string,
+): Promise<void> {
+  if (!pack.id) throw new Error('Cannot override readiness on a statpack without an id');
+  if (pack.isCheckedOut) {
+    throw new Error('Cannot mark a checked-out statpack Ready — check it in first');
+  }
+  if (pack.status.includes('Expired')) {
+    throw new Error('Expired or recalled items must be physically replaced — this pack cannot be overridden to Ready');
+  }
+  if (pack.status === 'Ready') {
+    throw new Error('This statpack is already Ready');
+  }
+
+  const { out, low } = getPackShortages(pack);
+  const shortages: StatpackShortageSnapshot[] = [...out, ...low].map((s) => ({
+    itemId: s.itemId,
+    name: s.name,
+    currentQuantity: s.currentQuantity,
+    requiredQuantity: s.requiredQuantity,
+  }));
+
+  const readyOverride: Record<string, unknown> = {
+    byUid: actor.uid,
+    byName: actor.name,
+    at: serverTimestamp(),
+    previousStatus: pack.status,
+    shortages,
+  };
+  if (note && note.trim()) readyOverride.note = note.trim();
+
+  const payload = deepRemoveUndefined({
+    status: 'Ready' as const,
+    readyOverride,
+    updatedAt: serverTimestamp(),
+  });
+
+  await updateDoc(doc(db, 'statpacks', pack.id), payload as Record<string, unknown>);
+
+  // Best-effort ledger entry — an audit-log failure must never block the
+  // override itself.
+  try {
+    await recordAuditEvent({
+      eventType: 'statpack_ready_override',
+      source: 'statpacks',
+      sourceId: pack.id,
+      actor: { userId: actor.uid, userName: actor.name },
+      targets: [{ collection: 'statpacks', docId: pack.id }],
+      before: { status: pack.status },
+      after: { status: 'Ready' },
+      details: { note: note?.trim() || undefined, shortages },
+    });
+  } catch (e) {
+    console.warn('overrideStatpackReady: audit ledger write failed (non-fatal)', e);
+  }
 }
 
 /**

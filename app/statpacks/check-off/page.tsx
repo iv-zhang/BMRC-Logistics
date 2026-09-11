@@ -17,6 +17,7 @@ import { useUserRole } from '@/app/hooks/useUserRole';
 import { logStatpackCheckOff } from '@/app/lib/inventory';
 import { THRESHOLDS } from '@/app/config/org-config';
 import { swapBag, hydrateBag, resolveBagAssignments } from '@/app/lib/exchange-bags';
+import StatpackRestockChips from '@/app/components/statpack-restock-chips';
 import type { Statpack, StatpackItem, StatpackPocket, InventoryItem, ExchangeBag, ExchangeBagAssignment } from '@/app/types';
 
 // ─── types & constants ───────────────────────────────────────────────────────
@@ -1249,9 +1250,12 @@ export default function StatpackCheckOffPage() {
                   </span>
                 </div>
               </div>
-              <span className={`text-[11px] font-semibold px-2.5 py-1 rounded-full whitespace-nowrap ${statusInfo.bg} ${statusInfo.color}`}>
-                {statusInfo.label}
-              </span>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className={`text-[11px] font-semibold px-2.5 py-1 rounded-full whitespace-nowrap ${statusInfo.bg} ${statusInfo.color}`}>
+                  {statusInfo.label}
+                </span>
+                {pack && <StatpackRestockChips pack={pack} />}
+              </div>
             </div>
 
             {mode === 'checkout' && eventName && (

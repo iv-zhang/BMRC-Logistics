@@ -26,6 +26,7 @@ import { collection, onSnapshot, query, where, orderBy, Timestamp, doc, getDoc }
 import { auth, db } from '@/firebase';
 import type { InventoryItem, Statpack, StatpackItem, Event } from '@/app/types';
 import BarcodeScanner from '@/app/components/barcode-scanner';
+import StatpackRestockChips from '@/app/components/statpack-restock-chips';
 import { findAssetByCode } from '@/app/lib/inventory';
 import { subscribeEvents } from '@/app/lib/events';
 import { toJsDate } from '@/app/components/events/event-utils';
@@ -359,13 +360,16 @@ export default function CheckoutPage() {
                               </div>
                             </div>
                             <div className="flex flex-col items-end gap-2">
-                              <Chip
-                                color={pack.status === 'Ready' ? 'success' : 'warning'}
-                                size="sm"
-                                variant="flat"
-                              >
-                                {pack.status}
-                              </Chip>
+                              <div className="flex items-center gap-1 flex-wrap justify-end">
+                                <Chip
+                                  color={pack.status === 'Ready' ? 'success' : 'warning'}
+                                  size="sm"
+                                  variant="flat"
+                                >
+                                  {pack.status}
+                                </Chip>
+                                <StatpackRestockChips pack={pack} showOverride={false} />
+                              </div>
                               {pack.contents && (
                                 <span className="text-xs text-foreground-500 tabular-nums">
                                   {pack.contents.length} items

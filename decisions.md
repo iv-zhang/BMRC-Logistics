@@ -107,6 +107,19 @@ Items`; short-not-restocked or sharps full → `Restock Needed`; else `Ready`; c
 back-room→shelf replenishment is a human process caught by the next crew or admin audit.
 Checkout enforces **fix-or-acknowledge** on expired/short items.
 
+**Amended 2026-09-11 — partial shortages don't block Ready; admin override.** Only a
+required consumable counted at **0** (not restocked) derives `Restock Needed`; an item that
+is short but not empty (e.g. 1 of 2) leaves the pack `Ready`. *Why:* the checkout list only
+offers `Ready` packs, so one missing roll of tape was pulling a deployable pack out of
+service. The shortage isn't lost — it stays visible as a "Needs restock · N" chip derived
+from persisted `contents[].currentQuantity` (`getPackShortages`,
+`app/lib/statpack-shortages.ts`), never a stored flag that could go stale. Admins/QMs can
+also **override** a not-ready pack to `Ready` (`overrideStatpackReady`, stamps
+`Statpack.readyOverride` with who/when/note + a snapshot of what was missing). The override
+is **one-shot**: any subsequent check-off clears it and re-derives. It is refused for
+`Expired Items` (replace, don't override) and for checked-out packs. Checkout still asks
+members to fix-or-acknowledge short items.
+
 ### D-9 — One shared check-off page for checkout / check-in / audit
 **Decision:** all three modes share `app/statpacks/check-off/page.tsx`, driven by `?id` +
 `?mode` query params. Audit mode logs `action: 'audit'` and stamps `lastAuditAt`/`By`

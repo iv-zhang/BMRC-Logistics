@@ -13,7 +13,7 @@ import {
   Spinner,
   useDisclosure,
 } from '@heroui/react';
-import { Package, MapPin, Pencil, Save, X, Clock, Repeat } from 'lucide-react';
+import { Package, MapPin, Pencil, Save, X, Clock, Repeat, AlertTriangle } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { doc, onSnapshot, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
@@ -21,8 +21,18 @@ import type { Statpack, User, ExchangeBag, ExchangeBagAssignment, StatpackPocket
 import StatpackEditorModal from '@/app/components/statpack-editor-modal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import StatpackHistory from '@/app/components/statpack-history';
+import StatpackRestockChips from '@/app/components/statpack-restock-chips';
+import StatpackReadyOverride from '@/app/components/statpack-ready-override';
 import { computeStatpackAssetValue } from '@/app/lib/inventory';
 import { subscribeExchangeBags, resolveBagAssignments } from '@/app/lib/exchange-bags';
+import { getPackShortages, formatShortage } from '@/app/lib/statpack-shortages';
+
+function formatOverrideDate(value: Date | { toDate?: () => Date } | undefined | null): string {
+  if (!value) return '';
+  const d = value instanceof Date ? value : typeof value.toDate === 'function' ? value.toDate() : null;
+  if (!d) return '';
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
 
 const POCKET_OPTIONS: { id: StatpackPocket; name: string }[] = [
   { id: 'main', name: 'Main Compartment' },
@@ -250,6 +260,15 @@ export default function StatpackDetailClient() {
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center"><Spinner size="lg" color="primary" /></div>
   );
 
+  // `setPack(snapshot.data())` doesn't include the doc id — the new
+  // shortage/override components need a real `id` for writes, so build a
+  // copy that carries it through.
+  const packWithId: Statpack = { ...pack, id: statpackId };
+  const isAdmin = userRole === 'admin' || userRole === 'quartermaster';
+  const shortages = getPackShortages(packWithId);
+  const overrideEligible =
+    isAdmin && !packWithId.isCheckedOut && packWithId.status !== 'Ready' && !packWithId.status.includes('Expired');
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
       <div className="max-w-6xl mx-auto space-y-6">
@@ -273,7 +292,10 @@ export default function StatpackDetailClient() {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div>
                 <p className="text-sm font-semibold text-foreground-500">Status</p>
-                <Chip size="sm" variant="flat">{pack.status}</Chip>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <Chip size="sm" variant="flat">{pack.status}</Chip>
+                  <StatpackRestockChips pack={packWithId} />
+                </div>
               </div>
               <div>
                 <p className="text-sm font-semibold text-foreground-500">Location</p>
@@ -313,6 +335,54 @@ export default function StatpackDetailClient() {
                   <Button startContent={<X size={16} />} variant="light" onPress={cancelSummaryEdit}>Cancel</Button>
                 </div>
               </div>
+            )}
+
+            {isAdmin && (shortages.total > 0 || overrideEligible) && (
+              <>
+                <Divider />
+                <div>
+                  <h3 className="font-semibold mb-2 flex items-center gap-2">
+                    <AlertTriangle size={16} className="text-warning" /> Missing / low
+                  </h3>
+                  {shortages.total > 0 && (
+                    <div className="flex flex-col gap-2 mb-3">
+                      {shortages.out.length > 0 && (
+                        <div className="bg-danger-50 dark:bg-danger-950/20 rounded-large p-3">
+                          <p className="text-[11px] font-semibold uppercase tracking-widest text-danger mb-1.5">Out</p>
+                          <ul className="flex flex-col gap-1">
+                            {shortages.out.map((s) => (
+                              <li key={s.itemId} className="text-sm text-foreground flex items-center justify-between gap-2">
+                                <span>{formatShortage(s)}</span>
+                                {s.pocket && <span className="text-xs text-foreground-400">{s.pocket}</span>}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {shortages.low.length > 0 && (
+                        <div className="bg-warning-50 dark:bg-warning-950/20 rounded-large p-3">
+                          <p className="text-[11px] font-semibold uppercase tracking-widest text-warning mb-1.5">Low</p>
+                          <ul className="flex flex-col gap-1">
+                            {shortages.low.map((s) => (
+                              <li key={s.itemId} className="text-sm text-foreground flex items-center justify-between gap-2">
+                                <span>{formatShortage(s)}</span>
+                                {s.pocket && <span className="text-xs text-foreground-400">{s.pocket}</span>}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {overrideEligible && <StatpackReadyOverride pack={packWithId} />}
+                  {pack.readyOverride && (
+                    <p className="text-xs text-foreground-500 mt-2">
+                      Marked ready by {pack.readyOverride.byName} on {formatOverrideDate(pack.readyOverride.at)}
+                      {pack.readyOverride.note ? ` — ${pack.readyOverride.note}` : ''}
+                    </p>
+                  )}
+                </div>
+              </>
             )}
 
             {userRole === 'admin' && (
