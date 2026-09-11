@@ -48,6 +48,8 @@ import {
 import { db } from '@/firebase';
 import type { InventoryItem, Statpack, StatpackItem, StorageLocationRef } from '@/app/types';
 import { useUserRole } from '@/app/hooks/useUserRole';
+import StatpackRestockChips from '@/app/components/statpack-restock-chips';
+import StatpackReadyOverride from '@/app/components/statpack-ready-override';
 import {
   canUserAudit,
   generateAuditSnapshot,
@@ -831,6 +833,7 @@ export default function AuditPage() {
                       >
                         {pack.isCheckedOut ? 'Checked Out' : pack.status}
                       </Chip>
+                      <StatpackRestockChips pack={pack} />
                       {auditCurrent ? (
                         <Chip size="sm" variant="flat" color="success">Audit current</Chip>
                       ) : (
@@ -850,6 +853,7 @@ export default function AuditPage() {
                   </div>
 
                   <div className="flex-none flex items-center gap-2">
+                    <StatpackReadyOverride pack={pack} />
                     {isAdmin && (
                       <Tooltip
                         content="Pack is checked out — edit after check-in"

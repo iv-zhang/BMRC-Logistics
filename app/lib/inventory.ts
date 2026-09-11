@@ -605,6 +605,10 @@ export async function logStatpackCheckOff(params: {
         lastCheckedBy: userName,
         lastCheckedAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
+        // The admin "mark Ready" override is one-shot: ANY check-off
+        // (checkout, checkin, or audit) clears it, so a stale override can
+        // never mask a problem introduced after it was set.
+        readyOverride: null,
       };
 
       // ── Persist pack contents (currentQuantity is source of truth) ──────────
@@ -630,7 +634,13 @@ export async function logStatpackCheckOff(params: {
 
       // Accumulate status signals while we walk the entries.
       let anyExpired = false;
-      let anyShortConsumable = false;
+      // Only a required consumable counted at ZERO (and not restocked) blocks
+      // readiness. A partial shortage (1 ≤ counted < required) is deployable —
+      // the crew still has some — so it no longer flips the pack out of
+      // 'Ready'; the shortage stays visible via the persisted currentQuantity
+      // on pack contents (see app/lib/statpack-shortages.ts) and admins can
+      // still see/restock it without the pack being hidden from checkout.
+      let anyOutConsumable = false;
       // Fail-closed: a required consumable submitted WITHOUT a numeric count is an
       // unknown, and unknown must resolve to not-ready (never optimistic 'Ready').
       let anyUnknown = false;
@@ -664,8 +674,8 @@ export async function logStatpackCheckOff(params: {
           if (typeof e.countedQuantity !== 'number' || !Number.isFinite(e.countedQuantity)) {
             // Required consumable with no usable count → unknown → fail-closed.
             anyUnknown = true;
-          } else if (e.countedQuantity < e.requiredQuantity && e.restockStatus !== 'restocked') {
-            anyShortConsumable = true;
+          } else if (e.countedQuantity <= 0 && e.restockStatus !== 'restocked') {
+            anyOutConsumable = true;
           }
         }
       }
@@ -696,12 +706,14 @@ export async function logStatpackCheckOff(params: {
       }
 
       // Derive the resulting pack status for check-in / audit. Conservative:
-      // expired/recalled lots (entered OR already stored) block first; short,
-      // unknown (uncounted), stale life-safety assets, or a full sharps box all
-      // keep the pack out of 'Ready'.
+      // expired/recalled lots (entered OR already stored) block first; a
+      // consumable counted at ZERO, unknown (uncounted), stale life-safety
+      // assets, or a full sharps box all keep the pack out of 'Ready'. A
+      // partial shortage (still > 0 on hand) does NOT block readiness — see
+      // anyOutConsumable comment above.
       const deriveStatus = (): Statpack['status'] => {
         if (anyExpired || anyStoredExpired || anyQuarantined) return 'Expired Items';
-        if (anyShortConsumable
+        if (anyOutConsumable
           || anyUnknown
           || hazard.assetCurrencyLapsed
           || sharpsCheck?.status === 'full') return 'Restock Needed';

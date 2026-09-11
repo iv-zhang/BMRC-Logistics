@@ -10,6 +10,7 @@ import {
 import { db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import type { Statpack, InventoryItem, StatpackLog, StatpackItem } from '@/app/types';
+import { getPackShortages } from '@/app/lib/statpack-shortages';
 import MemberDashboard from './member-dashboard';
 import {
   AlertTriangle, ChevronDown, Search, X, ArrowUpRight, Clock, AlertCircle,
@@ -55,12 +56,15 @@ function getPackChips(pack: Statpack): PackChip[] {
   const expiredContents = pack.contents?.filter(
     c => c.expirationDate && new Date(c.expirationDate as Date) < today,
   ) ?? [];
+  const shortages = getPackShortages(pack);
   const chips: PackChip[] = [];
   if (pack.status === 'In Use') chips.push({ label: 'In Use', color: 'primary' });
   else if (pack.status === 'Ready' && expiredContents.length === 0) chips.push({ label: 'Ready', color: 'success' });
   if (expiredContents.length > 0) chips.push({ label: 'Expired items', color: 'danger' });
-  if (pack.status === 'Restock Needed') chips.push({ label: 'Restock needed', color: 'danger' });
+  if (shortages.total > 0) chips.push({ label: `Needs restock · ${shortages.total}`, color: shortages.out.length > 0 ? 'danger' : 'warning' });
+  if (pack.status === 'Restock Needed' && shortages.total === 0) chips.push({ label: 'Restock needed', color: 'danger' });
   if (pack.status === 'CRITICAL - EXPIRED ITEMS') chips.push({ label: 'Critical', color: 'danger' });
+  if (pack.status === 'Ready' && pack.readyOverride) chips.push({ label: 'Override', color: 'primary' });
   return chips;
 }
 

@@ -1,8 +1,10 @@
 /**
  * INV-8 — Statpack service-ready is DERIVED and CONSERVATIVE: true only if no
- * expired lot AND no recalled lot AND every SKU ≥ par AND AED battery+pads
- * current AND glucometer control test passed within interval. Any unknown input
- * → not ready.
+ * expired lot AND no recalled lot AND no required SKU at 0 AND AED
+ * battery+pads current AND glucometer control test passed within interval.
+ * Any unknown input → not ready. A partial shortage (still > 0 on hand) does
+ * NOT block readiness — the pack stays deployable and the shortage remains
+ * visible via persisted `currentQuantity` — see app/lib/statpack-shortages.ts.
  *
  * Real path: app/lib/inventory.ts → logStatpackCheckOff → deriveStatus (which
  * writes Statpack.status) + assessPackHazards (recall + asset currency, read from
@@ -63,10 +65,15 @@ defineInvariant('INV-8', 'Readiness is derived and conservative', async (t) => {
     { itemId: IDS.epi, batchId: IDS.epiLotA, requiredQuantity: 2, countedQuantity: 2, ok: false, expirationDate: PAST }]);
   t.ok(s1 !== 'Ready', 'expired item flips readiness false', `status stayed '${s1}'`);
 
-  // (2) below-par consumable → not Ready
+  // (2) partial shortage (still > 0 on hand) → deployable, still Ready
   await resetClean();
   const s2 = await audit([{ itemId: IDS.gauze, requiredQuantity: 20, countedQuantity: 5, ok: false, pocket: 'main' }]);
-  t.ok(s2 !== 'Ready', 'below-par (short) item flips readiness false', `status stayed '${s2}'`);
+  t.equal(s2, 'Ready', 'partial (non-zero) shortage no longer blocks readiness');
+
+  // (2b) required consumable counted at ZERO → not Ready
+  await resetClean();
+  const s2b = await audit([{ itemId: IDS.gauze, requiredQuantity: 20, countedQuantity: 0, ok: false, pocket: 'main' }]);
+  t.ok(s2b !== 'Ready', 'a required consumable counted at 0 still flips readiness false', `status stayed '${s2b}'`);
 
   // (3) sharps container full → not Ready
   await resetClean();
@@ -103,4 +110,24 @@ defineInvariant('INV-8', 'Readiness is derived and conservative', async (t) => {
   const s7 = await audit([{ itemId: IDS.epi, requiredQuantity: 2, countedQuantity: null, ok: false, pocket: 'main' }]);
   t.ok(s7 !== 'Ready', 'unknown/uncounted input fails safe to not-ready',
     `status is '${s7}' — unknown input must force not-ready`);
+
+  // (8) the admin "mark Ready" override is ONE-SHOT: any subsequent
+  // check-off clears it, even when the fresh audit itself derives not-Ready.
+  await resetClean();
+  await updateDoc(doc(db, 'statpacks', IDS.packMRC1), {
+    status: 'Ready',
+    readyOverride: {
+      byUid: 'admin-1',
+      byName: 'Quinn',
+      at: new Date(),
+      previousStatus: 'Restock Needed',
+      shortages: [],
+    },
+  });
+  const s8 = await audit([{ itemId: IDS.gauze, requiredQuantity: 20, countedQuantity: 0, ok: false, pocket: 'main' }]);
+  t.ok(s8 !== 'Ready', 'a fresh 0-count re-derives not-Ready even over a prior override',
+    `status stayed '${s8}'`);
+  const p8 = await getPack(IDS.packMRC1);
+  t.ok(!p8.readyOverride, 'the override is cleared (one-shot) by the next check-off',
+    `readyOverride is still '${JSON.stringify(p8.readyOverride)}'`);
 });

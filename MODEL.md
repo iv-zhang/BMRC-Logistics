@@ -352,14 +352,18 @@ Readiness is **not** a derived `service-ready` boolean. It is a stored string en
 `deriveStatus()` returns:
 ```
 if (anyExpired)                                   → 'Expired Items'
-else if (anyShortConsumable || sharps === 'full') → 'Restock Needed'
+else if (anyOutConsumable || sharps === 'full')   → 'Restock Needed'
 else                                              → 'Ready'
 ```
 where the signals are accumulated over `checkEntries` (line 524-560):
 - `anyExpired` — an entry whose `newExpirationDate ?? expirationDate` is in the past,
   **or** whose reported `issue.type` is `broken`/`expired` (line 548-551).
-- `anyShortConsumable` — a non-asset entry with `countedQuantity < requiredQuantity`
-  and `restockStatus !== 'restocked'` (line 553-559).
+- `anyOutConsumable` — a non-asset entry with `countedQuantity <= 0` (required > 0)
+  and `restockStatus !== 'restocked'`. A partly-short item (1 ≤ counted < required) no
+  longer affects status; it surfaces as a "Needs restock" chip derived from
+  `contents[].currentQuantity` by `getPackShortages` (decisions.md D-8 amendment).
+- Every check-off clears `Statpack.readyOverride` (the admin one-shot override written by
+  `overrideStatpackReady`).
 - Checkout unconditionally sets `status:'In Use'` (line 583-586).
 
 Notably, `deriveStatus` uses **only what the member entered on this check-off**. It does

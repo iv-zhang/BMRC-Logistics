@@ -707,6 +707,22 @@ export interface StatpackItem {
   customWarnings?: StatpackWarning[];
 }
 
+export interface StatpackShortageSnapshot {
+  itemId: string;
+  name: string;
+  currentQuantity: number;
+  requiredQuantity: number;
+}
+
+export interface StatpackReadyOverride {
+  byUid: string;
+  byName: string;
+  at: Date; // serverTimestamp on write; Timestamp/Date on read
+  note?: string;
+  previousStatus: Statpack['status'];
+  shortages: StatpackShortageSnapshot[];
+}
+
 export interface Statpack {
   id: string;
   name: string;
@@ -746,7 +762,15 @@ export interface Statpack {
     lastCheckedAt?: Date;
     lastCheckedBy?: string;
   };
-  
+  /**
+   * Set only by an admin's manual "mark Ready" override (`overrideStatpackReady`
+   * in app/lib/statpacks.ts) on a not-ready pack (e.g. an item counted at 0).
+   * Shortages stay flagged via `getPackShortages`. One-shot: cleared (set to `null`) by the
+   * very next `logStatpackCheckOff` call (checkout, checkin, or audit),
+   * regardless of what that check-off derives.
+   */
+  readyOverride?: StatpackReadyOverride | null;
+
   createdAt: Date;
   updatedAt: Date;
   

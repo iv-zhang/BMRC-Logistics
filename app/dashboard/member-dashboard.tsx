@@ -25,6 +25,7 @@ import type { Statpack, User, AppNotification, ShiftRequest } from '@/app/types'
 import { subscribeUserNotifications, markNotificationRead } from '@/app/lib/notifications';
 import { subscribeMyRequests } from '@/app/lib/events';
 import { toJsDate, formatEventDate } from '@/app/components/events/event-utils';
+import StatpackRestockChips from '@/app/components/statpack-restock-chips';
 import {
   LogIn,
   LogOut,
@@ -625,19 +626,22 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
                           {pack.type}
                         </p>
                       </div>
-                      <Chip
-                        color={
-                          pack.status === 'Ready'
-                            ? 'success'
-                            : pack.status === 'In Use'
-                            ? 'warning'
-                            : 'danger'
-                        }
-                        size="sm"
-                        variant="flat"
-                      >
-                        {pack.status}
-                      </Chip>
+                      <div className="flex items-center gap-1 flex-wrap justify-end">
+                        <Chip
+                          color={
+                            pack.status === 'Ready'
+                              ? 'success'
+                              : pack.status === 'In Use'
+                              ? 'warning'
+                              : 'danger'
+                          }
+                          size="sm"
+                          variant="flat"
+                        >
+                          {pack.status}
+                        </Chip>
+                        <StatpackRestockChips pack={pack} showOverride={false} />
+                      </div>
                     </div>
                   </CardBody>
                 </Card>
