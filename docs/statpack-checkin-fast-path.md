@@ -265,8 +265,16 @@ export async function flagStatpackRestock(
 | C | Sonnet | `app/lib/statpack-restock-flag.ts` (new) | ✅ landed, tsc + lint clean |
 | D | Haiku | `app/types.ts`, `decisions.md`, `MODEL.md` | ✅ landed |
 
-**Committed + pushed** as `8cee820` (backend half: A + C + D). Branch now tracks
-`origin/feat/statpack-checkin-fast-path`. The UI half lands in a second commit.
+**Committed + pushed** as `8cee820` (backend half: A + C + D), doc as `ef206f9`. Branch now
+tracks `origin/feat/statpack-checkin-fast-path`. The UI half lands in a second commit.
+
+`npm run test` against the committed backend half: **69 passed, 0 failed.** So the
+`deriveStatus` change does not regress the audit/restock integration suite. Note what that
+does *not* cover, though — that suite exercises audit/restock analysis, not the statpack
+check-in path, so none of the fast path's own smoke cases (listed above) are tested by it.
+They still need the emulator driver, which per CLAUDE.md is not run until immediately
+before a commit. `npm run build` is deliberately deferred until agent B lands, since it
+would otherwise compile a half-written page.
 
 Orchestrator verification of A's diff (read line by line, not taken on trust): the
 untouched-contents scan gates on `typeof current !== 'number' || !Number.isFinite(current)`
@@ -286,13 +294,22 @@ derived status and the flag trigger can never disagree about what counts as a co
 
 ### Findings / bugs
 
-**F-1 — pre-existing: `vitest` types missing, repo-wide `tsc` is not clean.**
-`npx tsc --noEmit` reports errors in `app/lib/__tests__/*.test.ts` for missing `vitest`
-types. This is **unrelated to this feature** and predates the branch, but it matters
-operationally: CLAUDE.md's default verification tier is "run `npx tsc --noEmit`", and that
-command does not currently exit clean on a healthy tree. Anyone verifying this branch has
-to read past those errors, which is exactly how a real error gets missed. Worth fixing
-separately — not in this branch's scope.
+**F-1 — pre-existing: two test files are orphaned, and they permanently break the
+project's own default verification command.** Unrelated to this feature, predates the
+branch, but worth fixing separately because of what it costs.
+
+`app/lib/__tests__/o2-checkout-integration.test.ts` and `o2-validation.test.ts` import
+`vitest`. **`vitest` is not installed** — not in `dependencies`, not in `devDependencies`,
+not in `node_modules`. And `npm run test` is `node ./scripts/test-audit-restock.cjs`, which
+never invokes vitest. So nothing in the repo runs these two files: they are dead tests
+providing zero coverage while looking like coverage.
+
+Worse, `tsconfig.json` includes `**/*.ts` with no `__tests__` exclusion, so `tsc` compiles
+them and fails on the missing module. CLAUDE.md's default post-change verification tier is
+`npx tsc --noEmit` — **that command cannot exit clean on a healthy tree today.** A
+verification step that is always red trains everyone to skim past it, which is exactly how
+a real error gets through. Either install vitest and wire it into `npm run test`, or delete
+the two orphans; leaving them is the one option with ongoing cost.
 
 **F-2 — `statpack-restock-flag.ts` deliberately omits `'use client'`.**
 Its import `notifications.ts` declares `'use client'`, but the file follows its closest
