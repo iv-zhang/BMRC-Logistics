@@ -1,7 +1,9 @@
 # Statpack check-in fast path + restock flagging
 
 **Branch:** `feat/statpack-checkin-fast-path`
-**Status:** in progress — plan approved, open questions resolved, implementation dispatched
+**Status:** implemented — all four agents landed, seam verified, tsc/build/test green.
+**Built-and-typechecked, NOT runtime-verified** (the emulator driver has not been run).
+One blocker before ship: **F-3**, the production Firestore rules question.
 **Date:** 2026-09-14 (last updated 2026-09-14)
 
 ## Problem
@@ -261,7 +263,7 @@ export async function flagStatpackRestock(
 | # | Model | Files | Status |
 |---|---|---|---|
 | A | Sonnet | `app/lib/inventory.ts` | ✅ landed, verified by orchestrator |
-| B | Sonnet | `check-off/page.tsx`, `checkin-used-picker.tsx` (new) | running |
+| B | Sonnet | `check-off/page.tsx`, `checkin-used-picker.tsx` (new) | ✅ landed, seam verified |
 | C | Sonnet | `app/lib/statpack-restock-flag.ts` (new) | ✅ landed, tsc + lint clean |
 | D | Haiku | `app/types.ts`, `decisions.md`, `MODEL.md` | ✅ landed |
 
@@ -291,6 +293,42 @@ exactly this distinction (`statpack-shortages.ts:28-34`). Treating missing as ze
 make every one-tap check-in of a never-counted pack derive `Restock Needed`. A was also
 told to use `isAssetContent` (not the entry-level `isAssetEntry`) for that scan, so the
 derived status and the flag trigger can never disagree about what counts as a consumable.
+
+### Integration pass — the A↔B seam, traced by hand
+
+The payload contract holds. `checkin-used-picker.tsx` computes
+`counted = Math.max(0, (currentQuantity ?? requiredQuantity) - used)` and
+`ok = counted >= requiredQuantity`, exactly as specified; `usedQty` rides along for the
+review summary only and is dropped when the page maps picks into check entries.
+`restockStatus` is genuinely absent from the fast-path entries (not set to `undefined` —
+simply never written), with the explanatory comment intact. `quickCheckin: true` appears on
+the used-nothing branch only; the picker branch leaves it unset, matching the field's own
+"member reported no items used" semantics. The full-form `allItems.map` path is untouched
+and still sets `restockStatus` as before.
+
+All five smoke cases traced through the **combined** A+B logic:
+
+| Scenario | Entry loop | Untouched scan | Derived | Flag |
+|---|---|---|---|---|
+| Used nothing, pack healthy | no-op (`[]`) | nothing at 0 | `Ready` | none ✓ |
+| Used nothing, pack already at 0 | no-op (`[]`) | finite `0`, not restocked → out | `Restock Needed` | task + notify ✓ |
+| Used 2 of 2 | `counted 0` → out | same item, agrees | `Restock Needed` | task + notify ✓ |
+| Used 1 of 2 | `counted 1`, no flag | `1 > 0`, no flag | `Ready` | task + notify (`low`) ✓ |
+| Second check-in while short | — | — | — | de-duped, subtasks refreshed ✓ |
+
+Row 2 is the regression the fail-closed fix exists to prevent, and row 4 is the D-8
+amendment holding: a partly-short pack stays deployable but logistics still hears about it.
+
+### Final verification (integrated tree, all four agents landed)
+
+- `npx tsc --noEmit` — **only the 5 pre-existing F-1 errors** in `app/lib/__tests__/o2-*.test.ts`
+  (4× vitest module/implicit-any, 1× `TS2740` on an incomplete `InventoryItem` literal).
+  Zero errors in any file this feature touched.
+- `npm run test` — **69 passed, 0 failed.**
+- `npm run build` — **succeeds**, `/statpacks/check-off` still prerenders as a static route,
+  so the `output: export` constraint (static route + query params, no `[id]` segment) is intact.
+- `run-bmrc-logistics` emulator driver — **NOT run.** This ships built-and-typechecked,
+  **not runtime-verified.** The smoke cases above are traced by reading code, not executed.
 
 ### Findings / bugs
 
