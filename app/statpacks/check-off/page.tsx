@@ -18,6 +18,7 @@ import { logStatpackCheckOff } from '@/app/lib/inventory';
 import { THRESHOLDS } from '@/app/config/org-config';
 import { swapBag, hydrateBag, resolveBagAssignments } from '@/app/lib/exchange-bags';
 import StatpackRestockChips from '@/app/components/statpack-restock-chips';
+import CheckinUsedPicker, { type CheckinUsedPick } from '@/app/components/statpacks/checkin-used-picker';
 import type { Statpack, StatpackItem, StatpackPocket, InventoryItem, ExchangeBag, ExchangeBagAssignment } from '@/app/types';
 
 // ─── types & constants ───────────────────────────────────────────────────────
@@ -706,6 +707,172 @@ function BagCard({ bag, qtyPerPack, check, blocking, onSealIntact, onResolution,
   );
 }
 
+// ─── Check-in fast path ──────────────────────────────────────────────────────
+// mode=checkin only. Renders BEFORE the pocket-by-pocket accordion:
+//   Step 0 (gate)   — "Did you use anything?" No submits immediately; Yes goes
+//                      to Step 1. "Open full check-off" always escapes to the
+//                      unmodified accordion form below.
+//   Step 1 (picker) — CheckinUsedPicker; Continue feeds the existing showReview
+//                      sheet (Step 2), which submits exactly as it always has.
+// checkout and audit never read `checkinStage` and are unaffected.
+
+type CheckinStage = 'gate' | 'picker' | 'full';
+
+interface ReviewSummaryShape {
+  used: { name: string; qty: number }[];
+  restocked: string[];
+  reported: string[];
+  acknowledged: string[];
+  psi: { name: string; psi: number }[];
+}
+
+interface FastPathOverride {
+  checkEntries: {
+    itemId: string;
+    itemName: string;
+    batchId?: string;
+    compartmentId?: string;
+    pocket?: StatpackPocket;
+    requiredQuantity: number;
+    countedQuantity: number;
+    ok: boolean;
+  }[];
+  quickCheckin?: boolean;
+  summary?: ReviewSummaryShape;
+}
+
+interface CheckinGateScreenProps {
+  pack: Statpack;
+  statusInfo: { label: string; color: string; bg: string };
+  submitting: boolean;
+  onBack: () => void;
+  onUsedNothing: () => void;
+  onUsedSomething: () => void;
+  onOpenFullCheckoff: () => void;
+}
+
+function CheckinGateScreen({
+  pack, statusInfo, submitting, onBack, onUsedNothing, onUsedSomething, onOpenFullCheckoff,
+}: CheckinGateScreenProps) {
+  return (
+    <div className="max-w-lg mx-auto min-h-screen flex flex-col">
+      <header className="sticky top-0 z-30 bg-background/80 backdrop-blur-md border-b border-divider">
+        <div className="h-14 flex items-center gap-2 px-3">
+          <button
+            onClick={onBack}
+            className="w-9 h-9 rounded-xl flex items-center justify-center text-foreground-500 hover:bg-content2 transition-colors duration-150"
+          >
+            <ArrowLeft size={20} />
+          </button>
+          <div className="flex-1 text-center flex flex-col leading-tight">
+            <span className="text-sm font-semibold text-foreground">Check-In</span>
+            <span className="text-[11px] text-foreground-400 font-medium">Did you use anything from this pack?</span>
+          </div>
+          <div className="w-9 h-9" />
+        </div>
+      </header>
+
+      <main className="flex-1 px-3 py-4 flex flex-col gap-4">
+        <div className="bg-content1 border border-divider rounded-2xl p-4">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 rounded-[13px] bg-primary flex-none flex items-center justify-center shadow-md shadow-primary/30 relative">
+              <div className="absolute w-5 h-1.5 bg-white rounded-sm" />
+              <div className="absolute w-1.5 h-5 bg-white rounded-sm" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold text-lg leading-tight text-foreground truncate">{pack.name}</div>
+              <div className="flex items-center gap-1.5 text-xs text-foreground-500 font-medium mt-0.5">
+                <MapPin size={11} className="text-foreground-400 flex-none" />
+                <span className="truncate">
+                  {pack.type}{pack.currentLocation ? ` · ${pack.currentLocation}` : ''}
+                </span>
+              </div>
+            </div>
+            <span className={`text-[11px] font-semibold px-2.5 py-1 rounded-full whitespace-nowrap ${statusInfo.bg} ${statusInfo.color}`}>
+              {statusInfo.label}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-3 mt-1">
+          <button
+            onClick={onUsedNothing}
+            disabled={submitting}
+            className="w-full flex items-center gap-3 bg-content1 border-2 border-divider hover:border-success/40 rounded-2xl px-4 py-4 text-left transition-colors duration-150 disabled:opacity-60"
+          >
+            <div className="w-11 h-11 rounded-[13px] bg-success-50 dark:bg-success-900/20 text-success flex items-center justify-center flex-none">
+              <Check size={20} strokeWidth={2.5} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-base font-semibold text-foreground">No, used nothing</div>
+              <div className="text-xs text-foreground-500 font-medium mt-0.5">One tap — no counting needed</div>
+            </div>
+            {submitting ? <Spinner size="sm" color="success" /> : <ArrowRight size={18} className="text-foreground-400 flex-none" />}
+          </button>
+
+          <button
+            onClick={onUsedSomething}
+            disabled={submitting}
+            className="w-full flex items-center gap-3 bg-content1 border-2 border-divider hover:border-primary/40 rounded-2xl px-4 py-4 text-left transition-colors duration-150 disabled:opacity-60"
+          >
+            <div className="w-11 h-11 rounded-[13px] bg-primary-50 dark:bg-primary-900/20 text-primary flex items-center justify-center flex-none">
+              <Plus size={20} strokeWidth={2.5} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-base font-semibold text-foreground">Yes, I used something</div>
+              <div className="text-xs text-foreground-500 font-medium mt-0.5">Pick what was used and how much</div>
+            </div>
+            <ArrowRight size={18} className="text-foreground-400 flex-none" />
+          </button>
+        </div>
+
+        <div className="flex flex-col items-center gap-1 mt-1">
+          <button
+            onClick={onOpenFullCheckoff}
+            className="text-sm font-semibold text-primary hover:text-primary/70 transition-colors"
+          >
+            Open full check-off
+          </button>
+          <p className="text-xs text-foreground-400 text-center">
+            Need to report a broken AED, full sharps, or an expiration? Use the full form.
+          </p>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+interface CheckinPickerScreenProps {
+  pack: Statpack;
+  items: StatpackItem[];
+  onBack: () => void;
+  onContinue: (picks: CheckinUsedPick[]) => void;
+}
+
+function CheckinPickerScreen({ pack, items, onBack, onContinue }: CheckinPickerScreenProps) {
+  return (
+    <div className="max-w-lg mx-auto min-h-screen flex flex-col">
+      <header className="sticky top-0 z-30 bg-background/80 backdrop-blur-md border-b border-divider">
+        <div className="h-14 flex items-center gap-2 px-3">
+          <button
+            onClick={onBack}
+            className="w-9 h-9 rounded-xl flex items-center justify-center text-foreground-500 hover:bg-content2 transition-colors duration-150"
+          >
+            <ArrowLeft size={20} />
+          </button>
+          <div className="flex-1 text-center flex flex-col leading-tight">
+            <span className="text-sm font-semibold text-foreground">What did you use?</span>
+            <span className="text-[11px] text-foreground-400 font-medium truncate">{pack.name}</span>
+          </div>
+          <div className="w-9 h-9" />
+        </div>
+      </header>
+
+      <CheckinUsedPicker items={items} onContinue={onContinue} />
+    </div>
+  );
+}
+
 // ─── Page ────────────────────────────────────────────────────────────────────
 
 export default function StatpackCheckOffPage() {
@@ -742,6 +909,13 @@ export default function StatpackCheckOffPage() {
 
   // Check-in review step
   const [showReview, setShowReview] = useState(false);
+
+  // Check-in fast path (mode === 'checkin' only). checkout/audit never touch
+  // this — mainContent below only branches on it when mode === 'checkin'.
+  const [checkinStage, setCheckinStage] = useState<CheckinStage>('gate');
+  // Set only while the picker's (Step 1) choices are queued for the Step 2
+  // review sheet; consumed by doSubmit on Confirm, cleared after submit.
+  const [fastPathOverride, setFastPathOverride] = useState<FastPathOverride | null>(null);
 
   // Linked exchange bags — loaded in all three modes; the seal reflex is
   // recorded per bag regardless of mode (checkout blocks on it, checkin/audit
@@ -1031,8 +1205,29 @@ export default function StatpackCheckOffPage() {
   }, [allItems]);
 
   // Build the check-off payload + a plain-language summary for the check-in review.
-  const buildPayload = useCallback(() => {
+  // `override` is supplied only by the check-in fast path (Step 0 "used
+  // nothing", or Step 1's picker feeding Step 2's review sheet) — it bypasses
+  // the full pocket-by-pocket computation below entirely and submits exactly
+  // what the crew reported. Sharps/O2/AED/bag/seal checks are intentionally
+  // not asked on that path; those signals still fail-closed off the pack's
+  // own persisted state (see docs/statpack-checkin-fast-path.md).
+  const buildPayload = useCallback((override?: FastPathOverride) => {
     if (!pack || !user) return null;
+
+    if (override) {
+      return {
+        payload: {
+          statpackId: pack.id,
+          statpackName: pack.name,
+          action: mode,
+          userId: user.uid,
+          userName: user.displayName || user.email || 'Unknown',
+          checkEntries: override.checkEntries,
+          quickCheckin: override.quickCheckin,
+        },
+        summary: override.summary ?? { used: [], restocked: [], reported: [], acknowledged: [], psi: [] },
+      };
+    }
 
     const oxygenReadings: Record<string, string> = {};
     const summary = {
@@ -1135,8 +1330,8 @@ export default function StatpackCheckOffPage() {
     };
   }, [pack, user, allItems, itemChecks, countOf, resolution, sealState, sharps, sharpsAck, isAdmin, mode, today, bagChecks, eventId, eventName]);
 
-  const doSubmit = useCallback(async () => {
-    const built = buildPayload();
+  const doSubmit = useCallback(async (override?: FastPathOverride) => {
+    const built = buildPayload(override);
     if (!built) return;
     setShowReview(false);
     setSubmitting(true);
@@ -1191,8 +1386,48 @@ export default function StatpackCheckOffPage() {
 
   const reviewSummary = useMemo(() => {
     if (!showReview) return null;
+    if (fastPathOverride) return fastPathOverride.summary ?? null;
     return buildPayload()?.summary ?? null;
-  }, [showReview, buildPayload]);
+  }, [showReview, buildPayload, fastPathOverride]);
+
+  // Confirm on the Step 2 review sheet: submits the fast-path picks when the
+  // crew came through Step 1, otherwise behaves exactly as the full form
+  // always has (buildPayload() with no override).
+  const confirmCheckin = useCallback(() => {
+    if (fastPathOverride) { doSubmit(fastPathOverride); return; }
+    doSubmit();
+  }, [fastPathOverride, doSubmit]);
+
+  // Step 0 "No, used nothing" — one tap, no review sheet.
+  const handleUsedNothing = useCallback(() => {
+    doSubmit({ checkEntries: [], quickCheckin: true });
+  }, [doSubmit]);
+
+  // Step 1 picker "Continue" — queue the picks for the Step 2 review sheet.
+  const handleFastPathContinue = useCallback((picks: CheckinUsedPick[]) => {
+    const summary: ReviewSummaryShape = {
+      used: picks.map(p => ({ name: p.itemName, qty: p.usedQty })),
+      restocked: [],
+      reported: [],
+      acknowledged: [],
+      psi: [],
+    };
+    const checkEntries = picks.map(p => ({
+      itemId: p.itemId,
+      itemName: p.itemName,
+      batchId: p.batchId,
+      compartmentId: p.compartmentId,
+      pocket: p.pocket,
+      requiredQuantity: p.requiredQuantity,
+      countedQuantity: p.countedQuantity,
+      ok: p.ok,
+      // restockStatus deliberately UNSET — the crew did not restock.
+      // Setting 'restocked' here would suppress the Restock Needed derivation
+      // in logStatpackCheckOff. Leave it out.
+    }));
+    setFastPathOverride({ checkEntries, summary });
+    setShowReview(true);
+  }, []);
 
   if (loading || !user) {
     return (
@@ -1209,6 +1444,152 @@ export default function StatpackCheckOffPage() {
     { id: 'full', label: 'Full' },
     { id: 'na', label: 'N/A' },
   ];
+
+  // Check-in usage review sheet + toast — shared across every stage/mode
+  // (gate never shows it; picker's Continue and the full form's handleComplete
+  // both route through setShowReview(true)) so there is exactly one copy of
+  // this markup, not one per stage.
+  const reviewOverlay = showReview && reviewSummary && (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={() => setShowReview(false)} />
+      <div className="fixed inset-x-0 bottom-0 z-50 max-w-lg mx-auto bg-content1 border-t border-divider rounded-t-2xl flex flex-col max-h-[85vh]">
+        <div className="px-5 py-4 border-b border-divider flex items-center gap-3">
+          <div className="w-9 h-9 rounded-[10px] bg-primary-50 dark:bg-primary-900/20 text-primary flex items-center justify-center flex-none">
+            <Check size={17} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-semibold text-foreground">Confirm check-in</div>
+            <div className="text-xs text-foreground-400 font-medium">You are attesting to the following</div>
+          </div>
+          <button
+            onClick={() => setShowReview(false)}
+            className="w-8 h-8 rounded-medium bg-content2 hover:bg-content3 text-foreground-400 flex items-center justify-center transition-colors flex-none"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-4">
+          <ReviewSection title="Items used" empty="No items used">
+            {reviewSummary.used.map(u => (
+              <ReviewRow key={u.name} label={u.name} value={`−${u.qty}`} tone="warning" />
+            ))}
+          </ReviewSection>
+
+          <ReviewSection title="Restocked to par" empty="Nothing restocked">
+            {reviewSummary.restocked.map(n => (
+              <ReviewRow key={n} label={n} value="par" tone="success" />
+            ))}
+          </ReviewSection>
+
+          <ReviewSection title="Reported to admin" empty="No issues reported">
+            {reviewSummary.reported.map(n => (
+              <ReviewRow key={n} label={n} value="reported" tone="danger" />
+            ))}
+          </ReviewSection>
+
+          {reviewSummary.acknowledged.length > 0 && (
+            <ReviewSection title="Acknowledged" empty="">
+              {reviewSummary.acknowledged.map(n => (
+                <ReviewRow key={n} label={n} value="ack" tone="warning" />
+              ))}
+            </ReviewSection>
+          )}
+
+          {reviewSummary.psi.length > 0 && (
+            <ReviewSection title="O₂ pressure" empty="">
+              {reviewSummary.psi.map(p => (
+                <ReviewRow key={p.name} label={p.name} value={`${p.psi} PSI`} tone="foreground" mono />
+              ))}
+            </ReviewSection>
+          )}
+
+          <div className="flex items-center justify-between bg-content2 rounded-large px-4 py-3">
+            <span className="text-xs font-semibold uppercase tracking-wide text-foreground-400">Sharps container</span>
+            <span className={`text-sm font-semibold ${
+              sharps === 'full' ? 'text-danger' : sharps === 'ok' ? 'text-success' : 'text-foreground-500'
+            }`}>
+              {sharps ? sharps.toUpperCase() : 'Not checked'}
+            </span>
+          </div>
+
+          {linkedBags.length > 0 && (
+            <ReviewSection title="Exchange bags" empty="No bags checked">
+              {linkedBags.map(bag => {
+                const chk = bagChecks[bag.id];
+                const label = chk?.sealIntact === true
+                  ? 'Sealed'
+                  : chk?.sealIntact === false
+                  ? (chk.resolution === 'swapped' ? 'Swapped' : chk.resolution === 'replaced' ? 'Replaced in place' : 'Broken — unresolved')
+                  : 'Not checked';
+                const tone = chk?.sealIntact === true ? 'success' as const
+                  : chk?.sealIntact === false && chk.resolution ? 'warning' as const
+                  : chk?.sealIntact === false ? 'danger' as const
+                  : 'foreground' as const;
+                return <ReviewRow key={bag.id} label={bag.name} value={label} tone={tone} />;
+              })}
+            </ReviewSection>
+          )}
+        </div>
+
+        <div className="px-5 py-4 border-t border-divider flex gap-3">
+          <Button variant="bordered" className="flex-1 font-semibold" onPress={() => setShowReview(false)}>
+            Back
+          </Button>
+          <Button color="primary" className="flex-1 font-semibold" isLoading={submitting} onPress={confirmCheckin}
+            endContent={!submitting ? <ArrowRight size={15} /> : undefined}>
+            Confirm Check-In
+          </Button>
+        </div>
+      </div>
+    </>
+  );
+
+  const toastNode = toast && (
+    <div className={`fixed z-[60] bottom-20 left-1/2 -translate-x-1/2 flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-lg text-sm font-semibold text-white max-w-[92vw] ${
+      toast.ok ? 'bg-success' : 'bg-danger'
+    }`}>
+      <div className="w-5 h-5 rounded-full bg-white/25 flex items-center justify-center flex-none">
+        {toast.ok
+          ? <Check size={12} strokeWidth={3.5} />
+          : <span className="text-xs leading-none">✕</span>}
+      </div>
+      <span>{toast.msg}</span>
+    </div>
+  );
+
+  // Check-in fast path — Step 0 (gate) and Step 1 (picker). checkout/audit
+  // never satisfy this (checkinStage only matters for mode === 'checkin'),
+  // and "Open full check-off" sets checkinStage to 'full', which falls
+  // through to the byte-for-byte unchanged accordion form below.
+  const fastPathContent = mode === 'checkin' && checkinStage === 'gate' ? (
+    <CheckinGateScreen
+      pack={pack}
+      statusInfo={statusInfo}
+      submitting={submitting}
+      onBack={() => router.back()}
+      onUsedNothing={handleUsedNothing}
+      onUsedSomething={() => setCheckinStage('picker')}
+      onOpenFullCheckoff={() => setCheckinStage('full')}
+    />
+  ) : mode === 'checkin' && checkinStage === 'picker' ? (
+    <CheckinPickerScreen
+      pack={pack}
+      items={allItems}
+      onBack={() => setCheckinStage('gate')}
+      onContinue={handleFastPathContinue}
+    />
+  ) : null;
+
+  if (fastPathContent) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
+        {fastPathContent}
+        {reviewOverlay}
+        {toastNode}
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
@@ -1520,117 +1901,8 @@ export default function StatpackCheckOffPage() {
           </Button>
         </footer>
       </div>
-
-      {/* Check-in usage review */}
-      {showReview && reviewSummary && (
-        <>
-          <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={() => setShowReview(false)} />
-          <div className="fixed inset-x-0 bottom-0 z-50 max-w-lg mx-auto bg-content1 border-t border-divider rounded-t-2xl flex flex-col max-h-[85vh]">
-            <div className="px-5 py-4 border-b border-divider flex items-center gap-3">
-              <div className="w-9 h-9 rounded-[10px] bg-primary-50 dark:bg-primary-900/20 text-primary flex items-center justify-center flex-none">
-                <Check size={17} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-semibold text-foreground">Confirm check-in</div>
-                <div className="text-xs text-foreground-400 font-medium">You are attesting to the following</div>
-              </div>
-              <button
-                onClick={() => setShowReview(false)}
-                className="w-8 h-8 rounded-medium bg-content2 hover:bg-content3 text-foreground-400 flex items-center justify-center transition-colors flex-none"
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-4">
-              <ReviewSection title="Items used" empty="No items used">
-                {reviewSummary.used.map(u => (
-                  <ReviewRow key={u.name} label={u.name} value={`−${u.qty}`} tone="warning" />
-                ))}
-              </ReviewSection>
-
-              <ReviewSection title="Restocked to par" empty="Nothing restocked">
-                {reviewSummary.restocked.map(n => (
-                  <ReviewRow key={n} label={n} value="par" tone="success" />
-                ))}
-              </ReviewSection>
-
-              <ReviewSection title="Reported to admin" empty="No issues reported">
-                {reviewSummary.reported.map(n => (
-                  <ReviewRow key={n} label={n} value="reported" tone="danger" />
-                ))}
-              </ReviewSection>
-
-              {reviewSummary.acknowledged.length > 0 && (
-                <ReviewSection title="Acknowledged" empty="">
-                  {reviewSummary.acknowledged.map(n => (
-                    <ReviewRow key={n} label={n} value="ack" tone="warning" />
-                  ))}
-                </ReviewSection>
-              )}
-
-              {reviewSummary.psi.length > 0 && (
-                <ReviewSection title="O₂ pressure" empty="">
-                  {reviewSummary.psi.map(p => (
-                    <ReviewRow key={p.name} label={p.name} value={`${p.psi} PSI`} tone="foreground" mono />
-                  ))}
-                </ReviewSection>
-              )}
-
-              <div className="flex items-center justify-between bg-content2 rounded-large px-4 py-3">
-                <span className="text-xs font-semibold uppercase tracking-wide text-foreground-400">Sharps container</span>
-                <span className={`text-sm font-semibold ${
-                  sharps === 'full' ? 'text-danger' : sharps === 'ok' ? 'text-success' : 'text-foreground-500'
-                }`}>
-                  {sharps ? sharps.toUpperCase() : 'Not checked'}
-                </span>
-              </div>
-
-              {linkedBags.length > 0 && (
-                <ReviewSection title="Exchange bags" empty="No bags checked">
-                  {linkedBags.map(bag => {
-                    const chk = bagChecks[bag.id];
-                    const label = chk?.sealIntact === true
-                      ? 'Sealed'
-                      : chk?.sealIntact === false
-                      ? (chk.resolution === 'swapped' ? 'Swapped' : chk.resolution === 'replaced' ? 'Replaced in place' : 'Broken — unresolved')
-                      : 'Not checked';
-                    const tone = chk?.sealIntact === true ? 'success' as const
-                      : chk?.sealIntact === false && chk.resolution ? 'warning' as const
-                      : chk?.sealIntact === false ? 'danger' as const
-                      : 'foreground' as const;
-                    return <ReviewRow key={bag.id} label={bag.name} value={label} tone={tone} />;
-                  })}
-                </ReviewSection>
-              )}
-            </div>
-
-            <div className="px-5 py-4 border-t border-divider flex gap-3">
-              <Button variant="bordered" className="flex-1 font-semibold" onPress={() => setShowReview(false)}>
-                Back
-              </Button>
-              <Button color="primary" className="flex-1 font-semibold" isLoading={submitting} onPress={doSubmit}
-                endContent={!submitting ? <ArrowRight size={15} /> : undefined}>
-                Confirm Check-In
-              </Button>
-            </div>
-          </div>
-        </>
-      )}
-
-      {/* Toast */}
-      {toast && (
-        <div className={`fixed z-[60] bottom-20 left-1/2 -translate-x-1/2 flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-lg text-sm font-semibold text-white max-w-[92vw] ${
-          toast.ok ? 'bg-success' : 'bg-danger'
-        }`}>
-          <div className="w-5 h-5 rounded-full bg-white/25 flex items-center justify-center flex-none">
-            {toast.ok
-              ? <Check size={12} strokeWidth={3.5} />
-              : <span className="text-xs leading-none">✕</span>}
-          </div>
-          <span>{toast.msg}</span>
-        </div>
-      )}
+      {reviewOverlay}
+      {toastNode}
     </div>
   );
 }
