@@ -432,3 +432,28 @@ extra slot and a hard rule that they are **excluded from staffing math**: a team
 **Do not regress:** never fold the intern into a fill fraction or a "team is staffed" check;
 never let an intern request or be approved into the FTO slot; keep `hasFtoIntern === undefined`
 meaning off.
+
+### D-31 — Statpack check-in fast path and restock auto-flagging
+
+**Decision:** `?mode=checkin` gains an optional initial gate step presented before the existing pocket-by-pocket form. Check-out and audit are unmodified.
+
+1. **Gate step:** "Did you use anything from this pack?" — one button choice.
+   - **Used nothing** → immediate submission: `quickCheckin: true`, `checkEntries: []`, no other form steps.
+   - **Used something** → Step 1 (picker of touched items only) → Step 2 (existing `showReview` confirm sheet).
+2. **Picker component** (`app/components/statpacks/checkin-used-picker.tsx`) collects only consumables that the crew actually touched, with quantity steppers defaulted to 1, clamped to `currentQuantity`. Untouched items produce no entry — their stored counts survive the transaction.
+3. **Escape hatch:** "Open full check-off" remains visible throughout, so crew needing to report an expiration, full sharps box, or broken asset can still reach the complete form.
+
+**Why one tap is safe:** `deriveStatus` in `app/lib/inventory.ts` reads signals from two sources:
+- The submitted `checkEntries` (per-item counts + expirations entered this pass)
+- The **pack's persisted state** (`anyStoredExpired` — past expirations already on `contents[]`, `anyQuarantined` — recalled lots, `hazard.assetCurrencyLapsed` — a lapsed AED/O₂). These fire regardless of `checkEntries` content. A one-tap "used nothing" still fail-closes on an expired item, recalled lot, or stale life-safety asset without asking the crew anything.
+
+**The untouched-contents fix:** `anyOutConsumable` previously accumulated only from `checkEntries`, safe because full submissions touched every item. Under partial submission a different failure becomes possible: a pack left at 0 gauze by the last crew, checked in with "used nothing", would derive `Ready` — silently un-flagging a depleted pack, the exact failure D-8 exists to prevent. Fix: after the entry loop updates `contents[].currentQuantity`, scan the **final `contents` array** for any non-asset item with `requiredQuantity > 0` and `currentQuantity <= 0` that was **not restocked this pass** (not in `restockedItemIds` collected from entries with `restockStatus === 'restocked'`), and fold into `anyOutConsumable`. Behaviour-preserving for full submissions and audits; adds signal only for items not submitted.
+
+**Auto-flagging the logistics team:** Check-in now auto-creates a de-duplicated `team_tasks` card when the pack leaves with `getPackShortages(...).total > 0` (deliberately including *partial* shortages — the pack still derives `Ready` per the D-8 amendment, but logistics is told). After the transaction commits, best-effort, never throwing (matching `issue_reports` convention):
+1. **Status + chips** — free, derived from persisted `currentQuantity`.
+2. **Committee Board task** — helper `app/lib/statpack-restock-flag.ts` writes a doc with `title: 'Restock ${pack.name}'`, `definitionOfDone: 'All pack contents back to par quantity.'`, `subtasks` keyed to each shortage, and `linkedStatpackId: pack.id` (new optional field, ratified in TASK 2 of this entry). De-duplicated: if an open task for this pack exists, update its subtasks instead of creating a second card; otherwise every check-in of a chronically short pack spawns another.
+3. **In-app notification** — broadcasted to `['admin', 'quartermaster']` only (not `medops`, per D-13: medops never sees logistics surfaces). Links to `/statpacks/<id>`.
+
+**This reverses documented non-behaviour:** `MODEL.md` explicitly states "post-event scan → auto-flag below-par item" does **not exist**; D-8 frames restock as human-pull, caught by the next crew or admin audit. Auto-creating a task and notification is a deliberate reversal, scoped to **statpacks only** — inventory below-par remains display-only. Not a silent patch.
+
+**Do not regress:** don't add a time/sharps/expiry input to the fast-path gate (the escape hatch covers those); don't include `medops` in the restock notification; don't let `anyOutConsumable` drift back to entry-only (statpacks short on untouched items must still derive `Restock Needed`); never remove the de-dupe check (a chronically short pack gets one card, not many).

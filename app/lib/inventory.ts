@@ -5,6 +5,7 @@ import { recordAuditEvent, removeUndefined, deepRemoveUndefined } from '@/app/li
 import { createReport } from '@/app/lib/reports';
 import { getAssetCategoriesRuntime, getThresholds } from '@/app/lib/org-config-store';
 import { endEventShifts } from '@/app/lib/events';
+import { flagStatpackRestock } from '@/app/lib/statpack-restock-flag';
 
 /**
  * Fetch an inventory item by ID and return enriched itemDetails + suggested verification rules.
@@ -579,6 +580,10 @@ export async function logStatpackCheckOff(params: {
   // Captured inside the transaction (before currentEventId is cleared) so the
   // check-in → end-shifts hook below knows which event to end, best-effort.
   let checkedInEventId: string | undefined;
+  // Captured inside the transaction (contents is mutated in place and only
+  // exists as a local there) so the post-commit restock-flag hook below can
+  // read the pack's FINAL contents, best-effort. Same pattern as checkedInEventId.
+  let checkinFinalContents: StatpackItem[] | undefined;
 
   try {
     await runTransaction(db, async (tx) => {
@@ -645,6 +650,9 @@ export async function logStatpackCheckOff(params: {
       // unknown, and unknown must resolve to not-ready (never optimistic 'Ready').
       let anyUnknown = false;
       const nowMs = Date.now();
+      // Items explicitly restocked THIS pass, so the post-loop untouched-contents
+      // scan below doesn't re-flag something the crew just fixed.
+      const restockedItemIds = new Set<string>();
 
       for (const e of (checkEntries || [])) {
         const idx = matchIndex(e);
@@ -670,6 +678,8 @@ export async function logStatpackCheckOff(params: {
         const expiredByIssue = Boolean(e.issue && (e.issue.type === 'broken' || e.issue.type === 'expired'));
         if (expiredByDate || expiredByIssue) anyExpired = true;
 
+        if (e.restockStatus === 'restocked') restockedItemIds.add(e.itemId);
+
         if (!isAssetEntry && typeof e.requiredQuantity === 'number' && e.requiredQuantity > 0) {
           if (typeof e.countedQuantity !== 'number' || !Number.isFinite(e.countedQuantity)) {
             // Required consumable with no usable count → unknown → fail-closed.
@@ -677,6 +687,48 @@ export async function logStatpackCheckOff(params: {
           } else if (e.countedQuantity <= 0 && e.restockStatus !== 'restocked') {
             anyOutConsumable = true;
           }
+        }
+      }
+
+      // ── Untouched-contents fail-closed scan (fast-path check-in fix) ────────
+      // `anyOutConsumable` above only sees items present in THIS submission.
+      // That was safe when every check-in resubmitted every item, but the fast
+      // "used nothing" check-in submits `checkEntries: []` and relies entirely
+      // on the pack's already-persisted `contents`. Without this scan, a pack
+      // the last crew left at 0 gauze would derive 'Ready' on a quick check-in
+      // — the zero lives in `contents`, never in `checkEntries` — silently
+      // un-flagging a genuinely depleted pack (exactly what D-8 exists to
+      // prevent). So: walk the FINAL contents (after the mutation above) and
+      // flag anything still at zero that wasn't just restocked this pass.
+      //
+      // This uses the same asset test as `getPackShortages`
+      // (app/lib/statpack-shortages.ts `isAssetContent`: serial/assetInstanceId/
+      // itemDetails.isAsset) rather than the entry-level `isAssetEntry` above,
+      // because this scan reads persisted `contents`, not entries — mirroring
+      // `getPackShortages`'s test here keeps `deriveStatus` and the shortage
+      // display permanently in agreement about what counts as a consumable.
+      //
+      // Missing/undefined/non-finite `currentQuantity` means "never counted",
+      // NOT zero (see the comment on `getPackShortages`) — it must NOT trigger
+      // this flag, or every one-tap check-in of a never-counted pack would
+      // wrongly derive 'Restock Needed'. Only a finite count <= 0 counts.
+      //
+      // Behaviour-preserving for full submissions and audits: every item is
+      // present in `checkEntries` either way, so this only adds signal for
+      // items the crew did NOT touch this pass.
+      for (const c of contents) {
+        if (!c) continue;
+        const isAssetContent = Boolean(c.serialNumber) || Boolean(c.assetInstanceId) || Boolean(c.itemDetails?.isAsset);
+        if (isAssetContent) continue;
+
+        const required = c.requiredQuantity;
+        if (typeof required !== 'number' || !Number.isFinite(required) || required <= 0) continue;
+
+        const current = c.currentQuantity;
+        if (typeof current !== 'number' || !Number.isFinite(current)) continue; // never counted, not zero
+
+        if (current <= 0 && !restockedItemIds.has(c.itemId)) {
+          anyOutConsumable = true;
         }
       }
 
@@ -694,6 +746,10 @@ export async function logStatpackCheckOff(params: {
       // Write updated contents back whenever the pack has contents to persist.
       if (Array.isArray(spData?.contents)) {
         statpackUpdate.contents = contents;
+        // Capture the FINAL contents for the post-commit restock-flag hook
+        // below (check-in only cares, but capturing here is cheapest — it's
+        // the one place `contents` is finalized before the transaction closes).
+        if (action === 'checkin') checkinFinalContents = contents as StatpackItem[];
       }
 
       // Persist the pack-level sharps container check.
@@ -778,6 +834,21 @@ export async function logStatpackCheckOff(params: {
       await endEventShifts(checkedInEventId, { uid: userId, name: userName });
     } catch (e) {
       console.warn('logStatpackCheckOff: endEventShifts failed', e);
+    }
+  }
+
+  // Flag logistics when a check-in leaves the pack short (fast-path or full
+  // check-off). Best-effort, outside the transaction, never able to roll back
+  // the check-in — same convention as the endEventShifts hook above. The
+  // helper itself no-ops when there are no shortages, so no pre-check needed.
+  if (action === 'checkin' && checkinFinalContents) {
+    try {
+      await flagStatpackRestock(
+        { id: statpackId, name: statpackName, contents: checkinFinalContents },
+        { uid: userId, name: userName },
+      );
+    } catch (e) {
+      console.warn('logStatpackCheckOff: flagStatpackRestock failed', e);
     }
   }
 

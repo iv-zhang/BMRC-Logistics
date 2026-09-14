@@ -184,16 +184,17 @@ shelf metadata; `restock_shelf_events` rows carry `shelfId` + event data.
 `unit?`, `category?`, `priority`, `notes?`, `linkedInventoryId?`,
 `status: 'pending'|'ordered'|'received'`, `addedBy/Name`, `addedAt`, `orderedAt?`,
 `receivedAt?`, `completedBy/Name?`. Read/written at
-[app/buy-list/page.tsx:102,198](app/buy-list/page.tsx#L102) and surfaced as tasks in
-[app/tasks/page.tsx:124](app/tasks/page.tsx#L124).
+[app/buy-list/page.tsx:102,198](app/buy-list/page.tsx#L102); also mirrored as read-only
+in the Committee Board (see `team_tasks` below).
 
-### `tasks` — logistics task list
-`TaskItem` ([app/types.ts:759-788](app/types.ts#L759-L788)): `title`, `description?`,
+### `tasks` — **legacy, dead** (do not use)
+Retained only for historical documents. `TaskItem` shape: `title`, `description?`,
 `definitionOfDone?`, `category: TaskCategory`, `priority`,
 `status: 'backlog'|'this_cycle'|'in_progress'|'blocked'|'done'` (legacy docs may contain
-`'todo'`; readernpm rs normalize it to `'backlog'`), `quantity?`, `unit?`,
+`'todo'`; readers normalize it to `'backlog'`), `quantity?`, `unit?`,
 `linkedInventoryId?`, `linkedBuyListId?`, `createdBy/Name`, `assignedTo/Name?`,
-`dueDate?`, `completedAt/By/Name?`, timestamps.
+`dueDate?`, `completedAt/By/Name?`, timestamps. `/tasks` is a 21-line redirect to
+`/committee-board`; nothing in the app writes `tasks` any more. **The live logistics queue is `team_tasks`** (see below).
 
 ### `team_tasks` — Logistics Committee kanban board
 `TeamTask` ([app/types.ts:790-812](app/types.ts#L790-L812)): `title`, `ownerId`,
@@ -415,13 +416,14 @@ stored `status`.
    `itemName` and optional `linkedInventoryId`. There is **no dedupe**: nothing checks
    whether an item is already `pending`/`ordered` before inserting, and there is no query
    keyed on `linkedInventoryId`.
-4. `buyList` is mirrored into the Tasks view read-only
-   [app/tasks/page.tsx:124-155](app/tasks/page.tsx#L124-L155).
+4. `buyList` is mirrored into the Committee Board's buy list view.
 
-The "post-event scan → auto-flag below-par item" behavior described in the spec does
-not exist: below-par detection (`getItemStatus → 'low'`,
-[app/lib/item-status.ts:101](app/lib/item-status.ts#L101)) drives status **chips** only;
-it is never wired to create a `buyList` entry.
+**Post-event auto-flagging** now exists **for statpacks only** (see **D-31** in
+`decisions.md`): a statpack check-in leaving the pack short auto-creates a de-duplicated
+`team_tasks` card + a broadcast notification to admin/quartermaster. Inventory below-par
+remains display-only: below-par detection (`getItemStatus → 'low'`,
+[app/lib/item-status.ts:101](app/lib/item-status.ts#L101)) drives status **chips**;
+it is never wired to create a `buyList` entry or a logistics task.
 
 **Modeling verdict:**
 - **Reorder trigger:** **absent** as an automated derivation. Below-par is computed for
