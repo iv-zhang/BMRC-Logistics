@@ -19,6 +19,7 @@ import { THRESHOLDS } from '@/app/config/org-config';
 import { swapBag, hydrateBag, resolveBagAssignments } from '@/app/lib/exchange-bags';
 import StatpackRestockChips from '@/app/components/statpack-restock-chips';
 import CheckinUsedPicker, { type CheckinUsedPick } from '@/app/components/statpacks/checkin-used-picker';
+import ThingsToFixCard, { type FixItem } from '@/app/components/statpacks/things-to-fix-card';
 import type { Statpack, StatpackItem, StatpackPocket, InventoryItem, ExchangeBag, ExchangeBagAssignment } from '@/app/types';
 
 // ─── types & constants ───────────────────────────────────────────────────────
@@ -111,6 +112,35 @@ function checksComplete(rules: ItemRules, checks: ItemChecks): boolean {
   return true;
 }
 
+// Joins a list the way a person would say it out loud.
+function joinList(parts: string[]): string {
+  if (parts.length <= 1) return parts[0] ?? '';
+  if (parts.length === 2) return `${parts[0]} and ${parts[1]}`;
+  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+}
+
+// MIRRORS checksComplete (above) field-for-field. checksComplete alone decides
+// what blocks; this only NAMES the empty fields for the member, and unlike
+// checksComplete it does not short-circuit, because one item can be missing
+// several. Never let this function's result feed anything that blocks.
+function missingCheckFields(rules: ItemRules, checks: ItemChecks): string[] {
+  const out: string[] = [];
+  if (!rules.hasRules) return out;
+  if (rules.needExp && !checks.exp) out.push(`the "${rules.expLabel}" box`);
+  if (rules.needPsi && !checks.psi) out.push('the "Cylinder pressure" box');
+  if (rules.needPsi && !checks.regulatorOk) out.push('the "Regulator attached & functioning" checkbox');
+  if (rules.needAED && !checks.padsSealed) out.push('the "Pads sealed & unexpired" checkbox');
+  if (rules.needAED && !checks.batteryOk) out.push('the "Battery indicator green" checkbox');
+  if (rules.needAED && !checks.padExp) out.push('the "Pad / battery expiration" box');
+  return out;
+}
+
+// Firestore ids are attribute-safe, but never trust an id you did not generate.
+function cssAttrEscape(v: string): string {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(v);
+  return v.replace(/["\\]/g, '\\$&');
+}
+
 function computeIssue(
   item: StatpackItem, rules: ItemRules, found: number, checks: ItemChecks, today: Date,
 ): ItemIssue {
@@ -187,6 +217,7 @@ interface ItemRowProps {
   mode: Mode;
   issue: ItemIssue;
   resolution: Resolution | undefined;
+  highlight?: boolean;
   onToggle: () => void;
   onMinus: (e: React.MouseEvent) => void;
   onPlus: (e: React.MouseEvent) => void;
@@ -197,7 +228,7 @@ interface ItemRowProps {
 }
 
 function ItemRow({
-  item, found, checks, verifiedSet, today, mode, issue, resolution,
+  item, found, checks, verifiedSet, today, mode, issue, resolution, highlight,
   onToggle, onMinus, onPlus, onCheck, onRestock, onReport, onAcknowledge,
 }: ItemRowProps) {
   const rules = useMemo(() => deriveRules(item), [item]);
@@ -269,8 +300,9 @@ function ItemRow({
 
   return (
     <div
+      data-item-id={item.itemId}
       onClick={hasRules ? undefined : onToggle}
-      className={`border rounded-xl px-3 py-3 transition-all duration-150 ${rowBase}`}
+      className={`border rounded-xl px-3 py-3 transition-all duration-150 scroll-mt-20 ${rowBase} ${highlight ? 'ring-2 ring-danger ring-offset-2 ring-offset-background' : ''}`}
     >
       <div className="flex items-center gap-3">
         <div className={`w-6 h-6 rounded-lg flex-none flex items-center justify-center border-2 transition-all ${
@@ -568,12 +600,13 @@ interface BagCardProps {
   qtyPerPack: number;
   check: BagCheckState | undefined;
   blocking: boolean;
+  highlight?: boolean;
   onSealIntact: (intact: boolean) => void;
   onResolution: (resolution: 'swapped' | 'replaced') => void;
   onNotes: (notes: string) => void;
 }
 
-function BagCard({ bag, qtyPerPack, check, blocking, onSealIntact, onResolution, onNotes }: BagCardProps) {
+function BagCard({ bag, qtyPerPack, check, blocking, highlight, onSealIntact, onResolution, onNotes }: BagCardProps) {
   const requiresSeal = bagRequiresSeal(bag);
   const sealIntact = check?.sealIntact ?? null;
   const resolved = isBagResolved(check);
@@ -591,7 +624,10 @@ function BagCard({ bag, qtyPerPack, check, blocking, onSealIntact, onResolution,
     : 'bg-content2 border-divider';
 
   return (
-    <div className={`border rounded-xl px-3 py-3 transition-all duration-150 ${rowBase}`}>
+    <div
+      data-bag-id={bag.id}
+      className={`border rounded-xl px-3 py-3 transition-all duration-150 scroll-mt-20 ${rowBase} ${highlight ? 'ring-2 ring-danger ring-offset-2 ring-offset-background' : ''}`}
+    >
       <div className="flex items-center gap-3">
         <div className={`w-9 h-9 rounded-[9px] flex items-center justify-center flex-none ${
           V ? 'bg-white/20 text-white' : 'bg-content3 text-foreground-400'
@@ -1074,6 +1110,56 @@ export default function StatpackCheckOffPage() {
     toastTimer.current = setTimeout(() => setToast(null), 3200);
   }, []);
 
+  // Item/bag rows only exist in the DOM while their pocket is expanded, so
+  // expand first and let a post-commit effect do the scroll.
+  const [pendingScroll, setPendingScroll] = useState<{ sel: string; n: number } | null>(null);
+  const [flash, setFlash] = useState<{ id: string; n: number } | null>(null);
+  const scrollNonce = useRef(0);
+
+  const revealFix = useCallback((f: FixItem) => {
+    const n = ++scrollNonce.current;
+    let sel = '[data-fix-card]';
+    if (f.kind === 'sharps') {
+      sel = '[data-sharps-card]';
+    } else if (f.reachable && f.pocket) {
+      sel = f.itemId
+        ? `[data-item-id="${cssAttrEscape(f.itemId)}"]`
+        : `[data-bag-id="${cssAttrEscape(f.bagId ?? '')}"]`;
+      const pocketId = f.pocket;
+      // Only ever opens — a toggle here could close the pocket we are jumping into.
+      setPocketExpanded(p => (p[pocketId] ? p : { ...p, [pocketId]: true }));
+      setFlash({ id: f.itemId ?? f.bagId ?? '', n });
+    }
+    setPendingScroll({ sel, n });
+  }, []);
+
+  // Runs after the commit that mounted the row. The rAF covers HeroUI inputs
+  // settling and iOS dropping a smooth scroll issued in the same frame as a
+  // large DOM insertion. NOT useLayoutEffect — this page is prerendered by
+  // `output: export` and it would warn during the build.
+  useEffect(() => {
+    if (!pendingScroll) return;
+    const { sel } = pendingScroll;
+    const raf = requestAnimationFrame(() => {
+      const el = document.querySelector(sel);
+      if (el) {
+        const reduce = typeof window.matchMedia === 'function'
+          && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+      }
+      setPendingScroll(null);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [pendingScroll]);
+
+  useEffect(() => {
+    if (!flash) return;
+    const t = setTimeout(() => setFlash(null), 1600);
+    return () => clearTimeout(t);
+  }, [flash]);
+
+  const flashId = flash?.id ?? null;
+
   const allItems = useMemo(() => pack?.contents ?? [], [pack]);
 
   const countOf = useCallback((it: StatpackItem) =>
@@ -1121,35 +1207,141 @@ export default function StatpackCheckOffPage() {
     [allItems, itemChecks, today]
   );
 
-  // Blocking list: incomplete checks + unresolved short/expired/lowPsi + full sharps not acknowledged.
-  const blockers = useMemo(() => {
-    const list: string[] = [];
-    allItems.forEach(it => {
+  // Blocking list: incomplete checks + unresolved short/expired/lowPsi + full
+  // sharps not acknowledged + (checkout) unresolved broken bag seal.
+  //
+  // PARITY CONTRACT: the predicates, their order, and the early `return` after
+  // the incomplete-checks push are exactly what they were when this was a
+  // string[]. fixList.length === the old blockers.length for every input.
+  const fixList = useMemo<FixItem[]>(() => {
+    const list: FixItem[] = [];
+    const pocketNameOf = (p?: StatpackPocket) => POCKETS.find(pk => pk.id === p)?.name;
+    const lead = mode === 'checkout' ? 'before you take this pack'
+      : mode === 'checkin' ? 'before you finish check-in'
+      : 'before you submit this audit';
+
+    allItems.forEach((it, idx) => {
       const rules = deriveRules(it);
       const chk = itemChecks[it.itemId] ?? {};
-      const name = (it.itemDetails as any)?.name || 'item';
+      const display = (it.itemDetails as any)?.name || `Item ${it.itemId.slice(-6)}`;
+      const pName = pocketNameOf(it.pocket);
+      const base = {
+        itemId: it.itemId,
+        pocket: it.pocket,
+        pocketName: pName ?? 'Not in a pocket',
+        reachable: !!pName,
+        itemName: display,
+      };
+
       if (rules.hasRules && !checksComplete(rules, chk)) {
-        list.push(`${name}: finish required checks`);
-        return;
+        const missing = missingCheckFields(rules, chk);
+        list.push({
+          ...base,
+          key: `checks:${it.itemId}:${idx}`,
+          kind: 'checks',
+          headline: missing.length
+            ? `Still needs ${joinList(missing)} filled in`
+            : 'The required checks on this item are not finished yet',
+          details: missing.length > 1 ? missing.map(m => `Fill in ${m}`) : [],
+          fixHint:
+            'Tap this row, then fill in the yellow "Required checks" box on the item. ' +
+            'Nothing is broken here — it just needs the numbers and boxes filled in.',
+        });
+        return;   // SAME early return as the original — one blocker per item
       }
-      const iss = computeIssue(it, rules, countOf(it), chk, today);
+
+      const found = countOf(it);
+      const iss = computeIssue(it, rules, found, chk, today);
       if (iss.any && !isResolved(resolution[it.itemId])) {
-        list.push(`${name}: resolve (${[iss.short && 'short', iss.expired && 'expired', iss.lowPsi && 'low PSI'].filter(Boolean).join(', ')})`);
+        const details: string[] = [];
+        if (iss.short) details.push(`Only ${found} of the ${it.requiredQuantity} that should be here — ${iss.shortBy} missing`);
+        if (iss.expired) {
+          const exp = effectiveExpDate(it, rules, chk);
+          details.push(exp ? `Out of date — it expired ${fmtMonthYear(exp)}` : 'Out of date');
+        }
+        if (iss.lowPsi) details.push(`The cylinder reads ${chk.psi} — it needs at least ${rules.minPsi} to go out`);
+
+        const fixes: string[] = [];
+        if (iss.short) fixes.push(`add the missing ${iss.shortBy} and tap "Set to par"`);
+        if (iss.expired) fixes.push('swap in one that is still in date and type its new month in the box');
+        if (iss.lowPsi) fixes.push('swap in a full cylinder and type its new number in the "Cylinder pressure" box');
+
+        list.push({
+          ...base,
+          key: `issue:${it.itemId}:${idx}`,
+          kind: 'issue',
+          headline: details[0],
+          details,
+          fixHint:
+            `Tap this row, then ${joinList(fixes)}. ` +
+            'If there is none on the shelf, tap "Report" so an admin is told. ' +
+            `If it has to go out like this, tap "Acknowledge" and say why — that is recorded ${lead}.`,
+        });
       }
     });
-    if (sharps === 'full' && !sharpsAck.trim()) list.push('Sharps container full: acknowledge or empty');
+
+    if (sharps === 'full' && !sharpsAck.trim()) {
+      list.push({
+        key: 'sharps',
+        kind: 'sharps',
+        pocketName: 'Sharps Container section',
+        reachable: true,
+        itemName: 'Sharps container',
+        headline: 'Marked "Full", with nothing written down about it',
+        details: [],
+        fixHint:
+          'Tap this row to jump to the Sharps Container section. Either empty the container and tap "OK", ' +
+          'or leave it on "Full" and type in the box how it was handled.',
+      });
+    }
 
     // On checkout, a broken seal with no resolution blocks deployment.
     if (mode === 'checkout') {
-      bagAssignments.forEach(a => {
+      bagAssignments.forEach((a, ai) => {
         const bag = linkedBags.find(b => b.id === a.bagId);
         if (bag && isBagBlocking(mode, bag, bagChecks[a.bagId])) {
-          list.push(`${bag.name}: resolve broken seal before deploying`);
+          const pName = pocketNameOf(a.pocket);
+          list.push({
+            key: `bag:${a.bagId}:${ai}`,
+            kind: 'bag-seal',
+            bagId: a.bagId,
+            pocket: a.pocket,
+            pocketName: pName ?? 'Not in a pocket',
+            reachable: !!pName,
+            itemName: bag.name,
+            headline: 'You said the seal was broken, but not what happened to the bag',
+            details: [],
+            fixHint:
+              'Tap this row, then tap either "Swapped for a fresh sealed bag" or ' +
+              '"Used & replaced contents in place" on the bag.',
+          });
         }
       });
     }
     return list;
   }, [allItems, itemChecks, countOf, resolution, sharps, sharpsAck, today, mode, bagAssignments, linkedBags, bagChecks]);
+
+  const fixCountByPocket = useMemo(() => {
+    const m: Record<string, number> = {};
+    fixList.forEach(f => { if (f.reachable && f.pocket) m[f.pocket] = (m[f.pocket] ?? 0) + 1; });
+    return m;
+  }, [fixList]);
+
+  // Open pockets holding an actual problem, once, on the first render after the
+  // pack lands. Never re-runs, so it cannot fight a member who closes a pocket.
+  const didAutoOpen = useRef(false);
+  useEffect(() => {
+    if (didAutoOpen.current || !pack) return;
+    didAutoOpen.current = true;
+    const want = fixList.filter(f => f.reachable && f.pocket && (f.kind === 'issue' || f.kind === 'bag-seal'));
+    if (want.length === 0) return;
+    setPocketExpanded(prev => {
+      let changed = false;
+      const next = { ...prev };
+      want.forEach(f => { if (f.pocket && !next[f.pocket]) { next[f.pocket] = true; changed = true; } });
+      return changed ? next : prev;
+    });
+  }, [pack, fixList]);
 
   const statusInfo = useMemo(() => {
     const s = pack?.status ?? 'Ready';
@@ -1375,14 +1567,19 @@ export default function StatpackCheckOffPage() {
 
   const handleComplete = useCallback(() => {
     if (!pack || !user) return;
-    if (blockers.length > 0) {
-      const preview = blockers.slice(0, 3).join(' · ');
-      showToast(`${blockers.length} to resolve: ${preview}${blockers.length > 3 ? '…' : ''}`, false);
+    if (fixList.length > 0) {
+      revealFix(fixList[0]);
+      showToast(
+        fixList.length === 1
+          ? 'One thing still needs fixing — jumped to it'
+          : `${fixList.length} things still need fixing — jumped to the first`,
+        false,
+      );
       return;
     }
     if (mode === 'checkin') { setShowReview(true); return; }
     doSubmit();
-  }, [pack, user, blockers, mode, doSubmit, showToast]);
+  }, [pack, user, fixList, mode, doSubmit, showToast, revealFix]);
 
   const reviewSummary = useMemo(() => {
     if (!showReview) return null;
@@ -1615,6 +1812,10 @@ export default function StatpackCheckOffPage() {
         {/* Scrollable content */}
         <main className="flex-1 px-3 py-4 flex flex-col gap-3 pb-28">
 
+          {fixList.length > 0 && (
+            <ThingsToFixCard mode={mode} items={fixList} onSelect={revealFix} />
+          )}
+
           {/* Hero summary card */}
           <div className="bg-content1 border border-divider rounded-2xl p-4">
             <div className="flex items-center gap-3">
@@ -1694,6 +1895,7 @@ export default function StatpackCheckOffPage() {
             const pkPct = pTot > 0 ? Math.round(pVer / pTot * 100) : 0;
             const pkDone = pVer === pTot && pTot > 0;
             const expanded = !!pocketExpanded[pk.id];
+            const pFix = fixCountByPocket[pk.id] ?? 0;
 
             return (
               <div key={pk.id} className="bg-content1 border border-divider rounded-2xl overflow-hidden">
@@ -1707,16 +1909,24 @@ export default function StatpackCheckOffPage() {
                     {pk.code}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="font-semibold text-sm text-foreground">{pk.name}</div>
-                    <div className="text-xs text-foreground-400 font-medium">
-                      {pTot} items · {pTot - pVer > 0 ? `${pTot - pVer} to verify` : 'all verified'}
+                    <div className="font-semibold text-sm text-foreground truncate">{pk.name}</div>
+                    <div className="text-xs text-foreground-400 font-medium truncate">
+                      {pFix > 0
+                        ? `${pTot} items · ${pVer}/${pTot} verified`
+                        : `${pTot} items · ${pTot - pVer > 0 ? `${pTot - pVer} to verify` : 'all verified'}`}
                     </div>
                   </div>
-                  <span className={`font-mono text-xs font-semibold px-2.5 py-1 rounded-full transition-colors ${
-                    pkDone ? 'bg-success-50 dark:bg-success-900/20 text-success' : 'bg-primary-50 dark:bg-primary-900/20 text-primary'
-                  }`}>
-                    {pVer}/{pTot}
-                  </span>
+                  {pFix > 0 ? (
+                    <span className="text-[11px] font-semibold px-2.5 py-1 rounded-full whitespace-nowrap flex-none tabular-nums bg-danger-50 dark:bg-danger-900/20 text-danger">
+                      {pFix} to fix
+                    </span>
+                  ) : (
+                    <span className={`font-mono text-xs font-semibold px-2.5 py-1 rounded-full whitespace-nowrap flex-none transition-colors ${
+                      pkDone ? 'bg-success-50 dark:bg-success-900/20 text-success' : 'bg-primary-50 dark:bg-primary-900/20 text-primary'
+                    }`}>
+                      {pVer}/{pTot}
+                    </span>
+                  )}
                   <ChevronDown
                     size={17}
                     className={`text-foreground-400 transition-transform duration-200 flex-none ${expanded ? 'rotate-180' : ''}`}
@@ -1739,6 +1949,7 @@ export default function StatpackCheckOffPage() {
                         qtyPerPack={qtyPerPack}
                         check={bagChecks[bag.id]}
                         blocking={isBagBlocking(mode, bag, bagChecks[bag.id])}
+                        highlight={flashId === bag.id}
                         onSealIntact={(intact) => setBagSealIntact(bag.id, intact)}
                         onResolution={(res) => setBagResolution(bag.id, res)}
                         onNotes={(notes) => setBagNotes(bag.id, notes)}
@@ -1760,6 +1971,7 @@ export default function StatpackCheckOffPage() {
                           mode={mode}
                           issue={iss}
                           resolution={resolution[it.itemId]}
+                          highlight={flashId === it.itemId}
                           onToggle={() => toggleVerify(it.itemId)}
                           onMinus={e => adjustCount(it.itemId, -1, e)}
                           onPlus={e => adjustCount(it.itemId, 1, e)}
@@ -1787,7 +1999,7 @@ export default function StatpackCheckOffPage() {
           })}
 
           {/* Sharps container check — pack-level. Shown on check-in & audit; optional on checkout. */}
-          <div className="bg-content1 border border-divider rounded-2xl p-4">
+          <div data-sharps-card className="bg-content1 border border-divider rounded-2xl p-4 scroll-mt-20">
             <div className="flex items-center gap-2 mb-3">
               <span className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400">
                 Sharps Container
@@ -1869,15 +2081,19 @@ export default function StatpackCheckOffPage() {
         {/* Sticky footer */}
         <footer className="sticky bottom-0 z-30 bg-background/80 backdrop-blur-md border-t border-divider px-3 py-3 flex items-center gap-3">
           <div className="flex flex-col leading-tight">
-            {blockers.length > 0 ? (
-              <>
+            {fixList.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => setPendingScroll({ sel: '[data-fix-card]', n: ++scrollNonce.current })}
+                className="text-left"
+              >
                 <span className="text-sm font-semibold text-danger tabular-nums">
-                  {blockers.length} to resolve
+                  {fixList.length} to fix
                 </span>
-                <span className="text-xs text-foreground-400 font-medium">
-                  {verifiedCount}/{totalItems} verified
+                <span className="block text-xs text-foreground-400 font-medium">
+                  Show me the list
                 </span>
-              </>
+              </button>
             ) : (
               <>
                 <span className="text-sm font-semibold text-foreground tabular-nums">
@@ -1890,14 +2106,14 @@ export default function StatpackCheckOffPage() {
             )}
           </div>
           <Button
-            color={blockers.length > 0 ? 'danger' : 'primary'}
-            variant={blockers.length > 0 ? 'flat' : 'solid'}
-            className="ml-auto font-semibold"
+            color={fixList.length > 0 ? 'danger' : 'primary'}
+            variant={fixList.length > 0 ? 'flat' : 'solid'}
+            className="ml-auto font-semibold flex-none"
             isLoading={submitting}
             onPress={handleComplete}
             endContent={!submitting ? <ArrowRight size={16} /> : undefined}
           >
-            {btnLabel}
+            {fixList.length > 0 ? `${fixList.length} need${fixList.length === 1 ? 's' : ''} fixing` : btnLabel}
           </Button>
         </footer>
       </div>
