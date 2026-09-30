@@ -42,6 +42,8 @@ wave 5:  [2 U-seam]
 3. It ends with `npx tsc --noEmit` + `npm run lint` on its files and reports its file list and open questions. Never commit,
    never run the smoke driver, never run a migration/seed live, never deploy rules.
 4. The orchestrator (**O**, Opus) does seams, rebases, `decisions.md`, and §9 Status.
+5. **Review gate:** each wave stops when its packets land. Nothing from the next wave starts until the user has
+   manually reviewed the branches and said "go". Agents never chain into later packets on their own.
 
 **Never delete or rename a repo file without asking the user first**; list it in the report instead.
 Packets in the same wave own **disjoint files**. A `decisions.md` conflict means stop. New non-admin writes get flagged.
