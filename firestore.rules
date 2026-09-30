@@ -11,6 +11,10 @@ rules_version = '2';
 // (see scripts/emulator/guard.cjs). A `demo-*` project can never reach real
 // Google Cloud, so these permissive rules cannot expose production data.
 // Do NOT deploy this file to a live project.
+//
+// It is loaded ONLY through `firebase.emulator.json` (every emulator/test npm
+// script passes `--config firebase.emulator.json`). `firebase.json` -- the file a
+// bare `firebase deploy` reads -- points at `firestore.prod.rules` instead.
 // ─────────────────────────────────────────────────────────────────────────────
 service cloud.firestore {
   match /databases/{database}/documents {

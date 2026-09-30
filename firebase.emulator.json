@@ -10,7 +10,7 @@
   "firestore": {
     "database": "(default)",
     "location": "nam5",
-    "rules": "firestore.prod.rules",
+    "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
   },
   "emulators": {

@@ -3,7 +3,7 @@
  * REAL browser UI, backed by the Firestore + Auth emulators.
  *
  * Run with BOTH emulators, e.g.
- *   E2E_PORT=3123 firebase emulators:exec --only firestore,auth \
+ *   E2E_PORT=3123 firebase emulators:exec --config firebase.emulator.json --only firestore,auth \
  *     --project demo-bmrc-logistics "npx playwright test e2e/fto-attendance.spec.ts"
  *
  * `/events` is behind the real auth gate, and the FTO gate keys on

@@ -35,8 +35,8 @@ static export build catches routing violations dev mode tolerates.
 
 ## How the emulator harness works
 
-- Everything runs through `firebase emulators:exec --project
-  demo-bmrc-logistics` (Firestore on `127.0.0.1:8080`, emulator UI on `:4000`
+- Everything runs through `firebase emulators:exec --config
+  firebase.emulator.json --project demo-bmrc-logistics` (Firestore on `127.0.0.1:8080`, emulator UI on `:4000`
   when using `npm run emulator`).
 - `scripts/emulator/guard.ts` runs **first** (via the harness import chain)
   and hard-exits on any production-shaped config — no emulator host, non

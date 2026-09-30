@@ -7,7 +7,7 @@ import { defineConfig, devices } from '@playwright/test';
  * dev server (pointed at that emulator) are up:
  *
  *   npm run test:e2e
- *   → firebase emulators:exec --only firestore --project demo-bmrc-logistics "playwright test"
+ *   → firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics "playwright test"
  *
  * globalSetup seeds the representative dataset; the webServer boots `next dev`
  * with NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST set so the browser app talks to the
