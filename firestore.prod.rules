@@ -31,15 +31,31 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // The caller's own `users/{uid}` doc, or null if it doesn't exist (a
-    // brand-new registrant has no doc yet the instant before `register/page.tsx`
-    // writes one — `exists()` guards the `get()` below so that moment never
-    // throws instead of cleanly evaluating to "not privileged").
-    function callerIsPrivileged() {
+    // Caller role lookup. `exists()` guards the `get()` so a signed-in caller
+    // with no `users` doc yet (e.g. the instant before register/page.tsx writes
+    // one) evaluates to "no role" instead of throwing.
+    function callerIsAdminOrQm() {
       return isSignedIn() &&
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
-          in ['admin', 'quartermaster', 'medops'];
+          in ['admin', 'quartermaster'];
+    }
+
+    function callerIsMedops() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'medops';
+    }
+
+    // medops may only assign/modify these roles (mirrors MEDOPS_AVAILABLE_ROLES in
+    // app/roster/page.tsx, D-13). Without this a medops account could promote
+    // itself or anyone else to admin.
+    function medopsAssignable(role) {
+      return role in ['FTO', 'fto_intern', 'member'];
+    }
+
+    function roleUnchanged() {
+      return request.resource.data.get('role', null) == resource.data.get('role', null);
     }
 
     // ── users ────────────────────────────────────────────────────────────────
@@ -55,28 +71,33 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isSignedIn();
 
-      // Create: either the caller creating their OWN doc with role locked to
-      // 'member' (the only role register/page.tsx and app-sidebar.tsx's
-      // self-heal ever write), or a privileged caller creating/seeding ANY
-      // user doc (test identities, which are never the caller's own uid).
+      // Create: the caller creating their OWN doc with role locked to 'member'
+      // (all register/page.tsx and app-sidebar.tsx's self-heal ever write);
+      // admin/QM creating ANY other user doc (test identities, any role); or
+      // medops creating another user's doc with an assignable role only.
       allow create: if isSignedIn() && (
-        (request.auth.uid == userId && request.resource.data.role == 'member') ||
-        callerIsPrivileged()
+        (request.auth.uid == userId && request.resource.data.get('role', null) == 'member') ||
+        (request.auth.uid != userId && callerIsAdminOrQm()) ||
+        (request.auth.uid != userId && callerIsMedops() &&
+          medopsAssignable(request.resource.data.get('role', null)))
       );
 
-      // Update: the caller updating their OWN doc may not change `role`
-      // (Firestore's `request.resource.data` on a partial `updateDoc`/merge
-      // `setDoc` reflects the field AFTER the write, so an update that never
-      // touches `role` trivially satisfies this). A privileged caller may
-      // update any other user's doc (roster edits, cert verification,
-      // canAudit grants, test-identity reseeding).
+      // Update: nobody may change their OWN role (request.resource.data reflects
+      // the doc AFTER the write, so updates that never touch `role` trivially
+      // pass). Admin/QM may update any OTHER user. medops may update any OTHER
+      // user, but a role change must go from and to an assignable role (so it
+      // cannot promote anyone to admin/QM/medops or demote an admin).
       allow update: if isSignedIn() && (
-        (request.auth.uid == userId &&
-          request.resource.data.role == resource.data.role) ||
-        callerIsPrivileged()
+        (request.auth.uid == userId && roleUnchanged()) ||
+        (request.auth.uid != userId && callerIsAdminOrQm()) ||
+        (request.auth.uid != userId && callerIsMedops() &&
+          (roleUnchanged() ||
+            (medopsAssignable(request.resource.data.get('role', null)) &&
+             medopsAssignable(resource.data.get('role', null)))))
       );
 
-      allow delete: if callerIsPrivileged();
+      // No app flow deletes user docs; admin/QM only.
+      allow delete: if callerIsAdminOrQm();
     }
 
     // ── everything else ─────────────────────────────────────────────────────
@@ -84,8 +105,13 @@ service cloud.firestore {
     // beyond client-side gating, so the stopgap's floor is "must be signed
     // in" everywhere. R4 (feat/roles-access) replaces this with real
     // per-collection/per-role rules once that branch lands.
-    match /{document=**} {
-      allow read, write: if isSignedIn();
+    //
+    // IMPORTANT: Firestore rules are ADDITIVE (any matching `allow` grants
+    // access). A bare `match /{document=**}` would also match `users/*` and
+    // silently override every restriction above, so the top-level collection
+    // name is captured and `users` (and its subcollections) excluded here.
+    match /{collection}/{document=**} {
+      allow read, write: if isSignedIn() && collection != 'users';
     }
   }
 }
