@@ -1,5 +1,6 @@
 'use client';
 
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -128,7 +129,7 @@ const extractIssueReports = (details?: Record<string, unknown> | null) => {
 export default function AuditEventsPage() {
   const router = useRouter();
   const { loading: roleLoading, role } = useUserRole();
-  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isAdmin = canManageLogistics(role);
 
   const [events, setEvents] = useState<AuditEventView[]>([]);
   const [loading, setLoading] = useState(true);

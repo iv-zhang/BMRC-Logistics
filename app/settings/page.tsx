@@ -1,4 +1,5 @@
 'use client';
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Card, CardBody, Button, Spinner, Tabs, Tab } from '@heroui/react';
@@ -52,7 +53,7 @@ export default function SettingsPage() {
   const router = useRouter();
   const { user, userData, role, loading: authLoading } = useUserRole();
   const orgConfig = useOrgConfig();
-  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isAdmin = canManageLogistics(role);
 
   const [draft, setDraft] = useState<OrgConfigDoc | null>(null);
   const [saved, setSaved] = useState<OrgConfigDoc | null>(null);

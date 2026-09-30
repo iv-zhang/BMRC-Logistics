@@ -1,5 +1,6 @@
 'use client';
 
+import { canManageLogistics } from '@/app/lib/roles';
 import { useEffect, useState, useMemo, Fragment } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -430,7 +431,7 @@ export default function InventoryPage() {
         const snap = await getDoc(doc(db, 'users', user.uid));
         if (snap.exists()) {
           const data = snap.data() as User;
-          setIsAdmin(data.role === 'admin' || data.role === 'quartermaster');
+          setIsAdmin(canManageLogistics(data.role));
         }
       } catch (e) { console.error('Role fetch error', e); }
     })();
