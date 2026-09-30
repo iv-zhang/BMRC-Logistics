@@ -71,7 +71,7 @@ inventory, events.
 | **S1** | O | `firestore.prod.rules` (new) | **Stopgap** (keeps every current app flow working): signed-in required everywhere; `users/{uid}` create only by self with `role == 'member'` (matches `register/page.tsx:80`); self-update may not change `role`; admin/QM/medops may update other users (roster, D-15); all other collections = signed in. |
 | **S2** | O | `firebase.json`, `firebase.emulator.json` (new), emulator/sandbox scripts, `.github/copilot-instructions.md` | `firestore.rules` stays where it is (no rename). Production `firebase.json` points at `firestore.prod.rules`; the new `firebase.emulator.json` points at the open `firestore.rules`, and emulator/sandbox scripts pass `--config firebase.emulator.json`. A bare `firebase deploy` can then never ship open rules again. |
 | **S3** | S/med | `app/lib/__tests__/rules-stopgap.test.ts` (new) | Emulator test with prod rules loaded: anonymous read/write denied; register works; self role change denied; roster edit by medops works; normal member flows (check-off, shift request, issue report) work. |
-| **S4** | **you** | none | Deploy: `firebase deploy --only firestore:rules` (O gives you the exact command after S3 passes). |
+| **S4** | **you** | none | Deploy from the tip of the branch: `firebase deploy --only firestore:rules --project <PROD_PROJECT_ID>` (id = `NEXT_PUBLIC_FIREBASE_PROJECT_ID` in `.env.local`; no `--config`). Optional dry run on staging first: `--project staging` + `npm run dev:staging`. Then open the live site logged out: login screen, no data. |
 
 Remaining risk after the stopgap: anyone can register an account and then read/write logistics data. R4 closes that
 with per-role rules. Signups could also be restricted to `@berkeley.edu` later (**S-D1**).
@@ -288,7 +288,7 @@ forecast workbook.
 
 | Branch | Status |
 |---|---|
-| fix/firestore-rules | **in progress (remote agent): S1–S3**; S4 is your deploy after review |
+| fix/firestore-rules | **S1–S3 done, awaiting your review** (6779f71, 63cd57d, c42a253; `npm run test:rules` 25/25 on emulator; app not driven). **S4: deploy from c42a253 only**, never 6779f71 |
 | feat/inventory-hygiene | **in progress (remote agent): H0 H1 H2 H6 H8** |
 | feat/ui-system | **U1 done, awaiting your review** (a980c8d, 9b01e34; built + typechecked, not runtime-verified); U0 needs OK |
 | feat/roles-access | **in progress (remote agent): R1 + R2a/b** |
@@ -320,3 +320,16 @@ Append-only. Format: date · branch · finding · suggested action.
   `statpack-editor-modal.tsx`, `purchase-history.tsx`, plus a separate formatter in `app/lib/stats/shared.ts`. · Move to `MoneyText`/`formatCents` (integer cents) in U3/P4.
 - 2026-09-30 · ui-system · Dead-file candidates (not deleted): `tutorial-overlay.tsx` (no importers),
   `statpack-import-modal.tsx.new` (duplicate of the real file), the `/fix-timestamps` page (unlinked; its lib is still used). · Your call, per U-D2.
+- 2026-09-30 · firestore-rules · S1 as first written had two holes that only S3 caught: the `{document=**}` catch-all
+  also matched `users/*` (rules are OR'd → anyone signed in could make themselves admin), and medops could grant
+  `admin`. Fixed in c42a253 (catch-all excludes `users`; medops may only assign FTO/fto_intern/member; only admin/QM delete users). · Always write an emulator test before trusting a rule.
+- 2026-09-30 · firestore-rules · §0.5 root-cause guess is probably wrong: `.firebaserc` default is `bmrc-staging` and the
+  prod id isn't in the repo, so a bare deploy would have hit staging. Open rules reached prod another way (explicit
+  `--project` or a console paste). · The `firebase.json` split still protects every project; check prod rules history in the console.
+- 2026-09-30 · firestore-rules · Stopgap gaps for R4: every signed-in user (including self-registered strangers) can read
+  all user docs and read/write every other collection; anyone signed in can write the published `dashboards` doc.
+  Comments in `app/hooks/useStatsData.ts`, `app/stats/page.tsx`, `app/lib/dashboards.ts` claiming "role-gated by
+  firestore.rules" are false until R4. · R4 + S-D1 (`@berkeley.edu` sign-up restriction).
+- 2026-09-30 · firestore-rules · New `npm run test:rules`; emulator worked on firebase-tools 15.30.2 + JDK 21 here.
+  All emulator/sandbox scripts now pass `--config firebase.emulator.json`. · Use that config for any new emulator script.
+- 2026-09-30 · firestore-rules · `tutorial-overlay.tsx` (dead) would hit the `users` create rule if revived. · Another reason to delete it (your call).
