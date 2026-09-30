@@ -1,4 +1,5 @@
 'use client';
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useEffect, useState, useMemo } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useRouter } from 'next/navigation';
@@ -256,7 +257,7 @@ export default function DashboardPage() {
     );
   }
 
-  if (role && role !== 'admin' && role !== 'quartermaster' && userData) {
+  if (role && !canManageLogistics(role) && userData) {
     return <MemberDashboard userData={userData} />;
   }
 

@@ -1,5 +1,6 @@
 'use client';
 
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useEffect, useState, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { doc, getDoc } from 'firebase/firestore';
@@ -88,7 +89,7 @@ function PrintLabelsContent() {
         const role = userDoc.data()?.role || 'member';
         setUserRole(role);
 
-        if (role !== 'admin' && role !== 'quartermaster') {
+        if (!canManageLogistics(role)) {
           router.push('/dashboard');
           return;
         }

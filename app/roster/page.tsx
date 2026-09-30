@@ -1,5 +1,6 @@
 'use client';
 
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -109,7 +110,7 @@ export default function RosterPage() {
 
   // Access control: only admin, quartermaster, and medops can view
   const isEventManager = role === 'admin' || role === 'quartermaster' || role === 'medops';
-  const canEditAllRoles = role === 'admin' || role === 'quartermaster';
+  const canEditAllRoles = canManageLogistics(role);
   const isMedOps = role === 'medops';
 
   // Redirect if not authorized
@@ -692,8 +693,8 @@ function MemberDetailModal({
     ? ROLE_OPTIONS
     : ROLE_OPTIONS.filter(r => (MEDOPS_AVAILABLE_ROLES as readonly (typeof r.value)[]).includes(r.value));
 
-  const inheritsAudit = member.role === 'admin' || member.role === 'quartermaster';
-  const inheritsCommittee = member.role === 'admin' || member.role === 'quartermaster';
+  const inheritsAudit = canManageLogistics(member.role);
+  const inheritsCommittee = canManageLogistics(member.role);
 
   return (
     <Modal isOpen={isOpen} onOpenChange={onOpenChange} size="lg" scrollBehavior="inside">

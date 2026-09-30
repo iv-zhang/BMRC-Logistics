@@ -1,5 +1,6 @@
 'use client';
 
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Input, Spinner } from '@heroui/react';
 import { Plus, Search, Settings, Shirt } from 'lucide-react';
@@ -124,7 +125,7 @@ function LoanDueDateModal({
 
 export default function ApparelPage() {
   const { loading: authLoading, role, userData, user, effectiveUid } = useUserRole();
-  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isAdmin = canManageLogistics(role);
 
   const [items, setItems] = useState<ApparelItem[]>([]);
   const [itemsLoading, setItemsLoading] = useState(true);

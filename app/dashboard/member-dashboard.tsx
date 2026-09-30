@@ -1,5 +1,6 @@
 'use client';
 
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -533,7 +534,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
         </section>
 
         {/* Smart Ordering - Admin Only */}
-        {(role === 'admin' || role === 'quartermaster') && (
+        {canManageLogistics(role) && (
           <section>
             <h2 className="text-xl font-semibold mb-4">Smart Ordering</h2>
             <Card>

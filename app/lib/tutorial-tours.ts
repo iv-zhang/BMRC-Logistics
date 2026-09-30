@@ -19,6 +19,8 @@
  * The tour controller lives in `app/components/onboarding-tour.tsx`.
  */
 
+import { canManageLogistics } from '@/app/lib/roles';
+
 export type TourRole = 'member' | 'FTO' | 'medops' | 'admin';
 export type TourVariant = 'desktop' | 'mobile';
 
@@ -40,7 +42,7 @@ export interface TourStep {
 
 /** Map a raw user role to the tour variant it should receive. */
 export function tourRoleFor(role: string | null | undefined): TourRole {
-  if (role === 'admin' || role === 'quartermaster') return 'admin';
+  if (canManageLogistics(role)) return 'admin';
   if (role === 'medops') return 'medops';
   // fto_intern is the training tier below FTO — interns shadow a real FTO and
   // don't yet run FTO surfaces (staffing/check-in), so they get the member tour.

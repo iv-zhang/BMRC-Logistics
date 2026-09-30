@@ -93,8 +93,11 @@ export interface User {
    * same cert gating, same permissions as `FTO` — but an intern may only fill
    * the supernumerary FTO-intern slot (or a plain EMT slot), never the FTO slot,
    * and never gains the FTO's attendance-recording powers.
+   *
+   * `treasurer` can read logistics and record payments (paid / reimbursed) but
+   * cannot manage logistics; see the capability matrix in app/lib/roles.ts.
    */
-  role: 'admin' | 'member' | 'FTO' | 'fto_intern' | 'quartermaster' | 'inventory_helper' | 'medops';
+  role: 'admin' | 'member' | 'FTO' | 'fto_intern' | 'quartermaster' | 'inventory_helper' | 'medops' | 'treasurer';
   /** When true, this member can perform inventory audits even if not admin/quartermaster */
   canAudit?: boolean;
   /** When true, this member is on the Logistics Committee (sees the Committee Board) even if not admin/quartermaster */

@@ -1,5 +1,6 @@
 'use client';
 
+import { canManageLogistics } from '@/app/lib/roles';
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -27,7 +28,7 @@ import { useUserRole } from '@/app/hooks/useUserRole';
 export default function CheckinPage() {
   const router = useRouter();
   const { role } = useUserRole();
-  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isAdmin = canManageLogistics(role);
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [statpacks, setStatpacks] = useState<Statpack[]>([]);
   const [filteredPacks, setFilteredPacks] = useState<Statpack[]>([]);

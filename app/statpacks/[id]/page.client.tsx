@@ -1,4 +1,5 @@
 'use client';
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import {
@@ -264,7 +265,7 @@ export default function StatpackDetailClient() {
   // shortage/override components need a real `id` for writes, so build a
   // copy that carries it through.
   const packWithId: Statpack = { ...pack, id: statpackId };
-  const isAdmin = userRole === 'admin' || userRole === 'quartermaster';
+  const isAdmin = canManageLogistics(userRole);
   const shortages = getPackShortages(packWithId);
   const overrideEligible =
     isAdmin && !packWithId.isCheckedOut && packWithId.status !== 'Ready' && !packWithId.status.includes('Expired');

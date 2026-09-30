@@ -41,6 +41,8 @@ export interface OrgConfigResult {
   eventTypes: readonly string[];
   semesterStartDate: string;
   requireCertsForShiftSignup: boolean;
+  /** Roles allowed to see private finance fields; feed to `canSeePrivateFinance` (app/lib/roles.ts). */
+  privateFinanceRoles: readonly string[];
   /** True until the first Firestore snapshot resolves (defaults are used meanwhile). */
   loading: boolean;
   // Convenience lookups
@@ -74,6 +76,7 @@ function buildResult(cfg: OrgConfigDoc, loading: boolean): OrgConfigResult {
     eventTypes: cfg.eventTypes,
     semesterStartDate: cfg.semesterStartDate,
     requireCertsForShiftSignup: cfg.requireCertsForShiftSignup,
+    privateFinanceRoles: cfg.privateFinanceRoles,
     loading,
     // Helper fns read the same runtime store the subscription updates, so they
     // stay in sync with the live config.

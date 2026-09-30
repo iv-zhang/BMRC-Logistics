@@ -1,5 +1,6 @@
 'use client';
 
+import { canManageLogistics } from '@/app/lib/roles';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, Chip, Spinner, Switch, Textarea } from '@heroui/react';
@@ -47,7 +48,7 @@ const LOG_STATUS_CHIP: Record<VehicleLog['status'], { label: string; color: 'suc
 export default function VehiclesPage() {
   const router = useRouter();
   const { user, role, fullName, loading: authLoading } = useUserRole();
-  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isAdmin = canManageLogistics(role);
   const { vehicles: vehicleTypes } = useOrgConfig();
   const { vehicles, loading } = useVehicles();
 

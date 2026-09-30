@@ -1,5 +1,6 @@
 'use client';
 
+import { canManageLogistics } from '@/app/lib/roles';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, Chip, Input, Spinner, Textarea } from '@heroui/react';
@@ -24,7 +25,7 @@ function toDate(value: unknown): Date | null {
 export default function VehicleCheckOffPage() {
   const router = useRouter();
   const { user, role, fullName, loading: authLoading } = useUserRole();
-  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isAdmin = canManageLogistics(role);
   // Subscribing to org config keeps reading-field lookups reactive to admin edits.
   const { loading: configLoading } = useOrgConfig();
 

@@ -1,5 +1,6 @@
 'use client';
 
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -850,7 +851,7 @@ function ExchangeBagsSection({
 export default function RestockPage() {
   const router = useRouter();
   const { loading: authLoading, role, userData, user } = useUserRole();
-  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isAdmin = canManageLogistics(role);
 
   const storageLocationsData = useStorageLocations();
   const { zones, getShelvesForZone, getContainersForShelf, getShelfById, getZoneById, loading: locLoading } = storageLocationsData;
