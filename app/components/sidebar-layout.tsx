@@ -1,4 +1,5 @@
 'use client';
+import { canManageLogistics } from '@/app/lib/roles';
 import { useState } from 'react';
 import { usePathname } from 'next/navigation';
 import AppSidebar from './app-sidebar';
@@ -18,7 +19,7 @@ export default function SidebarLayout({ children }: { children: React.ReactNode 
   const [navHidden, setNavHidden] = useState(false);
   const pathname = usePathname();
   const { role, isRoleOverridden } = useUserRole();
-  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isAdmin = canManageLogistics(role);
 
   const showSidebar = !NO_SIDEBAR_PATHS.some(p => pathname?.startsWith(p));
   // On mobile the icon rail is hidden app-wide (app-sidebar) and replaced by the

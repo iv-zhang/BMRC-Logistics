@@ -1,4 +1,5 @@
 'use client';
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, Chip, Spinner, Select, SelectItem, Tabs, Tab } from '@heroui/react';
@@ -164,7 +165,7 @@ export default function ProfilePage() {
   // both seeding (only a real admin/quartermaster may create test identities)
   // and the Test Account History card (a test identity can't hide it from
   // itself by "becoming" a lower role).
-  const isRealAdmin = user.role === 'admin' || user.role === 'quartermaster';
+  const isRealAdmin = canManageLogistics(user.role);
 
   const handleRoleSelect = async (value: string) => {
     try {

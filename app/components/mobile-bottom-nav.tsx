@@ -1,4 +1,5 @@
 'use client';
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { useUserRole } from '@/app/hooks/useUserRole';
@@ -36,11 +37,11 @@ export default function MobileBottomNav() {
   const { role, user, userData, isRoleOverridden } = useUserRole();
   const [moreOpen, setMoreOpen] = useState(false);
 
-  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isAdmin = canManageLogistics(role);
   const isMedOps = role === 'medops';
   // Real (non-overridden) role — an override can drop `role` to 'member', so this
   // is how an admin testing a member role stays able to exit back to admin view.
-  const isRealAdmin = userData?.role === 'admin' || userData?.role === 'quartermaster';
+  const isRealAdmin = canManageLogistics(userData?.role);
   // Committee members get a Board tab; admins reach the board via the More sheet (ADMIN_NAV)
   const memberTabs = userData?.isCommitteeMember === true
     ? [...MEMBER_TABS, { key: 'committee-board', label: 'Board', Icon: SquareKanban, path: '/committee-board' }]

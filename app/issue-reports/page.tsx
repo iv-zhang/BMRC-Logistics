@@ -1,5 +1,6 @@
 'use client';
 
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useState, useEffect } from 'react';
 import { Button, Chip, Checkbox, Spinner } from '@heroui/react';
 import { Search, AlertCircle, Clock, User, X } from 'lucide-react';
@@ -87,7 +88,7 @@ export default function IssueReportsPage() {
     search: '',
   });
 
-  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isAdmin = canManageLogistics(role);
 
   // Subscribe to reports
   useEffect(() => {

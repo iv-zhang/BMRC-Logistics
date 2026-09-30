@@ -10,6 +10,7 @@
  * step gets caught here instead of vanishing. Admin / quartermaster only.
  */
 
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Chip, Spinner, Button } from '@heroui/react';
@@ -102,7 +103,7 @@ const SEVERITY_ORDER: ExceptionSeverity[] = ['high', 'medium', 'low'];
 export default function ReconciliationPage() {
   const router = useRouter();
   const { loading: authLoading, user, role } = useUserRole();
-  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isAdmin = canManageLogistics(role);
 
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [statpacks, setStatpacks] = useState<Statpack[]>([]);

@@ -1,5 +1,6 @@
 'use client';
 
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -301,7 +302,7 @@ export default function CommitteeBoardPage() {
   const { tasks, loading: tasksLoading } = useTeamTasks();
   const { cards: auditCards } = useAuditTaskCards();
 
-  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isAdmin = canManageLogistics(role);
   // UI-level gating only — real enforcement is the deferred rules-hardening track
   const isCommittee = isAdmin || userData?.isCommitteeMember === true;
 
@@ -318,7 +319,7 @@ export default function CommitteeBoardPage() {
 
   // Only admins/quartermasters are assignable as owners.
   const adminMembers = useMemo(
-    () => members.filter((m) => m.role === 'admin' || m.role === 'quartermaster'),
+    () => members.filter((m) => canManageLogistics(m.role)),
     [members]
   );
 

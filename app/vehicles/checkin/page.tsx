@@ -1,5 +1,6 @@
 'use client';
 
+import { canManageLogistics } from '@/app/lib/roles';
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Card, CardBody, Button, Input, Spinner, Chip, Avatar } from '@heroui/react';
@@ -20,7 +21,7 @@ const TYPE_ICONS: Record<string, React.ComponentType<{ size?: number; className?
 export default function VehicleCheckinPickerPage() {
   const router = useRouter();
   const { user, role, loading: authLoading } = useUserRole();
-  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isAdmin = canManageLogistics(role);
   const { vehicles: vehicleTypes } = useOrgConfig();
   const { vehicles, loading } = useVehicles();
   const [searchQuery, setSearchQuery] = useState('');

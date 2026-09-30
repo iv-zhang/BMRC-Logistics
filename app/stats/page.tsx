@@ -16,6 +16,7 @@
  * overflow class here is `md:`-prefixed.
  */
 
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, Card, CardBody, Spinner } from '@heroui/react';
@@ -118,7 +119,7 @@ export default function StatsPage() {
   const router = useRouter();
   const { role, effectiveUid, userData, loading: authLoading } = useUserRole();
 
-  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isAdmin = canManageLogistics(role);
   const isEventManager = isEventManagerRole(role);
 
   /** Dashboards this role may see. medops gets staffing/calls only (D-13). */

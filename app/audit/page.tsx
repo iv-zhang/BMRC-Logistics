@@ -1,5 +1,6 @@
 'use client';
 
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -154,7 +155,7 @@ export default function AuditPage() {
 
   // ─── Auth & permission check ──────────────────────────────────────────────
   const hasAuditAccess = useMemo(() => canUserAudit(userData), [userData]);
-  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isAdmin = canManageLogistics(role);
 
   // Trainer devices (AEDs, manikins) — snapshot rows don't carry isTrainer,
   // so look it up from the live full inventory by id.

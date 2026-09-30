@@ -1,4 +1,5 @@
 'use client';
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useEffect, useState } from 'react';
 import Image from 'next/image';
 import { usePathname, useRouter } from 'next/navigation';
@@ -99,7 +100,7 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
     };
   }, []);
 
-  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isAdmin = canManageLogistics(role);
   const isDark = mounted && theme === 'dark';
   const expanded = (navHover || tourPinned) && !navHidden;
 

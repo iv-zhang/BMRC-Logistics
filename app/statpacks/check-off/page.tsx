@@ -1,5 +1,6 @@
 'use client';
 
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, Spinner, Input } from '@heroui/react';
@@ -919,7 +920,7 @@ export default function StatpackCheckOffPage() {
   const [eventId, setEventId] = useState<string | null>(null);
   const [eventName, setEventName] = useState<string | null>(null);
   const { role } = useUserRole();
-  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isAdmin = canManageLogistics(role);
 
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [pack, setPack] = useState<Statpack | null>(null);

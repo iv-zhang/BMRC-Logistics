@@ -11,6 +11,7 @@
  * a mismatch between them is a bug.
  */
 
+import { canManageLogistics } from '@/app/lib/roles';
 import {
   collection,
   doc,
@@ -36,7 +37,7 @@ export interface VehicleActor {
   role?: string;
 }
 
-const isAdminRole = (role?: string) => role === 'admin' || role === 'quartermaster';
+const isAdminRole = (role?: string) => canManageLogistics(role);
 
 /** Map reading-field ids (org-config) to VehicleShiftReadings keys. */
 const READING_KEY_BY_FIELD_ID: Record<string, keyof VehicleShiftReadings> = {

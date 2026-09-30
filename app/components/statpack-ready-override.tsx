@@ -1,5 +1,6 @@
 'use client';
 
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useState } from 'react';
 import {
   Button,
@@ -34,7 +35,7 @@ export default function StatpackReadyOverride({ pack, size = 'sm' }: StatpackRea
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isAdmin = canManageLogistics(role);
   const eligible = isAdmin && !pack.isCheckedOut && pack.status !== 'Ready' && !pack.status.includes('Expired');
 
   if (!eligible) return null;

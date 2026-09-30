@@ -1,5 +1,6 @@
 'use client';
 
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useEffect, useMemo, useState } from 'react';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { Card, CardBody, CardHeader, Chip, Button, Divider, Spinner, ScrollShadow } from '@heroui/react';
@@ -91,7 +92,7 @@ export default function LogTimeline({ statpackId, maxRows = 8, onViewAll }: LogT
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { role } = useUserRole();
-  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isAdmin = canManageLogistics(role);
   const [detailOpen, setDetailOpen] = useState(false);
   const [selectedItem, setSelectedItem] = useState<StatpackLogDisplayItem | null>(null);
 
