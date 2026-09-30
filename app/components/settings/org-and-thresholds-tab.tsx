@@ -1,7 +1,8 @@
 'use client';
 import React from 'react';
-import { Input } from '@heroui/react';
-import type { OrgInfo, ThresholdConfig } from '@/app/config/org-config';
+import { Input, Select, SelectItem } from '@heroui/react';
+import { AUDIT_CADENCES } from '@/app/config/org-config';
+import type { AuditCadence, OrgInfo, ThresholdConfig } from '@/app/config/org-config';
 
 // ---------------------------------------------------------------------------
 // Organization tab — org.name / org.shortName / org.timezone
@@ -54,8 +55,19 @@ interface ThresholdsTabProps {
   onChange: (thresholds: ThresholdConfig) => void;
 }
 
+type NumericThresholdKey = {
+  [K in keyof ThresholdConfig]: ThresholdConfig[K] extends number ? K : never;
+}[keyof ThresholdConfig];
+
+const CADENCE_LABELS: Record<AuditCadence, { label: string; helper: string }> = {
+  monthly: { label: 'Monthly', helper: 'Every item is re-counted each calendar month.' },
+  quarterly: { label: 'Quarterly', helper: 'Every item is re-counted each calendar quarter (Jan–Mar, Apr–Jun, Jul–Sep, Oct–Dec).' },
+  semester: { label: 'Each semester', helper: 'Every item is re-counted once per semester (uses the semester start date under Events & Venues).' },
+  yearly: { label: 'Yearly', helper: 'Every item is re-counted each calendar year.' },
+};
+
 interface ThresholdField {
-  key: keyof ThresholdConfig;
+  key: NumericThresholdKey;
   label: string;
   helper: string;
   unit: string;
@@ -115,7 +127,7 @@ const FIELDS: ThresholdField[] = [
 ];
 
 export function ThresholdsTab({ thresholds, onChange }: ThresholdsTabProps) {
-  const setField = (key: keyof ThresholdConfig, raw: string) => {
+  const setField = (key: NumericThresholdKey, raw: string) => {
     const n = raw === '' ? 0 : Number(raw);
     onChange({ ...thresholds, [key]: Number.isFinite(n) ? n : 0 });
   };
@@ -127,6 +139,21 @@ export function ThresholdsTab({ thresholds, onChange }: ThresholdsTabProps) {
         Numbers that drive warnings, colors, and checkout blocks throughout the app.
       </p>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Select
+          label="Supply audit cadence"
+          description={CADENCE_LABELS[thresholds.auditCadence]?.helper ?? CADENCE_LABELS.monthly.helper}
+          selectedKeys={[AUDIT_CADENCES.includes(thresholds.auditCadence) ? thresholds.auditCadence : 'monthly']}
+          disallowEmptySelection
+          onChange={(e) => {
+            const val = e.target.value as AuditCadence;
+            if (AUDIT_CADENCES.includes(val)) onChange({ ...thresholds, auditCadence: val });
+          }}
+          className="md:col-span-2"
+        >
+          {AUDIT_CADENCES.map((c) => (
+            <SelectItem key={c}>{CADENCE_LABELS[c].label}</SelectItem>
+          ))}
+        </Select>
         {FIELDS.map((f) => (
           <Input
             key={f.key}

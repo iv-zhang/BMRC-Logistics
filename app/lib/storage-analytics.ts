@@ -8,7 +8,7 @@
  */
 
 import type { InventoryItem, Shelf } from '@/app/types';
-import { getItemStatus, computeBagStock, type ItemStatus } from '@/app/lib/item-status';
+import { getItemStatus, computeBagStock, isConfirmedItem, type ItemStatus } from '@/app/lib/item-status';
 
 export interface RestockItemRef {
   id: string;
@@ -62,17 +62,23 @@ function bucketFor(map: Map<string, LocationRollup>, id: string | undefined | nu
 
 function applyItem(rollup: LocationRollup, item: InventoryItem, status: ItemStatus, available: number, par: number) {
   rollup.itemCount++;
-  if (status === 'low') rollup.low++;
-  else if (status === 'out') rollup.out++;
-  else if (status === 'expiring') rollup.expiring++;
-  else if (status === 'expired') rollup.expired++;
 
-  // Pure assets (asset-valued, no par/reorder concept) shouldn't clutter a
-  // "restock needed" list even when they read 'out' — that status just means
-  // "no deployable stock", not "needs reordering".
-  const isPureAsset = item.assetValue !== undefined && par === 0;
-  if ((status === 'low' || status === 'out') && !isPureAsset) {
-    rollup.restockItems.push({ id: item.id, name: item.name, available, par });
+  // Status buckets and the restock list are alerts: only confirmed items feed
+  // them (an unverified/retired record may not exist). The item still counts
+  // toward itemCount and audit freshness below, so the catalog view stays honest.
+  if (isConfirmedItem(item)) {
+    if (status === 'low') rollup.low++;
+    else if (status === 'out') rollup.out++;
+    else if (status === 'expiring') rollup.expiring++;
+    else if (status === 'expired') rollup.expired++;
+
+    // Pure assets (asset-valued, no par/reorder concept) shouldn't clutter a
+    // "restock needed" list even when they read 'out' — that status just means
+    // "no deployable stock", not "needs reordering".
+    const isPureAsset = item.assetValue !== undefined && par === 0;
+    if ((status === 'low' || status === 'out') && !isPureAsset) {
+      rollup.restockItems.push({ id: item.id, name: item.name, available, par });
+    }
   }
 
   if (item.lastAuditDate) {

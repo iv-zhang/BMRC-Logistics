@@ -16,9 +16,11 @@
 import {
   computeBagStock,
   getItemStatus,
-  isAuditedThisMonth,
+  isAuditCurrent,
+  auditCyclePeriod,
   isStatpackAuditCurrent,
   batchHasStock,
+  isConfirmedItem,
 } from '@/app/lib/item-status';
 import type { InventoryItem, Statpack } from '@/app/types';
 
@@ -73,6 +75,10 @@ export function buildExceptions(
   const out: ReconciliationException[] = [];
 
   for (const item of items || []) {
+    // Unverified / retired records may not exist, so they raise no exceptions
+    // (the Unverified audit queue is where they get resolved).
+    if (!isConfirmedItem(item)) continue;
+
     const name = item.name || 'Unnamed item';
 
     // ORPHANED LOCATION — residue of a skipped intake/move step. The structured
@@ -116,17 +122,17 @@ export function buildExceptions(
       });
     }
 
-    // STALE AUDIT — last verified outside the current month; the on-hand figure
+    // STALE AUDIT — last verified outside the current audit cycle (monthly by default); the on-hand figure
     // may not reflect reality (skipped post-event scan → drift).
     const lastAudit = toDate(item.lastAuditDate);
-    if (!isAuditedThisMonth(lastAudit, now)) {
+    if (!isAuditCurrent(lastAudit, now)) {
       out.push({
         severity: 'medium',
         kind: 'stale_audit',
         itemId: item.id,
         itemName: name,
         detail: lastAudit
-          ? `Not verified this month — last audited ${lastAudit.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}.`
+          ? `Not verified ${auditCyclePeriod()} — last audited ${lastAudit.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}.`
           : 'Never audited — on-hand count is unverified.',
       });
     }

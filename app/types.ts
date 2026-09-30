@@ -416,6 +416,16 @@ export interface InventoryBatch {
   assetInstances?: AssetInstance[];
 }
 
+/**
+ * Whether an inventory record is believed to physically exist.
+ *   - `confirmed`  seen and counted in an audit on/after the baseline cutoff.
+ *   - `unverified` never verified since the cutoff; may be a ghost record.
+ *   - `retired`    audited and found not to exist (terminal; kept for history).
+ * Read it through `getExistence()` (app/lib/item-status.ts), never raw: confirmed
+ * vs unverified is DERIVED from `lastAuditDate`, only `retired` is stored truth.
+ */
+export type ItemExistence = 'confirmed' | 'unverified' | 'retired';
+
 export interface InventoryItem {
   id: string;
   /**
@@ -582,6 +592,17 @@ export interface InventoryItem {
   auditCondition?: 'Good' | 'Damaged' | 'Expired';
   auditNotes?: string;
   lastAuditDate?: Date;
+  /**
+   * Stored existence marker. Only `'retired'` is authoritative; `'confirmed'` /
+   * `'unverified'` may be stamped by migrations/audit actions but are
+   * re-derived from `lastAuditDate` by `getExistence()` (Principle 2: derive,
+   * don't assert), so read via that helper, not this field.
+   */
+  existence?: ItemExistence;
+  /** Set by `retireInventoryItem` when existence becomes 'retired'. */
+  retiredAt?: Date | FieldValue;
+  retiredBy?: string;
+  retiredReason?: string;
   isLegacyItem?: boolean; // Quick-added legacy/found items
   /** Training / non-deployable gear (trainer AEDs, manikins) — still tracked as an asset but must not be dispatched */
   isTrainer?: boolean;

@@ -377,7 +377,19 @@ export const STATPACK_TYPES: StatpackTypeDef[] = [
 // Thresholds & Business Rules
 // ---------------------------------------------------------------------------
 
+/**
+ * How often every supply item must be re-audited to count as "verified".
+ * monthly = current calendar month (the original D-6 behavior), quarterly = current
+ * calendar quarter, semester = since the current semester start (see
+ * `isAuditCurrent` in app/lib/item-status.ts), yearly = current calendar year.
+ */
+export type AuditCadence = 'monthly' | 'quarterly' | 'semester' | 'yearly';
+
+export const AUDIT_CADENCES: readonly AuditCadence[] = ['monthly', 'quarterly', 'semester', 'yearly'];
+
 export interface ThresholdConfig {
+  /** Supply audit cadence (amends D-6). Default 'monthly'. */
+  auditCadence: AuditCadence;
   /** USD value above which an item is automatically classified as an asset */
   assetValueThreshold: number;
   /** % of par level below which a low-stock warning is shown */
@@ -401,6 +413,7 @@ export interface ThresholdConfig {
 }
 
 export const THRESHOLDS: ThresholdConfig = {
+  auditCadence: 'monthly',
   assetValueThreshold: 500,
   lowStockPercent: 25,
   expirationWarningDays: 90,
