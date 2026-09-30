@@ -28,6 +28,7 @@ function cloneConfig(cfg: {
   eventTypes: readonly string[];
   semesterStartDate: string;
   requireCertsForShiftSignup: boolean;
+  privateFinanceRoles: readonly string[];
 }): OrgConfigDoc {
   const plain: OrgConfigDoc = {
     org: cfg.org,
@@ -42,6 +43,7 @@ function cloneConfig(cfg: {
     eventTypes: [...cfg.eventTypes],
     semesterStartDate: cfg.semesterStartDate,
     requireCertsForShiftSignup: cfg.requireCertsForShiftSignup,
+    privateFinanceRoles: [...cfg.privateFinanceRoles],
   };
   return typeof structuredClone === 'function' ? structuredClone(plain) : JSON.parse(JSON.stringify(plain));
 }

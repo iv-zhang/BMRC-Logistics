@@ -28,6 +28,7 @@ import {
   getEventTypesRuntime,
   getSemesterStartRuntime,
   getRequireCertsRuntime,
+  getPrivateFinanceRolesRuntime,
 } from '@/app/lib/org-config-store';
 
 // ---------------------------------------------------------------------------
@@ -438,6 +439,12 @@ export const ROLES: RoleDef[] = [
     permissions: ['inventory.*', 'assets.*', 'statpacks.*', 'audit.*', 'buylist.*'],
   },
   {
+    id: 'treasurer',
+    label: 'Treasurer',
+    description: 'Reads logistics and records payments (paid / reimbursed); cannot edit inventory or purchases',
+    permissions: ['logistics.read', 'payments.record'],
+  },
+  {
     id: 'medops',
     label: 'MedOps',
     description: 'Staffs events and switches members between FTO/member; no logistics access',
@@ -558,6 +565,9 @@ export const SEMESTER_START_DATE = '2026-01-01';
  */
 export const REQUIRE_CERTS_FOR_SHIFT_SIGNUP = true;
 
+/** Default roles that may see private finance fields (payee names, Zelle/Venmo handles). */
+export const PRIVATE_FINANCE_ROLES: string[] = ['admin'];
+
 // ---------------------------------------------------------------------------
 // Runtime config document shape + defaults
 //
@@ -582,6 +592,12 @@ export type OrgConfigDoc = {
   semesterStartDate: string;
   /** Gate shift signup on valid EMT + CPR certs (default true). */
   requireCertsForShiftSignup: boolean;
+  /**
+   * Roles allowed to see private finance fields (payee names, Zelle/Venmo
+   * handles). `admin` always can regardless of this list (see
+   * `canSeePrivateFinance` in app/lib/roles.ts). Default `['admin']`.
+   */
+  privateFinanceRoles: string[];
 };
 
 export const DEFAULT_ORG_CONFIG: OrgConfigDoc = {
@@ -597,6 +613,7 @@ export const DEFAULT_ORG_CONFIG: OrgConfigDoc = {
   eventTypes: [...EVENT_TYPES],
   semesterStartDate: SEMESTER_START_DATE,
   requireCertsForShiftSignup: REQUIRE_CERTS_FOR_SHIFT_SIGNUP,
+  privateFinanceRoles: [...PRIVATE_FINANCE_ROLES],
 };
 
 // ---------------------------------------------------------------------------
@@ -705,4 +722,9 @@ export function getSemesterStart(): Date {
 /** Whether shift signup is gated on valid EMT + CPR certs (runtime). */
 export function getRequireCertsForShiftSignup(): boolean {
   return getRequireCertsRuntime();
+}
+
+/** Roles allowed to see private finance fields (runtime override, else `['admin']`). */
+export function getPrivateFinanceRoles(): string[] {
+  return getPrivateFinanceRolesRuntime();
 }

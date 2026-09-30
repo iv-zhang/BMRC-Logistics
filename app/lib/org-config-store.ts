@@ -79,6 +79,11 @@ export function applyOrgConfigDoc(data: Partial<OrgConfigDoc> | undefined): void
       typeof data.requireCertsForShiftSignup === 'boolean'
         ? data.requireCertsForShiftSignup
         : d.requireCertsForShiftSignup,
+    // An explicitly saved array wins even if empty (an org may deliberately
+    // list no roles; admin is always allowed by canSeePrivateFinance anyway).
+    privateFinanceRoles: Array.isArray(data.privateFinanceRoles)
+      ? data.privateFinanceRoles.filter((r): r is string => typeof r === 'string')
+      : d.privateFinanceRoles,
   };
 }
 
@@ -136,6 +141,11 @@ export function getSemesterStartRuntime(): string {
 
 export function getRequireCertsRuntime(): boolean {
   return getRuntimeConfig().requireCertsForShiftSignup;
+}
+
+/** Live `org_settings.privateFinanceRoles` (default `['admin']`). Feed to `canSeePrivateFinance`. */
+export function getPrivateFinanceRolesRuntime(): string[] {
+  return getRuntimeConfig().privateFinanceRoles;
 }
 
 // ---------------------------------------------------------------------------
