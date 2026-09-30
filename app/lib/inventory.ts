@@ -1,3 +1,4 @@
+import { canManageLogistics } from '@/app/lib/roles';
 import { collection, doc, getDoc, getDocs, writeBatch, serverTimestamp, addDoc, updateDoc, runTransaction, query, where, orderBy, limit, documentId } from 'firebase/firestore';
 import { db } from '@/firebase';
 import type { InventoryItem, InventoryBatch, Statpack, StatpackItem, StatpackPocket, Container, BoxLog, StatpackLog, PurchaseInfo, ValidationWarning, AssetInstance, AssetCheckResult, StatpackAuditResult, AssetVerificationRules } from '@/app/types';
@@ -591,7 +592,7 @@ export async function logStatpackCheckOff(params: {
       if (!sp.exists()) throw new Error('Statpack not found');
       const spData = sp.data() as any;
 
-      const isAdmin = userRole === 'admin' || userRole === 'quartermaster';
+      const isAdmin = canManageLogistics(userRole);
 
       // Prevent checking out a statpack that is already checked out
       if (action === 'checkout' && spData?.isCheckedOut) {

@@ -29,6 +29,19 @@ Two small seam edits outside R1's Owns list, required to compile: `app/hooks/use
 - `npm run build`: see final entry.
 - Not runtime-verified (no emulator smoke driver run).
 
+## R2a: lib, components, dashboard  (done)
+
+Pattern replaced: `X === 'admin' || X === 'quartermaster'` (and `!==`/`&&` negation) with `canManageLogistics(X)`;
+`import { canManageLogistics } from '@/app/lib/roles'` added to each file. Behavior-preserving (same two roles).
+Sites changed (12 files, 12 expressions):
+- `app/lib/vehicles.ts:39` (`isAdminRole`), `app/lib/inventory.ts:594` (`logStatpackCheckOff` `isAdmin`), `app/lib/tutorial-tours.ts:43` (`tourRoleFor`)
+- `app/components/statpack-history.tsx:43`, `mobile-bottom-nav.tsx:39` + `:43` (`isRealAdmin`), `statpack-ready-override.tsx:37`,
+  `app-sidebar.tsx:102`, `statpack-checkoff-modal.tsx:80`, `log-timeline.tsx:94`, `sidebar-layout.tsx:21`
+- `app/dashboard/member-dashboard.tsx:536` (Smart Ordering gate), `app/dashboard/page.tsx:259` (negated: member-dashboard redirect)
+
+Verification (R2a): `tsc` 0 errors outside `app/lib/__tests__/*`; eslint on the 12 files = 65 problems (58 errors, 7 warnings),
+identical to the pre-change baseline (measured by reverting the patch), so 0 new.
+
 ## Findings / open questions
 - `app/lib/__tests__/o2-*.test.ts` import `vitest`, which is not installed or configured and nothing runs them; they also
   produce 5 `tsc` errors on a clean checkout. Dead or broken tests. No action taken (no deletions without asking).

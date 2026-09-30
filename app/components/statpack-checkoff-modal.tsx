@@ -1,5 +1,6 @@
 'use client';
 
+import { canManageLogistics } from '@/app/lib/roles';
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -77,7 +78,7 @@ export default function StatpackCheckOffModal({
 }: StatpackCheckOffModalProps) {
   const router = useRouter();
   const { role } = useUserRole();
-  const isAdmin = role === 'admin' || role === 'quartermaster';
+  const isAdmin = canManageLogistics(role);
   const [checkCounts, setCheckCounts] = useState<Record<string, number>>({});
   const [checkedItems, setCheckedItems] = useState<Set<string>>(new Set());
   const [sealChecks, setSealChecks] = useState<
