@@ -8,7 +8,7 @@ Model/agent: Sonnet 5.5 (autonomous). Nothing here touches live data; no migrati
 | Packet | Status | Commit |
 |---|---|---|
 | H0 diagnose-merges | done (read-only, findings below) | (this commit) |
-| H1 variant signature + merge gate | pending | |
+| H1 variant signature + merge gate | done | (H1 commit) |
 | H2 existence types/status | pending | |
 | H8 audit cadence | pending | |
 | H6 picker/editor | pending | |
@@ -62,9 +62,29 @@ Grepped `merge|dedupe|dedup|normalize|levenshtein|similar|fuzzy` over `app/lib`,
   duplicate). Both are pure additions; nothing that used to be blocked becomes allowed.
 - (3) is UI-level suggestion only; it lives in a component (not owned by these packets), so it is logged, not edited.
 
+## H1 notes
+
+- `app/lib/variant-signature.ts` (pure): `variantSignature(name)`, `itemVariantSignature(item)`, `variantsMatch`,
+  `checkVariantMerge(a, b)` -> `ok | blocked | conflict`. Token kinds: dim, size N, Fr, gauge/grams (`g`), mm/cm/in/ft,
+  mL (L converted), oz/mg/mcg/lb, letter sizes (S..XXXL, words, `S/M` ranges), age (adult/peds/infant/neo), colors,
+  bare numbers (so `Stat Pack 1` != `Stat Pack 2`, `ET Tube 7.0` != `7.5`). Pack counts (`100 ct`, `box of 50`, `x100`,
+  `100/box`) are deliberately stripped.
+- Decision: unsized vs sized (`Gloves` vs `Gloves, M`) is a **mismatch** (strict). Gauge and grams share one `g:` token.
+- Wired (refuse-only, nothing newly allowed): `findDuplicateCandidates` no longer links pairs with different
+  signatures (no more chaining S~M~L); `buildMergePlan` throws on any survivor/loser variant mismatch (third guard after
+  tracking-mode and itemsPerBox). New `findVariantConflicts(items)` lists same-SKU/barcode, different-variant pairs.
+- Not wired: `additemmodal.tsx` duplicate suggestions (a component, outside these packets): still lists `NPA 28 Fr` when
+  typing `NPA 30 Fr`. Suggestion-only; the merge itself is now refused. No UI consumes `findVariantConflicts` yet (H4/H5).
+- Tests run on Node's built-in runner (`npx tsx --test ...`); see Findings on the missing vitest install.
+
 ## Verification
 
-(appended per packet)
+### H1
+- `npx tsx --test app/lib/__tests__/variant-signature.test.ts`: 84 tests, 84 pass, 0 fail.
+- `NEXT_PUBLIC_FIREBASE_API_KEY=fake-key NEXT_PUBLIC_FIREBASE_PROJECT_ID=demo-bmrc-logistics npx tsx --test app/lib/__tests__/inventory-merge-variants.test.ts`: 7 tests, 7 pass.
+- `npx tsc --noEmit`: only the 5 pre-existing errors in `app/lib/__tests__/o2-*.test.ts` (missing `vitest`); nothing new.
+- `npx eslint` on the 4 touched/new files: clean.
+- Not runtime-verified in the app (no emulator smoke driver run); `mergeInventoryItems` itself (Firestore) was not exercised.
 
 ## Open questions
 
@@ -72,4 +92,15 @@ Grepped `merge|dedupe|dedup|normalize|levenshtein|similar|fuzzy` over `app/lib`,
 
 ## Findings / notes for later
 
-(appended)
+- **Baseline tsc is not clean.** `app/lib/__tests__/o2-checkout-integration.test.ts` and `o2-validation.test.ts` import
+  `vitest`, which is not in `package.json` or `node_modules`, and no vitest config or npm script exists. So they never
+  run and `npx tsc --noEmit` already reports 5 errors on `main`. Also `npm run test` only runs
+  `scripts/test-audit-restock.cjs`. New hygiene tests use `node:test` via `tsx` instead. Suggest: either install vitest
+  and wire `test:unit`, or convert the o2 tests; add a `test:unit` script that runs `tsx --test app/lib/__tests__/*.test.ts`.
+- `app/lib/statpack-import.ts` `itemNameSimilarity` has zero callers (dead) and would score `NPA` vs `NPA 28 Fr` as
+  "high" confidence. Candidate for deletion (needs user approval; not deleted).
+- `parseLegacyName` only splits on parentheses, last comma, or ` - `; `NPA 28 Fr` parses as family `NPA 28 Fr` with no
+  variant. Relevant to H3/H6: sizes can be embedded in family strings, so the variant picker should split by
+  `variantSignature` tokens, not only separators.
+- Existing fuzzy matcher is weak in the other direction too: `NPA 28 Fr` vs `NPA, 28 French` (distance 5) is not
+  linked as a duplicate. Out of scope; a signature-first matcher could link them.
