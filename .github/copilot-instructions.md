@@ -23,7 +23,7 @@ This file gives AI coding assistants the minimal, actionable context needed to b
 - Build for production (static export):
   - `npm run build` (runs `next build`) — with `output: 'export'` Next may emit static files to `out/`.
   - If `out/` missing, run `npx next export` after `npm run build` to produce `out/` for Firebase hosting.
-- Deploy to Firebase hosting: ensure `out/` exists then `firebase deploy` (the failing `firebase deploy` you ran likely indicates `out/` was not present).
+- Deploy to Firebase hosting: ensure `out/` exists then `firebase deploy --only hosting`. **Never run a bare `firebase deploy`** and never deploy Firestore rules from an AI session: rules changes are deployed by a human only, with `firebase deploy --only firestore:rules`. `firebase.json` points at `firestore.prod.rules`; the wide-open `firestore.rules` is emulator-only and is loaded solely through `firebase.emulator.json` (every emulator/test npm script passes `--config firebase.emulator.json`). Do not repoint `firebase.json` at `firestore.rules`.
 - Lint: `npm run lint` (uses `eslint`).
 
 ## Environment variables
@@ -86,8 +86,8 @@ This file gives AI coding assistants the minimal, actionable context needed to b
 ## Developer workflows & commands
 
 - Dev server: `npm run dev` (Next dev server, port 3000).
-- Build & static export: `npm run build` then `npx next export` (if `out/` not produced automatically). Confirm `out/` exists before `firebase deploy`.
-- Deploy: `firebase deploy` (requires `out/` and Firebase CLI auth).
+- Build & static export: `npm run build` then `npx next export` (if `out/` not produced automatically). Confirm `out/` exists before `firebase deploy --only hosting`.
+- Deploy hosting: `firebase deploy --only hosting` (requires `out/` and Firebase CLI auth). Never run a bare `firebase deploy`, and never deploy Firestore rules from an AI session (a human runs `firebase deploy --only firestore:rules`). `firebase.json` uses `firestore.prod.rules`; the open `firestore.rules` is emulator-only via `firebase.emulator.json`.
 - Linting: `npm run lint`.
 
 ## Environment variables

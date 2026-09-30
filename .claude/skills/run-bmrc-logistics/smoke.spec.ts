@@ -12,7 +12,7 @@
  * faked with the app's documented `bmrc_role_override` localStorage flag.
  *
  * Run it (from repo root):
- *   firebase emulators:exec --only firestore --project demo-bmrc-logistics \
+ *   firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \
  *     "npx playwright test --config=.claude/skills/run-bmrc-logistics/smoke.config.ts"
  *
  * Screenshots land in .claude/skills/run-bmrc-logistics/screenshots/.

@@ -1,0 +1,117 @@
+rules_version = '2';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PRODUCTION STOPGAP RULES (plan §0.5, packet S1).
+//
+// The repo's other rules file, `firestore.rules`, is deliberately wide-open
+// (`allow read, write: if true`) so the Firestore Local Emulator Suite can run
+// seed/integration/property tests with no auth layer — see the warning at the
+// top of that file. `firebase.json` used to point production deploys at that
+// same open file; a bare `firebase deploy` could ship it straight to the live
+// project (see packet S2, which repoints `firebase.json` at THIS file instead
+// and adds a separate `firebase.emulator.json` for local/CI emulator use).
+//
+// This file is the real security boundary for the live `bmrc-logistics`
+// project. It intentionally does NOT implement the full per-role capability
+// model from plan §2 (`feat/roles-access` packet R4) yet — that is a bigger,
+// carefully-tested change. This is a narrow stopgap with one goal: nobody
+// signed OUT can read or write anything, and a signed-in member cannot grant
+// themselves admin. Every collection below `users` gets a coarse
+// "any signed-in user may read/write" rule, matching today's actual app
+// behavior (which has no finer-grained checks of its own yet) so no current
+// flow breaks. R4 will tighten per-collection access later.
+//
+// Do not deploy this file by hand — see docs/plans/log/fix-firestore-rules.md
+// for the exact `firebase deploy` command once S1-S3 are reviewed (S4).
+// ─────────────────────────────────────────────────────────────────────────────
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Caller role lookup. `exists()` guards the `get()` so a signed-in caller
+    // with no `users` doc yet (e.g. the instant before register/page.tsx writes
+    // one) evaluates to "no role" instead of throwing.
+    function callerIsAdminOrQm() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+          in ['admin', 'quartermaster'];
+    }
+
+    function callerIsMedops() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'medops';
+    }
+
+    // medops may only assign/modify these roles (mirrors MEDOPS_AVAILABLE_ROLES in
+    // app/roster/page.tsx, D-13). Without this a medops account could promote
+    // itself or anyone else to admin.
+    function medopsAssignable(role) {
+      return role in ['FTO', 'fto_intern', 'member'];
+    }
+
+    function roleUnchanged() {
+      return request.resource.data.get('role', null) == resource.data.get('role', null);
+    }
+
+    // ── users ────────────────────────────────────────────────────────────────
+    // Every current write site (grepped across app/): register/page.tsx (self
+    // create, role: 'member'), app-sidebar.tsx (self-heal create if missing,
+    // also role: 'member'), roster/page.tsx (admin/QM/medops editing OTHER
+    // members' role/canAudit/memberStatus/joinedTerm/isCommitteeMember),
+    // onboarding-tour.tsx + audit-helpers.ts/setAuditPermission +
+    // certifications.ts/updateMemberCertification (field updates, self or by
+    // admin/QM/medops), test-identity.ts/seedTestUsers (admin/QM creating or
+    // merge-updating the seeded `__test_*` identity docs — those ids are never
+    // the caller's own uid, so they only pass through the privileged branch).
+    match /users/{userId} {
+      allow read: if isSignedIn();
+
+      // Create: the caller creating their OWN doc with role locked to 'member'
+      // (all register/page.tsx and app-sidebar.tsx's self-heal ever write);
+      // admin/QM creating ANY other user doc (test identities, any role); or
+      // medops creating another user's doc with an assignable role only.
+      allow create: if isSignedIn() && (
+        (request.auth.uid == userId && request.resource.data.get('role', null) == 'member') ||
+        (request.auth.uid != userId && callerIsAdminOrQm()) ||
+        (request.auth.uid != userId && callerIsMedops() &&
+          medopsAssignable(request.resource.data.get('role', null)))
+      );
+
+      // Update: nobody may change their OWN role (request.resource.data reflects
+      // the doc AFTER the write, so updates that never touch `role` trivially
+      // pass). Admin/QM may update any OTHER user. medops may update any OTHER
+      // user, but a role change must go from and to an assignable role (so it
+      // cannot promote anyone to admin/QM/medops or demote an admin).
+      allow update: if isSignedIn() && (
+        (request.auth.uid == userId && roleUnchanged()) ||
+        (request.auth.uid != userId && callerIsAdminOrQm()) ||
+        (request.auth.uid != userId && callerIsMedops() &&
+          (roleUnchanged() ||
+            (medopsAssignable(request.resource.data.get('role', null)) &&
+             medopsAssignable(resource.data.get('role', null)))))
+      );
+
+      // No app flow deletes user docs; admin/QM only.
+      allow delete: if callerIsAdminOrQm();
+    }
+
+    // ── everything else ─────────────────────────────────────────────────────
+    // No collection in the app today enforces its own per-role write checks
+    // beyond client-side gating, so the stopgap's floor is "must be signed
+    // in" everywhere. R4 (feat/roles-access) replaces this with real
+    // per-collection/per-role rules once that branch lands.
+    //
+    // IMPORTANT: Firestore rules are ADDITIVE (any matching `allow` grants
+    // access). A bare `match /{document=**}` would also match `users/*` and
+    // silently override every restriction above, so the top-level collection
+    // name is captured and `users` (and its subcollections) excluded here.
+    match /{collection}/{document=**} {
+      allow read, write: if isSignedIn() && collection != 'users';
+    }
+  }
+}
