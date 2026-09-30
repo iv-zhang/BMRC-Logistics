@@ -1,6 +1,6 @@
 # Platform overhaul plan
 
-Status: **v5, execution started 2026-09-30 (wave 0 + wave 1)** · Updated 2026-09-30 · Plan branch `plan/platform-overhaul`
+Status: **v5, wave 0 + wave 1 landed 2026-09-30; paused for your review before wave 2** · Updated 2026-09-30 · Plan branch `plan/platform-overhaul`
 
 **Scope:** Logistics + MedOps spending and stock. Three documents stay the source of truth for their own areas,
 and the app **feeds** them, never duplicates them:
@@ -289,7 +289,7 @@ forecast workbook.
 | Branch | Status |
 |---|---|
 | fix/firestore-rules | **S1–S3 done, awaiting your review** (6779f71, 63cd57d, c42a253; `npm run test:rules` 25/25 on emulator; app not driven). **S4: deploy from c42a253 only**, never 6779f71 |
-| feat/inventory-hygiene | **in progress (remote agent): H0 H1 H2 H6 H8** |
+| feat/inventory-hygiene | **H0 H1 H2 H8 done, awaiting your review** (d539160 … ff3f34e; build/test/lint pass, 119 new unit tests, not runtime-verified). **H6 skipped** (needs design calls). Proposed D-32/D-33 text is in the branch log |
 | feat/ui-system | **U1 done, awaiting your review** (a980c8d, 9b01e34; built + typechecked, not runtime-verified); U0 needs OK |
 | feat/roles-access | **R1 + R2 done, awaiting your review** (7a50459, 1dbd8f2, 504c9fe; tsc/lint/test/build pass, not runtime-verified). 35 `isAdmin` expressions in 31 files → `canManageLogistics` |
 | feat/assets-expiry | after hygiene H2 |
@@ -346,3 +346,22 @@ Append-only. Format: date · branch · finding · suggested action.
   `inventory_helper` (`member-dashboard.tsx:397,430`, `assets/page.tsx:1011`), `AUDIT_ROLES`, admin-only checks.
   `isAdmin`/`isRealAdmin` names in `profile/page.tsx` and `mobile-bottom-nav.tsx` mean "real account is admin/QM". · Revisit in R3.
 - 2026-09-30 · roles-access · Pre-existing `no-explicit-any` lint errors in `app/types.ts:1158,1589`. · Clean up opportunistically.
+- 2026-09-30 · inventory-hygiene · **Real bug (fixed on branch):** `findDuplicateCandidates` grouped by fuzzy name and
+  chained, so `Gloves S/M/L`, `NPA 28/30 Fr`, `14g/18g IV` became one merge group, and `mergeInventoryItems` had no
+  variant check, so an admin could merge sizes and repoint every statpack reference. Now gated by `variantSignature`
+  (`buildMergePlan` throws on mismatch). · Merge before anyone runs a dedupe in prod.
+- 2026-09-30 · inventory-hygiene · `additemmodal.tsx` duplicate suggestions have the same false positives (suggestion-only,
+  not fixed). `itemNameSimilarity` in `statpack-import.ts` has no callers (deletion candidate, your call). · H6.
+- 2026-09-30 · inventory-hygiene · `parseLegacyName` only splits on `()`, last comma, or ` - `, so `NPA 28 Fr` gets no
+  variant; fuzzy matcher misses `NPA 28 Fr` vs `NPA, 28 French`. · H3/H6 should split on signature tokens.
+- 2026-09-30 · inventory-hygiene · Once unverified items are excluded, `/reconciliation` goes quiet until items are
+  re-audited after 2026-06-01. · H-seam adds "N unverified not shown"; build the H5 Unverified queue before merging this branch.
+- 2026-09-30 · inventory-hygiene · `/audit` low/expired chips still count unverified items; `useAuditTaskCards.ts`, the
+  `/audit` header and other pages still use `isAuditedThisMonth`, so they stay monthly regardless of the cadence setting. · H-seam.
+- 2026-09-30 · inventory-hygiene · Retire is one-way (no restore helper), so "Found it" on a retired item needs one. · H5.
+- 2026-09-30 · inventory-hygiene · Semester cadence window starts at `semesterStartDate` (clamped to Jan 1/Jul 1, ignored
+  if future). · Decision **H-D1**: keep that, or use a fixed half-year split?
+- 2026-09-30 · all · **Test runner is fragmented:** `o2-*.test.ts` need uninstalled `vitest`; roles tests run via
+  `scripts/test-roles.ts`; hygiene tests use `node:test` via `npx tsx --test` (some need fake Firebase env). `npm test`
+  covers none of the hygiene tests, and `scripts/test-audit-restock.cjs` re-implements restock logic, so it doesn't
+  test the real code. · Decision **T-D1**: one runner (suggest `node:test` + `tsx`, add `test:unit`), fix or delete `o2-*` (your call).
