@@ -36,7 +36,8 @@ The skill is **not in this repo** (`.claude/skills/` has no `bmrc-ui`; it is a u
 
 - `npx tsc --noEmit`: **5 errors, all pre-existing, all in `app/lib/__tests__/o2-*.test.ts`** (`vitest` not installed). **0 errors in `app/components/ui`.** (Baseline not re-run on a clean tree; the errors are in files this branch does not touch.)
 - `npx eslint app/components/ui`: **pass** (exit 0, no output).
-- `npm run build`: see "Build" entry below.
+- `npm run build`: **pass** (exit 0, all routes generated). The first attempt **failed** at prerender with `auth/invalid-api-key` on `/reports` and `/_not-found` because this worktree has no `.env.local` (environmental, not caused by these files; TypeScript stage passed). Re-ran with emulator-mode env (`NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST`, `NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST`, `NEXT_PUBLIC_FIREBASE_PROJECT_ID=demo-bmrc-logistics`), which `firebase.ts` maps to a demo key; no real project touched.
+- `npm run test` not run (audit/restock integration test; unrelated to UI primitives, and needs emulators).
 - Not runtime-verified: the smoke driver was not run (per CLAUDE.md tier rules) and no page renders these yet. Visual/dark-mode/phone checks are untested.
 - `npm install` was needed in the worktree (no `node_modules`); it did not modify tracked files.
 
