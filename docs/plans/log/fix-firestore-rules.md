@@ -63,7 +63,51 @@ checks.
 
 ---
 
-<!-- S2 section appended after S2 lands -->
+### S2 — config split so a bare `firebase deploy` can never ship open rules
+
+**What changed (no file renamed or deleted):**
+- `firebase.json`: `firestore.rules` -> `firestore.prod.rules` (only diff vs. before).
+- `firebase.emulator.json` (new): byte-for-byte copy of the old `firebase.json`, i.e. it points at the
+  open `firestore.rules`. (`diff firebase.json firebase.emulator.json` shows exactly one line.)
+  Note: no `_comment` key inside it; the Firebase CLI schema is strict about unknown keys.
+- `package.json`: `--config firebase.emulator.json` added to all 8 scripts that start emulators:
+  `emulator`, `test:invariants`, `test:properties`, `test:simulation`, `test:emulator`, `test:e2e`,
+  `dev:sandbox`, `test:events`. (`dev:emulator`, `seed*`, `sandbox:seed` only run against an
+  already-running emulator, so they need nothing.)
+- Copy-paste command examples in docs/comments updated to match, so nobody types the old form:
+  `.claude/skills/run-bmrc-logistics/SKILL.md`, `.claude/skills/run-bmrc-logistics/smoke.spec.ts`
+  (comment), `.claude/skills/bmrc-testing/SKILL.md`, `e2e/fto-attendance.spec.ts` (comment),
+  `playwright.config.ts` (comment). `STAGING.md` now notes the staging deploy uses `firebase.json`
+  (i.e. `firestore.prod.rules`).
+- `firestore.rules`: header comment now says it is loaded only via `firebase.emulator.json`.
+- `.github/copilot-instructions.md`: both "Deploy" bullets (the file contains the guidance twice)
+  now say `firebase deploy --only hosting`, forbid a bare `firebase deploy`, forbid AI sessions
+  deploying rules, and explain the config split.
+
+**Verification:**
+- `python3 json.load` on `firebase.json`, `firebase.emulator.json`, `package.json`: all parse.
+- `firebase emulators:exec --config firebase.emulator.json --only firestore --project
+  demo-bmrc-logistics "echo ..."` with the globally installed `firebase-tools` 15.30.2 and JDK 21.0.12:
+  emulator started, script ran, exit 0. (The memory note that JDK 21 needs firebase-tools 13.35.1 did
+  not apply here; firebase-tools 15 works.) Side effect on this machine: the CLI downloaded
+  `cloud-firestore-emulator-v1.22.0.jar` and deleted the cached v1.19.8 jar.
+- `npm ci` was needed in this worktree (no `node_modules`); no lockfile change in S2.
+- `npx tsc --noEmit` / `npm run lint`: see S3 (S2 touched no TS logic, only comments in two TS files).
+
+**Findings:**
+- Decision needed from you (not blocking): a bare `firebase deploy` still deploys hosting AND
+  firestore rules/indexes (now the safe prod stopgap). That is the intended outcome, but the
+  recommended habit is still the explicit `--only` forms.
+- `.github/workflows/*` deploy hosting only (per plan) and do not reference rules; left untouched.
+- `decisions.md:416` and `docs/statpack-checkin-fast-path.md:361` describe `firestore.rules` as
+  emulator-only/wide open, which stays true; left untouched (O owns decisions.md).
+- `app/hooks/useStatsData.ts`, `app/stats/page.tsx`, `app/lib/dashboards.ts` comments say medops
+  reads/dashboards are "role-gated by firestore.rules". The stopgap does NOT enforce that (any
+  signed-in user can read every collection, including `dashboards`, and write the published
+  dashboard docs, because the stopgap drops the `/dashboards` block the open file carried). Until
+  R4, these gates are client-side only. Flagged for R4.
+
+---
 
 <!-- S3 section appended after S3 lands -->
 

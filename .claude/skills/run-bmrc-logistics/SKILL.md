@@ -65,7 +65,7 @@ emulators, drives the pages, and screenshots them. Nothing can reach
 production — the project id is `demo-*`.
 
 ```bash
-firebase emulators:exec --only firestore,auth --project demo-bmrc-logistics \
+firebase emulators:exec --config firebase.emulator.json --only firestore,auth --project demo-bmrc-logistics \
   "npx playwright test --config=.claude/skills/run-bmrc-logistics/smoke.config.ts"
 ```
 

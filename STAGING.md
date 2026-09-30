@@ -25,7 +25,9 @@ A real, cloud-based Firebase project (`bmrc-staging`, separate from prod `bmrc-l
    ```bash
    firebase deploy --only firestore:rules --project staging
    ```
-   (The `.firebaserc` alias `staging → bmrc-staging` is already configured.)
+   (The `.firebaserc` alias `staging → bmrc-staging` is already configured. This deploys the rules named by
+   `firebase.json`, which is `firestore.prod.rules`; the open `firestore.rules` is emulator-only and is only ever
+   loaded via `firebase.emulator.json`.)
 
 5. **Configure the web app**:
    - Copy `.env.staging.local.example` → `.env.staging.local` (which is gitignored).
