@@ -290,7 +290,7 @@ forecast workbook.
 |---|---|
 | fix/firestore-rules | **in progress (remote agent): S1–S3**; S4 is your deploy after review |
 | feat/inventory-hygiene | **in progress (remote agent): H0 H1 H2 H6 H8** |
-| feat/ui-system | **in progress (remote agent): U1**; U0 needs OK |
+| feat/ui-system | **U1 done, awaiting your review** (a980c8d, 9b01e34; built + typechecked, not runtime-verified); U0 needs OK |
 | feat/roles-access | **in progress (remote agent): R1 + R2a/b** |
 | feat/assets-expiry | after hygiene H2 |
 | feat/purchases-budget | after R1 + A1; B-D1 |
@@ -307,3 +307,16 @@ Append-only. Format: date · branch · finding · suggested action.
   wave-1 agents work from the §1/§6 summaries. · Re-expand packets here if a later wave needs more detail.
 - 2026-09-30 · plan · Feature branches existed only locally; pushed to `origin` so cloud agents can work while the
   laptop is off. · None.
+- 2026-09-30 · ui-system · Agents launched in "cloud" mode actually ran locally in worktrees, so they stop if the
+  laptop sleeps. · Confirm the remote option works before relying on it for unattended runs.
+- 2026-09-30 · ui-system · `npx tsc --noEmit` fails on `app/lib/__tests__/o2-*.test.ts`: `vitest` is not in
+  `package.json`. · Add `vitest` as a devDependency (or exclude those tests from tsc).
+- 2026-09-30 · ui-system · `npm run build` fails without `.env.local` (`auth/invalid-api-key` prerendering
+  `/reports`, `/_not-found`). · Make the build tolerate missing Firebase env (lazy init) or document demo env for CI/worktrees.
+- 2026-09-30 · ui-system · The user-level `bmrc-ui` skill is stale (claims dashboard has no gradient; wrong font/tokens;
+  repo uses `--font-hanken-grotesk`). Anti-clutter rules are drafted in `docs/plans/log/feat-ui-system.md` on that branch. · Update the skill during U-seam.
+- 2026-09-30 · ui-system · `/inventory` uses `alert()`/`confirm()`; merge/delete dialogs aren't full-screen on phones. · Fix in U3 via `ResponsiveModal`.
+- 2026-09-30 · ui-system · Float `toFixed(2)` money formatting in `purchase-modal.tsx`, `statpack-widget.tsx`,
+  `statpack-editor-modal.tsx`, `purchase-history.tsx`, plus a separate formatter in `app/lib/stats/shared.ts`. · Move to `MoneyText`/`formatCents` (integer cents) in U3/P4.
+- 2026-09-30 · ui-system · Dead-file candidates (not deleted): `tutorial-overlay.tsx` (no importers),
+  `statpack-import-modal.tsx.new` (duplicate of the real file), the `/fix-timestamps` page (unlinked; its lib is still used). · Your call, per U-D2.
