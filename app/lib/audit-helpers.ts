@@ -25,10 +25,10 @@ import {
   Timestamp,
 } from 'firebase/firestore';
 import { db } from '@/firebase';
-import type { InventoryItem, User } from '@/app/types';
+import type { InventoryItem, ItemExistence, User } from '@/app/types';
 import { addAuditEventToBatch } from '@/app/lib/audit';
 import { determineIsAsset } from '@/app/lib/inventory';
-import { batchHasStock, computeBagStock, isAuditedThisMonth } from '@/app/lib/item-status';
+import { batchHasStock, computeBagStock, getExistence, isAuditedThisMonth } from '@/app/lib/item-status';
 
 // ─── Permission helpers ───────────────────────────────────────────────────────
 
@@ -113,6 +113,12 @@ export interface DisposableSnapshot {
   auditVerified: boolean;
   lastAuditDate?: Date;
   auditCondition?: 'Good' | 'Damaged' | 'Expired';
+  /**
+   * Derived existence (`getExistence`). Always set by `generateAuditSnapshot`;
+   * optional only so hand-built snapshots keep compiling — `analyzeRestockNeeds`
+   * treats a missing value as confirmed.
+   */
+  existence?: ItemExistence;
   /** Legacy field for backward compat — prefer totalUnits */
   totalStockQuantity?: number;
 }
@@ -248,6 +254,7 @@ export async function generateAuditSnapshot(
         auditVerified: verifiedThisCycle,
         lastAuditDate,
         auditCondition: item.auditCondition,
+        existence: getExistence(item),
         totalStockQuantity: item.totalStockQuantity,
       });
     }
@@ -510,11 +517,15 @@ export interface RestockDecision {
  * Analyze inventory and produce restock recommendations.
  * Uses total on-hand UNITS vs reorderThreshold — the same comparison the
  * inventory page makes — so both surfaces flag the same items.
+ *
+ * Unverified and retired items are excluded: a record nobody has confirmed
+ * since the baseline may not exist, so it must not trigger a purchase.
  */
 export function analyzeRestockNeeds(
   items: DisposableSnapshot[]
 ): RestockDecision[] {
   return items
+    .filter((item) => item.existence === undefined || item.existence === 'confirmed')
     .map((item) => {
       const deficit = item.reorderThreshold - item.totalUnits;
       let urgency: RestockDecision['urgency'] = 'ok';

@@ -487,3 +487,53 @@ export async function recordItemFix(
     }),
   });
 }
+
+// ─── Retire (record does not exist) ───────────────────────────────────────────
+
+/**
+ * Mark an inventory record as retired: an auditor looked and the item does not
+ * exist (ghost record, long-gone stock). Never deletes: existence becomes
+ * `'retired'` (terminal; `getExistence` reads it), and the record keeps its
+ * history, references, and logs. Retired items drop out of alerts, restock, and
+ * exception lists. Stock counts and `lastAuditDate` are deliberately untouched.
+ *
+ * Writes the usual triple: inventory change + `inventory_logs` row + `auditEvents`.
+ */
+export async function retireInventoryItem(
+  item: InventoryItem,
+  actor: AuditActor,
+  reason?: string
+): Promise<void> {
+  const note = reason?.trim() || undefined;
+  const physicalBefore = computeBagStock(item).totalItems;
+
+  await updateDoc(doc(db, 'inventory', item.id), removeUndefined({
+    existence: 'retired',
+    retiredAt: serverTimestamp(),
+    retiredBy: actor.uid,
+    retiredReason: note,
+    updatedAt: serverTimestamp(),
+  }));
+
+  await addDoc(collection(db, 'inventory_logs'), removeUndefined({
+    itemId: item.id,
+    itemName: item.name,
+    action: 'item_retired',
+    userId: actor.uid,
+    userName: actor.name,
+    timestamp: serverTimestamp(),
+    notes: `Retired: item not found${note ? ` — ${note}` : ''}`,
+    details: removeUndefined({ reason: note, recordedPhysicalStock: physicalBefore }),
+  }));
+
+  await recordAuditEvent({
+    eventType: 'item_retired',
+    source: 'supply_audit',
+    sourceId: item.id,
+    actor: { userId: actor.uid, userName: actor.name, userEmail: actor.email ?? null },
+    targets: [{ collection: 'inventory', docId: item.id }],
+    before: { existence: item.existence ?? null },
+    after: { existence: 'retired' },
+    details: removeUndefined({ reason: note, recordedPhysicalStock: physicalBefore }),
+  });
+}

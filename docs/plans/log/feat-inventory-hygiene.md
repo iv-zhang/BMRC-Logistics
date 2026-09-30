@@ -9,7 +9,7 @@ Model/agent: Sonnet 5.5 (autonomous). Nothing here touches live data; no migrati
 |---|---|---|
 | H0 diagnose-merges | done (read-only, findings below) | (this commit) |
 | H1 variant signature + merge gate | done | (H1 commit) |
-| H2 existence types/status | pending | |
+| H2 existence types/status | done | (H2 commit) |
 | H8 audit cadence | pending | |
 | H6 picker/editor | pending | |
 
@@ -77,7 +77,33 @@ Grepped `merge|dedupe|dedup|normalize|levenshtein|similar|fuzzy` over `app/lib`,
   typing `NPA 30 Fr`. Suggestion-only; the merge itself is now refused. No UI consumes `findVariantConflicts` yet (H4/H5).
 - Tests run on Node's built-in runner (`npx tsx --test ...`); see Findings on the missing vitest install.
 
+## H2 notes
+
+- `ItemExistence` + `InventoryItem.existence/retiredAt/retiredBy/retiredReason` (types.ts).
+- `getExistence(item)` / `isConfirmedItem(item)` / `EXISTENCE_BASELINE_CUTOFF` (item-status.ts). Only a stored `retired`
+  is authoritative; confirmed vs unverified is **derived** from `lastAuditDate >= 2026-06-01` (local midnight). A stored
+  `confirmed`/`unverified` is ignored, so nothing can go sticky-green.
+- `retireInventoryItem(item, actor, reason?)` (audit-actions.ts): sets existence `retired` + retiredAt/By/Reason, triple
+  write (`inventory_logs` action `item_retired`, `auditEvents` `item_retired`). Never deletes, never changes stock or
+  `lastAuditDate`. No "un-retire" yet (H5 can add "Found it" which stamps `lastAuditDate`, but a retired item stays
+  retired until something clears `existence`; see open questions).
+- Lib selectors now excluding non-confirmed items (pages untouched):
+  - `analyzeRestockNeeds` (filters on new `DisposableSnapshot.existence`, set by `generateAuditSnapshot`).
+  - `computeStorageRollups` (low/out/expiring/expired buckets + `restockItems` only for confirmed; `itemCount` and audit
+    freshness still count everything).
+  - `buildExceptions` (reconciliation): skips non-confirmed items entirely.
+- Deliberately NOT changed: `getItemStatus` and `computeBagStock` (shared stock math, D-4/D-5), and the
+  `AuditSnapshot.lowStockCount/expiredCount` totals (the audit debug panel asserts they equal the count of flagged
+  `disposables`, and `/audit` shows them as chips). They still include unverified items.
+
 ## Verification
+
+### H2
+- `NEXT_PUBLIC_FIREBASE_API_KEY=fake-key NEXT_PUBLIC_FIREBASE_PROJECT_ID=demo-bmrc-logistics npx tsx --test app/lib/__tests__/existence.test.ts`: 11 tests, 11 pass.
+- `npm run test` (scripts/test-audit-restock.cjs): 69 passed, 0 failed. (That script re-implements the logic and does not import `analyzeRestockNeeds`, so it does not cover the new filter.)
+- `npx tsc --noEmit`: only the 5 pre-existing `o2-*.test.ts` vitest errors.
+- `npx eslint` on touched files: only 2 pre-existing `no-explicit-any` errors in `app/types.ts` (`Record<string, any>` at `InventoryLog.details` and `ApparelClaim.details`); nothing from this packet.
+- `retireInventoryItem` (Firestore writes) not exercised; not runtime-verified in the app.
 
 ### H1
 - `npx tsx --test app/lib/__tests__/variant-signature.test.ts`: 84 tests, 84 pass, 0 fail.
@@ -88,7 +114,15 @@ Grepped `merge|dedupe|dedup|normalize|levenshtein|similar|fuzzy` over `app/lib`,
 
 ## Open questions
 
-(appended)
+1. **Reconciliation page goes quiet at baseline.** Until items are audited on/after 2026-06-01, `buildExceptions` skips
+   them, so `/reconciliation` shows few exceptions. Intended per the plan, but H-seam should add an "N unverified items
+   not shown" line (and the Unverified queue, H5, must exist before this branch merges).
+2. **`/audit` snapshot chips** (`lowStockCount`, `expiredCount`) still include unverified items; excluding them needs a
+   page + debug-panel change (they must agree with the flagged `disposables`). Left to H-seam.
+3. **Un-retire.** `retireInventoryItem` is one-way. Should "Found it" on a retired item clear `existence`? (Suggest yes,
+   via a small `restoreInventoryItem`, added with H5.)
+4. Retired items still appear in `findDuplicateCandidates` and in the inventory page list; hiding retired by default is
+   H4 (page) work.
 
 ## Findings / notes for later
 

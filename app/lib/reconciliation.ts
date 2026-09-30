@@ -19,6 +19,7 @@ import {
   isAuditedThisMonth,
   isStatpackAuditCurrent,
   batchHasStock,
+  isConfirmedItem,
 } from '@/app/lib/item-status';
 import type { InventoryItem, Statpack } from '@/app/types';
 
@@ -73,6 +74,10 @@ export function buildExceptions(
   const out: ReconciliationException[] = [];
 
   for (const item of items || []) {
+    // Unverified / retired records may not exist, so they raise no exceptions
+    // (the Unverified audit queue is where they get resolved).
+    if (!isConfirmedItem(item)) continue;
+
     const name = item.name || 'Unnamed item';
 
     // ORPHANED LOCATION — residue of a skipped intake/move step. The structured

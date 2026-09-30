@@ -16,7 +16,7 @@ import {
   formatLevelLabel,
   LOCATION_SEPARATOR,
 } from '@/app/utils/storage-location';
-import type { InventoryBatch, InventoryItem } from '@/app/types';
+import type { InventoryBatch, InventoryItem, ItemExistence } from '@/app/types';
 
 export type ItemStatus = 'ok' | 'low' | 'out' | 'expired' | 'expiring';
 
@@ -132,6 +132,53 @@ export function getItemStatus(item: InventoryItem): ItemStatus {
   if (batches.some(b => b.expirationDate && b.expirationDate >= now && b.expirationDate <= cutoff))
     return 'expiring';
   return 'ok';
+}
+
+// ── Existence (confirmed / unverified / retired) ─────────────────────────────
+
+/**
+ * Baseline cutoff for "confirmed" stock: an item counts as confirmed only if an
+ * audit on/after this date saw it (local midnight, 2026-06-01). Earlier audits
+ * predate the hygiene pass and are not trusted. Month index 5 = June.
+ */
+export const EXISTENCE_BASELINE_CUTOFF = new Date(2026, 5, 1);
+
+function asDate(v: unknown): Date | undefined {
+  if (v instanceof Date) return isNaN(v.getTime()) ? undefined : v;
+  if (v && typeof (v as { toDate?: () => Date }).toDate === 'function') {
+    try {
+      const d = (v as { toDate: () => Date }).toDate();
+      return d instanceof Date && !isNaN(d.getTime()) ? d : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Does this record physically exist, as far as we can prove?
+ *   - `retired`     stored `existence === 'retired'` (terminal, wins over everything).
+ *   - `confirmed`   not retired AND `lastAuditDate >= EXISTENCE_BASELINE_CUTOFF`.
+ *   - `unverified`  everything else (including items with no audit date).
+ * Derived, not asserted: a stored 'confirmed'/'unverified' is ignored so a flag
+ * set once can never stay true forever (see D-6 for the same reasoning).
+ */
+export function getExistence(
+  item: Pick<InventoryItem, 'existence' | 'lastAuditDate'>,
+): ItemExistence {
+  if (item.existence === 'retired') return 'retired';
+  const audited = asDate(item.lastAuditDate);
+  if (audited && audited.getTime() >= EXISTENCE_BASELINE_CUTOFF.getTime()) return 'confirmed';
+  return 'unverified';
+}
+
+/**
+ * True for items that may drive alerts, restock decisions, and exception
+ * lists. Unverified and retired items must not (they may not exist).
+ */
+export function isConfirmedItem(item: Pick<InventoryItem, 'existence' | 'lastAuditDate'>): boolean {
+  return getExistence(item) === 'confirmed';
 }
 
 // ── Procurement: on-the-way display (Log Purchase → Receive) ─────────────────
