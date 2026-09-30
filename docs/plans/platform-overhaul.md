@@ -41,9 +41,18 @@ wave 5:  [2 U-seam]
 2. The subagent gets: packet text + **Skills** + "only touch files under *Owns*."
 3. It ends with `npx tsc --noEmit` + `npm run lint` on its files and reports its file list and open questions. Never commit,
    never run the smoke driver, never run a migration/seed live, never deploy rules.
-4. The orchestrator (**O**, Opus) does seams, rebases, `decisions.md`, and §9 Status.
+4. The orchestrator (**O**, Opus) does seams, rebases, `decisions.md`, §9 Status, and [findings.md](findings.md).
 5. **Review gate:** each wave stops when its packets land. Nothing from the next wave starts until the user has
    manually reviewed the branches and said "go". Agents never chain into later packets on their own.
+6. **Read only what you need.** Agents read this file's header (to the first `---`), §0, **their own branch's section**,
+   their branch log, and their branch's section of [findings.md](findings.md). Open another § only when your packet
+   cites it (e.g. §7 fixtures). Don't read other branches' sections or logs.
+7. **Branch log = open work only.** `docs/plans/log/<branch>.md` holds: one line per packet done (+ commit), open
+   questions, and new findings not yet folded. When O folds a finding into findings.md, or it's fixed, or it becomes
+   a decision (→ `decisions.md` via O), **delete it from the log**. No verification transcripts; one result line per packet.
+8. **Known environment noise (not your bug):** `tsc` errors in `app/lib/__tests__/o2-*.test.ts` (`vitest` missing, T-D1).
+   Build without `.env.local` as `NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 npm run build` (demo key, touches
+   nothing real). Any emulator script passes `--config firebase.emulator.json`.
 
 **Never delete or rename a repo file without asking the user first**; list it in the report instead.
 Packets in the same wave own **disjoint files**. A `decisions.md` conflict means stop. New non-admin writes get flagged.
@@ -58,9 +67,9 @@ Model key: **H/low** Haiku · **S/med** Sonnet · **O** orchestrator.
 
 **What we found:** the rules you pasted from the console are the repo's *emulator-only* file
 (`allow read, write: if true`). It's the older revision, without the `/dashboards` block added on 2026-08-06, so it was
-deployed at some point between Jul 4 and Aug 6. The likely cause: `firebase.json` points `firestore.rules` at that
-emulator file, so any bare `firebase deploy` (which `.github/copilot-instructions.md` tells people to run) ships it.
-The CI workflows deploy hosting only.
+deployed at some point between Jul 4 and Aug 6. `firebase.json` pointed `firestore.rules` at that emulator file, so a
+bare `firebase deploy` would ship it, but `.firebaserc` defaults to `bmrc-staging`, so prod was likely hit via an
+explicit `--project` or a console paste (see §10). The CI workflows deploy hosting only.
 
 **Impact:** the Firebase web config ships inside the public JS bundle. Anyone who opens the site can read, write, or
 delete **every collection** without logging in: member names/emails, roles (including making themselves admin),
@@ -282,86 +291,37 @@ forecast workbook.
 |---|---|---|---|
 | **S-D1** | later | Restrict sign-up to `@berkeley.edu` emails? | Yes, after the stopgap ships. |
 | **C-D2** | C2 | Loaner lost after N days overdue | 30. |
-| **U-D1/2** | U1/U2 | Visual direction; which dead files to delete (`tutorial-overlay.tsx`, `statpack-import-modal.tsx.new`, `/fix-timestamps`) | Your style everywhere; U2 lists the candidates with evidence and **you approve each deletion**. |
+| **U-D1/2** | U1/U2 | Visual direction; which dead files to delete: `tutorial-overlay.tsx` (no importers; would also trip the `users` create rule if revived), `statpack-import-modal.tsx.new` (duplicate), the `/fix-timestamps` page (unlinked; its lib is still used), `itemNameSimilarity` in `statpack-import.ts` (no callers) | Your style everywhere; **you approve each deletion**. |
+| **H-D1** | H-seam | Semester audit window: start at `semesterStartDate` (current, clamped to Jan 1/Jul 1, ignored if future) or a fixed Jan–Jun / Jul–Dec split? | Keep `semesterStartDate`. |
+| **H-D2** | H merge | Approve the D-32 (existence + cadence) and D-33 (merge only identical variants) wording in the hygiene branch log | Approve; O copies it into `decisions.md` at merge. |
+| **T-D1** | any | Tests run three ways (`vitest` `o2-*` tests never run; `scripts/test-roles.ts`; `node:test` via `npx tsx --test`), and `npm test` runs none of the hygiene tests. `scripts/test-audit-restock.cjs` re-implements the restock logic, so it doesn't test the real code. | One runner: `node:test` + `tsx`, a `test:unit` script chained into `npm test`; fix or delete the `o2-*` tests (your call). |
+| **R-D1** | R3 | Should treasurer receive restock notifications (recipients hard-coded admin/QM at `statpack-restock-flag.ts:111`)? | No: they're operational, not finance. |
 
 ## 9. Status
 
 | Branch | Status |
 |---|---|
 | fix/firestore-rules | **S1–S3 done, awaiting your review** (6779f71, 63cd57d, c42a253; `npm run test:rules` 25/25 on emulator; app not driven). **S4: deploy from c42a253 only**, never 6779f71 |
-| feat/inventory-hygiene | **H0 H1 H2 H8 done, awaiting your review** (d539160 … ff3f34e; build/test/lint pass, 119 new unit tests, not runtime-verified). **H6 skipped** (needs design calls). Proposed D-32/D-33 text is in the branch log |
+| feat/inventory-hygiene | **H0 H1 H2 H8 done, awaiting your review** (d539160 … ff3f34e; build/test/lint pass, 119 new unit tests, not runtime-verified). Fixes a real merge-across-sizes bug, so **no dedupe in prod until this merges**. **H6 skipped** (needs design calls). Proposed D-32/D-33 text is in the branch log |
 | feat/ui-system | **U1 done, awaiting your review** (a980c8d, 9b01e34; built + typechecked, not runtime-verified); U0 needs OK |
 | feat/roles-access | **R1 + R2 done, awaiting your review** (7a50459, 1dbd8f2, 504c9fe; tsc/lint/test/build pass, not runtime-verified). 35 `isAdmin` expressions in 31 files → `canManageLogistics` |
 | feat/assets-expiry | after hygiene H2 |
 | feat/purchases-budget | after R1 + A1; B-D1 |
 | feat/uniforms | after P1; C6 needs your CSV export of the responses sheet |
 
-Each in-flight branch keeps its own running log at `docs/plans/log/<branch-name>.md` (packets done, verification
-results, open questions, findings). Branch logs are folded into §10 by O when branches are reviewed.
+Each in-flight branch keeps a short log at `docs/plans/log/<branch-name>.md` (§0 rule 7). O folds its findings into
+[findings.md](findings.md) at each review gate and prunes the log.
 
-## 10. Findings log (bugs + notes for later)
+## 10. Unassigned findings
 
-Append-only. Format: date · branch · finding · suggested action.
+Branch-owned findings live in **[findings.md](findings.md)** (one section per branch). Only open items no branch owns yet
+stay here; delete a line once it's done.
 
-- 2026-09-30 · plan · The v2 packet text for H0–H8 and U0–U4 is no longer in this file (only the summaries above);
-  wave-1 agents work from the §1/§6 summaries. · Re-expand packets here if a later wave needs more detail.
-- 2026-09-30 · plan · Feature branches existed only locally; pushed to `origin` so cloud agents can work while the
-  laptop is off. · None.
-- 2026-09-30 · ui-system · Agents launched in "cloud" mode actually ran locally in worktrees, so they stop if the
-  laptop sleeps. · Confirm the remote option works before relying on it for unattended runs.
-- 2026-09-30 · ui-system · `npx tsc --noEmit` fails on `app/lib/__tests__/o2-*.test.ts`: `vitest` is not in
-  `package.json`. · Add `vitest` as a devDependency (or exclude those tests from tsc).
-- 2026-09-30 · ui-system · `npm run build` fails without `.env.local` (`auth/invalid-api-key` prerendering
-  `/reports`, `/_not-found`). · Make the build tolerate missing Firebase env (lazy init) or document demo env for CI/worktrees.
-- 2026-09-30 · ui-system · The user-level `bmrc-ui` skill is stale (claims dashboard has no gradient; wrong font/tokens;
-  repo uses `--font-hanken-grotesk`). Anti-clutter rules are drafted in `docs/plans/log/feat-ui-system.md` on that branch. · Update the skill during U-seam.
-- 2026-09-30 · ui-system · `/inventory` uses `alert()`/`confirm()`; merge/delete dialogs aren't full-screen on phones. · Fix in U3 via `ResponsiveModal`.
-- 2026-09-30 · ui-system · Float `toFixed(2)` money formatting in `purchase-modal.tsx`, `statpack-widget.tsx`,
-  `statpack-editor-modal.tsx`, `purchase-history.tsx`, plus a separate formatter in `app/lib/stats/shared.ts`. · Move to `MoneyText`/`formatCents` (integer cents) in U3/P4.
-- 2026-09-30 · ui-system · Dead-file candidates (not deleted): `tutorial-overlay.tsx` (no importers),
-  `statpack-import-modal.tsx.new` (duplicate of the real file), the `/fix-timestamps` page (unlinked; its lib is still used). · Your call, per U-D2.
-- 2026-09-30 · firestore-rules · S1 as first written had two holes that only S3 caught: the `{document=**}` catch-all
-  also matched `users/*` (rules are OR'd → anyone signed in could make themselves admin), and medops could grant
-  `admin`. Fixed in c42a253 (catch-all excludes `users`; medops may only assign FTO/fto_intern/member; only admin/QM delete users). · Always write an emulator test before trusting a rule.
-- 2026-09-30 · firestore-rules · §0.5 root-cause guess is probably wrong: `.firebaserc` default is `bmrc-staging` and the
-  prod id isn't in the repo, so a bare deploy would have hit staging. Open rules reached prod another way (explicit
-  `--project` or a console paste). · The `firebase.json` split still protects every project; check prod rules history in the console.
-- 2026-09-30 · firestore-rules · Stopgap gaps for R4: every signed-in user (including self-registered strangers) can read
-  all user docs and read/write every other collection; anyone signed in can write the published `dashboards` doc.
-  Comments in `app/hooks/useStatsData.ts`, `app/stats/page.tsx`, `app/lib/dashboards.ts` claiming "role-gated by
-  firestore.rules" are false until R4. · R4 + S-D1 (`@berkeley.edu` sign-up restriction).
-- 2026-09-30 · firestore-rules · New `npm run test:rules`; emulator worked on firebase-tools 15.30.2 + JDK 21 here.
-  All emulator/sandbox scripts now pass `--config firebase.emulator.json`. · Use that config for any new emulator script.
-- 2026-09-30 · firestore-rules · `tutorial-overlay.tsx` (dead) would hit the `users` create rule if revived. · Another reason to delete it (your call).
-- 2026-09-30 · roles-access · `canManageEvents` in `roles.ts` duplicates `isEventManagerRole` (events.ts imports
-  Firebase, so importing it would make roles.ts impure); a test asserts they agree for every role. · Have `events.ts` re-export from `roles.ts` in R-seam so there is one definition.
-- 2026-09-30 · roles-access · Role unit tests live in `scripts/test-roles.ts` (tsx), chained into `npm run test`,
-  because nothing in the repo runs vitest. · Pick one test runner (see the vitest finding above).
-- 2026-09-30 · roles-access · Treasurer can't be assigned yet: missing from roster `ROLE_OPTIONS`; `getRoleColor`
-  (`profile/page.tsx`) and `tourRoleFor` fall through to member; no treasurer in test identities or emulator logins. · R3.
-- 2026-09-30 · roles-access · `/settings` has no editor for `privateFinanceRoles` (the value round-trips). · P6 already owns it; confirm.
-- 2026-09-30 · roles-access · Restock-notification recipients are hard-coded admin/QM (`statpack-restock-flag.ts:111`);
-  decide whether treasurer receives them. · R3/R-seam decision.
-- 2026-09-30 · roles-access · Left unconverted on purpose: medops event-manager gates, three-role checks that include
-  `inventory_helper` (`member-dashboard.tsx:397,430`, `assets/page.tsx:1011`), `AUDIT_ROLES`, admin-only checks.
-  `isAdmin`/`isRealAdmin` names in `profile/page.tsx` and `mobile-bottom-nav.tsx` mean "real account is admin/QM". · Revisit in R3.
-- 2026-09-30 · roles-access · Pre-existing `no-explicit-any` lint errors in `app/types.ts:1158,1589`. · Clean up opportunistically.
-- 2026-09-30 · inventory-hygiene · **Real bug (fixed on branch):** `findDuplicateCandidates` grouped by fuzzy name and
-  chained, so `Gloves S/M/L`, `NPA 28/30 Fr`, `14g/18g IV` became one merge group, and `mergeInventoryItems` had no
-  variant check, so an admin could merge sizes and repoint every statpack reference. Now gated by `variantSignature`
-  (`buildMergePlan` throws on mismatch). · Merge before anyone runs a dedupe in prod.
-- 2026-09-30 · inventory-hygiene · `additemmodal.tsx` duplicate suggestions have the same false positives (suggestion-only,
-  not fixed). `itemNameSimilarity` in `statpack-import.ts` has no callers (deletion candidate, your call). · H6.
-- 2026-09-30 · inventory-hygiene · `parseLegacyName` only splits on `()`, last comma, or ` - `, so `NPA 28 Fr` gets no
-  variant; fuzzy matcher misses `NPA 28 Fr` vs `NPA, 28 French`. · H3/H6 should split on signature tokens.
-- 2026-09-30 · inventory-hygiene · Once unverified items are excluded, `/reconciliation` goes quiet until items are
-  re-audited after 2026-06-01. · H-seam adds "N unverified not shown"; build the H5 Unverified queue before merging this branch.
-- 2026-09-30 · inventory-hygiene · `/audit` low/expired chips still count unverified items; `useAuditTaskCards.ts`, the
-  `/audit` header and other pages still use `isAuditedThisMonth`, so they stay monthly regardless of the cadence setting. · H-seam.
-- 2026-09-30 · inventory-hygiene · Retire is one-way (no restore helper), so "Found it" on a retired item needs one. · H5.
-- 2026-09-30 · inventory-hygiene · Semester cadence window starts at `semesterStartDate` (clamped to Jan 1/Jul 1, ignored
-  if future). · Decision **H-D1**: keep that, or use a fixed half-year split?
-- 2026-09-30 · all · **Test runner is fragmented:** `o2-*.test.ts` need uninstalled `vitest`; roles tests run via
-  `scripts/test-roles.ts`; hygiene tests use `node:test` via `npx tsx --test` (some need fake Firebase env). `npm test`
-  covers none of the hygiene tests, and `scripts/test-audit-restock.cjs` re-implements restock logic, so it doesn't
-  test the real code. · Decision **T-D1**: one runner (suggest `node:test` + `tsx`, add `test:unit`), fix or delete `o2-*` (your call).
+- 2026-09-30 · Open rules reached prod some other way than a bare deploy (`.firebaserc` default is `bmrc-staging`; the
+  prod id isn't in the repo), so maybe an explicit `--project` or a console paste. · **You:** check the prod rules
+  history in the Firebase console.
+- 2026-09-30 · "Remote" agents actually ran locally in `.claude/worktrees/`, so they stop if the laptop sleeps. · Confirm
+  the cloud option works before relying on unattended runs.
+- 2026-09-30 · `npm run build` fails without `.env.local` (`auth/invalid-api-key` prerendering `/reports`,
+  `/_not-found`). · Make Firebase init lazy so CI/worktrees build without env.
+- 2026-09-30 · Pre-existing `no-explicit-any` lint errors in `app/types.ts:1158,1589`. · Fix opportunistically.
