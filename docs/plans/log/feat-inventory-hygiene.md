@@ -11,7 +11,7 @@ Model/agent: Sonnet 5.5 (autonomous). Nothing here touches live data; no migrati
 | H1 variant signature + merge gate | done | (H1 commit) |
 | H2 existence types/status | done | (H2 commit) |
 | H8 audit cadence | done | (H8 commit) |
-| H6 picker/editor | pending | |
+| H6 picker/editor | skipped (see below) | n/a |
 
 ## H0 findings: where could different sizes/variants get merged?
 
@@ -61,6 +61,39 @@ Grepped `merge|dedupe|dedup|normalize|levenshtein|similar|fuzzy` over `app/lib`,
   duplicates; same-SKU/barcode cross-variant pairs surface as a distinct `conflict` reason instead of a mergeable
   duplicate). Both are pure additions; nothing that used to be blocked becomes allowed.
 - (3) is UI-level suggestion only; it lives in a component (not owned by these packets), so it is logged, not edited.
+
+## H6: skipped
+
+The v2 packet text is lost and H6 (family/variant picker, container control) lives in `additemmodal.tsx` /
+`intake-wizard.tsx` and the audit drawer, i.e. UI with real design choices (the **On shelf | In a container** control,
+`Container.kind`, variant-matched bin first). Guessing at that from a one-line summary would likely be thrown away, and
+`additemmodal.tsx` is also where the un-gated duplicate suggestions live. Suggested scope when it is re-expanded: a
+variant picker that fills `family` + `variantLabel` from `variantSignature` tokens, and swap the modal's
+Levenshtein-only suggestions for `checkVariantMerge`.
+
+## Proposed decisions text (for O to add to decisions.md; not edited here)
+
+### D-32 (proposed): Item existence is derived; unverified stock is not actionable
+**Decision:** every `inventory` record has an existence: `confirmed` (audited on/after 2026-06-01), `unverified`
+(everything else), or `retired` (audited and found not to exist). Only `retired` is stored; confirmed/unverified are
+derived from `lastAuditDate` by `getExistence()` (`app/lib/item-status.ts`). Unverified and retired items are excluded
+from restock analysis (`analyzeRestockNeeds`), storage-rollup alerts (`computeStorageRollups`), and reconciliation
+exceptions (`buildExceptions`). `getItemStatus`/`computeBagStock` are unchanged (D-4/D-5). Retiring never deletes
+(`retireInventoryItem`: triple write, history and references kept).
+**Why:** Principle 1 (fail safe) and 2 (derive, don't assert): a record nobody has seen since the baseline may be a
+ghost, and must not trigger purchases or crowd the exception list; a stored "confirmed" flag would go stale forever.
+**Amends D-6:** the audit window is `thresholds.auditCadence` (`monthly` default, `quarterly`, `semester`, `yearly`),
+evaluated by `isAuditCurrent()`. `isAuditedThisMonth` remains as the monthly special case. Semester windows start at
+`semesterStartDate`, clamped to no earlier than the calendar half-year start.
+
+### D-33 (proposed): Merge only identical variants
+**Decision:** two items may be treated as duplicates or merged only when their variant signatures match
+(`variantSignature()` in `app/lib/variant-signature.ts`: size N, Fr, gauge, mm/in/mL, S-XL, adult/peds/infant, triage
+colors, bare numbers; pack counts ignored). `findDuplicateCandidates` never links different variants,
+`mergeInventoryItems` refuses them, and a shared SKU/barcode across different variants is reported as a `conflict`
+(`findVariantConflicts`) for a human to resolve. Unsized vs sized is a mismatch.
+**Why:** merging `NPA 28 Fr` into `NPA 30 Fr` pools two products and repoints every statpack that requires the 28 Fr.
+Near-identical names (edit distance 1-2) are exactly what differs between sizes, so fuzzy name matching alone is unsafe.
 
 ## H1 notes
 
@@ -118,6 +151,14 @@ Grepped `merge|dedupe|dedup|normalize|levenshtein|similar|fuzzy` over `app/lib`,
   call `isAuditedThisMonth` directly stay monthly until H-seam moves them to `isAuditCurrent`/`auditCycleLabel`.
 
 ## Verification
+
+### Final pass (after all packets)
+- `npm run build` (with fake `NEXT_PUBLIC_FIREBASE_*` env, since the worktree has no `.env.local`): success, all routes prerendered.
+- `npm run test`: 69 passed, 0 failed.
+- All four `node:test` files together: 119 tests, 119 pass, 0 fail.
+- `npx tsc --noEmit`: only the 5 pre-existing vitest-import errors in `app/lib/__tests__/o2-*.test.ts` (present on `main`).
+- `npx eslint` on all touched files: clean (the only lint errors seen were 2 pre-existing `no-explicit-any` in `app/types.ts`, not from this branch).
+- Emulator invariant suites and the Playwright smoke driver were NOT run (per CLAUDE.md: only before a commit to main / on request). Nothing was run against live Firestore; no migration was run.
 
 ### H8
 - `NEXT_PUBLIC_FIREBASE_API_KEY=fake-key NEXT_PUBLIC_FIREBASE_PROJECT_ID=demo-bmrc-logistics npx tsx --test app/lib/__tests__/audit-cadence.test.ts`: 17 tests, 17 pass (includes a sweep proving monthly == `isAuditedThisMonth`).
