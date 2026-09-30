@@ -1,6 +1,6 @@
 # Platform overhaul plan
 
-Status: **v5, wave 0 + wave 1 landed 2026-09-30; paused for your review before wave 2** · Updated 2026-09-30 · Plan branch `plan/platform-overhaul`
+Status: **v5, wave 0 + wave 1 landed 2026-09-30; wave 2a in progress (§8.5)** (§8 decisions recorded 2026-09-30) · Updated 2026-09-30 · Plan branch `plan/platform-overhaul`
 
 **Scope:** Logistics + MedOps spending and stock. Three documents stay the source of truth for their own areas,
 and the app **feeds** them, never duplicates them:
@@ -287,15 +287,57 @@ configurable · paidFrom list · role matrix · private finance = **admin only**
 priority A > B > C > D · uniforms verified via Lang's Zelle · CSV = Treasurer's Expenses headers · the app feeds the
 forecast workbook.
 
-| ID | Blocks | Question | Recommendation |
+**Resolved (v5, Ivan 2026-09-30):**
+
+| ID | Decision | Notes for implementers |
+|---|---|---|
+| **S-D1** | Sign-up allowed only for `@berkeley.edu` and `@berkeleymrc.org`; all other domains rejected. No pending/approval queue. | Members use personal `@berkeley.edu` accounts (no separate member accounts). `@berkeleymrc.org` = committee/role accounts only (MedOps, Logistics, Admin…). Allowed domains live in `org_settings`, not hard-coded. Enforce in Firestore rules **and** UI; ships **after** `fix/firestore-rules` (a client-only check is meaningless while rules are open). **Blocked on the open question below before building.** |
+| **C-D2** | Loaner lost after **30 days**, an admin-editable threshold in org config (not a constant). | Also: a loaner still out when the semester ends is flagged regardless of day count (members graduate/leave over breaks). |
+| **U-D1** | My style everywhere. | — |
+| **U-D2** | Approved: delete `tutorial-overlay.tsx`, `statpack-import-modal.tsx.new`, the `/fix-timestamps` page (keep its lib), `itemNameSimilarity`. | **One commit per deletion** so each reverts alone. `/fix-timestamps` writes prod data from a live route; any future use belongs in `scripts/` with a dry-run. |
+| **H-D1** | Keep `semesterStartDate`. | Spring starts mid-Jan, fall late Aug; a fixed Jan–Jun / Jul–Dec split would misplace summer and open fall's window ~7 weeks early. |
+| **H-D2** | Approved as written (D-32 existence + cadence; D-33 merge only identical variants). O copies into `decisions.md` at merge. | If the branch-log wording differs from these summaries, **show Ivan the diff before merging.** |
+| **T-D1** | One runner: `node:test` + `tsx`; add `test:unit`, chain into `npm test`. Fix `o2-*` tests covering invariants that still exist, delete the rest. Delete `scripts/test-audit-restock.cjs` or rewrite it to import the real restock module. | A test that copies the logic is worse than none. **The PR lists which `o2-*` tests were kept vs deleted.** `scripts/test-roles.ts` becomes a `node:test` file or gets a comment saying why not. Update the `npm run test` line in CLAUDE.md. Goal: Lang or a new recruit runs `npm test` and trusts it. Deletions still need the per-file listing (no-deletions rule). |
+| **R-D1** | No. Restock stays admin/QM only. Move recipients out of the hard-coded array at `statpack-restock-flag.ts:111` into org config. | Treasurer notifications belong in `feat/purchases-budget` (purchase request / approved spend), not restock flags. |
+
+**Open (needs Ivan before S-D1 is built):** a shared role account (e.g. `logistics@berkeleymrc.org`) signs in under one uid for several
+people, so writes lose per-person attribution in `inventory_logs`/`auditEvents` and break per-person `effectiveUid` scoping (D-18).
+Should role accounts be (a) blocked from writes, (b) read-only, or (c) allowed as-is?
+
+## 8.5 Wave 2 breakdown (approved 2026-09-30; **2a in progress**)
+
+**Why wave 2 can't run as one batch** (found while preparing it):
+- **Wave 1 is not on `main`.** Every wave-2 packet needs something from it: A2 valuation needs `getExistence` (hygiene
+  H2), R3 edits the files R2 rewrote, R4 edits `firestore.prod.rules` (exists only on `fix/firestore-rules`), U3 needs
+  the U1 primitives. The four wave-1 branches merge together cleanly (probed with `git merge-tree`, no refs changed);
+  only `app/types.ts`, `app/config/org-config.ts`, `package.json` are touched by more than one, without conflict.
+- **The wave-2 packets collide on pages**, breaking the disjoint-files rule: `app/inventory/page.tsx` = H4 + R3 + U3;
+  `app/dashboard/page.tsx` = A4 + R3 + U3; `app/assets/page.tsx` = A3 + U3; `org-config.ts` = A1 + R-D1.
+  Fix: one owner per page per sub-wave, and U3 migrations run last.
+
+**Approved by Ivan 2026-09-30:** the 2a/2b/2c split; run 2a now; agents **commit per packet and push their feature
+branch** (never force-push, never push/merge to `main` without approval; CLAUDE.md updated); wave 1 goes to `main`
+through PRs.
+
+**Base:** local `integration/overhaul` = `main` + the four wave-1 branches (merge commits, so it matches what `main`
+becomes once the PRs merge). Wave-2 branches sit on it: `feat/assets-expiry`, `feat/roles-access-w2`,
+`feat/inventory-hygiene-w2` (the `-w2` suffix keeps the open wave-1 PRs from growing).
+
+**Wave-1 PRs are open but NOT merged, on purpose.** Ivan OK'd "merge if checks pass" on the understanding that the
+hosting workflow always fails. It doesn't: there are two workflows on push to `main`. *Deploy to Firebase Hosting on
+merge* fails, but *Deploy to Firebase Hosting* (`firebase-hosting.yml`, `channelId: live`) **succeeded on the last two
+pushes**. So merging = live deploy, and hygiene changes live behaviour (unverified items drop out of restock/alerts
+before the H5 queue exists to show them; see findings.md). Needs Ivan's call with that known.
+
+| Sub-wave | Packets (model) | Files | You verify at the pause |
 |---|---|---|---|
-| **S-D1** | later | Restrict sign-up to `@berkeley.edu` emails? | Yes, after the stopgap ships. |
-| **C-D2** | C2 | Loaner lost after N days overdue | 30. |
-| **U-D1/2** | U1/U2 | Visual direction; which dead files to delete: `tutorial-overlay.tsx` (no importers; would also trip the `users` create rule if revived), `statpack-import-modal.tsx.new` (duplicate), the `/fix-timestamps` page (unlinked; its lib is still used), `itemNameSimilarity` in `statpack-import.ts` (no callers) | Your style everywhere; **you approve each deletion**. |
-| **H-D1** | H-seam | Semester audit window: start at `semesterStartDate` (current, clamped to Jan 1/Jul 1, ignored if future) or a fixed Jan–Jun / Jul–Dec split? | Keep `semesterStartDate`. |
-| **H-D2** | H merge | Approve the D-32 (existence + cadence) and D-33 (merge only identical variants) wording in the hygiene branch log | Approve; O copies it into `decisions.md` at merge. |
-| **T-D1** | any | Tests run three ways (`vitest` `o2-*` tests never run; `scripts/test-roles.ts`; `node:test` via `npx tsx --test`), and `npm test` runs none of the hygiene tests. `scripts/test-audit-restock.cjs` re-implements the restock logic, so it doesn't test the real code. | One runner: `node:test` + `tsx`, a `test:unit` script chained into `npm test`; fix or delete the `o2-*` tests (your call). |
-| **R-D1** | R3 | Should treasurer receive restock notifications (recipients hard-coded admin/QM at `statpack-restock-flag.ts:111`)? | No: they're operational, not finance. |
+| **2a: lib only, no page edits** | **A1** (S) types + `asset-lifecycle.ts` + `fiscal.ts` + org-config → then **A2** (S) `expiry.ts`, `valuation.ts` · **R4** (S) full per-role `firestore.prod.rules` + emulator test · **H3** (H) dry-run baseline report script | all new files except `types.ts`, `org-config.ts` (+store), `firestore.prod.rules` | unit tests + rules-emulator output; the H3 dry-run counts (confirmed / unverified) against what you expect on the shelves; FY and bucket numbers |
+| **2b: pages, one owner each** | **H4** (S) `/inventory` confirmed-only default + hide retired + R3's read gate · **H5** (S) `/audit` Unverified queue, retire/restore helper · **A3** (S) `/assets` · **A4** (S) `/dashboard` expiry widget + R3's gate · **R3** (S) nav, buy-list, member-dashboard, roster `ROLE_OPTIONS`, R-D1 recipients → org config · **A5** (H) intake wizard cost · **A6** (S) backfill script (dry-run) | one page per agent | the sandbox (`npm run dev:sandbox`) per role: admin, QM, medops, treasurer, member |
+| **2c: migrations + seams** | **U3a–f** (H/S) pages → U1 primitives · **U2** approved deletions (U-D2, one commit each) · **T-D1** one test runner · O: H-seam, R-seam, A-seam (D-32…D-35 into `decisions.md`) | pages, after 2b lands | before/after screenshots; `npm test` |
+
+**Held back (need your design call, not guessed):** **H6** (variant picker, *On shelf | In a container* control,
+`Container.kind`) and **H7** (split by size). Their v2 packet text is lost; O writes a one-page proposal for you at the
+2a pause. **S-D1** stays blocked on the shared-role-account question in §8.
 
 ## 9. Status
 
@@ -325,3 +367,10 @@ stay here; delete a line once it's done.
 - 2026-09-30 · `npm run build` fails without `.env.local` (`auth/invalid-api-key` prerendering `/reports`,
   `/_not-found`). · Make Firebase init lazy so CI/worktrees build without env.
 - 2026-09-30 · Pre-existing `no-explicit-any` lint errors in `app/types.ts:1158,1589`. · Fix opportunistically.
+- 2026-09-30 · H3 "baseline migration" may be nearly empty: existence is *derived* from `lastAuditDate` (proposed D-32), so
+  there is nothing to stamp. · Reduced to a dry-run report script in 2a unless the report shows records needing a fix.
+- 2026-09-30 · The wave diagram puts packets that share a page in the same wave (see §8.5). · Later waves: check file
+  ownership across branches, not only within one.
+- 2026-09-30 · Two hosting workflows fire on every push to `main`: `firebase-hosting-merge.yml` (always fails: writes
+  placeholder `NEXT_PUBLIC_API_KEY` secrets) and `firebase-hosting.yml` (succeeds, deploys to **live**). Merging to
+  `main` is therefore a production deploy. · Delete or fix the failing one (needs your OK: file deletion).

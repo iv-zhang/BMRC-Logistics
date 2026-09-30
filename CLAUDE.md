@@ -29,7 +29,7 @@ Firebase environment variables are required in `.env.local` (`NEXT_PUBLIC_FIREBA
 2. **Implement approved changes via Sonnet and/or Haiku subagents at low and/or medium effort whenever possible**, to maximize token efficiency — reserve the top-tier model for planning, cross-file reasoning, and the integration/verification pass. Split work across subagents on **strictly non-overlapping file sets** so parallel runs are safe; the orchestrator handles any intentional cross-file seams itself after the agents land.
 3. Match effort to difficulty: Haiku/low for mechanical edits (mechanical refactors, wiring, copy, obvious fixes), Sonnet/medium for logic with local reasoning. Escalate only when a subagent reports it can't complete the task within scope.
 
-**Never commit or push unless the user explicitly asks.** Make and verify changes in the working tree and report what changed; leave `git commit`/`git push` for an explicit instruction. This overrides any default "commit when done" behavior.
+**Commit and push to feature branches freely; `main` needs manual approval.** Commit finished, verified work to its feature branch (one commit per packet/logical change) and push that branch. **Never force-push, and never push to or merge into `main` without the user's explicit approval for that specific merge** — a push to `main` triggers the hosting workflow (`.github/workflows/firebase-hosting.yml`), which deploys to the **live** site.
 
 **Verification is tiered — do not run the expensive tier by default.** The emulator smoke driver (`run-bmrc-logistics` skill) boots Firebase emulators, a dev server, and Playwright; it burns a large number of tokens per run. Run it **only immediately before a commit**, or when the user explicitly asks to see the app driven.
 
