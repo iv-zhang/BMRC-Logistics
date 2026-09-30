@@ -291,7 +291,7 @@ forecast workbook.
 | fix/firestore-rules | **S1–S3 done, awaiting your review** (6779f71, 63cd57d, c42a253; `npm run test:rules` 25/25 on emulator; app not driven). **S4: deploy from c42a253 only**, never 6779f71 |
 | feat/inventory-hygiene | **in progress (remote agent): H0 H1 H2 H6 H8** |
 | feat/ui-system | **U1 done, awaiting your review** (a980c8d, 9b01e34; built + typechecked, not runtime-verified); U0 needs OK |
-| feat/roles-access | **in progress (remote agent): R1 + R2a/b** |
+| feat/roles-access | **R1 + R2 done, awaiting your review** (7a50459, 1dbd8f2, 504c9fe; tsc/lint/test/build pass, not runtime-verified). 35 `isAdmin` expressions in 31 files → `canManageLogistics` |
 | feat/assets-expiry | after hygiene H2 |
 | feat/purchases-budget | after R1 + A1; B-D1 |
 | feat/uniforms | after P1; C6 needs your CSV export of the responses sheet |
@@ -333,3 +333,16 @@ Append-only. Format: date · branch · finding · suggested action.
 - 2026-09-30 · firestore-rules · New `npm run test:rules`; emulator worked on firebase-tools 15.30.2 + JDK 21 here.
   All emulator/sandbox scripts now pass `--config firebase.emulator.json`. · Use that config for any new emulator script.
 - 2026-09-30 · firestore-rules · `tutorial-overlay.tsx` (dead) would hit the `users` create rule if revived. · Another reason to delete it (your call).
+- 2026-09-30 · roles-access · `canManageEvents` in `roles.ts` duplicates `isEventManagerRole` (events.ts imports
+  Firebase, so importing it would make roles.ts impure); a test asserts they agree for every role. · Have `events.ts` re-export from `roles.ts` in R-seam so there is one definition.
+- 2026-09-30 · roles-access · Role unit tests live in `scripts/test-roles.ts` (tsx), chained into `npm run test`,
+  because nothing in the repo runs vitest. · Pick one test runner (see the vitest finding above).
+- 2026-09-30 · roles-access · Treasurer can't be assigned yet: missing from roster `ROLE_OPTIONS`; `getRoleColor`
+  (`profile/page.tsx`) and `tourRoleFor` fall through to member; no treasurer in test identities or emulator logins. · R3.
+- 2026-09-30 · roles-access · `/settings` has no editor for `privateFinanceRoles` (the value round-trips). · P6 already owns it; confirm.
+- 2026-09-30 · roles-access · Restock-notification recipients are hard-coded admin/QM (`statpack-restock-flag.ts:111`);
+  decide whether treasurer receives them. · R3/R-seam decision.
+- 2026-09-30 · roles-access · Left unconverted on purpose: medops event-manager gates, three-role checks that include
+  `inventory_helper` (`member-dashboard.tsx:397,430`, `assets/page.tsx:1011`), `AUDIT_ROLES`, admin-only checks.
+  `isAdmin`/`isRealAdmin` names in `profile/page.tsx` and `mobile-bottom-nav.tsx` mean "real account is admin/QM". · Revisit in R3.
+- 2026-09-30 · roles-access · Pre-existing `no-explicit-any` lint errors in `app/types.ts:1158,1589`. · Clean up opportunistically.
