@@ -10,13 +10,14 @@
  * counts in pages.
  */
 
-import { getThresholds } from '@/app/lib/org-config-store';
+import { getThresholds, getSemesterStartRuntime } from '@/app/lib/org-config-store';
+import { AUDIT_CADENCES, type AuditCadence } from '@/app/config/org-config';
 import {
   formatStorageLocation,
   formatLevelLabel,
   LOCATION_SEPARATOR,
 } from '@/app/utils/storage-location';
-import type { InventoryBatch, InventoryItem } from '@/app/types';
+import type { InventoryBatch, InventoryItem, ItemExistence } from '@/app/types';
 
 export type ItemStatus = 'ok' | 'low' | 'out' | 'expired' | 'expiring';
 
@@ -134,6 +135,53 @@ export function getItemStatus(item: InventoryItem): ItemStatus {
   return 'ok';
 }
 
+// ── Existence (confirmed / unverified / retired) ─────────────────────────────
+
+/**
+ * Baseline cutoff for "confirmed" stock: an item counts as confirmed only if an
+ * audit on/after this date saw it (local midnight, 2026-06-01). Earlier audits
+ * predate the hygiene pass and are not trusted. Month index 5 = June.
+ */
+export const EXISTENCE_BASELINE_CUTOFF = new Date(2026, 5, 1);
+
+function asDate(v: unknown): Date | undefined {
+  if (v instanceof Date) return isNaN(v.getTime()) ? undefined : v;
+  if (v && typeof (v as { toDate?: () => Date }).toDate === 'function') {
+    try {
+      const d = (v as { toDate: () => Date }).toDate();
+      return d instanceof Date && !isNaN(d.getTime()) ? d : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Does this record physically exist, as far as we can prove?
+ *   - `retired`     stored `existence === 'retired'` (terminal, wins over everything).
+ *   - `confirmed`   not retired AND `lastAuditDate >= EXISTENCE_BASELINE_CUTOFF`.
+ *   - `unverified`  everything else (including items with no audit date).
+ * Derived, not asserted: a stored 'confirmed'/'unverified' is ignored so a flag
+ * set once can never stay true forever (see D-6 for the same reasoning).
+ */
+export function getExistence(
+  item: Pick<InventoryItem, 'existence' | 'lastAuditDate'>,
+): ItemExistence {
+  if (item.existence === 'retired') return 'retired';
+  const audited = asDate(item.lastAuditDate);
+  if (audited && audited.getTime() >= EXISTENCE_BASELINE_CUTOFF.getTime()) return 'confirmed';
+  return 'unverified';
+}
+
+/**
+ * True for items that may drive alerts, restock decisions, and exception
+ * lists. Unverified and retired items must not (they may not exist).
+ */
+export function isConfirmedItem(item: Pick<InventoryItem, 'existence' | 'lastAuditDate'>): boolean {
+  return getExistence(item) === 'confirmed';
+}
+
 // ── Procurement: on-the-way display (Log Purchase → Receive) ─────────────────
 // Display-only — on-order is NOT on-hand, so these never feed computeBagStock
 // or getItemStatus. A placeholder row (0 stock) shows "On the way"; a stocked
@@ -180,12 +228,15 @@ export function statusBarColor(s: ItemStatus): string {
   return 'bg-danger';
 }
 
-// ── Monthly audit cycle ───────────────────────────────────────────────────────
+// ── Audit cycle ───────────────────────────────────────────────────────────────
 
 /**
- * Supplies are audited on a monthly cycle. An item counts as "verified" only
- * if its last audit happened in the current calendar month — the sticky
- * `auditVerified` boolean alone is meaningless across months.
+ * Supplies are audited on a cycle (monthly by default; see `AuditCadence`). An
+ * item counts as "verified" only if its last audit falls in the current cycle —
+ * the sticky `auditVerified` boolean alone is meaningless across cycles.
+ *
+ * `isAuditedThisMonth` is the original monthly check and is unchanged. New code
+ * should call `isAuditCurrent`, which follows the org's configured cadence.
  */
 export function isAuditedThisMonth(lastAuditDate?: Date, now = new Date()): boolean {
   if (!lastAuditDate) return false;
@@ -193,7 +244,88 @@ export function isAuditedThisMonth(lastAuditDate?: Date, now = new Date()): bool
          lastAuditDate.getMonth() === now.getMonth();
 }
 
-/** Label like "July 2026" for the current audit cycle. */
+/** The configured cadence, falling back to monthly for a missing/corrupt value. */
+export function getAuditCadence(): AuditCadence {
+  const v = getThresholds().auditCadence;
+  return (AUDIT_CADENCES as readonly string[]).includes(v) ? v : 'monthly';
+}
+
+/** Calendar half-year start (Jan 1 or Jul 1) for `now`. */
+function halfYearStart(now: Date): Date {
+  return new Date(now.getFullYear(), now.getMonth() < 6 ? 0 : 6, 1);
+}
+
+/**
+ * Start of the current semester window: the configured semester start, but never
+ * earlier than the calendar half-year start (a forgotten, stale
+ * `semesterStartDate` must not silently stretch the window — fail toward
+ * stricter) and never in the future.
+ */
+function semesterWindowStart(now: Date, semesterStart?: Date): Date {
+  const half = halfYearStart(now);
+  let cfg = semesterStart;
+  if (!cfg) {
+    const iso = getSemesterStartRuntime();
+    const d = iso ? new Date(`${iso}T00:00:00`) : undefined;
+    cfg = d && !isNaN(d.getTime()) ? d : undefined;
+  }
+  if (!cfg || cfg.getTime() > now.getTime()) return half;
+  return cfg.getTime() > half.getTime() ? cfg : half;
+}
+
+/**
+ * Cadence-aware "is this item's audit current?". With `cadence === 'monthly'`
+ * (the default) it is exactly `isAuditedThisMonth`.
+ *   - monthly    same calendar year + month
+ *   - quarterly  same calendar year + quarter (Jan-Mar, Apr-Jun, Jul-Sep, Oct-Dec)
+ *   - semester   on/after the semester window start (see `semesterWindowStart`)
+ *   - yearly     same calendar year
+ * Never audited (`undefined`) is always not current.
+ */
+export function isAuditCurrent(
+  lastAuditDate?: Date,
+  now = new Date(),
+  cadence: AuditCadence = getAuditCadence(),
+  semesterStart?: Date,
+): boolean {
+  if (!lastAuditDate) return false;
+  switch (cadence) {
+    case 'quarterly':
+      return lastAuditDate.getFullYear() === now.getFullYear() &&
+             Math.floor(lastAuditDate.getMonth() / 3) === Math.floor(now.getMonth() / 3);
+    case 'semester':
+      return lastAuditDate.getTime() >= semesterWindowStart(now, semesterStart).getTime() &&
+             lastAuditDate.getTime() <= now.getTime() + DAY_MS;
+    case 'yearly':
+      return lastAuditDate.getFullYear() === now.getFullYear();
+    case 'monthly':
+    default:
+      return isAuditedThisMonth(lastAuditDate, now);
+  }
+}
+
+/** Short period word for messages: "this month" / "this quarter" / "this semester" / "this year". */
+export function auditCyclePeriod(cadence: AuditCadence = getAuditCadence()): string {
+  switch (cadence) {
+    case 'quarterly': return 'this quarter';
+    case 'semester': return 'this semester';
+    case 'yearly': return 'this year';
+    default: return 'this month';
+  }
+}
+
+/** Cadence-aware cycle label: "July 2026" / "Q3 2026" / "Semester from Aug 25, 2026" / "2026". */
+export function auditCycleLabel(now = new Date(), cadence: AuditCadence = getAuditCadence(), semesterStart?: Date): string {
+  switch (cadence) {
+    case 'quarterly': return `Q${Math.floor(now.getMonth() / 3) + 1} ${now.getFullYear()}`;
+    case 'semester':
+      return `Semester from ${semesterWindowStart(now, semesterStart).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
+    case 'yearly': return String(now.getFullYear());
+    default: return currentAuditCycleLabel(now);
+  }
+}
+
+/** Label like "July 2026" for the current (monthly) audit cycle. */
 export function currentAuditCycleLabel(now = new Date()): string {
   return now.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 }

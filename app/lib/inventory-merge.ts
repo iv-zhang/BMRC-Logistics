@@ -31,6 +31,7 @@ import type { DocumentData, DocumentReference, WriteBatch } from 'firebase/fires
 import { db } from '@/firebase';
 import { recordAuditEvent, removeUndefined } from '@/app/lib/audit';
 import { computeBagStock } from '@/app/lib/item-status';
+import { checkVariantMerge, itemVariantSignature } from '@/app/lib/variant-signature';
 import { safeParseDate } from '@/app/utils/inventoryNormalization';
 import type { InventoryBatch, InventoryItem } from '@/app/types';
 
@@ -87,6 +88,13 @@ const REASON_RANK: Record<DuplicateReason, number> = { sku: 3, barcode: 3, name:
  * Archived/already-merged items are excluded. Union-find groups transitively
  * — if A~B and B~C, all three land in one group even if A and C alone
  * wouldn't have matched.
+ *
+ * Variant gate: a pair is only linked when their variant signatures match
+ * (`app/lib/variant-signature.ts`), so `NPA 28 Fr` / `NPA 30 Fr` or
+ * `Gloves M` / `Gloves L` are never suggested as duplicates, and the
+ * transitive grouping can never chain different sizes together. Pairs that
+ * share a SKU/barcode but differ in variant are reported by
+ * `findVariantConflicts` instead.
  */
 export function findDuplicateCandidates(items: InventoryItem[]): DuplicateGroup[] {
   const active = items.filter((i) => !(i as unknown as { isArchived?: boolean }).isArchived);
@@ -113,9 +121,12 @@ export function findDuplicateCandidates(items: InventoryItem[]): DuplicateGroup[
   const normalized = active.map((i) => normalizeName(i.name || ''));
   const skus = active.map((i) => ((i as unknown as { sku?: string }).sku || '').trim().toLowerCase());
   const barcodes = active.map((i) => (i.barcode || '').trim().toLowerCase());
+  const variantKeys = active.map((i) => itemVariantSignature(i).key);
 
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
+      // Different sizes/variants are different products, however close the names.
+      if (variantKeys[i] !== variantKeys[j]) continue;
       if (skus[i] && skus[j] && skus[i] === skus[j]) { union(i, j, 'sku'); continue; }
       if (barcodes[i] && barcodes[j] && barcodes[i] === barcodes[j]) { union(i, j, 'barcode'); continue; }
       if (normalized[i] && normalized[i] === normalized[j]) { union(i, j, 'name'); continue; }
@@ -145,6 +156,47 @@ export function findDuplicateCandidates(items: InventoryItem[]): DuplicateGroup[
   // Strongest matches first.
   result.sort((a, b) => REASON_RANK[b.reason] - REASON_RANK[a.reason]);
   return result;
+}
+
+// ─── Variant conflicts (same SKU/barcode, different variant) ─────────────────
+
+export interface VariantConflict {
+  a: InventoryItem;
+  b: InventoryItem;
+  /** What they share (the contradiction): a SKU, a barcode, or both. */
+  shared: Array<'sku' | 'barcode'>;
+  /** Plain-language explanation (from `checkVariantMerge`). */
+  reason: string;
+}
+
+/**
+ * Catalog contradictions: pairs of live items that share a SKU or barcode but
+ * have different variant signatures (one code, two sizes). They are NOT
+ * duplicates and must never be auto-merged; a person has to decide which code
+ * or name is wrong. Read-only; no UI consumes this yet (see hygiene log).
+ */
+export function findVariantConflicts(items: InventoryItem[]): VariantConflict[] {
+  const active = items.filter((i) => !(i as unknown as { isArchived?: boolean }).isArchived);
+  const out: VariantConflict[] = [];
+  for (let i = 0; i < active.length; i++) {
+    for (let j = i + 1; j < active.length; j++) {
+      const a = active[i], b = active[j];
+      const skuA = ((a as unknown as { sku?: string }).sku || '').trim().toLowerCase();
+      const skuB = ((b as unknown as { sku?: string }).sku || '').trim().toLowerCase();
+      const barA = (a.barcode || '').trim().toLowerCase();
+      const barB = (b.barcode || '').trim().toLowerCase();
+      const shared: Array<'sku' | 'barcode'> = [];
+      if (skuA && skuA === skuB) shared.push('sku');
+      if (barA && barA === barB) shared.push('barcode');
+      if (shared.length === 0) continue;
+      const check = checkVariantMerge(
+        { name: a.name, variantLabel: a.variantLabel, sku: skuA, barcode: barA },
+        { name: b.name, variantLabel: b.variantLabel, sku: skuB, barcode: barB },
+      );
+      if (check.verdict === 'conflict') out.push({ a, b, shared, reason: check.reason });
+    }
+  }
+  return out;
 }
 
 // ─── Shared write-batch chunker (Firestore's 500-op-per-batch limit) ─────────
@@ -415,6 +467,19 @@ async function buildMergePlan(survivorId: string, loserIds: string[]): Promise<M
           `stock. Make the units-per-box match on both items first, or convert one to loose units.`,
         );
       }
+    }
+  }
+
+  // ── Third guard: never merge different sizes/variants. ────────────────────
+  // `NPA 28 Fr` into `NPA 30 Fr` would pool two different products and repoint
+  // every statpack that requires the 28 Fr at the survivor. Only adds refusals.
+  for (const loser of losers) {
+    const check = checkVariantMerge(survivor, loser);
+    if (check.verdict !== 'ok') {
+      throw new Error(
+        `Cannot merge "${loser.name}" into "${survivor.name}". ${check.reason} ` +
+        `Only items with the same size/variant can be merged.`,
+      );
     }
   }
 

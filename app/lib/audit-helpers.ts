@@ -25,10 +25,10 @@ import {
   Timestamp,
 } from 'firebase/firestore';
 import { db } from '@/firebase';
-import type { InventoryItem, User } from '@/app/types';
+import type { InventoryItem, ItemExistence, User } from '@/app/types';
 import { addAuditEventToBatch } from '@/app/lib/audit';
 import { determineIsAsset } from '@/app/lib/inventory';
-import { batchHasStock, computeBagStock, isAuditedThisMonth } from '@/app/lib/item-status';
+import { batchHasStock, computeBagStock, getExistence, isAuditCurrent } from '@/app/lib/item-status';
 
 // ─── Permission helpers ───────────────────────────────────────────────────────
 
@@ -109,10 +109,16 @@ export interface DisposableSnapshot {
   /** Earliest expiration across all batches */
   earliestExpiration?: Date;
   isExpired: boolean;
-  /** Verified for the CURRENT monthly audit cycle (lastAuditDate this month) */
+  /** Verified for the CURRENT audit cycle (lastAuditDate within the configured cadence window) */
   auditVerified: boolean;
   lastAuditDate?: Date;
   auditCondition?: 'Good' | 'Damaged' | 'Expired';
+  /**
+   * Derived existence (`getExistence`). Always set by `generateAuditSnapshot`;
+   * optional only so hand-built snapshots keep compiling — `analyzeRestockNeeds`
+   * treats a missing value as confirmed.
+   */
+  existence?: ItemExistence;
   /** Legacy field for backward compat — prefer totalUnits */
   totalStockQuantity?: number;
 }
@@ -126,7 +132,7 @@ export interface AssetSnapshot {
   currentLocation?: string;
   lastChecked?: Date;
   isAsset: true;
-  /** Verified for the CURRENT monthly audit cycle (lastAuditDate this month) */
+  /** Verified for the CURRENT audit cycle (lastAuditDate within the configured cadence window) */
   auditVerified: boolean;
   lastAuditDate?: Date;
   /** For multi-instance assets, count of instances */
@@ -170,10 +176,10 @@ export async function generateAuditSnapshot(
     const isAsset = determineIsAsset(item);
 
     const lastAuditDate = item.lastAuditDate ? toDate(item.lastAuditDate) : undefined;
-    // Monthly audit cycle: an item only counts as verified if it was audited
-    // during the current calendar month. The sticky `auditVerified` boolean
-    // never resets, so it must not be trusted on its own.
-    const verifiedThisCycle = isAuditedThisMonth(lastAuditDate, now);
+    // Audit cycle (monthly by default, `thresholds.auditCadence`): an item only
+    // counts as verified if it was audited during the current cycle. The sticky
+    // `auditVerified` boolean never resets, so it must not be trusted on its own.
+    const verifiedThisCycle = isAuditCurrent(lastAuditDate, now);
 
     if (isAsset) {
       const instances = Array.isArray(item.assets) ? item.assets : [];
@@ -248,6 +254,7 @@ export async function generateAuditSnapshot(
         auditVerified: verifiedThisCycle,
         lastAuditDate,
         auditCondition: item.auditCondition,
+        existence: getExistence(item),
         totalStockQuantity: item.totalStockQuantity,
       });
     }
@@ -510,11 +517,15 @@ export interface RestockDecision {
  * Analyze inventory and produce restock recommendations.
  * Uses total on-hand UNITS vs reorderThreshold — the same comparison the
  * inventory page makes — so both surfaces flag the same items.
+ *
+ * Unverified and retired items are excluded: a record nobody has confirmed
+ * since the baseline may not exist, so it must not trigger a purchase.
  */
 export function analyzeRestockNeeds(
   items: DisposableSnapshot[]
 ): RestockDecision[] {
   return items
+    .filter((item) => item.existence === undefined || item.existence === 'confirmed')
     .map((item) => {
       const deficit = item.reorderThreshold - item.totalUnits;
       let urgency: RestockDecision['urgency'] = 'ok';
