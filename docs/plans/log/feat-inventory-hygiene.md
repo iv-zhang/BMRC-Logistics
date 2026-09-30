@@ -10,7 +10,7 @@ Model/agent: Sonnet 5.5 (autonomous). Nothing here touches live data; no migrati
 | H0 diagnose-merges | done (read-only, findings below) | (this commit) |
 | H1 variant signature + merge gate | done | (H1 commit) |
 | H2 existence types/status | done | (H2 commit) |
-| H8 audit cadence | pending | |
+| H8 audit cadence | done | (H8 commit) |
 | H6 picker/editor | pending | |
 
 ## H0 findings: where could different sizes/variants get merged?
@@ -96,7 +96,33 @@ Grepped `merge|dedupe|dedup|normalize|levenshtein|similar|fuzzy` over `app/lib`,
   `AuditSnapshot.lowStockCount/expiredCount` totals (the audit debug panel asserts they equal the count of flagged
   `disposables`, and `/audit` shows them as chips). They still include unverified items.
 
+## H8 notes
+
+- `ThresholdConfig.auditCadence: 'monthly'|'quarterly'|'semester'|'yearly'` (+ `AuditCadence`, `AUDIT_CADENCES`) in
+  `org-config.ts`, default `'monthly'`. The store merges thresholds per key, so no store change was needed; an old
+  `org_settings/current` without the key reads as monthly, and a corrupt value also falls back to monthly
+  (`getAuditCadence()`).
+- `item-status.ts`: `isAuditCurrent(lastAuditDate, now, cadence = getAuditCadence(), semesterStart?)`,
+  `getAuditCadence`, `auditCyclePeriod`, `auditCycleLabel`. `isAuditedThisMonth` and `currentAuditCycleLabel` are
+  unchanged; `isAuditCurrent(..., 'monthly')` delegates to `isAuditedThisMonth` (sweep-tested identical).
+- Semantics: quarterly = calendar quarter; yearly = calendar year; semester = on/after the semester window start, where
+  the start is the configured `semesterStartDate` but clamped to be no earlier than the calendar half-year start (Jan 1
+  / Jul 1) and ignored if in the future. Reason: the default `semesterStartDate` is `2026-01-01`, and a stale value must
+  not silently stretch the window (fail toward stricter).
+- Wired in lib (default monthly = identical behavior): `generateAuditSnapshot` (`auditVerified` chip) and
+  `buildExceptions` stale-audit rule (message says "this month/quarter/...").
+- Settings: `/settings` > Thresholds gets a "Supply audit cadence" select (`org-and-thresholds-tab.tsx`); the numeric
+  field list was narrowed to numeric keys so the string field type-checks.
+- NOT wired (pages/hooks, outside these packets): `app/hooks/useAuditTaskCards.ts` still uses `isAuditedThisMonth` and
+  titles the task "Monthly supply audit"; `app/audit/page.tsx` still shows `currentAuditCycleLabel()`; other pages that
+  call `isAuditedThisMonth` directly stay monthly until H-seam moves them to `isAuditCurrent`/`auditCycleLabel`.
+
 ## Verification
+
+### H8
+- `NEXT_PUBLIC_FIREBASE_API_KEY=fake-key NEXT_PUBLIC_FIREBASE_PROJECT_ID=demo-bmrc-logistics npx tsx --test app/lib/__tests__/audit-cadence.test.ts`: 17 tests, 17 pass (includes a sweep proving monthly == `isAuditedThisMonth`).
+- `npx tsc --noEmit`: only the 5 pre-existing `o2-*.test.ts` vitest errors. `npx eslint` on touched files: clean.
+- Settings form not viewed in a browser (built-and-typechecked only).
 
 ### H2
 - `NEXT_PUBLIC_FIREBASE_API_KEY=fake-key NEXT_PUBLIC_FIREBASE_PROJECT_ID=demo-bmrc-logistics npx tsx --test app/lib/__tests__/existence.test.ts`: 11 tests, 11 pass.
@@ -121,7 +147,10 @@ Grepped `merge|dedupe|dedup|normalize|levenshtein|similar|fuzzy` over `app/lib`,
    page + debug-panel change (they must agree with the flagged `disposables`). Left to H-seam.
 3. **Un-retire.** `retireInventoryItem` is one-way. Should "Found it" on a retired item clear `existence`? (Suggest yes,
    via a small `restoreInventoryItem`, added with H5.)
-4. Retired items still appear in `findDuplicateCandidates` and in the inventory page list; hiding retired by default is
+4. **Audit cadence consumers.** Decide whether H-seam should move `useAuditTaskCards` ("Monthly supply audit" task
+   card) and the `/audit` header label onto the cadence-aware helpers (they currently say "monthly" regardless of the
+   setting). Also: is `semester` meant to follow `semesterStartDate` (current choice) or a fixed Jan-Jun/Jul-Dec split?
+5. Retired items still appear in `findDuplicateCandidates` and in the inventory page list; hiding retired by default is
    H4 (page) work.
 
 ## Findings / notes for later

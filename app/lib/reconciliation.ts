@@ -16,7 +16,8 @@
 import {
   computeBagStock,
   getItemStatus,
-  isAuditedThisMonth,
+  isAuditCurrent,
+  auditCyclePeriod,
   isStatpackAuditCurrent,
   batchHasStock,
   isConfirmedItem,
@@ -121,17 +122,17 @@ export function buildExceptions(
       });
     }
 
-    // STALE AUDIT — last verified outside the current month; the on-hand figure
+    // STALE AUDIT — last verified outside the current audit cycle (monthly by default); the on-hand figure
     // may not reflect reality (skipped post-event scan → drift).
     const lastAudit = toDate(item.lastAuditDate);
-    if (!isAuditedThisMonth(lastAudit, now)) {
+    if (!isAuditCurrent(lastAudit, now)) {
       out.push({
         severity: 'medium',
         kind: 'stale_audit',
         itemId: item.id,
         itemName: name,
         detail: lastAudit
-          ? `Not verified this month — last audited ${lastAudit.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}.`
+          ? `Not verified ${auditCyclePeriod()} — last audited ${lastAudit.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}.`
           : 'Never audited — on-hand count is unverified.',
       });
     }

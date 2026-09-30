@@ -10,7 +10,8 @@
  * counts in pages.
  */
 
-import { getThresholds } from '@/app/lib/org-config-store';
+import { getThresholds, getSemesterStartRuntime } from '@/app/lib/org-config-store';
+import { AUDIT_CADENCES, type AuditCadence } from '@/app/config/org-config';
 import {
   formatStorageLocation,
   formatLevelLabel,
@@ -227,12 +228,15 @@ export function statusBarColor(s: ItemStatus): string {
   return 'bg-danger';
 }
 
-// ── Monthly audit cycle ───────────────────────────────────────────────────────
+// ── Audit cycle ───────────────────────────────────────────────────────────────
 
 /**
- * Supplies are audited on a monthly cycle. An item counts as "verified" only
- * if its last audit happened in the current calendar month — the sticky
- * `auditVerified` boolean alone is meaningless across months.
+ * Supplies are audited on a cycle (monthly by default; see `AuditCadence`). An
+ * item counts as "verified" only if its last audit falls in the current cycle —
+ * the sticky `auditVerified` boolean alone is meaningless across cycles.
+ *
+ * `isAuditedThisMonth` is the original monthly check and is unchanged. New code
+ * should call `isAuditCurrent`, which follows the org's configured cadence.
  */
 export function isAuditedThisMonth(lastAuditDate?: Date, now = new Date()): boolean {
   if (!lastAuditDate) return false;
@@ -240,7 +244,88 @@ export function isAuditedThisMonth(lastAuditDate?: Date, now = new Date()): bool
          lastAuditDate.getMonth() === now.getMonth();
 }
 
-/** Label like "July 2026" for the current audit cycle. */
+/** The configured cadence, falling back to monthly for a missing/corrupt value. */
+export function getAuditCadence(): AuditCadence {
+  const v = getThresholds().auditCadence;
+  return (AUDIT_CADENCES as readonly string[]).includes(v) ? v : 'monthly';
+}
+
+/** Calendar half-year start (Jan 1 or Jul 1) for `now`. */
+function halfYearStart(now: Date): Date {
+  return new Date(now.getFullYear(), now.getMonth() < 6 ? 0 : 6, 1);
+}
+
+/**
+ * Start of the current semester window: the configured semester start, but never
+ * earlier than the calendar half-year start (a forgotten, stale
+ * `semesterStartDate` must not silently stretch the window — fail toward
+ * stricter) and never in the future.
+ */
+function semesterWindowStart(now: Date, semesterStart?: Date): Date {
+  const half = halfYearStart(now);
+  let cfg = semesterStart;
+  if (!cfg) {
+    const iso = getSemesterStartRuntime();
+    const d = iso ? new Date(`${iso}T00:00:00`) : undefined;
+    cfg = d && !isNaN(d.getTime()) ? d : undefined;
+  }
+  if (!cfg || cfg.getTime() > now.getTime()) return half;
+  return cfg.getTime() > half.getTime() ? cfg : half;
+}
+
+/**
+ * Cadence-aware "is this item's audit current?". With `cadence === 'monthly'`
+ * (the default) it is exactly `isAuditedThisMonth`.
+ *   - monthly    same calendar year + month
+ *   - quarterly  same calendar year + quarter (Jan-Mar, Apr-Jun, Jul-Sep, Oct-Dec)
+ *   - semester   on/after the semester window start (see `semesterWindowStart`)
+ *   - yearly     same calendar year
+ * Never audited (`undefined`) is always not current.
+ */
+export function isAuditCurrent(
+  lastAuditDate?: Date,
+  now = new Date(),
+  cadence: AuditCadence = getAuditCadence(),
+  semesterStart?: Date,
+): boolean {
+  if (!lastAuditDate) return false;
+  switch (cadence) {
+    case 'quarterly':
+      return lastAuditDate.getFullYear() === now.getFullYear() &&
+             Math.floor(lastAuditDate.getMonth() / 3) === Math.floor(now.getMonth() / 3);
+    case 'semester':
+      return lastAuditDate.getTime() >= semesterWindowStart(now, semesterStart).getTime() &&
+             lastAuditDate.getTime() <= now.getTime() + DAY_MS;
+    case 'yearly':
+      return lastAuditDate.getFullYear() === now.getFullYear();
+    case 'monthly':
+    default:
+      return isAuditedThisMonth(lastAuditDate, now);
+  }
+}
+
+/** Short period word for messages: "this month" / "this quarter" / "this semester" / "this year". */
+export function auditCyclePeriod(cadence: AuditCadence = getAuditCadence()): string {
+  switch (cadence) {
+    case 'quarterly': return 'this quarter';
+    case 'semester': return 'this semester';
+    case 'yearly': return 'this year';
+    default: return 'this month';
+  }
+}
+
+/** Cadence-aware cycle label: "July 2026" / "Q3 2026" / "Semester from Aug 25, 2026" / "2026". */
+export function auditCycleLabel(now = new Date(), cadence: AuditCadence = getAuditCadence(), semesterStart?: Date): string {
+  switch (cadence) {
+    case 'quarterly': return `Q${Math.floor(now.getMonth() / 3) + 1} ${now.getFullYear()}`;
+    case 'semester':
+      return `Semester from ${semesterWindowStart(now, semesterStart).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
+    case 'yearly': return String(now.getFullYear());
+    default: return currentAuditCycleLabel(now);
+  }
+}
+
+/** Label like "July 2026" for the current (monthly) audit cycle. */
 export function currentAuditCycleLabel(now = new Date()): string {
   return now.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 }
