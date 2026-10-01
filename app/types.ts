@@ -429,7 +429,44 @@ export interface InventoryBatch {
  */
 export type ItemExistence = 'confirmed' | 'unverified' | 'retired';
 
-export interface InventoryItem {
+/**
+ * Asset lifecycle (Goal A, D-35 to be recorded): a SEPARATE axis from readiness
+ * (`assetStatus` Ready / Not Ready). Readiness answers "can it go out today";
+ * lifecycle answers "do we still have it, and where did it go". An undefined
+ * lifecycle on a legacy doc means `active`. Write it through
+ * `changeAssetLifecycle` (app/lib/asset-lifecycle.ts), never a raw updateDoc.
+ */
+export type AssetLifecycle = 'active' | 'loaned_out' | 'lost' | 'damaged' | 'retired';
+
+/** One dated lifecycle transition (append-only). `at` is a client Date: serverTimestamp is not allowed inside arrays. */
+export interface AssetLifecycleEntry {
+  from: AssetLifecycle;
+  to: AssetLifecycle;
+  at: Date;
+  by?: { uid: string; name?: string };
+  note?: string;
+}
+
+/** Acquisition / ownership fields shared by `InventoryItem` (asset docs) and `AssetInstance`. All optional: legacy docs lack them. */
+export interface AssetRegisterFields {
+  /** Lifecycle state; undefined = active. */
+  lifecycle?: AssetLifecycle;
+  /** Dated transitions, oldest first. */
+  lifecycleHistory?: AssetLifecycleEntry[];
+  /** Physical asset-tag label. */
+  assetTag?: string;
+  /** Who owns it (org-config `assetOwners`: BMRC, OEM, UCPD, ...). Only BMRC-owned gear is capitalized. */
+  owner?: string;
+  acquiredAt?: Date;
+  /** Original cost in integer cents. Unknown = undefined, never 0. */
+  acquisitionCostCents?: number;
+  /** `purchases/{id}` this asset came from. */
+  sourcePurchaseId?: string;
+  /** Free-text holder when loaned out (distinct from `assignedToId`, the statpack/container link). */
+  assignedTo?: string;
+}
+
+export interface InventoryItem extends AssetRegisterFields {
   id: string;
   /**
    * DERIVED, never typed by hand: `${family}, ${variantLabel}` (family alone if
@@ -1038,7 +1075,7 @@ export interface StatpackAuditResult {
 }
 
 // Per-asset instance metadata for serialized items (e.g., AEDs)
-export interface AssetInstance {
+export interface AssetInstance extends AssetRegisterFields {
   serial: string;
   // Unique asset identifier (asset tag or barcode). May differ from manufacturer `serial`.
   id?: string;

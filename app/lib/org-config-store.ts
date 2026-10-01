@@ -23,6 +23,9 @@ import { doc, onSnapshot, getDoc, setDoc, serverTimestamp } from 'firebase/fires
 import { db } from '@/firebase';
 import {
   DEFAULT_ORG_CONFIG,
+  sanitizeExpiryBuckets,
+  FISCAL_YEAR_START_MONTH,
+  ASSET_OWNERS,
   type OrgConfigDoc,
   type ThresholdConfig,
   type LocationDef,
@@ -71,7 +74,11 @@ export function applyOrgConfigDoc(data: Partial<OrgConfigDoc> | undefined): void
     statpackTypes: pickArray(data.statpackTypes, d.statpackTypes),
     itemCategories: pickArray(data.itemCategories, d.itemCategories),
     itemFamilies: pickArray(data.itemFamilies, d.itemFamilies),
-    thresholds: { ...d.thresholds, ...(data.thresholds ?? {}) },
+    thresholds: (() => {
+      const t = { ...d.thresholds, ...(data.thresholds ?? {}) };
+      t.expiryBuckets = sanitizeExpiryBuckets(t.expiryBuckets);
+      return t;
+    })(),
     venues: pickArray(data.venues, d.venues),
     eventTypes: pickArray(data.eventTypes, d.eventTypes),
     semesterStartDate: data.semesterStartDate || d.semesterStartDate,
@@ -84,6 +91,19 @@ export function applyOrgConfigDoc(data: Partial<OrgConfigDoc> | undefined): void
     privateFinanceRoles: Array.isArray(data.privateFinanceRoles)
       ? data.privateFinanceRoles.filter((r): r is string => typeof r === 'string')
       : d.privateFinanceRoles,
+    // 1-12 only; anything else (missing, 0, 13, NaN, a string) falls back to July.
+    fiscalYearStartMonth:
+      Number.isInteger(data.fiscalYearStartMonth) &&
+      (data.fiscalYearStartMonth as number) >= 1 &&
+      (data.fiscalYearStartMonth as number) <= 12
+        ? (data.fiscalYearStartMonth as number)
+        : FISCAL_YEAR_START_MONTH,
+    assetOwners: pickArray(
+      Array.isArray(data.assetOwners)
+        ? data.assetOwners.filter((o): o is string => typeof o === 'string' && o.trim() !== '')
+        : undefined,
+      [...ASSET_OWNERS],
+    ),
   };
 }
 
@@ -146,6 +166,21 @@ export function getRequireCertsRuntime(): boolean {
 /** Live `org_settings.privateFinanceRoles` (default `['admin']`). Feed to `canSeePrivateFinance`. */
 export function getPrivateFinanceRolesRuntime(): string[] {
   return getRuntimeConfig().privateFinanceRoles;
+}
+
+/** Live fiscal-year start month (1-12, default 7 = July). Feed to `app/lib/fiscal.ts`. */
+export function getFiscalYearStartMonthRuntime(): number {
+  return getRuntimeConfig().fiscalYearStartMonth ?? FISCAL_YEAR_START_MONTH;
+}
+
+/** Live equipment-owner choices (default BMRC, OEM, UCPD). */
+export function getAssetOwnersRuntime(): string[] {
+  return getRuntimeConfig().assetOwners ?? [...ASSET_OWNERS];
+}
+
+/** Live expiry look-ahead bands in days, ascending and sanitized (default [30, 60, 90]). */
+export function getExpiryBuckets(): number[] {
+  return sanitizeExpiryBuckets(getThresholds().expiryBuckets);
 }
 
 // ---------------------------------------------------------------------------

@@ -411,6 +411,28 @@ export interface ThresholdConfig {
   glucometerControlTestIntervalDays: number;
   /** Days between required AED checks (battery/pads) before it reads out-of-date */
   aedCheckIntervalDays: number;
+  /**
+   * Expiry look-ahead bands in days, ascending (default [30, 60, 90]). Drives the
+   * expired / <=30 / <=60 / <=90 buckets in `app/lib/expiry.ts`. Always read it
+   * through `getExpiryBuckets()` (org-config-store), which sanitizes a bad value.
+   */
+  expiryBuckets: number[];
+}
+
+export const DEFAULT_EXPIRY_BUCKETS: readonly number[] = [30, 60, 90];
+
+/**
+ * Coerce a stored `expiryBuckets` value into positive, unique, ascending whole
+ * days. An empty / non-array / all-invalid value falls back to the default
+ * (same "a corrupt doc is harmless" stance as `pickArray`).
+ */
+export function sanitizeExpiryBuckets(v: unknown): number[] {
+  if (!Array.isArray(v)) return [...DEFAULT_EXPIRY_BUCKETS];
+  const days = v
+    .filter((n): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 1)
+    .map((n) => Math.floor(n));
+  const uniq = Array.from(new Set(days)).sort((a, b) => a - b);
+  return uniq.length > 0 ? uniq : [...DEFAULT_EXPIRY_BUCKETS];
 }
 
 export const THRESHOLDS: ThresholdConfig = {
@@ -425,6 +447,7 @@ export const THRESHOLDS: ThresholdConfig = {
   shelfCheckIntervalDays: 7,
   glucometerControlTestIntervalDays: 30,
   aedCheckIntervalDays: 30,
+  expiryBuckets: [...DEFAULT_EXPIRY_BUCKETS],
 };
 
 // ---------------------------------------------------------------------------
@@ -581,6 +604,12 @@ export const REQUIRE_CERTS_FOR_SHIFT_SIGNUP = true;
 /** Default roles that may see private finance fields (payee names, Zelle/Venmo handles). */
 export const PRIVATE_FINANCE_ROLES: string[] = ['admin'];
 
+/** Month (1-12) the fiscal year starts in. BMRC's FY is Jul-Jun, so 7 (see `app/lib/fiscal.ts`). */
+export const FISCAL_YEAR_START_MONTH = 7;
+
+/** Who can own a piece of equipment (the "Owner" column of the workbook's equipment register). Only `BMRC` items can be capitalized. */
+export const ASSET_OWNERS: string[] = ['BMRC', 'OEM', 'UCPD'];
+
 // ---------------------------------------------------------------------------
 // Runtime config document shape + defaults
 //
@@ -611,6 +640,16 @@ export type OrgConfigDoc = {
    * `canSeePrivateFinance` in app/lib/roles.ts). Default `['admin']`.
    */
   privateFinanceRoles: string[];
+  /**
+   * Fiscal-year start month, 1-12 (default 7 = July, so "FY27" = Jul 2026-Jun 2027).
+   * Optional on the TYPE only so the not-yet-updated settings draft (which
+   * builds an OrgConfigDoc by hand and merge-saves it) still typechecks and
+   * never clobbers the stored value; the merged runtime config always has it.
+   * Read via `getFiscalYearStartMonthRuntime()`.
+   */
+  fiscalYearStartMonth?: number;
+  /** Equipment owner choices (default BMRC, OEM, UCPD). BMRC-owned gear at/above the asset threshold is capitalized. Optional on the type for the same reason; read via `getAssetOwnersRuntime()`. */
+  assetOwners?: string[];
 };
 
 export const DEFAULT_ORG_CONFIG: OrgConfigDoc = {
@@ -627,6 +666,8 @@ export const DEFAULT_ORG_CONFIG: OrgConfigDoc = {
   semesterStartDate: SEMESTER_START_DATE,
   requireCertsForShiftSignup: REQUIRE_CERTS_FOR_SHIFT_SIGNUP,
   privateFinanceRoles: [...PRIVATE_FINANCE_ROLES],
+  fiscalYearStartMonth: FISCAL_YEAR_START_MONTH,
+  assetOwners: [...ASSET_OWNERS],
 };
 
 // ---------------------------------------------------------------------------
