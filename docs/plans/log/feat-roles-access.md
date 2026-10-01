@@ -4,7 +4,7 @@
 - R1 · `app/lib/roles.ts` capabilities, `treasurer` role, `privateFinanceRoles` setting · 7a50459 · `scripts/test-roles.ts` 133/0; tsc 0 errors outside the 5 known o2 tests; eslint 0 new
 - R2a · lib/components/dashboard: 13 inline admin/QM checks -> `canManageLogistics` (12 files) · 1dbd8f2 · tsc 0 new; eslint identical to baseline (65 problems)
 - R2b · route pages: 22 checks -> `canManageLogistics` (19 files) · 504c9fe · tsc 0 new; eslint identical to baseline (15 problems); after both: `npm run test` 69/0 + 133/0, `NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 npm run build` pass; smoke driver NOT run (drive the sandbox before merge)
-- R4 · `firestore.prod.rules` per-role rules + `app/lib/__tests__/rules.test.ts` (`npm run test:rules` now runs only this file) · commit pending hash (see git log) · rules suite 92/0; tsc 0 new; eslint clean; NOT deployed (deploy is a separate reviewed step, see fix-firestore-rules.md)
+- R4 · `firestore.prod.rules` per-role rules + `app/lib/__tests__/rules.test.ts` (`npm run test:rules` now runs only this file) · 313143a · rules suite 92/0 (re-run by O at the 2a gate: 92/0); tsc 0 new; eslint clean; NOT deployed (deploy is a separate reviewed step, see fix-firestore-rules.md)
 
 ## R4 write table (every Firestore write in `app/`, by who can reach it in the UI)
 Roles: M = admin/QM, EM = admin/QM/medops, OP = admin/QM/inventory_helper/any user with `canAudit`, ALL = any signed-in. "Rule" is what the rules now enforce.
@@ -45,7 +45,3 @@ Roles: M = admin/QM, EM = admin/QM/medops, OP = admin/QM/inventory_helper/any us
 - **`private/*` write set** (M + treasurer) and the payment field names (`paidAt`, `paidFrom`, `asucPrNumber`, `reimbursedAt`, ...) are provisional until P2; `purchases` update by `inventory_helper` covers receive, a plain `canAudit` member using the inventory page by URL cannot receive.
 - **Treasurer may read all `uniform_orders`/`loaner_checkouts`** (plan: canViewLogistics 'full'); the task text said members-own only, tell me if the treasurer should not.
 - `rules-stopgap.test.ts` is now redundant and stale (2 of its 25 cases assert the old open behavior and fail); its cases are folded into `rules.test.ts`. Left in place per the no-delete rule; the deletion is yours to approve.
-
-## Findings from R4 (not yet folded)
-- `app/inventory/page.tsx:970-976`: "Merge selected" is not gated by `isAdmin`; any inventory-page user can start a destructive merge (rules allow only the exact repoint fields for operators).
-- Stats comments claiming "role-gated by firestore.rules" (`useStatsData.ts`, `stats/page.tsx`, `dashboards.ts`) are now true for `published__*`.
