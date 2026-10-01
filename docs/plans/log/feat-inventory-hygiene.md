@@ -4,6 +4,7 @@
 - H0 diagnose-merges · read-only; merge paths found (`inventory-merge.ts` fuzzy grouping + `buildMergePlan` with no variant guard) · d539160 · n/a (docs only)
 - H1 variant signature + merge gate · `variant-signature.ts`; `findDuplicateCandidates`/`buildMergePlan` refuse cross-variant · df671fc · 91 unit tests pass, tsc/eslint clean, not runtime-verified
 - H2 existence status · `getExistence`, `retireInventoryItem`; unverified/retired excluded from restock, rollups, reconciliation · 5466877 · 11 unit tests pass, `retireInventoryItem` not exercised
+- H3 existence-baseline report · read-only report script; classifies items by existence and shows unverified stock > 0 · [tbc] · 15 unit tests pass, `node --check` and eslint clean
 - H8 audit cadence · `thresholds.auditCadence` + `isAuditCurrent` + settings select (amends D-6) · 579045a · 17 unit tests pass, settings form not viewed in browser
 - Final pass · ff3f34e · `npm run build` ok, `npm run test` 69/0, 119 node:test pass, tsc only the 5 known o2 errors, eslint clean; emulator smoke driver NOT run, no live data touched
 
