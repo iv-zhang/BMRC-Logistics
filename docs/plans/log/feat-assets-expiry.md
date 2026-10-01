@@ -16,8 +16,3 @@
 - `app/hooks/useOrgConfig.ts` `buildResult` and `app/settings/page.tsx` do not expose or edit the new keys. `fiscalYearStartMonth` and `assetOwners` are optional on `OrgConfigDoc` (type only) so the hand-built settings draft still typechecks and its merge-save cannot clobber them. A3/A4 can read via `getAssetOwnersRuntime()` / `getExpiryBuckets()` / `getFiscalYearStartMonthRuntime()`.
 - Callers pass `determineIsAsset` (inventory.ts) as `isAsset` to the selectors, so they stay Firebase-free; `item-status.ts` still loads the Firebase client module transitively (needs the fake env in tests, like existing suites).
 - A4 must pass `getExpiryBuckets()`, `getFiscalYearStartMonthRuntime()` and `getThresholds().assetValueThreshold` into the selectors.
-
-## Findings (not yet folded)
-- `app/dashboard/page.tsx:209-217` lot expiry ignores `batchHasStock` (zero-stock tombstones count) and `new Date(b.expirationDate)`; `:200,217` hardcode 60. (A4 replaces it with `expiryReport`.)
-- `app/lib/audit-actions.ts:268` `new Date(input.expirationMonth + '-01')` parses as UTC midnight on the 1st, so a month-precision lot reads expired from the 1st of its expiry month (and is off by a day in US timezones). Same rule used by `getItemStatus`; not changed here.
-- `app/lib/item-status.ts:79` `computeBagStock` box path returns `boxes` (not `loose`) when `itemsPerBox` is unset/0, so loose units are dropped.
