@@ -1,6 +1,6 @@
 # Platform overhaul plan
 
-Status: **v5, wave 0 + wave 1 landed 2026-09-30; wave 2a in progress (§8.5)** (§8 decisions recorded 2026-09-30) · Updated 2026-09-30 · Plan branch `plan/platform-overhaul`
+Status: **v5, wave 0 + wave 1 merged to `main` and live 2026-09-30; wave 2a in progress (§8.5)** (§8 decisions recorded 2026-09-30) · Updated 2026-09-30 · Plan branch `plan/platform-overhaul`
 
 **Scope:** Logistics + MedOps spending and stock. Three documents stay the source of truth for their own areas,
 and the app **feeds** them, never duplicates them:
@@ -323,11 +323,13 @@ through PRs.
 becomes once the PRs merge). Wave-2 branches sit on it: `feat/assets-expiry`, `feat/roles-access-w2`,
 `feat/inventory-hygiene-w2` (the `-w2` suffix keeps the open wave-1 PRs from growing).
 
-**Wave-1 PRs are open but NOT merged, on purpose.** Ivan OK'd "merge if checks pass" on the understanding that the
-hosting workflow always fails. It doesn't: there are two workflows on push to `main`. *Deploy to Firebase Hosting on
-merge* fails, but *Deploy to Firebase Hosting* (`firebase-hosting.yml`, `channelId: live`) **succeeded on the last two
-pushes**. So merging = live deploy, and hygiene changes live behaviour (unverified items drop out of restock/alerts
-before the H5 queue exists to show them; see findings.md). Needs Ivan's call with that known.
+**Wave 1 merged and LIVE 2026-09-30** (PRs #3-#6, merged by Ivan; `main` @ ec02816 is tree-identical to
+`integration/overhaul`). `firebase-hosting.yml` deployed each merge to the live channel (4/4 success; the sibling
+`firebase-hosting-merge.yml` failed 4/4). Checked on that exact tree: tsc (5 known), `npm test` 69 + 133, 119 unit
+tests, build. **Not yet run on it: rules emulator suite, smoke driver.** Consequences now live:
+- Items not audited since 2026-06-01 are *unverified* and no longer appear in restock analysis, storage alerts or
+  reconciliation, and there is no Unverified queue yet. **H5 is now the first packet of 2b.**
+- Firestore **rules are still the open ones** until S4 is deployed by hand (merging never deploys rules).
 
 | Sub-wave | Packets (model) | Files | You verify at the pause |
 |---|---|---|---|
@@ -343,11 +345,11 @@ before the H5 queue exists to show them; see findings.md). Needs Ivan's call wit
 
 | Branch | Status |
 |---|---|
-| fix/firestore-rules | **S1–S3 done, awaiting your review** (6779f71, 63cd57d, c42a253; `npm run test:rules` 25/25 on emulator; app not driven). **S4: deploy from c42a253 only**, never 6779f71 |
-| feat/inventory-hygiene | **H0 H1 H2 H8 done, awaiting your review** (d539160 … ff3f34e; build/test/lint pass, 119 new unit tests, not runtime-verified). Fixes a real merge-across-sizes bug, so **no dedupe in prod until this merges**. **H6 skipped** (needs design calls). Proposed D-32/D-33 text is in the branch log |
-| feat/ui-system | **U1 done, awaiting your review** (a980c8d, 9b01e34; built + typechecked, not runtime-verified); U0 needs OK |
-| feat/roles-access | **R1 + R2 done, awaiting your review** (7a50459, 1dbd8f2, 504c9fe; tsc/lint/test/build pass, not runtime-verified). 35 `isAdmin` expressions in 31 files → `canManageLogistics` |
-| feat/assets-expiry | after hygiene H2 |
+| fix/firestore-rules | **Merged (PR #3), live hosting.** **S4 still to do by hand:** `firebase deploy --only firestore:rules --project <PROD_PROJECT_ID>` from `main` |
+| feat/inventory-hygiene | **H0 H1 H2 H8 merged (PR #4), live**, not runtime-verified. H3 in 2a (`feat/inventory-hygiene-w2`); H4 H5 in 2b (**H5 first**); H6 H7 need design calls |
+| feat/ui-system | **U1 merged (PR #5), live** (unused so far). U2/U3 in 2c; U0 needs OK |
+| feat/roles-access | **R1 + R2 merged (PR #6), live**, not runtime-verified. R4 in 2a (`feat/roles-access-w2`); R3 in 2b |
+| feat/assets-expiry | A1 A2 in 2a (in progress); A3-A6 in 2b |
 | feat/purchases-budget | after R1 + A1; B-D1 |
 | feat/uniforms | after P1; C6 needs your CSV export of the responses sheet |
 
@@ -374,3 +376,8 @@ stay here; delete a line once it's done.
 - 2026-09-30 · Two hosting workflows fire on every push to `main`: `firebase-hosting-merge.yml` (always fails: writes
   placeholder `NEXT_PUBLIC_API_KEY` secrets) and `firebase-hosting.yml` (succeeds, deploys to **live**). Merging to
   `main` is therefore a production deploy. · Delete or fix the failing one (needs your OK: file deletion).
+- 2026-09-30 · Unit tests that import `item-status.ts` fail with `auth/invalid-api-key` when there is no `.env.local`
+  (pure lib pulls in `firebase.ts` at import). Workaround: `NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST=127.0.0.1:8080`. · Same fix
+  as the lazy-init item above; bake the env var into `test:unit` (T-D1).
+- 2026-09-30 · `@firebase/rules-unit-testing` is in `package.json` (from the rules branch) but was not installed locally. ·
+  Run `npm install` after pulling `main`.
