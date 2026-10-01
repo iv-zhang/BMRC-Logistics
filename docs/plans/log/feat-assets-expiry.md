@@ -19,5 +19,5 @@
 
 ## Findings (not yet folded)
 - `app/dashboard/page.tsx:209-217` lot expiry ignores `batchHasStock` (zero-stock tombstones count) and `new Date(b.expirationDate)`; `:200,217` hardcode 60. (A4 replaces it with `expiryReport`.)
-- `app/lib/audit-actions.ts:267` `new Date(input.expirationMonth + '-01')` parses as UTC midnight on the 1st, so a month-precision lot reads expired from the 1st of its expiry month (and is off by a day in US timezones). Same rule used by `getItemStatus`; not changed here.
-- `app/lib/item-status.ts:75-77` `computeBagStock` box path returns `boxes` (not `loose`) when `itemsPerBox` is unset/0, so loose units are dropped.
+- `app/lib/audit-actions.ts:268` `new Date(input.expirationMonth + '-01')` parses as UTC midnight on the 1st, so a month-precision lot reads expired from the 1st of its expiry month (and is off by a day in US timezones). Same rule used by `getItemStatus`; not changed here.
+- `app/lib/item-status.ts:79` `computeBagStock` box path returns `boxes` (not `loose`) when `itemsPerBox` is unset/0, so loose units are dropped.
