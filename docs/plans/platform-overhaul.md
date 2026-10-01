@@ -1,6 +1,6 @@
 # Platform overhaul plan
 
-Status: **v5, wave 0 + wave 1 merged to `main` and live 2026-09-30; wave 2a in progress (§8.5)** (§8 decisions recorded 2026-09-30) · Updated 2026-09-30 · Plan branch `plan/platform-overhaul`
+Status: **v5, wave 0 + wave 1 merged to `main` and live 2026-09-30; wave 2a landed 2026-09-30, awaiting your review before 2b (§8.5)** (§8 decisions recorded 2026-09-30) · Updated 2026-09-30 · Plan branch `plan/platform-overhaul`
 
 **Scope:** Logistics + MedOps spending and stock. Three documents stay the source of truth for their own areas,
 and the app **feeds** them, never duplicates them:
@@ -304,7 +304,21 @@ forecast workbook.
 people, so writes lose per-person attribution in `inventory_logs`/`auditEvents` and break per-person `effectiveUid` scoping (D-18).
 Should role accounts be (a) blocked from writes, (b) read-only, or (c) allowed as-is?
 
-## 8.5 Wave 2 breakdown (approved 2026-09-30; **2a in progress**)
+**Open at the 2a gate (answer before or with "go" for 2b; detail in the branch logs):**
+
+| ID | Question | Default if you say nothing |
+|---|---|---|
+| **R4-D1** | Seven member-reachable collections stay "any signed-in user may update" (`statpacks`, `vehicles`, `vehicle_logs`, `exchange_bags`, `team_tasks`, `apparel_items`, log creates), plus `events.teams`, `shift_requests.attendance`, `notifications` create. Narrowing them needs server-side writes (none exist: static export). Accept for now? | Accept; record as a known limit in D-34 |
+| **R4-D2** | `canAudit` is honoured for any role, so a medops user with the flag can write inventory. Keep (matches the UI) or make medops read-only regardless? | Keep |
+| **R4-D3** | Treasurer may read all `uniform_orders` / `loaner_checkouts` (needed for the finance feed). OK? | Yes |
+| **R4-D4** | `users`, `medication_logs`, `purchase_history`, `issue_reports` are still readable by every signed-in user. Tighten in R3/R-seam? | Leave `users` (roster, event staffing need it); restrict the other three to manage roles in R-seam |
+| **R4-D5** | Delete `app/lib/__tests__/rules-stopgap.test.ts`? It is superseded by `rules.test.ts` and 2 of its 25 cases now fail by design. | Keep until you approve (no-deletions rule) |
+| **A-D1** | "Supplies at cost": include expired/quarantined lots (still physically on hand), exclude them, or show separately? | Show separately |
+| **A-D2** | Retiring an asset (lifecycle) does not set hygiene `existence: 'retired'`. Keep the two axes separate? | Yes (goes into D-35) |
+| **A-D3** | Asset components (pads, batteries) are in the expiry buckets even when the asset's supply audit is stale. OK? | Yes |
+| **H6/H7** | Design choices in [h6-h7-proposal.md](h6-h7-proposal.md). | Not built until answered |
+
+## 8.5 Wave 2 breakdown (approved 2026-09-30; **2a landed, 2b waits for "go"**)
 
 **Why wave 2 can't run as one batch** (found while preparing it):
 - **Wave 1 is not on `main`.** Every wave-2 packet needs something from it: A2 valuation needs `getExistence` (hygiene
@@ -331,25 +345,54 @@ tests, build. **Not yet run on it: rules emulator suite, smoke driver.** Consequ
   reconciliation, and there is no Unverified queue yet. **H5 is now the first packet of 2b.**
 - Firestore **rules are still the open ones** until S4 is deployed by hand (merging never deploys rules).
 
+**2a result (2026-09-30).** All four packets committed and pushed; nothing merged, nothing deployed, no live data read.
+
+| Packet | Branch · commit | Checked by O at the gate |
+|---|---|---|
+| A1 | `feat/assets-expiry` · 6085c1a | tsc: only the 5 known `o2-*` errors; eslint clean |
+| A2 | `feat/assets-expiry` · f8f9cd0 | 87 unit tests pass (lifecycle, fiscal, expiry, valuation) |
+| R4 | `feat/roles-access-w2` · 313143a | rules emulator suite **92 / 0**; tsc clean. **Not deployed** |
+| H3 | `feat/inventory-hygiene-w2` · 3ace209 | 19 unit tests pass. **Report not run** (reads live `inventory`, needs your credentials) |
+
+The three branches merge cleanly with each other and with `origin/main` (`git merge-tree`, no refs changed).
+Not run: `npm run build`, smoke driver (no page changed in 2a).
+
+**For you at this pause:**
+1. H3 counts: in `.claude/worktrees/w2-hygiene`, `GOOGLE_APPLICATION_CREDENTIALS=<key.json> npm run report:existence`
+   (read-only; add `-- --list` for the unverified items with stock). Compare confirmed/unverified with the shelves.
+2. Rules: in `.claude/worktrees/w2-roles`,
+   `npx firebase-tools@13.35.1 emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics "./node_modules/.bin/tsx --test app/lib/__tests__/rules.test.ts"`
+   and read the write table in `docs/plans/log/feat-roles-access.md` on that branch.
+3. FY/bucket numbers: `app/lib/__tests__/{fiscal,expiry,valuation}.test.ts` on `feat/assets-expiry`.
+4. The open questions in §8 and [h6-h7-proposal.md](h6-h7-proposal.md).
+5. **S4 is still open:** production rules are the open ones until you deploy by hand. Deploying the stopgap from `main`
+   now and R4 after its review is safer than waiting for R4.
+
+**2b launch notes (for O, after "go"):** branches continue in place (`feat/assets-expiry`: A3 A4 A5 A6;
+`feat/inventory-hygiene-w2`: H5 first, then H4; `feat/roles-access-w2`: R3). H4 also gates "Merge selected" on
+`canManageLogistics` (findings). A4 reads config through `getExpiryBuckets()` / `getFiscalYearStartMonthRuntime()` /
+`getThresholds().assetValueThreshold` and passes `determineIsAsset` into the selectors. R3 must not touch
+`app/inventory/page.tsx` or `app/dashboard/page.tsx` (H4 and A4 carry its gates). O exposes the new config keys in
+`useOrgConfig.ts` before A3/A4 start.
+
 | Sub-wave | Packets (model) | Files | You verify at the pause |
 |---|---|---|---|
-| **2a: lib only, no page edits** | **A1** (S) types + `asset-lifecycle.ts` + `fiscal.ts` + org-config → then **A2** (S) `expiry.ts`, `valuation.ts` · **R4** (S) full per-role `firestore.prod.rules` + emulator test · **H3** (H) dry-run baseline report script | all new files except `types.ts`, `org-config.ts` (+store), `firestore.prod.rules` | unit tests + rules-emulator output; the H3 dry-run counts (confirmed / unverified) against what you expect on the shelves; FY and bucket numbers |
+| **2a: lib only, no page edits (landed)** | **A1** (S) types + `asset-lifecycle.ts` + `fiscal.ts` + org-config → then **A2** (S) `expiry.ts`, `valuation.ts` · **R4** (S) full per-role `firestore.prod.rules` + emulator test · **H3** (H) dry-run baseline report script | all new files except `types.ts`, `org-config.ts` (+store), `firestore.prod.rules` | unit tests + rules-emulator output; the H3 dry-run counts (confirmed / unverified) against what you expect on the shelves; FY and bucket numbers |
 | **2b: pages, one owner each** | **H4** (S) `/inventory` confirmed-only default + hide retired + R3's read gate · **H5** (S) `/audit` Unverified queue, retire/restore helper · **A3** (S) `/assets` · **A4** (S) `/dashboard` expiry widget + R3's gate · **R3** (S) nav, buy-list, member-dashboard, roster `ROLE_OPTIONS`, R-D1 recipients → org config · **A5** (H) intake wizard cost · **A6** (S) backfill script (dry-run) | one page per agent | the sandbox (`npm run dev:sandbox`) per role: admin, QM, medops, treasurer, member |
 | **2c: migrations + seams** | **U3a–f** (H/S) pages → U1 primitives · **U2** approved deletions (U-D2, one commit each) · **T-D1** one test runner · O: H-seam, R-seam, A-seam (D-32…D-35 into `decisions.md`) | pages, after 2b lands | before/after screenshots; `npm test` |
 
 **Held back (need your design call, not guessed):** **H6** (variant picker, *On shelf | In a container* control,
-`Container.kind`) and **H7** (split by size). Their v2 packet text is lost; O writes a one-page proposal for you at the
-2a pause. **S-D1** stays blocked on the shared-role-account question in §8.
+`Container.kind`) and **H7** (split by size). Their v2 packet text is lost; the one-page proposal is [h6-h7-proposal.md](h6-h7-proposal.md). **S-D1** stays blocked on the shared-role-account question in §8.
 
 ## 9. Status
 
 | Branch | Status |
 |---|---|
 | fix/firestore-rules | **Merged (PR #3), live hosting.** **S4 still to do by hand:** `firebase deploy --only firestore:rules --project <PROD_PROJECT_ID>` from `main` |
-| feat/inventory-hygiene | **H0 H1 H2 H8 merged (PR #4), live**, not runtime-verified. H3 in 2a (`feat/inventory-hygiene-w2`); H4 H5 in 2b (**H5 first**); H6 H7 need design calls |
+| feat/inventory-hygiene | **H0 H1 H2 H8 merged (PR #4), live**, not runtime-verified. **H3 done** (`feat/inventory-hygiene-w2` 3ace209, report not yet run on live data); H4 H5 in 2b (**H5 first**); H6 H7 wait on [h6-h7-proposal.md](h6-h7-proposal.md) |
 | feat/ui-system | **U1 merged (PR #5), live** (unused so far). U2/U3 in 2c; U0 needs OK |
-| feat/roles-access | **R1 + R2 merged (PR #6), live**, not runtime-verified. R4 in 2a (`feat/roles-access-w2`); R3 in 2b |
-| feat/assets-expiry | A1 A2 in 2a (in progress); A3-A6 in 2b |
+| feat/roles-access | **R1 + R2 merged (PR #6), live**, not runtime-verified. **R4 done** (`feat/roles-access-w2` 313143a, rules suite 92/0, **not deployed**); R3 in 2b |
+| feat/assets-expiry | **A1 A2 done** (6085c1a, f8f9cd0; 87 unit tests), write path not exercised against an emulator; A3-A6 in 2b |
 | feat/purchases-budget | after R1 + A1; B-D1 |
 | feat/uniforms | after P1; C6 needs your CSV export of the responses sheet |
 
@@ -381,3 +424,8 @@ stay here; delete a line once it's done.
   as the lazy-init item above; bake the env var into `test:unit` (T-D1).
 - 2026-09-30 · `@firebase/rules-unit-testing` is in `package.json` (from the rules branch) but was not installed locally. ·
   Run `npm install` after pulling `main`.
+- 2026-09-30 · The `firebase` CLI is not in `node_modules/.bin`, so `npm run test:rules` and the other `emulators:exec`
+  scripts fail as written; they run with `npx firebase-tools@13.35.1 emulators:exec ...` (JDK 21 needs that version). ·
+  Add `firebase-tools@13.35.1` as a devDependency or change the scripts (T-D1).
+- 2026-09-30 · Some R4 denials are reached through a rules *evaluation error* (e.g. a `get()` on a missing doc) rather
+  than a clean `false`. Still fail-closed, but it hides real mistakes in the emulator log. · Tidy in R-seam.
