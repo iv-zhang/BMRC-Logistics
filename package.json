@@ -27,7 +27,7 @@
     "dev:sandbox": "firebase emulators:exec --config firebase.emulator.json --only firestore,auth --project demo-bmrc-logistics \"npm run sandbox:seed && npm run dev:emulator\"",
     "seed:staging": "tsx ./scripts/seed-staging.ts",
     "dev:staging": "node ./scripts/dev-staging.mjs",
-    "test:rules": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx --test app/lib/__tests__/rules-stopgap.test.ts\"",
+    "test:rules": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx --test app/lib/__tests__/rules.test.ts\"",
     "test:events": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx ./scripts/emulator/run-events.ts\""
   },
   "dependencies": {

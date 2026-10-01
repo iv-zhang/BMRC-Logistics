@@ -1,50 +1,108 @@
 rules_version = '2';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PRODUCTION STOPGAP RULES (plan §0.5, packet S1).
+// PRODUCTION RULES (plan §2, packet R4) — per-role access.
 //
-// The repo's other rules file, `firestore.rules`, is deliberately wide-open
-// (`allow read, write: if true`) so the Firestore Local Emulator Suite can run
-// seed/integration/property tests with no auth layer — see the warning at the
-// top of that file. `firebase.json` used to point production deploys at that
-// same open file; a bare `firebase deploy` could ship it straight to the live
-// project (see packet S2, which repoints `firebase.json` at THIS file instead
-// and adds a separate `firebase.emulator.json` for local/CI emulator use).
+// This is the real security boundary for the live `bmrc-logistics` project.
+// `firestore.rules` (the open emulator-only file) must never be deployed; see
+// docs/plans/log/fix-firestore-rules.md for the deploy command.
 //
-// This file is the real security boundary for the live `bmrc-logistics`
-// project. It intentionally does NOT implement the full per-role capability
-// model from plan §2 (`feat/roles-access` packet R4) yet — that is a bigger,
-// carefully-tested change. This is a narrow stopgap with one goal: nobody
-// signed OUT can read or write anything, and a signed-in member cannot grant
-// themselves admin. Every collection below `users` gets a coarse
-// "any signed-in user may read/write" rule, matching today's actual app
-// behavior (which has no finer-grained checks of its own yet) so no current
-// flow breaks. R4 will tighten per-collection access later.
+// How these rules were derived: every Firestore write in `app/` was grepped and
+// traced to the roles that can actually reach it in the UI (the table lives in
+// docs/plans/log/feat-roles-access.md). A collection is tightened ONLY where that
+// table proves non-managers never write it. Where a non-manager flow exists (or
+// could not be ruled out) the write stays at the old stopgap level ("any
+// signed-in user") and is listed in that log under "Left open, needs a decision".
 //
-// Do not deploy this file by hand — see docs/plans/log/fix-firestore-rules.md
-// for the exact `firebase deploy` command once S1-S3 are reviewed (S4).
+// IMPORTANT facts for anyone editing this file:
+//   * Rules see the REAL Firebase Auth uid's role (users/{uid}.role). The client
+//     side role override / test identity is invisible here; test identities are
+//     an admin/QM-only tool, so those writes arrive as admin/QM.
+//   * Rules are ADDITIVE: any matching `allow` grants access. Every collection
+//     therefore has its own explicit `match`, and the final catch-all excludes all
+//     of them by name. Add new collections to BOTH places.
+//   * Role vocabulary: admin | quartermaster | treasurer | inventory_helper | FTO |
+//     fto_intern | medops | member. Keep the helper functions below in step with
+//     app/lib/roles.ts (canManageLogistics, canRecordPayment, canSeePrivateFinance,
+//     canManageEvents, canRequestSupplies).
+//   * Per-request limit: 10 document accesses (20 for batches/transactions). The
+//     users/{uid} role lookup is the same document every time, so it counts once.
 // ─────────────────────────────────────────────────────────────────────────────
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // ── identity helpers ─────────────────────────────────────────────────────
     function isSignedIn() {
       return request.auth != null;
     }
 
-    // Caller role lookup. `exists()` guards the `get()` so a signed-in caller
-    // with no `users` doc yet (e.g. the instant before register/page.tsx writes
-    // one) evaluates to "no role" instead of throwing.
+    function userPath(uid) {
+      return /databases/$(database)/documents/users/$(uid);
+    }
+
+    // Caller's role, or null. `exists()` guards the `get()` so a signed-in caller
+    // with no `users` doc yet (the instant before register/app-sidebar writes one)
+    // evaluates to "no role" instead of throwing.
+    function callerRole() {
+      return isSignedIn() && exists(userPath(request.auth.uid))
+        ? get(userPath(request.auth.uid)).data.get('role', null)
+        : null;
+    }
+
+    // admin / quartermaster: roles.ts canManageLogistics (the old `isAdmin`).
     function callerIsAdminOrQm() {
-      return isSignedIn() &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
-          in ['admin', 'quartermaster'];
+      return callerRole() in ['admin', 'quartermaster'];
     }
 
     function callerIsMedops() {
-      return isSignedIn() &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'medops';
+      return callerRole() == 'medops';
+    }
+
+    // admin / quartermaster / medops: roles.ts canManageEvents (isEventManagerRole).
+    function callerIsEventManager() {
+      return callerRole() in ['admin', 'quartermaster', 'medops'];
+    }
+
+    // admin / treasurer: roles.ts canRecordPayment.
+    function callerCanRecordPayment() {
+      return callerRole() in ['admin', 'treasurer'];
+    }
+
+    // Anyone who may run the supply audit in the UI (audit-helpers.ts canUserAudit:
+    // admin/QM/inventory_helper, or ANY role whose users doc has canAudit == true)
+    // and therefore also the inventory page's receive / barcode / item tools.
+    function callerCanOperateInventory() {
+      return callerRole() in ['admin', 'quartermaster', 'inventory_helper'] ||
+        (isSignedIn() && exists(userPath(request.auth.uid)) &&
+          get(userPath(request.auth.uid)).data.get('canAudit', false) == true);
+    }
+
+    // The set of fields a write actually changes (update only).
+    function changedKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    // ── private finance docs (payee names, Zelle/Venmo handles) ──────────────
+    // org_settings/current.privateFinanceRoles; admin is ALWAYS allowed and the
+    // default when the field is missing is ['admin'] (roles.ts canSeePrivateFinance).
+    function privateFinanceRoles() {
+      return exists(/databases/$(database)/documents/org_settings/current)
+        ? get(/databases/$(database)/documents/org_settings/current).data.get('privateFinanceRoles', ['admin'])
+        : ['admin'];
+    }
+
+    function callerCanSeePrivateFinance() {
+      return callerRole() == 'admin' ||
+        (callerRole() != null && callerRole() in privateFinanceRoles());
+    }
+
+    // `…/private/*` under ANY parent (planned: purchases/{id}/private/payment).
+    // Read = privateFinanceRoles only. Write = whoever records the payee: the
+    // logistics managers (entering a purchase) and the treasurer. PROVISIONAL: no
+    // code writes these docs yet (plan §4 P2); revisit when it does.
+    match /{path=**}/private/{docId} {
+      allow read: if callerCanSeePrivateFinance();
+      allow write: if callerIsAdminOrQm() || callerRole() == 'treasurer';
     }
 
     // medops may only assign/modify these roles (mirrors MEDOPS_AVAILABLE_ROLES in
@@ -59,22 +117,20 @@ service cloud.firestore {
     }
 
     // ── users ────────────────────────────────────────────────────────────────
-    // Every current write site (grepped across app/): register/page.tsx (self
-    // create, role: 'member'), app-sidebar.tsx (self-heal create if missing,
-    // also role: 'member'), roster/page.tsx (admin/QM/medops editing OTHER
-    // members' role/canAudit/memberStatus/joinedTerm/isCommitteeMember),
-    // onboarding-tour.tsx + audit-helpers.ts/setAuditPermission +
-    // certifications.ts/updateMemberCertification (field updates, self or by
-    // admin/QM/medops), test-identity.ts/seedTestUsers (admin/QM creating or
-    // merge-updating the seeded `__test_*` identity docs — those ids are never
-    // the caller's own uid, so they only pass through the privileged branch).
+    // Unchanged from the stopgap. Every current write site: register/page.tsx (self
+    // create, role: 'member'), app-sidebar.tsx (self-heal create, role: 'member'),
+    // roster/page.tsx (admin/QM/medops editing OTHER members' role/canAudit/
+    // memberStatus/joinedTerm/isCommitteeMember), onboarding-tour.tsx +
+    // audit-helpers.ts/setAuditPermission + certifications.ts/updateMemberCertification
+    // (field updates, self or by admin/QM/medops), test-identity.ts/seedTestUsers
+    // (admin/QM creating or merge-updating `__test_*` docs).
+    // Reads stay signed-in: events/notifications query users by role to find
+    // recipients, and the roster/events UIs show member names to members.
     match /users/{userId} {
       allow read: if isSignedIn();
 
-      // Create: the caller creating their OWN doc with role locked to 'member'
-      // (all register/page.tsx and app-sidebar.tsx's self-heal ever write);
-      // admin/QM creating ANY other user doc (test identities, any role); or
-      // medops creating another user's doc with an assignable role only.
+      // Create: self with role locked to 'member'; admin/QM any other user doc;
+      // medops another user's doc with an assignable role only.
       allow create: if isSignedIn() && (
         (request.auth.uid == userId && request.resource.data.get('role', null) == 'member') ||
         (request.auth.uid != userId && callerIsAdminOrQm()) ||
@@ -82,11 +138,9 @@ service cloud.firestore {
           medopsAssignable(request.resource.data.get('role', null)))
       );
 
-      // Update: nobody may change their OWN role (request.resource.data reflects
-      // the doc AFTER the write, so updates that never touch `role` trivially
-      // pass). Admin/QM may update any OTHER user. medops may update any OTHER
-      // user, but a role change must go from and to an assignable role (so it
-      // cannot promote anyone to admin/QM/medops or demote an admin).
+      // Update: nobody changes their OWN role. Admin/QM may update any OTHER user.
+      // medops may update any OTHER user, but a role change must go from and to an
+      // assignable role (cannot promote to admin/QM/medops or demote an admin).
       allow update: if isSignedIn() && (
         (request.auth.uid == userId && roleUnchanged()) ||
         (request.auth.uid != userId && callerIsAdminOrQm()) ||
@@ -100,18 +154,359 @@ service cloud.firestore {
       allow delete: if callerIsAdminOrQm();
     }
 
-    // ── everything else ─────────────────────────────────────────────────────
-    // No collection in the app today enforces its own per-role write checks
-    // beyond client-side gating, so the stopgap's floor is "must be signed
-    // in" everywhere. R4 (feat/roles-access) replaces this with real
-    // per-collection/per-role rules once that branch lands.
-    //
-    // IMPORTANT: Firestore rules are ADDITIVE (any matching `allow` grants
-    // access). A bare `match /{document=**}` would also match `users/*` and
-    // silently override every restriction above, so the top-level collection
-    // name is captured and `users` (and its subcollections) excluded here.
-    match /{collection}/{document=**} {
-      allow read, write: if isSignedIn() && collection != 'users';
+    // ── org config ───────────────────────────────────────────────────────────
+    // Written only by /settings (admin/QM page); seedOrgConfigIfMissing from a
+    // non-admin is swallowed client-side. `privateFinanceRoles` decides who can read
+    // payee data, so ONLY an admin may change it (a QM must not be able to grant
+    // themselves access). Consequence: a QM "Reset to defaults" is denied while the
+    // stored list differs from the default ['admin'] (admin can still do it).
+    match /org_settings/{docId} {
+      allow read: if isSignedIn();
+      allow create: if callerIsAdminOrQm() &&
+        (callerRole() == 'admin' ||
+          !request.resource.data.keys().hasAny(['privateFinanceRoles']) ||
+          request.resource.data.privateFinanceRoles == ['admin']);
+      allow update: if callerIsAdminOrQm() &&
+        (callerRole() == 'admin' || !changedKeys().hasAny(['privateFinanceRoles']));
+      allow delete: if callerRole() == 'admin';
+    }
+
+    // ── saved /stats layouts ─────────────────────────────────────────────────
+    // `published__<key>` = the org default: admin/QM only (stats page canPublish).
+    // `<uid>__<key>` = a personal layout: its owner (or admin/QM, who also drive the
+    // test-identity view). Doc ids are built in app/lib/dashboards.ts.
+    match /dashboards/{dashId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && (
+        callerIsAdminOrQm() ||
+        (!dashId.matches('published__.*') && dashId.matches(request.auth.uid + '__.*'))
+      );
+    }
+
+    // ── events & staffing (D-13..D-30) ───────────────────────────────────────
+    // Create/delete/edit: event managers (admin/QM/medops). A member cancelling their
+    // own APPROVED request frees their slot by rewriting `teams` (cancelRequest
+    // transaction in app/lib/events.ts), so non-managers may touch ONLY teams +
+    // updatedAt. (Open gap: that cannot tell whose slot they changed.)
+    match /events/{eventId} {
+      allow read: if isSignedIn();
+      allow create, delete: if callerIsEventManager();
+      allow update: if callerIsEventManager() ||
+        (isSignedIn() && changedKeys().hasOnly(['teams', 'updatedAt']));
+    }
+
+    // Create: your own request (requestShift sets userId = requester.uid) or a
+    // manager. Update: managers (approve/reject/attendance/hours); ANY signed-in user
+    // may write `attendance` (assigned FTO live check-in/out, and the auto end-shift
+    // sweep that any member's statpack check-in triggers on other members' docs);
+    // a requester may cancel their OWN request (and nothing else), so nobody can
+    // self-approve. Delete: admin/QM (test-identity cleanup).
+    match /shift_requests/{requestId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() &&
+        (callerIsEventManager() || request.resource.data.get('userId', null) == request.auth.uid);
+      allow update: if callerIsEventManager() ||
+        (isSignedIn() && changedKeys().hasOnly(['attendance'])) ||
+        (isSignedIn() && resource.data.get('userId', null) == request.auth.uid &&
+          request.resource.data.get('status', null) == 'cancelled' &&
+          changedKeys().hasOnly(['status', 'decidedAt']));
+      allow delete: if callerIsAdminOrQm();
+    }
+
+    // Everyone creates (member shift requests broadcast to managers; statpack
+    // check-in flags logistics). Read/mark-read: the recipient only (managers see all
+    // because they drive test identities). Delete: admin/QM (test-identity cleanup).
+    match /notifications/{notifId} {
+      allow read: if isSignedIn() &&
+        (resource.data.get('userId', null) == request.auth.uid || callerIsAdminOrQm());
+      allow create: if isSignedIn();
+      allow update: if isSignedIn() && changedKeys().hasOnly(['read']) &&
+        (resource.data.get('userId', null) == request.auth.uid || callerIsAdminOrQm());
+      allow delete: if callerIsAdminOrQm();
+    }
+
+    // ── inventory ────────────────────────────────────────────────────────────
+    // Create: audit/receiving users (admin/QM/inventory_helper/canAudit): new items
+    // from the audit stack, intake wizard, receive. Delete: admin/QM only (every
+    // delete button is admin-gated). Update: those same operators, PLUS anyone for
+    // an ASSET doc, limited to the asset checkout/checkin fields (members check
+    // assets out/in from /statpacks/checkout|checkin and /assets/checkout; see
+    // checkoutAsset/checkinAsset/batchCheckout/AssetCheckoutModal). So a plain member
+    // can never change a consumable's counts. medops is read-only here.
+    match /inventory/{itemId} {
+      allow read: if isSignedIn();
+      allow create: if callerCanOperateInventory();
+      allow update: if callerCanOperateInventory() ||
+        (isSignedIn() && resource.data.get('isAsset', false) == true &&
+          changedKeys().hasOnly([
+            'assetStatus', 'assets', 'currentLocation', 'lastKnownReturnLocation',
+            'checkedOutBy', 'checkedOutAt', 'checkoutReason',
+            'lastCheckedInBy', 'lastCheckedInAt', 'assetNextExpiration', 'updatedAt'
+          ]));
+      allow delete: if callerIsAdminOrQm();
+    }
+
+    // Append-only ledgers: everyone writes rows (audit, restock, asset checkout,
+    // statpack check-off, shipments, purchases); only admin/QM may rewrite or delete
+    // (inventory merge, fix-timestamps, test-identity cleanup, undo-purchase).
+    match /inventory_logs/{logId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if callerIsAdminOrQm();
+    }
+    match /statpack_logs/{logId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if callerIsAdminOrQm();
+    }
+    match /auditEvents/{eventId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if callerIsAdminOrQm();
+    }
+    match /box_logs/{logId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if callerIsAdminOrQm();
+    }
+    match /medication_logs/{logId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if callerIsAdminOrQm();
+    }
+    match /exchange_bag_events/{eventId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if callerIsAdminOrQm();
+    }
+    match /apparel_claims/{claimId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if callerIsAdminOrQm();
+    }
+    // Dead modal today (restock-alert-modal has no importer); kept like the logs.
+    match /inventory_alerts/{alertId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if callerIsAdminOrQm();
+    }
+
+    // Barcode tag index: written by assignBarcode (assets page admin/QM/helper,
+    // inventory page, asset modal); read by every scanner.
+    match /barcode_index/{code} {
+      allow read: if isSignedIn();
+      allow write: if callerCanOperateInventory();
+    }
+
+    // Audit zone locks: acquire/release inside the audit page (canUserAudit gate).
+    match /audit_locks/{zone} {
+      allow read: if isSignedIn();
+      allow write: if callerCanOperateInventory();
+    }
+
+    // ── storage layout ───────────────────────────────────────────────────────
+    // Zones/shelves/containers are EDITED in settings (admin/QM). The audit Move
+    // picker can create one inline, so create is open to audit operators.
+    match /storage_zones/{id} {
+      allow read: if isSignedIn();
+      allow create: if callerCanOperateInventory();
+      allow update, delete: if callerIsAdminOrQm();
+    }
+    match /shelves/{id} {
+      allow read: if isSignedIn();
+      allow create: if callerCanOperateInventory();
+      allow update, delete: if callerIsAdminOrQm();
+    }
+    // Containers: the inventory page's "Merge duplicates" (open to anyone on that page,
+    // so helpers) repoints boxContents[].itemId, hence the operator carve-out.
+    match /containers/{id} {
+      allow read: if isSignedIn();
+      allow create: if callerCanOperateInventory();
+      allow update: if callerIsAdminOrQm() ||
+        (callerCanOperateInventory() && changedKeys().hasOnly(['boxContents', 'updatedAt']));
+      allow delete: if callerIsAdminOrQm();
+    }
+
+    // ── statpacks & vehicles ─────────────────────────────────────────────────
+    // Create/delete: admin/QM (admin-only buttons). Update stays open: every
+    // member's check-out/check-in/audit writes the pack in the check-off transaction.
+    match /statpacks/{packId} {
+      allow read: if isSignedIn();
+      allow create, delete: if callerIsAdminOrQm();
+      allow update: if isSignedIn();
+    }
+    // Roster add/edit/retire/delete: admin/QM (isAdmin buttons). Members update the
+    // vehicle doc in the checkout/checkin transaction.
+    match /vehicles/{vehicleId} {
+      allow read: if isSignedIn();
+      allow create, delete: if callerIsAdminOrQm();
+      allow update: if isSignedIn();
+    }
+    // One doc per shift: created at checkout, updated at checkin (both by members).
+    match /vehicle_logs/{logId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn();
+      allow delete: if callerIsAdminOrQm();
+    }
+    // Exchange bags: members swap a bag during statpack check-off; editor is admin.
+    match /exchange_bags/{bagId} {
+      allow read: if isSignedIn();
+      allow create, delete: if callerIsAdminOrQm();
+      allow update: if isSignedIn();
+    }
+
+    // ── restock (page is hard-gated to admin/QM) ─────────────────────────────
+    // restock_categories: also repointed (itemRestocks.*) by the inventory merge, which
+    // operators can run, so operators may touch that one map.
+    match /restock_categories/{id} {
+      allow read: if isSignedIn();
+      allow create, delete: if callerIsAdminOrQm();
+      allow update: if callerIsAdminOrQm() ||
+        (callerCanOperateInventory() && changedKeys().hasOnly(['itemRestocks', 'updatedAt']));
+    }
+    match /restock_shelf_events/{id} {
+      allow read: if isSignedIn();
+      allow write: if callerIsAdminOrQm();
+    }
+    match /restock_actions/{id} {
+      allow read: if isSignedIn();
+      allow write: if callerIsAdminOrQm();
+    }
+
+    // ── reports ──────────────────────────────────────────────────────────────
+    // Anyone files a report (member report form, check-off, vehicle damage, profile
+    // bug form, inventory page). Triage/resolve/delete is the admin-only /issue-reports.
+    match /issue_reports/{id} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if callerIsAdminOrQm();
+    }
+    match /restock_reports/{id} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if callerIsAdminOrQm();
+    }
+
+    // ── committee board ──────────────────────────────────────────────────────
+    // Committee-flagged members edit cards, and statpack check-in creates/refreshes a
+    // restock card for ANY member. Delete is admin-gated in the UI.
+    match /team_tasks/{id} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn();
+      allow delete: if callerIsAdminOrQm();
+    }
+    // Legacy `tasks` is dead; only the inventory merge repoints linkedInventoryId.
+    match /tasks/{id} {
+      allow read: if isSignedIn();
+      allow create, delete: if callerIsAdminOrQm();
+      allow update: if callerIsAdminOrQm() ||
+        (callerCanOperateInventory() && changedKeys().hasOnly(['linkedInventoryId']));
+    }
+
+    // ── purchasing ───────────────────────────────────────────────────────────
+    // buyList: admin/QM manage; medops may CREATE a request (canRequestSupplies) and
+    // bump quantity on an existing open entry (addToBuyList de-dupe path).
+    match /buyList/{id} {
+      allow read: if isSignedIn();
+      allow create: if callerRole() in ['admin', 'quartermaster', 'medops'];
+      // Operators: inventory merge repoints linkedInventoryId on open entries.
+      allow update: if callerIsAdminOrQm() ||
+        (callerIsMedops() && changedKeys().hasOnly(['quantity'])) ||
+        (callerCanOperateInventory() && changedKeys().hasOnly(['linkedInventoryId']));
+      allow delete: if callerIsAdminOrQm();
+    }
+
+    // Payment lifecycle fields (plan §4). PROVISIONAL names: the code does not write
+    // them yet. Only admin/treasurer may set or change them, on create or update.
+    function paymentFields() {
+      return ['paidAt', 'paidBy', 'paidFrom', 'paidAtEstimated', 'asucPrNumber',
+              'reimbursedAt', 'reimbursedBy', 'paymentConfirmedAt', 'paymentConfirmedBy'];
+    }
+
+    // purchases: read by admin/QM/treasurer (canViewLogistics) and the inventory
+    // helper who receives stock (receive-drawer reads the doc). medops/members: no.
+    // Create/cancel: admin/QM ("Log Purchase" is isAdmin-gated). Update: admin/QM and
+    // inventory_helper (receivePurchaseLine) for non-payment fields; the treasurer
+    // may update payment fields ONLY. Payment fields: admin/treasurer only.
+    match /purchases/{id} {
+      allow read: if callerRole() in ['admin', 'quartermaster', 'treasurer', 'inventory_helper'];
+      allow create: if callerIsAdminOrQm() &&
+        (callerRole() == 'admin' || !request.resource.data.keys().hasAny(paymentFields()));
+      allow update:
+        if (callerRole() in ['admin', 'quartermaster', 'inventory_helper'] &&
+            (callerRole() == 'admin' || !changedKeys().hasAny(paymentFields()))) ||
+           (callerRole() == 'treasurer' &&
+            changedKeys().hasOnly(paymentFields().concat(['updatedAt'])));
+      allow delete: if callerIsAdminOrQm();
+    }
+    // No app writer today; legacy pricing history, read by the member dashboard.
+    match /purchase_history/{id} {
+      allow read: if isSignedIn();
+      allow write: if callerIsAdminOrQm();
+    }
+    // Written only from the admin block of the member dashboard (retired in R3).
+    match /purchase_requests/{id} {
+      allow read: if callerIsAdminOrQm();
+      allow write: if callerIsAdminOrQm();
+    }
+    match /vendors/{id} {
+      allow read: if isSignedIn();
+      allow write: if callerIsAdminOrQm();
+    }
+    match /laf_records/{id} {
+      allow read: if isSignedIn();
+      allow write: if callerIsAdminOrQm();
+    }
+
+    // ── uniform exchange (/apparel: members list, claim, waitlist) ───────────
+    match /apparel_items/{id} {
+      allow read, write: if isSignedIn();
+    }
+    // Category management is behind the admin-only "Manage Categories" button.
+    match /apparel_categories/{id} {
+      allow read: if isSignedIn();
+      allow write: if callerIsAdminOrQm();
+    }
+
+    // ── PROVISIONAL: planned uniform/loaner collections (feat/uniforms) ──────
+    // No code reads or writes these yet. Members read only their OWN docs (matched on
+    // a `userId` field: rename here if the real schema differs); admin/QM manage;
+    // the treasurer may read for the finance feed (canViewLogistics 'full').
+    match /uniform_orders/{id} {
+      allow read: if isSignedIn() &&
+        (callerRole() in ['admin', 'quartermaster', 'treasurer'] ||
+         resource.data.get('userId', null) == request.auth.uid);
+      allow write: if callerIsAdminOrQm();
+    }
+    match /uniform_rounds/{id} {
+      allow read: if isSignedIn();
+      allow write: if callerIsAdminOrQm();
+    }
+    match /loaner_checkouts/{id} {
+      allow read: if isSignedIn() &&
+        (callerRole() in ['admin', 'quartermaster', 'treasurer'] ||
+         resource.data.get('userId', null) == request.auth.uid);
+      allow write: if callerIsAdminOrQm();
+    }
+
+    // ── everything else ──────────────────────────────────────────────────────
+    // A collection this file does not know (e.g. reconciliation_exceptions, a new one
+    // added without a rule) keeps the stopgap floor: signed-in read/write on its
+    // top-level docs. Named collections are excluded so this can never override their
+    // rules (rules are additive). Sub-collections of unknown collections are denied.
+    match /{collection}/{docId} {
+      allow read, write: if isSignedIn() && !(collection in [
+        'users', 'org_settings', 'dashboards', 'events', 'shift_requests', 'notifications',
+        'inventory', 'inventory_logs', 'statpack_logs', 'auditEvents', 'box_logs',
+        'medication_logs', 'exchange_bag_events', 'apparel_claims', 'inventory_alerts',
+        'barcode_index', 'audit_locks', 'storage_zones', 'shelves', 'containers',
+        'statpacks', 'vehicles', 'vehicle_logs', 'exchange_bags',
+        'restock_categories', 'restock_shelf_events', 'restock_actions',
+        'issue_reports', 'restock_reports', 'team_tasks', 'tasks',
+        'buyList', 'purchases', 'purchase_history', 'purchase_requests', 'vendors',
+        'laf_records', 'apparel_items', 'apparel_categories',
+        'uniform_orders', 'uniform_rounds', 'loaner_checkouts'
+      ]);
     }
   }
 }
