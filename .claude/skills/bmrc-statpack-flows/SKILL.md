@@ -62,9 +62,14 @@ It is not logging-only. Inside its transaction it writes the **pack** and a
   a past month is *not* "satisfied".
 - O₂ PSI + regulator (`oxygenPsi`, `regulatorOk`) and AED checks
   (`assetCheckResult`) are captured per entry.
-- **Checkout enforces fix-or-acknowledge** on expired/short items: the member
-  either fixes it (restock / new expiration) or explicitly acknowledges
-  (`acknowledged` + `acknowledgeReason`). Silent pass-through is a regression.
+- **Safety issues block; shortages only flag** (D-8, 2nd amendment). Expired
+  items, low O₂ PSI, unfinished required checks, and (checkout) a broken bag
+  seal block submission until the member fixes, reports, or acknowledges
+  (`acknowledged` + `acknowledgeReason`) — silent pass-through on those is a
+  regression. A **short** item or a sharps container marked "Full" with no
+  note is a non-blocking **flag** (`flagList`, amber card): the pack can still
+  be checked out/in, and the shortage carries through as `Restock Needed` +
+  the auto-flag task. `Restock Needed` packs appear in the checkout list.
 - **Sharps container** is a pack-level check (`Statpack.sharpsContainer`,
   passed as `sharpsCheck: { status: 'ok' | 'full' | 'na' }`).
 - A **"Report"** on an item creates a tracked `issue_reports` doc targeting

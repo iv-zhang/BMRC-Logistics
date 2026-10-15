@@ -4,7 +4,7 @@ import React, { useState } from 'react';
 import { AlertTriangle, ClipboardList, ArrowRight, ChevronRight, ChevronDown } from 'lucide-react';
 import type { StatpackPocket } from '@/app/types';
 
-export type FixKind = 'checks' | 'issue' | 'sharps' | 'bag-seal';
+export type FixKind = 'checks' | 'issue' | 'sharps' | 'bag-seal' | 'restock-flag';
 
 export interface FixItem {
   /** Stable React key. */
@@ -30,6 +30,8 @@ export interface ThingsToFixCardProps {
   mode: 'checkout' | 'checkin' | 'audit';
   items: FixItem[];
   onSelect: (f: FixItem) => void;
+  /** 'block' (default) = must fix to continue; 'flag' = amber, non-blocking. */
+  variant?: 'block' | 'flag';
 }
 
 const MODE_LEAD: Record<ThingsToFixCardProps['mode'], string> = {
@@ -38,8 +40,8 @@ const MODE_LEAD: Record<ThingsToFixCardProps['mode'], string> = {
   audit: 'before you submit this audit',
 };
 
-function FixRow({ f, onSelect }: { f: FixItem; onSelect: (f: FixItem) => void }) {
-  const isProblem = f.kind !== 'checks';
+function FixRow({ f, onSelect, flag = false }: { f: FixItem; onSelect: (f: FixItem) => void; flag?: boolean }) {
+  const isProblem = !flag && f.kind !== 'checks';
   const lines = f.details.length > 0 ? f.details : [f.headline];
 
   return (
@@ -79,10 +81,37 @@ function FixRow({ f, onSelect }: { f: FixItem; onSelect: (f: FixItem) => void })
   );
 }
 
-export default function ThingsToFixCard({ mode, items, onSelect }: ThingsToFixCardProps) {
+export default function ThingsToFixCard({ mode, items, onSelect, variant = 'block' }: ThingsToFixCardProps) {
   const [expanded, setExpanded] = useState(false);
 
   if (items.length === 0) return null;
+
+  // Flagged items never block — a short pack is recorded and logistics is told,
+  // so the whole card stays amber and always shows its rows.
+  if (variant === 'flag') {
+    return (
+      <div data-flag-card className="scroll-mt-20 bg-content1 border border-divider rounded-2xl p-4 flex flex-col gap-3">
+        <div className="flex items-start gap-3">
+          <div className="w-9 h-9 rounded-xl flex-none flex items-center justify-center bg-warning-50 dark:bg-warning-950/20 text-warning">
+            <AlertTriangle size={18} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-base font-semibold leading-tight text-warning">
+              Flagged for restock · {items.length}
+            </div>
+            <div className="text-xs text-foreground-500 font-medium mt-0.5 break-words">
+              You can still continue — these are recorded and logistics is told.
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-col gap-2">
+          {items.map(f => (
+            <FixRow key={f.key} f={f} onSelect={onSelect} flag />
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   const problems = items.filter(f => f.kind !== 'checks');
   const checks = items.filter(f => f.kind === 'checks');

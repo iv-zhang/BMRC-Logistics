@@ -120,6 +120,20 @@ is **one-shot**: any subsequent check-off clears it and re-derives. It is refuse
 `Expired Items` (replace, don't override) and for checked-out packs. Checkout still asks
 members to fix-or-acknowledge short items.
 
+**Amended 2026-10-14 — shortages flag, they don't block.** `Restock Needed` is a flag, not a
+gate: those packs appear in the checkout list (`app/statpacks/checkout/page.tsx`), and on the
+check-off page a short item or a sharps container marked "Full" with no note no longer blocks
+checkout or check-in. They render in an amber "Flagged for restock" card (`flagList`);
+Set to par / Report / Acknowledge stay available but optional. *Why:* a pack missing
+consumables is still far more useful on shift than a pack sitting on the shelf, and the
+member who can't restock it shouldn't be stopped. The shortage isn't lost: unresolved
+items submit with `restockStatus` unset, so check-in still derives `Restock Needed`, the
+"Needs restock" chips still show, and the auto-flag task + admin/QM notification still fire.
+**Still blocking (the safety gate):** expired items, low O₂ PSI, unfinished required checks,
+and (at checkout) a broken bag seal with no resolution. `Expired Items` packs stay out of
+the checkout list. **Do not** add shortages back to `fixList` or make the sharps note
+required again without revisiting this amendment.
+
 ### D-9 — One shared check-off page for checkout / check-in / audit
 **Decision:** all three modes share `app/statpacks/check-off/page.tsx`, driven by `?id` +
 `?mode` query params. Audit mode logs `action: 'audit'` and stamps `lastAuditAt`/`By`

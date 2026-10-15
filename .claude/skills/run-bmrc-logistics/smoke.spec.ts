@@ -404,3 +404,40 @@ test('member dashboard (signed in, member override)', async ({ page }) => {
   if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
   await page.screenshot({ path: join(SHOTS, 'member-dashboard.png'), fullPage: true });
 });
+
+// D-8 2nd amendment: a short pack is FLAGGED, not blocked. A 'Restock Needed'
+// pack must be offered on the checkout list, and checking it out must not be
+// held up by its shortage — the amber "Flagged for restock" card shows instead
+// of a blocking "need fixing" count, and the submit goes through.
+test('restock-needed pack is flagged but can still be checked out', async ({ page }) => {
+  const PACK = `Smoke Short Pack ${Date.now()}`;
+  const packId = await createDoc('statpacks', {
+    name: PACK,
+    type: 'Primary',
+    status: 'Restock Needed',
+    isCheckedOut: false,
+    currentLocation: 'MRC1',
+    compartments: [{ id: 'main', name: 'Main', parentPocket: 'main', isSealed: false }],
+    contents: [{ itemId: 'gauze-2x2', batchId: '', requiredQuantity: 20, currentQuantity: 0, pocket: 'main' }],
+    sharpsContainer: { status: 'ok' },
+  });
+  await signIn(page);
+
+  await page.goto('/statpacks/checkout', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2500);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+  await expect(page.getByText(PACK).first()).toBeVisible({ timeout: 10_000 });
+  await page.screenshot({ path: join(SHOTS, 'checkout-list-restock-needed.png'), fullPage: true });
+
+  await page.goto(`/statpacks/check-off?id=${packId}&mode=checkout`, { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2500);
+  await expect(page.getByText('Flagged for restock', { exact: false }).first()).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText(/need(s)? fixing/)).toHaveCount(0);
+  await page.screenshot({ path: join(SHOTS, 'checkoff-restock-flag.png'), fullPage: true });
+
+  await page.getByRole('button', { name: 'Complete Checkout' }).click();
+  await expect.poll(async () => (await getDocById('statpacks', packId))?.isCheckedOut, { timeout: 15_000 }).toBe(true);
+});

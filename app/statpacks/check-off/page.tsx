@@ -64,6 +64,8 @@ interface ItemIssue {
   lowPsi: boolean;
   shortBy: number;
   any: boolean;
+  /** Safety problem (expired / low PSI) — blocks submission. Shortage alone only flags. */
+  blocking: boolean;
 }
 
 function deriveRules(item: StatpackItem): ItemRules {
@@ -150,7 +152,7 @@ function computeIssue(
   const exp = effectiveExpDate(item, rules, checks);
   const expired = exp !== null && exp.getTime() < today.getTime();
   const lowPsi = rules.needPsi && !!checks.psi ? Number(checks.psi) < rules.minPsi : false;
-  return { short, expired, lowPsi, shortBy, any: short || expired || lowPsi };
+  return { short, expired, lowPsi, shortBy, any: short || expired || lowPsi, blocking: expired || lowPsi };
 }
 
 // "Ready" (green) = genuinely good: complete checks AND non-expired AND (for O2) in-pressure.
@@ -504,24 +506,28 @@ function ItemRow({
         </div>
       )}
 
-      {/* Fix-or-acknowledge — shown whenever the item has an unresolved short / expired / low-PSI issue */}
+      {/* Fix-or-acknowledge — shown whenever the item has an unresolved short / expired / low-PSI issue.
+          Short-only is a non-blocking flag (amber); expired / low PSI still block (red). */}
       {(issue.any || resolved) && (
         <div
           onClick={e => e.stopPropagation()}
           className={`mt-3 rounded-xl px-3 py-2.5 flex flex-col gap-2 ${
             resolved
               ? V ? 'bg-white/10' : 'bg-content3'
-              : V ? 'bg-white/10' : 'bg-danger-50 dark:bg-danger-950/20'
+              : V ? 'bg-white/10'
+              : issue.blocking ? 'bg-danger-50 dark:bg-danger-950/20' : 'bg-warning-50 dark:bg-warning-950/20'
           }`}
         >
           <div className="flex items-center gap-2 flex-wrap">
-            <AlertTriangle size={13} className={V ? 'text-white' : resolved ? 'text-foreground-500' : 'text-danger'} />
-            <span className={`text-xs font-semibold ${V ? 'text-white' : resolved ? 'text-foreground-600' : 'text-danger'}`}>
+            <AlertTriangle size={13} className={V ? 'text-white' : resolved ? 'text-foreground-500' : issue.blocking ? 'text-danger' : 'text-warning'} />
+            <span className={`text-xs font-semibold ${V ? 'text-white' : resolved ? 'text-foreground-600' : issue.blocking ? 'text-danger' : 'text-warning'}`}>
               {resolved
                 ? resolution!.kind === 'reported'
                   ? `Reported${resolution!.notes ? ` — ${resolution!.notes}` : ''}`
                   : `Acknowledged — ${(resolution as any).reason}`
-                : `${issueLabel} — resolve to continue`}
+                : issue.blocking
+                  ? `${issueLabel} — resolve to continue`
+                  : `${issueLabel} — flagged for restock`}
             </span>
             {!draft && (
               <div className="ml-auto flex gap-1.5">
@@ -1119,7 +1125,7 @@ export default function StatpackCheckOffPage() {
 
   const revealFix = useCallback((f: FixItem) => {
     const n = ++scrollNonce.current;
-    let sel = '[data-fix-card]';
+    let sel = f.kind === 'restock-flag' ? '[data-flag-card]' : '[data-fix-card]';
     if (f.kind === 'sharps') {
       sel = '[data-sharps-card]';
     } else if (f.reachable && f.pocket) {
@@ -1208,12 +1214,13 @@ export default function StatpackCheckOffPage() {
     [allItems, itemChecks, today]
   );
 
-  // Blocking list: incomplete checks + unresolved short/expired/lowPsi + full
-  // sharps not acknowledged + (checkout) unresolved broken bag seal.
+  // Blocking list: incomplete checks + unresolved expired/lowPsi + (checkout)
+  // unresolved broken bag seal.
   //
   // PARITY CONTRACT: the predicates, their order, and the early `return` after
   // the incomplete-checks push are exactly what they were when this was a
-  // string[]. fixList.length === the old blockers.length for every input.
+  // string[], EXCEPT that shortages and a full sharps container moved to
+  // `flagList` below (D-8 2nd amendment) and are no longer blockers.
   const fixList = useMemo<FixItem[]>(() => {
     const list: FixItem[] = [];
     const pocketNameOf = (p?: StatpackPocket) => POCKETS.find(pk => pk.id === p)?.name;
@@ -1253,14 +1260,15 @@ export default function StatpackCheckOffPage() {
 
       const found = countOf(it);
       const iss = computeIssue(it, rules, found, chk, today);
-      if (iss.any && !isResolved(resolution[it.itemId])) {
+      if (iss.blocking && !isResolved(resolution[it.itemId])) {
         const details: string[] = [];
-        if (iss.short) details.push(`Only ${found} of the ${it.requiredQuantity} that should be here — ${iss.shortBy} missing`);
+        // Blocking problems lead; a shortage on the same item rides along after them.
         if (iss.expired) {
           const exp = effectiveExpDate(it, rules, chk);
           details.push(exp ? `Out of date — it expired ${fmtMonthYear(exp)}` : 'Out of date');
         }
         if (iss.lowPsi) details.push(`The cylinder reads ${chk.psi} — it needs at least ${rules.minPsi} to go out`);
+        if (iss.short) details.push(`Only ${found} of the ${it.requiredQuantity} that should be here — ${iss.shortBy} missing`);
 
         const fixes: string[] = [];
         if (iss.short) fixes.push(`add the missing ${iss.shortBy} and tap "Set to par"`);
@@ -1280,21 +1288,6 @@ export default function StatpackCheckOffPage() {
         });
       }
     });
-
-    if (sharps === 'full' && !sharpsAck.trim()) {
-      list.push({
-        key: 'sharps',
-        kind: 'sharps',
-        pocketName: 'Sharps Container section',
-        reachable: true,
-        itemName: 'Sharps container',
-        headline: 'Marked "Full", with nothing written down about it',
-        details: [],
-        fixHint:
-          'Tap this row to jump to the Sharps Container section. Either empty the container and tap "OK", ' +
-          'or leave it on "Full" and type in the box how it was handled.',
-      });
-    }
 
     // On checkout, a broken seal with no resolution blocks deployment.
     if (mode === 'checkout') {
@@ -1320,7 +1313,57 @@ export default function StatpackCheckOffPage() {
       });
     }
     return list;
-  }, [allItems, itemChecks, countOf, resolution, sharps, sharpsAck, today, mode, bagAssignments, linkedBags, bagChecks]);
+  }, [allItems, itemChecks, countOf, resolution, today, mode, bagAssignments, linkedBags, bagChecks]);
+
+  // Non-blocking flags: a short item (any resolution clears it) or a full sharps
+  // container with no note. The pack derives Restock Needed from the counts, so
+  // these only inform — they never stop a submit.
+  const flagList = useMemo<FixItem[]>(() => {
+    const list: FixItem[] = [];
+    const pocketNameOf = (p?: StatpackPocket) => POCKETS.find(pk => pk.id === p)?.name;
+
+    allItems.forEach((it, idx) => {
+      const rules = deriveRules(it);
+      const chk = itemChecks[it.itemId] ?? {};
+      if (rules.hasRules && !checksComplete(rules, chk)) return;   // already a blocker
+
+      const found = countOf(it);
+      const iss = computeIssue(it, rules, found, chk, today);
+      if (iss.short && !iss.blocking && !resolution[it.itemId]) {
+        const pName = pocketNameOf(it.pocket);
+        list.push({
+          key: `restock-flag:${it.itemId}:${idx}`,
+          kind: 'restock-flag',
+          itemId: it.itemId,
+          pocket: it.pocket,
+          pocketName: pName ?? 'Not in a pocket',
+          reachable: !!pName,
+          itemName: (it.itemDetails as { name?: string } | undefined)?.name || `Item ${it.itemId.slice(-6)}`,
+          headline: `Only ${found} of ${it.requiredQuantity} — ${iss.shortBy} short`,
+          details: [],
+          fixHint:
+            'You can still continue — this pack will be flagged for restock and logistics is told automatically. ' +
+            `If you can, add the missing ${iss.shortBy} and tap "Set to par".`,
+        });
+      }
+    });
+
+    if (sharps === 'full' && !sharpsAck.trim()) {
+      list.push({
+        key: 'sharps',
+        kind: 'sharps',
+        pocketName: 'Sharps Container section',
+        reachable: true,
+        itemName: 'Sharps container',
+        headline: 'Marked "Full", with nothing written down about it',
+        details: [],
+        fixHint:
+          'You can still continue — the pack will show Restock Needed. ' +
+          'Tap this row to jump to the Sharps Container section; if you like, note how it was handled.',
+      });
+    }
+    return list;
+  }, [allItems, itemChecks, countOf, resolution, sharps, sharpsAck, today]);
 
   const fixCountByPocket = useMemo(() => {
     const m: Record<string, number> = {};
@@ -1334,7 +1377,9 @@ export default function StatpackCheckOffPage() {
   useEffect(() => {
     if (didAutoOpen.current || !pack) return;
     didAutoOpen.current = true;
-    const want = fixList.filter(f => f.reachable && f.pocket && (f.kind === 'issue' || f.kind === 'bag-seal'));
+    const want = [...fixList, ...flagList].filter(
+      f => f.reachable && f.pocket && (f.kind === 'issue' || f.kind === 'bag-seal' || f.kind === 'restock-flag'),
+    );
     if (want.length === 0) return;
     setPocketExpanded(prev => {
       let changed = false;
@@ -1342,7 +1387,7 @@ export default function StatpackCheckOffPage() {
       want.forEach(f => { if (f.pocket && !next[f.pocket]) { next[f.pocket] = true; changed = true; } });
       return changed ? next : prev;
     });
-  }, [pack, fixList]);
+  }, [pack, fixList, flagList]);
 
   const statusInfo = useMemo(() => {
     const s = pack?.status ?? 'Ready';
@@ -1816,6 +1861,9 @@ export default function StatpackCheckOffPage() {
           {fixList.length > 0 && (
             <ThingsToFixCard mode={mode} items={fixList} onSelect={revealFix} />
           )}
+          {flagList.length > 0 && (
+            <ThingsToFixCard mode={mode} variant="flag" items={flagList} onSelect={revealFix} />
+          )}
 
           {/* Hero summary card */}
           <div className="bg-content1 border border-divider rounded-2xl p-4">
@@ -2032,17 +2080,17 @@ export default function StatpackCheckOffPage() {
               <div className="mt-3 flex items-center gap-2">
                 <Input
                   size="sm"
-                  placeholder="Acknowledge — how was it handled?"
+                  placeholder="Optional — how was it handled?"
                   aria-label="Sharps full acknowledgement"
                   value={sharpsAck}
                   onValueChange={setSharpsAck}
                   classNames={{
                     base: 'flex-1',
-                    inputWrapper: 'h-9 min-h-9 bg-content1 border border-danger/40 data-[hover=true]:bg-content1',
+                    inputWrapper: 'h-9 min-h-9 bg-content1 border border-warning/40 data-[hover=true]:bg-content1',
                     input: 'text-xs',
                   }}
                 />
-                <span className={`w-2 h-2 rounded-full flex-none ${sharpsAck.trim() ? 'bg-success' : 'bg-danger'}`} />
+                <span className={`w-2 h-2 rounded-full flex-none ${sharpsAck.trim() ? 'bg-success' : 'bg-warning'}`} />
               </div>
             )}
           </div>
@@ -2103,6 +2151,11 @@ export default function StatpackCheckOffPage() {
                 <span className="text-xs text-foreground-400 font-medium">
                   {pct === 100 ? 'All items verified' : `${totalItems - verifiedCount} remaining`}
                 </span>
+                {flagList.length > 0 && (
+                  <span className="text-xs text-warning font-medium">
+                    {flagList.length} flagged for restock
+                  </span>
+                )}
               </>
             )}
           </div>
