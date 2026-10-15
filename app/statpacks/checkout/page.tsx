@@ -108,7 +108,8 @@ export default function CheckoutPage() {
     setLoading(true);
     const q = query(
       collection(db, 'statpacks'),
-      where('status', 'in', ['Ready', 'In Maintenance']),
+      // 'Restock Needed' is a flag, not a block — short packs can still go out (decisions.md D-8, 2nd amendment).
+      where('status', 'in', ['Ready', 'Restock Needed', 'In Maintenance']),
       orderBy('name'),
     );
     const unsub = onSnapshot(q, (snap) => {
