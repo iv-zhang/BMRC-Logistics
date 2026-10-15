@@ -183,12 +183,17 @@ export default function InventoryPage() {
                     <div className={`font-mono text-[28px] font-semibold tabular-nums leading-tight ${qtyColor}`}>
                       {item.isOxygen ? (item.oxygenPsi ?? 0) : (bag.hasBagTracking ? bag.totalItems : item.unopenedBoxes)}
                       <span className="text-sm text-foreground-400 font-normal ml-1.5">
-                        {item.isOxygen ? 'PSI' : (bag.hasBagTracking ? 'items' : (item.unit || 'units'))}
+                        {item.isOxygen ? 'PSI' : (bag.hasBagTracking ? 'items' : 'boxes')}
                       </span>
                     </div>
                     {bag.hasBagTracking && (
                       <div className="text-xs text-foreground-400 mt-1">
                         {bag.totalBags} bag{bag.totalBags !== 1 ? 's' : ''} · {bag.totalLoose} loose
+                      </div>
+                    )}
+                    {!item.isOxygen && !bag.hasBagTracking && (
+                      <div className="text-xs text-foreground-400 mt-1">
+                        {bag.totalItems} units
                       </div>
                     )}
                   </div>
@@ -1253,7 +1258,7 @@ export default function InventoryPage() {
                                 {bag.hasBagTracking ? bag.totalItems : item.unopenedBoxes}
                               </div>
                               <div className="text-[9px] uppercase tracking-wider text-foreground-400 mt-1 font-semibold">
-                                {bag.hasBagTracking ? 'Items' : (item.unit || 'Units')}
+                                {bag.hasBagTracking ? 'Items' : 'Boxes'}
                               </div>
                             </div>
                             <button
@@ -1267,8 +1272,11 @@ export default function InventoryPage() {
                           <div className="w-full h-[5px] rounded-full bg-content3 overflow-hidden">
                             <div className={`h-full rounded-full transition-all duration-300 ${barColor}`} style={{ width: `${barPct}%` }} />
                           </div>
-                          {(!!item.maxUnits || item.reorderThreshold > 0) && (
+                          {(!bag.hasBagTracking || !!item.maxUnits || item.reorderThreshold > 0) && (
                             <div className="flex items-center gap-1 justify-end flex-wrap">
+                              {!bag.hasBagTracking && (
+                                <Chip size="sm" variant="flat" color="default">{bag.totalItems} units</Chip>
+                              )}
                               {!!item.maxUnits && (
                                 <Chip size="sm" variant="flat" color="default">Par {item.maxUnits}</Chip>
                               )}
@@ -1435,8 +1443,13 @@ export default function InventoryPage() {
                             {item.isOxygen ? (item.oxygenPsi ?? 0) : (bag.hasBagTracking ? bag.totalItems : item.unopenedBoxes)}
                           </span>
                           <div className="text-[9px] uppercase tracking-wider text-foreground-400 font-semibold">
-                            {item.isOxygen ? 'PSI' : (bag.hasBagTracking ? 'Items' : (item.unit || 'Units'))}
+                            {item.isOxygen ? 'PSI' : (bag.hasBagTracking ? 'Items' : 'Boxes')}
                           </div>
+                          {!item.isOxygen && !bag.hasBagTracking && (
+                            <div className="text-[11px] text-foreground-400 tabular-nums">
+                              {bag.totalItems} units
+                            </div>
+                          )}
                         </div>
                         {/* Status */}
                         <div className="flex gap-1 flex-wrap items-center self-center">
