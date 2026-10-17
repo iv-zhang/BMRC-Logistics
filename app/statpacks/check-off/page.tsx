@@ -940,6 +940,12 @@ export default function StatpackCheckOffPage() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [pack, setPack] = useState<Statpack | null>(null);
   const [loading, setLoading] = useState(true);
+  const [packLoadError, setPackLoadError] = useState<'missing' | 'failed' | null>(null);
+  const [bagLoadError, setBagLoadError] = useState(false);
+  const [bagLoadedPackId, setBagLoadedPackId] = useState<string | null>(null);
+  const [bagRetry, setBagRetry] = useState(0);
+  const packLoadSeq = useRef(0);
+  const initializedPackId = useRef<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1013,86 +1019,97 @@ export default function StatpackCheckOffPage() {
     });
   }, [router]);
 
-  useEffect(() => {
-    if (!packId) return;
+  const loadPack = useCallback(async () => {
+    if (!packId) { setLoading(false); setPackLoadError('missing'); return; }
+    const seq = ++packLoadSeq.current;
     setLoading(true);
-    (async () => {
-      try {
-        const snap = await getDoc(doc(db, 'statpacks', packId));
-        if (!snap.exists()) { router.back(); return; }
-        const data = snap.data();
+    setPackLoadError(null);
+    try {
+      const snap = await getDoc(doc(db, 'statpacks', packId));
+      if (seq !== packLoadSeq.current) return;
+      if (!snap.exists()) { setPack(null); setPackLoadError('missing'); return; }
+      const data = snap.data();
 
-        const rawContents: StatpackItem[] = Array.isArray(data.contents)
-          ? data.contents.map((it: any) => ({
-              ...it,
-              expirationDate: it.expirationDate instanceof Timestamp
-                ? it.expirationDate.toDate()
-                : it.expirationDate instanceof Date ? it.expirationDate : undefined,
-            }))
-          : [];
+      const rawContents: StatpackItem[] = Array.isArray(data.contents)
+        ? data.contents.map((it: any) => ({
+            ...it,
+            expirationDate: it.expirationDate instanceof Timestamp
+              ? it.expirationDate.toDate()
+              : it.expirationDate instanceof Date ? it.expirationDate : undefined,
+          }))
+        : [];
 
-        const ids = [...new Set(
-          rawContents.flatMap(i => [i.assetInstanceId, i.itemId].filter(Boolean) as string[])
-        )];
-        const invMap = new Map<string, InventoryItem>();
-        for (let i = 0; i < ids.length; i += 10) {
-          const chunk = ids.slice(i, i + 10);
-          const q = query(collection(db, 'inventory'), where(documentId(), 'in', chunk));
-          const s = await getDocs(q);
-          s.forEach(d => invMap.set(d.id, { id: d.id, ...d.data() } as InventoryItem));
-        }
-
-        const contents = rawContents.map(item => {
-          const lookupId = item.assetInstanceId || item.itemId;
-          const inv = lookupId ? invMap.get(lookupId) : undefined;
-          return {
-            ...item,
-            itemDetails: inv ? { ...(item.itemDetails ?? {}), ...inv } : item.itemDetails,
-          };
-        });
-
-        const spPack: Statpack = {
-          id: snap.id,
-          name: String(data.name || ''),
-          type: data.type ?? 'Primary',
-          status: data.status as Statpack['status'],
-          currentLocation: data.currentLocation,
-          isCheckedOut: data.isCheckedOut ?? false,
-          assignedToUserId: data.assignedToUserId,
-          assignedToUserName: data.assignedToUserName,
-          lastCheckedAt: data.lastCheckedAt instanceof Timestamp ? data.lastCheckedAt.toDate() : undefined,
-          compartments: Array.isArray(data.compartments) ? data.compartments : [],
-          contents,
-          createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate() : new Date(),
-          updatedAt: data.updatedAt instanceof Timestamp ? data.updatedAt.toDate() : new Date(),
-          assetValue: data.assetValue,
-          assetSerial: data.assetSerial,
-          exchangeBagIds: Array.isArray(data.exchangeBagIds) ? data.exchangeBagIds : undefined,
-          exchangeBagAssignments: Array.isArray(data.exchangeBagAssignments) ? data.exchangeBagAssignments : undefined,
-        };
-
-        setPack(spPack);
-
-        // Start from ACTUAL counts — currentQuantity — so depletion is visible. Fall back to par only when missing.
-        const counts: Record<string, number> = {};
-        contents.forEach(it => {
-          counts[statpackEntryKey(it)] = typeof it.currentQuantity === 'number' ? it.currentQuantity : it.requiredQuantity;
-        });
-        setItemCounts(counts);
-
-        const seals: Record<string, boolean> = {};
-        POCKETS.forEach(pk => { seals[pk.id] = false; });
-        (spPack.compartments ?? []).forEach(c => {
-          if (c.isSealed) seals[c.parentPocket] = true;
-        });
-        setSealState(seals);
-      } catch (e) {
-        console.error('Failed to load statpack', e);
-      } finally {
-        setLoading(false);
+      const ids = [...new Set(
+        rawContents.flatMap(i => [i.assetInstanceId, i.itemId].filter(Boolean) as string[])
+      )];
+      const invMap = new Map<string, InventoryItem>();
+      for (let i = 0; i < ids.length; i += 10) {
+        const chunk = ids.slice(i, i + 10);
+        const q = query(collection(db, 'inventory'), where(documentId(), 'in', chunk));
+        const s = await getDocs(q);
+        if (seq !== packLoadSeq.current) return;
+        s.forEach(d => invMap.set(d.id, { id: d.id, ...d.data() } as InventoryItem));
       }
-    })();
-  }, [packId, router]);
+
+      const contents = rawContents.map(item => {
+        const lookupId = item.assetInstanceId || item.itemId;
+        const inv = lookupId ? invMap.get(lookupId) : undefined;
+        return {
+          ...item,
+          itemDetails: inv ? { ...(item.itemDetails ?? {}), ...inv } : item.itemDetails,
+        };
+      });
+
+      const spPack: Statpack = {
+        id: snap.id,
+        name: String(data.name || ''),
+        type: data.type ?? 'Primary',
+        status: data.status as Statpack['status'],
+        currentLocation: data.currentLocation,
+        isCheckedOut: data.isCheckedOut ?? false,
+        assignedToUserId: data.assignedToUserId,
+        assignedToUserName: data.assignedToUserName,
+        lastCheckedAt: data.lastCheckedAt instanceof Timestamp ? data.lastCheckedAt.toDate() : undefined,
+        compartments: Array.isArray(data.compartments) ? data.compartments : [],
+        contents,
+        createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate() : new Date(),
+        updatedAt: data.updatedAt instanceof Timestamp ? data.updatedAt.toDate() : new Date(),
+        assetValue: data.assetValue,
+        assetSerial: data.assetSerial,
+        exchangeBagIds: Array.isArray(data.exchangeBagIds) ? data.exchangeBagIds : undefined,
+        exchangeBagAssignments: Array.isArray(data.exchangeBagAssignments) ? data.exchangeBagAssignments : undefined,
+      };
+
+      setPack(spPack);
+
+      // Start from ACTUAL counts — currentQuantity — so depletion is visible. Fall back to par only when missing.
+      const counts: Record<string, number> = {};
+      contents.forEach(it => {
+        counts[statpackEntryKey(it)] = typeof it.currentQuantity === 'number' ? it.currentQuantity : it.requiredQuantity;
+      });
+      if (initializedPackId.current !== packId) {
+        setItemCounts(counts);
+      }
+
+      const seals: Record<string, boolean> = {};
+      POCKETS.forEach(pk => { seals[pk.id] = false; });
+      (spPack.compartments ?? []).forEach(c => {
+        if (c.isSealed) seals[c.parentPocket] = true;
+      });
+      if (initializedPackId.current !== packId) {
+        setSealState(seals);
+        initializedPackId.current = packId;
+      }
+    } catch (e) {
+      if (seq !== packLoadSeq.current) return;
+      console.error('Failed to load statpack', e);
+      setPackLoadError('failed');
+    } finally {
+      if (seq === packLoadSeq.current) setLoading(false);
+    }
+  }, [packId]);
+
+  useEffect(() => { void loadPack(); return () => { packLoadSeq.current += 1; }; }, [loadPack]);
 
   // Fetch linked exchange bags — loaded in all three modes (checkout/checkin/
   // audit), not just check-in. `resolveBagAssignments` shims legacy flat
@@ -1102,7 +1119,10 @@ export default function StatpackCheckOffPage() {
     if (!pack) { setLinkedBags([]); setBagAssignments([]); return; }
     const assignments = resolveBagAssignments(pack);
     setBagAssignments(assignments);
-    if (assignments.length === 0) { setLinkedBags([]); return; }
+    if (assignments.length === 0) { setLinkedBags([]); setBagLoadError(false); setBagLoadedPackId(pack.id); return; }
+    let active = true;
+    setBagLoadError(false);
+    setBagLoadedPackId(null);
     (async () => {
       try {
         const ids = [...new Set(assignments.map(a => a.bagId))];
@@ -1113,12 +1133,21 @@ export default function StatpackCheckOffPage() {
           const s = await getDocs(q);
           s.forEach(d => bags.push(hydrateBag(d.id, d.data())));
         }
-        setLinkedBags(bags);
+        if (active) {
+          setLinkedBags(bags);
+          setBagLoadError(bags.length !== ids.length);
+          setBagLoadedPackId(pack.id);
+        }
       } catch (e) {
         console.error('Failed to load linked exchange bags', e);
+        if (active) setBagLoadError(true);
+        if (active) setBagLoadedPackId(pack.id);
       }
     })();
-  }, [pack]);
+    return () => { active = false; };
+  }, [pack, bagRetry]);
+
+  const bagLoading = !!pack && resolveBagAssignments(pack).length > 0 && bagLoadedPackId !== pack.id && !bagLoadError;
 
   const showToast = useCallback((msg: string, ok: boolean) => {
     setToast({ msg, ok });
@@ -1579,6 +1608,8 @@ export default function StatpackCheckOffPage() {
   }, [pack, user, allItems, itemChecks, countOf, resolution, sealState, sharps, sharpsAck, isAdmin, mode, today, bagChecks, eventId, eventName]);
 
   const doSubmit = useCallback(async (override?: FastPathOverride) => {
+    // A physical return must remain possible; stored safety state is rechecked by the writer.
+    if (mode !== 'checkin' && (bagLoading || bagLoadError)) { showToast('Exchange bag details are unavailable. Wait for them to load or retry before submitting.', false); return; }
     if (checkoutUnavailable) {
       showToast(checkoutUnavailable, false);
       return;
@@ -1623,7 +1654,7 @@ export default function StatpackCheckOffPage() {
     } finally {
       setSubmitting(false);
     }
-  }, [checkoutUnavailable, buildPayload, mode, pack, showToast, router, linkedBags, bagChecks, user]);
+  }, [checkoutUnavailable, buildPayload, mode, pack, showToast, router, linkedBags, bagChecks, user, bagLoadError, bagLoading]);
 
   const handleComplete = useCallback(() => {
     if (!pack || !user) return;
@@ -1698,7 +1729,24 @@ export default function StatpackCheckOffPage() {
     );
   }
 
-  if (!pack) return null;
+  if (!pack) {
+    const destination = mode === 'checkout' ? '/statpacks/checkout' : mode === 'checkin' ? '/statpacks/checkin' : '/audit';
+    const description = packLoadError === 'missing'
+      ? (packId ? 'This statpack could not be found. It may have been removed or the link may be outdated.' : 'The link is missing a statpack ID.')
+      : 'The statpack could not be loaded. Check your connection or access, then try again.';
+    return (
+      <main className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center p-5">
+        <section role="alert" className="w-full max-w-md rounded-2xl border border-warning bg-content1 p-5 shadow-sm">
+          <h1 className="text-lg font-semibold">Unable to open check-off</h1>
+          <p className="mt-2 text-sm text-foreground-500">{description}</p>
+          {packLoadError === 'failed' && <Button className="mt-4 w-full" color="primary" onPress={() => void loadPack()}>Retry</Button>}
+          <Button className="mt-3 w-full" variant="bordered" onPress={() => router.push(destination)}>
+            {mode === 'checkout' ? 'Back to checkout' : mode === 'checkin' ? 'Back to check-in' : 'Back to audit'}
+          </Button>
+        </section>
+      </main>
+    );
+  }
 
   const sharpsOpts: { id: SharpsStatus; label: string }[] = [
     { id: 'ok', label: 'OK' },
@@ -1823,6 +1871,14 @@ export default function StatpackCheckOffPage() {
   // never satisfy this (checkinStage only matters for mode === 'checkin'),
   // and "Open full check-off" sets checkinStage to 'full', which falls
   // through to the byte-for-byte unchanged accordion form below.
+  const bagRecoveryNode = resolveBagAssignments(pack).length > 0 && (bagLoading || bagLoadError) ? (
+    <div role="alert" className="mx-auto mt-3 w-[calc(100%-1.5rem)] max-w-lg bg-warning-50 dark:bg-warning-900/20 border border-warning rounded-2xl p-4">
+      <h2 className="font-semibold">{bagLoading ? 'Loading linked exchange bags' : 'Exchange bags could not be loaded'}</h2>
+      <p className="mt-1 text-sm">{bagLoading ? 'Please wait while the linked bag details load.' : mode === 'checkin' ? 'You can still return this pack. Retry to inspect or update its linked bags.' : 'Linked bag details are incomplete, so this check-off cannot be submitted yet.'}</p>
+      {bagLoadError && <Button className="mt-3" variant="bordered" onPress={() => { setBagLoadedPackId(null); setBagRetry(n => n + 1); }}>Retry loading bags</Button>}
+    </div>
+  ) : null;
+
   const fastPathContent = mode === 'checkin' && checkinStage === 'gate' ? (
     <CheckinGateScreen
       pack={pack}
@@ -1845,6 +1901,7 @@ export default function StatpackCheckOffPage() {
   if (fastPathContent) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
+        {bagRecoveryNode}
         {fastPathContent}
         {reviewOverlay}
         {toastNode}
@@ -1875,6 +1932,8 @@ export default function StatpackCheckOffPage() {
 
         {/* Scrollable content */}
         <main className="flex-1 px-3 py-4 flex flex-col gap-3 pb-28">
+
+          {bagRecoveryNode}
 
           {checkoutUnavailable && (
             <div role="alert" className="bg-warning-50 dark:bg-warning-900/20 border border-warning rounded-2xl p-4">
