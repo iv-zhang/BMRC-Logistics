@@ -594,3 +594,194 @@ test('check-off displays In Use and Unknown statuses explicitly', async ({ page 
     }, testRunId);
   }
 });
+
+test('audit loose-only count works at desktop and phone widths', async ({ page }) => {
+  const testRunId = `audit-loose-${Date.now()}`;
+  const purpose = 'Exercise loose-only audit counts at desktop and phone widths';
+  const fixtureRefs: Array<{ collection: string; id: string }> = [];
+  const itemIds: string[] = [];
+  try {
+    for (const viewport of [
+      { name: 'desktop', width: 1440, height: 900 },
+      { name: 'phone', width: 390, height: 844 },
+    ]) {
+      const name = `[TEST] Audit loose OPA ${viewport.name} ${testRunId}`;
+      const itemId = await createDoc('inventory', {
+        isTest: true,
+        testRunId,
+        purpose,
+        name,
+        category: 'Trauma',
+        unit: 'count',
+        unopenedBoxes: 0,
+        looseUnits: 0,
+        totalStockQuantity: 0,
+        reorderThreshold: 0,
+        location: 'HQ',
+        room: 'Back Room',
+        pool: 'hq_reserve',
+        auditVerified: false,
+        lastAuditDate: null,
+      });
+      itemIds.push(itemId);
+      fixtureRefs.push({ collection: 'inventory', id: itemId });
+    }
+
+    await signIn(page);
+    for (let i = 0; i < itemIds.length; i++) {
+      const viewport = i === 0
+        ? { width: 1440, height: 900 }
+        : { width: 390, height: 844 };
+      const viewportName = i === 0 ? 'desktop' : 'phone';
+      const name = `[TEST] Audit loose OPA ${viewportName} ${testRunId}`;
+      await page.setViewportSize(viewport);
+      await page.goto('/audit?tab=disposables', { waitUntil: 'domcontentloaded' });
+      await page.waitForLoadState('load');
+      await page.waitForTimeout(2000);
+      await page.getByPlaceholder('Search items, categories, locations…').fill(name);
+      const card = page.getByText(name, { exact: true }).locator('xpath=../../..');
+      await expect(card).toBeVisible({ timeout: 10_000 });
+      await card.getByRole('button', { name: 'Count' }).click();
+
+      const looseInput = page.getByRole('spinbutton', { name: 'Individual units observed' });
+      await expect(looseInput).toBeVisible();
+      await expect(looseInput).toHaveValue('');
+      await expect(page.getByRole('spinbutton', { name: 'Sealed boxes / bags observed' })).toHaveCount(0);
+      await looseInput.fill('12');
+      await expect(page.getByText('12 units', { exact: true })).toBeVisible();
+      await expect(page.getByText('Count differs from system — recorded without verification.', { exact: true })).toBeVisible();
+      await page.screenshot({ path: join(SHOTS, `audit-loose-count-${viewportName}.png`), fullPage: true });
+      // Next's development issue badge overlaps the footer's right edge.
+      // Click the exposed left side of the real button (no force/action bypass).
+      await page.getByRole('button', { name: 'Save count' }).click({ position: { x: 20, y: 15 } });
+
+      await expect.poll(async () => (await getDocById('inventory', itemIds[i]))?.looseUnits, { timeout: 10_000 }).toBe(12);
+      const saved = await getDocById('inventory', itemIds[i]);
+      expect(saved?.unopenedBoxes).toBe(0);
+      expect(saved?.looseUnits).toBe(12);
+      expect(saved?.totalStockQuantity).toBe(12);
+      expect(saved?.auditVerified).toBe(false);
+      expect(saved?.lastAuditDate).toBeNull();
+    }
+  } finally {
+    const [logs, events] = await Promise.all([
+      listCollection('inventory_logs'),
+      listCollection('auditEvents'),
+    ]);
+    const generated = [
+      ...logs.filter((log) => itemIds.includes(log.itemId)).map((log) => ({ collection: 'inventory_logs', id: log.id })),
+      ...events.filter((event) => itemIds.includes(event.sourceId)).map((event) => ({ collection: 'auditEvents', id: event.id })),
+    ];
+    await createDoc('test_cleanup_manifests', {
+      isTest: true,
+      testRunId,
+      purpose,
+      fixtures: fixtureRefs,
+      generated,
+      createdAt: new Date(),
+    }, testRunId);
+  }
+});
+
+test('audit package and loose count works at desktop and phone widths', async ({ page }) => {
+  const testRunId = `audit-package-loose-${Date.now()}`;
+  const purpose = 'Exercise sealed package plus loose-unit audit counts at desktop and phone widths';
+  const fixtureRefs: Array<{ collection: string; id: string }> = [];
+  const itemIds: string[] = [];
+  try {
+    for (const viewport of [
+      { name: 'desktop', width: 1440, height: 900 },
+      { name: 'phone', width: 390, height: 844 },
+    ]) {
+      const name = `[TEST] Audit bag and loose OPA ${viewport.name} ${testRunId}`;
+      const itemId = await createDoc('inventory', {
+        isTest: true,
+        testRunId,
+        purpose,
+        name,
+        category: 'Trauma',
+        unit: 'count',
+        unopenedBoxes: 0,
+        totalStockQuantity: 10,
+        batches: [{
+          id: `test-bag-lot-${viewport.name}-${testRunId}`,
+          batchNumber: `TEST-${viewport.name}-${testRunId}`,
+          status: 'sealed',
+          bagCount: 1,
+          itemsPerBag: 10,
+          looseItems: 0,
+          stock: 10,
+        }],
+        reorderThreshold: 0,
+        location: 'HQ',
+        room: 'Back Room',
+        pool: 'hq_reserve',
+        auditVerified: false,
+        lastAuditDate: null,
+      });
+      itemIds.push(itemId);
+      fixtureRefs.push({ collection: 'inventory', id: itemId });
+    }
+
+    await signIn(page);
+    for (let i = 0; i < itemIds.length; i++) {
+      const viewport = i === 0
+        ? { width: 1440, height: 900 }
+        : { width: 390, height: 844 };
+      const viewportName = i === 0 ? 'desktop' : 'phone';
+      const name = `[TEST] Audit bag and loose OPA ${viewportName} ${testRunId}`;
+      await page.setViewportSize(viewport);
+      await page.goto('/audit?tab=disposables', { waitUntil: 'domcontentloaded' });
+      await page.waitForLoadState('load');
+      await page.waitForTimeout(2000);
+      await page.getByPlaceholder('Search items, categories, locations…').fill(name);
+      const card = page.getByText(name, { exact: true }).locator('xpath=../../..');
+      await expect(card).toBeVisible({ timeout: 10_000 });
+      await card.getByRole('button', { name: 'Count' }).click();
+
+      const sealedInput = page.getByRole('spinbutton', { name: 'Sealed boxes / bags observed' });
+      const looseInput = page.getByRole('spinbutton', { name: 'Loose units observed' });
+      await expect(sealedInput).toBeVisible();
+      await expect(looseInput).toBeVisible();
+      await expect(sealedInput).toHaveValue('');
+      await expect(looseInput).toHaveValue('');
+      await sealedInput.fill('2');
+      await looseInput.fill('7');
+      await expect(page.getByText('2 bags × 10 + 7 loose = 27 units', { exact: true })).toBeVisible();
+      await expect(page.getByText('Count differs from system — recorded without verification.', { exact: true })).toBeVisible();
+      await page.screenshot({ path: join(SHOTS, `audit-package-loose-count-${viewportName}.png`), fullPage: true });
+      // Next's development issue badge overlaps the footer's right edge.
+      // Click the exposed left side of the real button (no force/action bypass).
+      await page.getByRole('button', { name: 'Save count' }).click({ position: { x: 20, y: 15 } });
+
+      await expect.poll(async () => (await getDocById('inventory', itemIds[i]))?.totalStockQuantity, { timeout: 10_000 }).toBe(27);
+      const saved = await getDocById('inventory', itemIds[i]);
+      expect(saved?.unopenedBoxes).toBe(0);
+      expect(saved?.totalStockQuantity).toBe(27);
+      expect(saved?.batches).toHaveLength(1);
+      expect(saved?.batches?.[0]?.bagCount).toBe(2);
+      expect(saved?.batches?.[0]?.itemsPerBag).toBe(10);
+      expect(saved?.batches?.[0]?.looseItems).toBe(7);
+      expect(saved?.batches?.[0]?.stock).toBe(27);
+      expect(saved?.auditVerified).toBe(false);
+      expect(saved?.lastAuditDate).toBeNull();
+    }
+  } finally {
+    const [logs, events] = await Promise.all([
+      listCollection('inventory_logs'),
+      listCollection('auditEvents'),
+    ]);
+    const generated = [
+      ...logs.filter((log) => itemIds.includes(log.itemId)).map((log) => ({ collection: 'inventory_logs', id: log.id })),
+      ...events.filter((event) => itemIds.includes(event.sourceId)).map((event) => ({ collection: 'auditEvents', id: event.id })),
+    ];
+    await createDoc('test_cleanup_manifests', {
+      isTest: true,
+      testRunId,
+      purpose,
+      fixtures: fixtureRefs,
+      generated,
+      createdAt: new Date(),
+    }, testRunId);
+  }
+});
