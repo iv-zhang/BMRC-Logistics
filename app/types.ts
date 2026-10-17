@@ -1193,6 +1193,24 @@ export interface InventoryLog {
 }
 
 // --- BUY LIST (Admin Shopping List) ---
+/** One physical delivery against a buy-list entry (partial deliveries allowed). */
+export interface BuyListDelivery {
+  /** 1-based, per entry */
+  seq: number;
+  /** Packages (boxes/bags) received */
+  quantity: number;
+  /** Total units = quantity x units-per-package (0 when intake is deferred and unknown) */
+  units: number;
+  inventoryItemId?: string;
+  /** `buylist_<entryId>_<seq>` — also the stock-write idempotency key */
+  idempotencyKey: string;
+  /** True once the stock write has landed */
+  posted: boolean;
+  at: Date | FieldValue;
+  by: string;
+  byName?: string;
+}
+
 export interface BuyListItem {
   id?: string;
   itemName: string;
@@ -1211,6 +1229,11 @@ export interface BuyListItem {
   receivedAt?: Date | FieldValue;
   completedBy?: string;
   completedByName?: string;
+  /** Packages received so far across all deliveries */
+  receivedQuantity?: number;
+  /** Absent on legacy 'received' docs: intake was never tracked, never claim it posted. */
+  intakeStatus?: 'needed' | 'partial' | 'posted';
+  deliveries?: BuyListDelivery[];
 }
 
 // --- BUG REPORTS & ISSUE TRACKING ---

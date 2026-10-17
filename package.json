@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node ./scripts/test-audit-restock.cjs && tsx ./scripts/test-roles.ts && tsx ./scripts/test-statpack-status.ts && tsx ./scripts/test-audit-count.ts && tsx ./scripts/test-statpack-entry-identity.ts && tsx ./scripts/test-statpack-content-match.ts && tsx ./scripts/test-dashboard-summary.ts",
+    "test": "node ./scripts/test-audit-restock.cjs && tsx ./scripts/test-roles.ts && tsx ./scripts/test-statpack-status.ts && tsx ./scripts/test-audit-count.ts && tsx ./scripts/test-statpack-entry-identity.ts && tsx ./scripts/test-statpack-content-match.ts && tsx ./scripts/test-dashboard-summary.ts && tsx ./scripts/test-buy-list-intake.ts",
     "test:roles": "tsx ./scripts/test-roles.ts",
     "migrate:batch-locations": "node ./scripts/migrate-batch-locations.js --dry-run",
     "migrate:normalize-inventory": "node ./scripts/normalize-inventory.cjs --dry-run",
@@ -28,7 +28,8 @@
     "seed:staging": "tsx ./scripts/seed-staging.ts",
     "dev:staging": "node ./scripts/dev-staging.mjs",
     "test:rules": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx --test app/lib/__tests__/rules-stopgap.test.ts\"",
-    "test:events": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx ./scripts/emulator/run-events.ts\""
+    "test:events": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx ./scripts/emulator/run-events.ts\"",
+    "test:buylist-intake": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx ./scripts/emulator/run-buy-list-intake.ts\""
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

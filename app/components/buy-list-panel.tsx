@@ -44,6 +44,7 @@ import {
 } from "firebase/firestore";
 import { auth, db } from "@/firebase";
 import { addToBuyList } from "@/app/lib/buy-list";
+import BuyListIntakeModal from "@/app/components/buy-list-intake-modal";
 import type { BuyListItem } from "@/app/types";
 
 const PRIORITY_COLORS: Record<string, "default" | "primary" | "warning" | "danger"> = {
@@ -64,6 +65,38 @@ const STATUS_ICONS: Record<string, React.ReactNode> = {
   ordered: <Truck size={14} />,
   received: <PackageCheck size={14} />,
 };
+
+function intakeChip(item: BuyListItem): React.ReactNode {
+  if (item.intakeStatus === "needed") {
+    return (
+      <Chip size="sm" variant="flat" color="warning" data-testid="buylist-intake-chip-needed">
+        Delivered — intake needed
+      </Chip>
+    );
+  }
+  if (item.intakeStatus === "partial") {
+    return (
+      <Chip size="sm" variant="flat" color="primary" data-testid="buylist-intake-chip-partial">
+        Partially received {item.receivedQuantity ?? 0}/{item.quantity ?? "?"}
+      </Chip>
+    );
+  }
+  if (item.intakeStatus === "posted") {
+    return (
+      <Chip size="sm" variant="flat" color="success" data-testid="buylist-intake-chip-posted">
+        In stock
+      </Chip>
+    );
+  }
+  if (item.status === "received") {
+    return (
+      <Chip size="sm" variant="flat" color="default" data-testid="buylist-intake-chip-legacy">
+        Received (intake not tracked)
+      </Chip>
+    );
+  }
+  return null;
+}
 
 export interface BuyListPanelProps {
   /** 'mine' filters items where addedBy === current user uid. Default 'all'. */
@@ -108,6 +141,8 @@ export default function BuyListPanel({
   const [formPriority, setFormPriority] = useState<BuyListItem["priority"]>("medium");
   const [formNotes, setFormNotes] = useState("");
   const [saving, setSaving] = useState(false);
+  const [intakeEntry, setIntakeEntry] = useState<BuyListItem | null>(null);
+  const [intakeSeq, setIntakeSeq] = useState<number | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => setUser(u));
@@ -246,10 +281,10 @@ export default function BuyListPanel({
       if (newStatus === "ordered") {
         update.orderedAt = serverTimestamp();
       }
-      if (newStatus === "received") {
-        update.receivedAt = serverTimestamp();
-        update.completedBy = user?.uid || "unknown";
-        update.completedByName = user?.displayName || user?.email || "Unknown";
+      // Reopening keeps delivery history (that stock really was posted) but the
+      // order is no longer complete, so "In stock" would overstate it.
+      if (newStatus === "pending" && item.intakeStatus) {
+        update.intakeStatus = item.deliveries?.some((d) => !d.posted) ? "needed" : "partial";
       }
       await updateDoc(doc(db, "buyList", item.id), update);
     } catch (err) {
@@ -416,6 +451,7 @@ export default function BuyListPanel({
                         <Chip size="sm" variant="flat" color={STATUS_COLORS[item.status] || "default"}>
                           {item.status}
                         </Chip>
+                        {intakeChip(item)}
                         {item.category && (
                           <Chip size="sm" variant="flat" color="secondary">
                             {item.category}
@@ -455,9 +491,25 @@ export default function BuyListPanel({
                           color="success"
                           variant="flat"
                           startContent={<PackageCheck size={14} />}
-                          onPress={() => handleStatusChange(item, "received")}
+                          onPress={() => {
+                            setIntakeSeq(null);
+                            setIntakeEntry(item);
+                          }}
                         >
                           Received
+                        </Button>
+                      )}
+                      {item.intakeStatus === "needed" && item.deliveries?.some((d) => !d.posted) && (
+                        <Button
+                          size="sm"
+                          color="warning"
+                          variant="flat"
+                          onPress={() => {
+                            setIntakeSeq(item.deliveries!.find((d) => !d.posted)!.seq);
+                            setIntakeEntry(item);
+                          }}
+                        >
+                          Post intake
                         </Button>
                       )}
                       {item.status === "received" && (
@@ -498,6 +550,17 @@ export default function BuyListPanel({
           })}
         </div>
       )}
+
+      <BuyListIntakeModal
+        isOpen={!!intakeEntry}
+        onClose={() => {
+          setIntakeEntry(null);
+          setIntakeSeq(null);
+        }}
+        entry={intakeEntry}
+        pendingSeq={intakeSeq}
+        actor={{ uid: user?.uid || "unknown", name: user?.displayName || user?.email || "Unknown" }}
+      />
 
       {/* Add/Edit Modal */}
       <Modal isOpen={modalIsOpen} onOpenChange={modalOnOpenChange} size="lg">

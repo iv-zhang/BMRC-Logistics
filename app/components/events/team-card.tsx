@@ -24,6 +24,8 @@ interface TeamCardProps {
   actorName: string;
   /** The viewer's own active (pending/approved) request for this event, if any — blocks new requests. */
   myActiveRequest: ShiftRequest | undefined;
+  /** Set while the event's sign-ups are loading or failed to load: the viewer's own request is unknown, so requesting is held with this reason. */
+  requestHoldReason?: string | null;
   onRequested: () => void;
   onError: (msg: string) => void;
 }
@@ -47,6 +49,7 @@ export default function TeamCard({
   actorUid,
   actorName,
   myActiveRequest,
+  requestHoldReason = null,
   onRequested,
   onError,
 }: TeamCardProps) {
@@ -86,6 +89,18 @@ export default function TeamCard({
   const renderRequestControl = (role: SlotRole, hasOpenSlot: boolean) => {
     if (!eventOpen || !hasOpenSlot || myActiveRequest) return null;
     if (!canRequestRole(userRole, role)) return null;
+    if (requestHoldReason) {
+      return (
+        <div className="mt-1.5 flex flex-col gap-1">
+          <Button size="sm" variant="flat" color="primary" isDisabled className="w-full">
+            Request {slotRoleLabel(role)}
+          </Button>
+          <p className="text-[11px] text-foreground-400 leading-snug" data-testid="team-request-held">
+            {requestHoldReason}
+          </p>
+        </div>
+      );
+    }
 
     if (openRole === role) {
       return (

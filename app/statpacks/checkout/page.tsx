@@ -29,6 +29,7 @@ import BarcodeScanner from '@/app/components/barcode-scanner';
 import StatpackRestockChips from '@/app/components/statpack-restock-chips';
 import { findAssetByCode } from '@/app/lib/inventory';
 import { subscribeEvents } from '@/app/lib/events';
+import LoadFailureNotice, { describeLoadError } from '@/app/components/load-failure-notice';
 import { toJsDate } from '@/app/components/events/event-utils';
 import CheckoutModal from '@/app/components/checkout-modal';
 import { getStatpackCheckoutUnavailableReason, STATPACK_CHECKOUT_PICKER_STATUSES } from '@/app/lib/statpack-checkout';
@@ -57,6 +58,8 @@ export default function CheckoutPage() {
   const [events, setEvents] = useState<Event[]>([]);
   const [eventPickerPackId, setEventPickerPackId] = useState<string | null>(null);
   const [selectedEventId, setSelectedEventId] = useState('');
+  const [eventsError, setEventsError] = useState<unknown>(null);
+  const [eventsRetry, setEventsRetry] = useState(0);
 
   // Asset checkout
   const [activeTab, setActiveTab] = useState<string>('statpacks');
@@ -78,9 +81,15 @@ export default function CheckoutPage() {
   // Open (selectable) events for the checkout event picker
   useEffect(() => {
     if (!user) return;
-    const unsub = subscribeEvents((evts) => setEvents(evts.filter((e) => e.status === 'open')));
+    const unsub = subscribeEvents(
+      (evts) => {
+        setEvents(evts.filter((e) => e.status === 'open'));
+        setEventsError(null);
+      },
+      { onError: (err) => setEventsError(err ?? true) },
+    );
     return () => unsub();
-  }, [user]);
+  }, [user, eventsRetry]);
 
   // Open the event picker instead of navigating straight to check-off, so the
   // member can (optionally) tag this checkout with the event it's for.
@@ -520,6 +529,15 @@ export default function CheckoutPage() {
             <p className="text-sm text-foreground-500">
               Optional — link this checkout to an event so the pack&apos;s history shows who used it, and where.
             </p>
+            {eventsError != null && (
+              <LoadFailureNotice
+                compact
+                testId="checkout-events-load-error"
+                title="Events couldn't load"
+                message={`${describeLoadError(eventsError)} You can still skip and continue.`}
+                onRetry={() => setEventsRetry((k) => k + 1)}
+              />
+            )}
             <Select
               label="Event"
               placeholder="No specific event"

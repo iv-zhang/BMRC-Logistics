@@ -24,6 +24,7 @@ import {
   type EventActor,
 } from '@/app/lib/events';
 import type { Event, ShiftRequest } from '@/app/types';
+import LoadFailureNotice, { describeLoadError } from '@/app/components/load-failure-notice';
 import EventCalendar from '@/app/components/events/event-calendar';
 import EventList from '@/app/components/events/event-list';
 import EventDetailDrawer from '@/app/components/events/event-detail-drawer';
@@ -41,6 +42,13 @@ export default function EventsPage() {
   const [myRequests, setMyRequests] = useState<ShiftRequest[]>([]);
   const [pendingRequests, setPendingRequests] = useState<ShiftRequest[]>([]);
   const [loading, setLoading] = useState(true);
+  const [eventsError, setEventsError] = useState<unknown>(null);
+  const [eventsCached, setEventsCached] = useState(false);
+  const [eventsRetry, setEventsRetry] = useState(0);
+  const [myError, setMyError] = useState<unknown>(null);
+  const [myRetry, setMyRetry] = useState(0);
+  const [pendingError, setPendingError] = useState<unknown>(null);
+  const [pendingRetry, setPendingRetry] = useState(0);
   // `?event=<id>` deep link (e.g. from a dashboard "Upcoming Shifts" row or a
   // shift-request notification), read lazily from window.location.search so it
   // keeps working under `output: export` (no useSearchParams / Suspense).
@@ -67,12 +75,22 @@ export default function EventsPage() {
   }, [authLoading, user, router]);
 
   useEffect(() => {
-    const unsub = subscribeEvents((evs) => {
-      setEvents(evs);
-      setLoading(false);
-    });
+    const unsub = subscribeEvents(
+      (evs) => {
+        setEvents(evs);
+        setEventsError(null);
+        setLoading(false);
+      },
+      {
+        onError: (err) => {
+          setEventsError(err ?? true);
+          setLoading(false);
+        },
+        onCacheState: setEventsCached,
+      },
+    );
     return () => unsub();
-  }, []);
+  }, [eventsRetry]);
 
   // Once events have loaded, open the drawer for the deep-linked event (if any).
   // Guarded by deepLinkHandled so it only auto-opens once — the user can close
@@ -91,18 +109,31 @@ export default function EventsPage() {
       setMyRequests([]);
       return;
     }
-    const unsub = subscribeMyRequests(effectiveUid, setMyRequests);
+    const unsub = subscribeMyRequests(
+      effectiveUid,
+      (r) => {
+        setMyRequests(r);
+        setMyError(null);
+      },
+      { onError: (err) => setMyError(err ?? true) },
+    );
     return () => unsub();
-  }, [effectiveUid]);
+  }, [effectiveUid, myRetry]);
 
   useEffect(() => {
     if (!canManage) {
       setPendingRequests([]);
       return;
     }
-    const unsub = subscribePendingRequests(setPendingRequests);
+    const unsub = subscribePendingRequests(
+      (r) => {
+        setPendingRequests(r);
+        setPendingError(null);
+      },
+      { onError: (err) => setPendingError(err ?? true) },
+    );
     return () => unsub();
-  }, [canManage]);
+  }, [canManage, pendingRetry]);
 
   useEffect(() => {
     if (!toast) return;
@@ -226,6 +257,36 @@ export default function EventsPage() {
           </div>
         </div>
 
+        {eventsError != null && (
+          <div className="mb-4">
+            <LoadFailureNotice
+              testId="events-load-error"
+              title="Events couldn't load"
+              message={`${describeLoadError(eventsError)} Any events shown below may be out of date.`}
+              onRetry={() => setEventsRetry((k) => k + 1)}
+            />
+          </div>
+        )}
+        {eventsError == null && eventsCached && (
+          <p
+            data-testid="events-cached-note"
+            className="mb-4 rounded-medium border border-warning/30 bg-warning-50 dark:bg-warning-900/20 px-3 py-1.5 text-xs text-warning-700 dark:text-warning"
+          >
+            Showing saved data — waiting for live updates.
+          </p>
+        )}
+        {myError != null && (
+          <div className="mb-4">
+            <LoadFailureNotice
+              compact
+              testId="my-requests-load-error"
+              title="Your shift requests couldn't load"
+              message={describeLoadError(myError)}
+              onRetry={() => setMyRetry((k) => k + 1)}
+            />
+          </div>
+        )}
+
         {viewMode === 'calendar' && (
           <EventCalendar
             month={month}
@@ -248,7 +309,15 @@ export default function EventsPage() {
           />
         )}
 
-        {viewMode === 'requests' && canManage && (
+        {viewMode === 'requests' && canManage && pendingError != null && (
+          <LoadFailureNotice
+            testId="pending-requests-load-error"
+            title="Pending requests couldn't load"
+            message={describeLoadError(pendingError)}
+            onRetry={() => setPendingRetry((k) => k + 1)}
+          />
+        )}
+        {viewMode === 'requests' && canManage && pendingError == null && (
           <PendingRequestsInbox
             requests={pendingRequests}
             actor={actor}
