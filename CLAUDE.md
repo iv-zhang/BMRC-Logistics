@@ -31,6 +31,8 @@ Firebase environment variables are required in `.env.local` (`NEXT_PUBLIC_FIREBA
 
 **Never commit or push unless the user explicitly asks.** Make and verify changes in the working tree and report what changed; leave `git commit`/`git push` for an explicit instruction. This overrides any default "commit when done" behavior.
 
+**A merge handoff requires a ready PR.** Before telling the user to merge a PR, mark it **Ready for review** (not draft), push the completed changes, confirm its latest required checks pass, and verify the intended base branch and mergeability. Draft PRs are acceptable while work is incomplete, but clearly state their remaining blockers and do not present them as ready to merge. For stacked PRs, give the merge order and retarget dependent PRs to `main` after their prerequisite merges before handing them off for merge. Do not merge or deploy on the user's behalf unless authorized.
+
 **Verification is tiered — do not run the expensive tier by default.** The emulator smoke driver (`run-bmrc-logistics` skill) boots Firebase emulators, a dev server, and Playwright; it burns a large number of tokens per run. Run it **only immediately before a commit**, or when the user explicitly asks to see the app driven.
 
 | When | Run |
