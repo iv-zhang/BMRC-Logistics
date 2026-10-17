@@ -541,6 +541,73 @@ test('restock-needed pack is flagged but can still be checked out', async ({ pag
   }
 });
 
+// Maintenance blocks deployment through both the picker and a hand-entered URL.
+// Audit remains available so staff can inspect and document the pack condition.
+test('maintenance pack is excluded from checkout and direct checkout is unavailable', async ({ page }) => {
+  const testRunId = `smoke-maintenance-${Date.now()}`;
+  const purpose = 'Verify maintenance blocks statpack checkout in the picker and direct URL while audit remains available';
+  const metadata = { isTest: true, testRunId, purpose };
+  const packName = `[TEST] Smoke Maintenance ${testRunId}`;
+  const readyName = `[TEST] Smoke Restock Ready ${testRunId}`;
+  const fixtureRefs: Array<{ collection: string; id: string }> = [];
+  let maintenanceId = '';
+  try {
+    maintenanceId = await createDoc('statpacks', {
+      ...metadata,
+      name: packName,
+      type: 'Primary',
+      status: 'In Maintenance',
+      isCheckedOut: false,
+      currentLocation: 'MRC1',
+      compartments: [{ id: 'main', name: 'Main', parentPocket: 'main', isSealed: false }],
+      contents: [],
+    });
+    fixtureRefs.push({ collection: 'statpacks', id: maintenanceId });
+    const restockId = await createDoc('statpacks', {
+      ...metadata,
+      name: readyName,
+      type: 'Primary',
+      status: 'Restock Needed',
+      isCheckedOut: false,
+      currentLocation: 'MRC1',
+      compartments: [{ id: 'main', name: 'Main', parentPocket: 'main', isSealed: false }],
+      contents: [],
+    });
+    fixtureRefs.push({ collection: 'statpacks', id: restockId });
+
+    await signIn(page);
+    await page.goto('/statpacks/checkout', { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('load');
+    await page.waitForTimeout(2000);
+    await expect(page.getByText(readyName).first()).toBeVisible();
+    await expect(page.getByText(packName, { exact: true })).toHaveCount(0);
+
+    await page.goto(`/statpacks/check-off?id=${maintenanceId}&mode=checkout`, { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('load');
+    await page.waitForTimeout(1500);
+    await expect(page.getByRole('heading', { name: 'Checkout unavailable' })).toBeVisible();
+    await expect(page.getByText('This statpack is In Maintenance and is unavailable for checkout. Choose another pack or contact logistics.', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Checkout unavailable' })).toBeDisabled();
+    await page.screenshot({ path: join(SHOTS, 'maintenance-checkout-unavailable.png'), fullPage: true });
+
+    await page.goto(`/statpacks/check-off?id=${maintenanceId}&mode=audit`, { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('load');
+    await page.waitForTimeout(1500);
+    await expect(page.getByText(packName).first()).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Checkout unavailable' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Submit Audit' })).toBeEnabled();
+  } finally {
+    await createDoc('test_cleanup_manifests', {
+      isTest: true,
+      testRunId,
+      purpose,
+      fixtures: fixtureRefs,
+      generated: [],
+      createdAt: new Date(),
+    }, testRunId);
+  }
+});
+
 test('check-off displays In Use and Unknown statuses explicitly', async ({ page }) => {
   const testRunId = `smoke-status-${Date.now()}`;
   const purpose = 'Verify status labels on the shared statpack check-off surface';

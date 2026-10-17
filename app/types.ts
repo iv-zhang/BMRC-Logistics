@@ -751,7 +751,7 @@ export interface Statpack {
   id: string;
   name: string;
   type: 'Primary' | 'Secondary' | 'Event Bag';
-  status: 'Ready' | 'Restock Needed' | 'Expired Items' | 'CRITICAL - EXPIRED ITEMS' | 'In Use' | 'Pending Initial Check';
+  status: 'Ready' | 'Restock Needed' | 'Expired Items' | 'CRITICAL - EXPIRED ITEMS' | 'In Use' | 'Pending Initial Check' | 'In Maintenance';
   compartments: StatpackCompartment[];
   contents: StatpackItem[];
   isCheckedOut: boolean;

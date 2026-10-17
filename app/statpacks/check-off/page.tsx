@@ -23,6 +23,7 @@ import CheckinUsedPicker, { type CheckinUsedPick } from '@/app/components/statpa
 import ThingsToFixCard, { type FixItem } from '@/app/components/statpacks/things-to-fix-card';
 import type { Statpack, StatpackItem, StatpackPocket, InventoryItem, ExchangeBag, ExchangeBagAssignment } from '@/app/types';
 import { getStatpackStatusInfo } from '@/app/lib/statpack-status';
+import { getStatpackCheckoutUnavailableReason } from '@/app/lib/statpack-checkout';
 
 // ─── types & constants ───────────────────────────────────────────────────────
 
@@ -1391,6 +1392,9 @@ export default function StatpackCheckOffPage() {
   }, [pack, fixList, flagList]);
 
   const statusInfo = useMemo(() => getStatpackStatusInfo(pack?.status), [pack?.status]);
+  const checkoutUnavailable = mode === 'checkout' && pack
+    ? getStatpackCheckoutUnavailableReason(pack)
+    : null;
 
   const modeTitle = mode === 'checkout' ? 'Checkout Verification'
     : mode === 'checkin' ? 'Check-In Verification' : 'Inventory Audit';
@@ -1565,6 +1569,10 @@ export default function StatpackCheckOffPage() {
   }, [pack, user, allItems, itemChecks, countOf, resolution, sealState, sharps, sharpsAck, isAdmin, mode, today, bagChecks, eventId, eventName]);
 
   const doSubmit = useCallback(async (override?: FastPathOverride) => {
+    if (checkoutUnavailable) {
+      showToast(checkoutUnavailable, false);
+      return;
+    }
     const built = buildPayload(override);
     if (!built) return;
     setShowReview(false);
@@ -1605,10 +1613,14 @@ export default function StatpackCheckOffPage() {
     } finally {
       setSubmitting(false);
     }
-  }, [buildPayload, mode, pack, showToast, router, linkedBags, bagChecks, user]);
+  }, [checkoutUnavailable, buildPayload, mode, pack, showToast, router, linkedBags, bagChecks, user]);
 
   const handleComplete = useCallback(() => {
     if (!pack || !user) return;
+    if (checkoutUnavailable) {
+      showToast(checkoutUnavailable, false);
+      return;
+    }
     if (fixList.length > 0) {
       revealFix(fixList[0]);
       showToast(
@@ -1621,7 +1633,7 @@ export default function StatpackCheckOffPage() {
     }
     if (mode === 'checkin') { setShowReview(true); return; }
     doSubmit();
-  }, [pack, user, fixList, mode, doSubmit, showToast, revealFix]);
+  }, [pack, user, checkoutUnavailable, fixList, mode, doSubmit, showToast, revealFix]);
 
   const reviewSummary = useMemo(() => {
     if (!showReview) return null;
@@ -1853,6 +1865,16 @@ export default function StatpackCheckOffPage() {
 
         {/* Scrollable content */}
         <main className="flex-1 px-3 py-4 flex flex-col gap-3 pb-28">
+
+          {checkoutUnavailable && (
+            <div role="alert" className="bg-warning-50 dark:bg-warning-900/20 border border-warning rounded-2xl p-4">
+              <h2 className="font-semibold">Checkout unavailable</h2>
+              <p className="mt-1 text-sm">{checkoutUnavailable}</p>
+              <Button className="mt-3" variant="bordered" onPress={() => router.push('/statpacks/checkout')}>
+                Choose another pack
+              </Button>
+            </div>
+          )}
 
           {fixList.length > 0 && (
             <ThingsToFixCard mode={mode} items={fixList} onSelect={revealFix} />
@@ -2160,10 +2182,11 @@ export default function StatpackCheckOffPage() {
             variant={fixList.length > 0 ? 'flat' : 'solid'}
             className="ml-auto font-semibold flex-none"
             isLoading={submitting}
+            isDisabled={!!checkoutUnavailable}
             onPress={handleComplete}
             endContent={!submitting ? <ArrowRight size={16} /> : undefined}
           >
-            {fixList.length > 0 ? `${fixList.length} need${fixList.length === 1 ? 's' : ''} fixing` : btnLabel}
+            {checkoutUnavailable ? 'Checkout unavailable' : fixList.length > 0 ? `${fixList.length} need${fixList.length === 1 ? 's' : ''} fixing` : btnLabel}
           </Button>
         </footer>
       </div>

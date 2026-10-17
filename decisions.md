@@ -134,6 +134,14 @@ and (at checkout) a broken bag seal with no resolution. `Expired Items` packs st
 the checkout list. **Do not** add shortages back to `fixList` or make the sharps note
 required again without revisiting this amendment.
 
+**Amended 2026-10-17 — maintenance blocks checkout.** The logistics director approved
+excluding `In Maintenance` packs from checkout. Use one shared eligibility rule in the
+picker, direct-link checkout page, and the write transaction; the transaction must read
+the current pack state so an already-open checkout cannot bypass a later maintenance
+change. No admin maintenance override is authorized. This checkout gate does not block
+check-in or audit. `Restock Needed` remains eligible under the shortage amendment above;
+existing expiry and ownership checks continue to apply.
+
 ### D-9 — One shared check-off page for checkout / check-in / audit
 **Decision:** all three modes share `app/statpacks/check-off/page.tsx`, driven by `?id` +
 `?mode` query params. Audit mode logs `action: 'audit'` and stamps `lastAuditAt`/`By`
