@@ -14,6 +14,7 @@
     "migrate:normalize-inventory": "node ./scripts/normalize-inventory.cjs --dry-run",
     "migrate:item-naming": "node ./scripts/migrate-item-naming.cjs --dry-run",
     "migrate:tasks-to-team": "node ./scripts/migrate-tasks-to-team.js --dry-run",
+    "report:existence": "node ./scripts/report-existence-baseline.cjs",
     "emulator": "firebase emulators:start --config firebase.emulator.json --only firestore --project demo-bmrc-logistics",
     "seed": "tsx ./scripts/emulator/seed-cli.ts",
     "test:invariants": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx ./scripts/emulator/run-invariants.ts\"",
