@@ -7,6 +7,7 @@ import { createReport } from '@/app/lib/reports';
 import { getAssetCategoriesRuntime, getThresholds } from '@/app/lib/org-config-store';
 import { endEventShifts } from '@/app/lib/events';
 import { flagStatpackRestock } from '@/app/lib/statpack-restock-flag';
+import { getStatpackCheckoutUnavailableReason } from '@/app/lib/statpack-checkout';
 
 /**
  * Fetch an inventory item by ID and return enriched itemDetails + suggested verification rules.
@@ -594,9 +595,11 @@ export async function logStatpackCheckOff(params: {
 
       const isAdmin = canManageLogistics(userRole);
 
-      // Prevent checking out a statpack that is already checked out
-      if (action === 'checkout' && spData?.isCheckedOut) {
-        throw new Error('Statpack is already checked out');
+      // Use current transactional state: an open checkout tab cannot bypass a
+      // later maintenance change. This gate has no admin override.
+      if (action === 'checkout') {
+        const unavailable = getStatpackCheckoutUnavailableReason(spData);
+        if (unavailable) throw new Error(unavailable);
       }
 
       // Enforce same-user checkin: only the user who checked out (or admin) can check in

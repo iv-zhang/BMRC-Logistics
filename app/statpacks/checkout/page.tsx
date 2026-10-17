@@ -31,6 +31,7 @@ import { findAssetByCode } from '@/app/lib/inventory';
 import { subscribeEvents } from '@/app/lib/events';
 import { toJsDate } from '@/app/components/events/event-utils';
 import CheckoutModal from '@/app/components/checkout-modal';
+import { getStatpackCheckoutUnavailableReason, STATPACK_CHECKOUT_PICKER_STATUSES } from '@/app/lib/statpack-checkout';
 
 const formatEventDate = (d: Event['date'] | undefined) => {
   const date = toJsDate(d);
@@ -83,9 +84,14 @@ export default function CheckoutPage() {
 
   // Open the event picker instead of navigating straight to check-off, so the
   // member can (optionally) tag this checkout with the event it's for.
-  const startCheckout = useCallback((id: string) => {
+  const startCheckout = useCallback((pack: Pick<Statpack, 'id'> & Partial<Statpack>) => {
+    const unavailable = getStatpackCheckoutUnavailableReason(pack);
+    if (unavailable) {
+      alert(unavailable);
+      return;
+    }
     setSelectedEventId('');
-    setEventPickerPackId(id);
+    setEventPickerPackId(pack.id);
   }, []);
 
   const confirmEventPicker = useCallback((skip: boolean) => {
@@ -109,7 +115,7 @@ export default function CheckoutPage() {
     const q = query(
       collection(db, 'statpacks'),
       // 'Restock Needed' is a flag, not a block — short packs can still go out (decisions.md D-8, 2nd amendment).
-      where('status', 'in', ['Ready', 'Restock Needed', 'In Maintenance']),
+      where('status', 'in', STATPACK_CHECKOUT_PICKER_STATUSES),
       orderBy('name'),
     );
     const unsub = onSnapshot(q, (snap) => {
@@ -131,8 +137,9 @@ export default function CheckoutPage() {
                 : [],
             } as Statpack;
           });
-          setStatpacks(packs);
-          setFilteredPacks(packs);
+          const eligiblePacks = packs.filter(pack => !getStatpackCheckoutUnavailableReason(pack));
+          setStatpacks(eligiblePacks);
+          setFilteredPacks(eligiblePacks);
         } catch (err) {
           console.error('Failed to load statpacks:', err);
         } finally {
@@ -190,7 +197,7 @@ export default function CheckoutPage() {
   // Selecting a pack opens the event picker rather than navigating directly;
   // the picker itself does the navigation to check-off (Continue or Skip).
   const handleSelectPack = useCallback((pack: Statpack) => {
-    startCheckout(pack.id);
+    startCheckout(pack);
   }, [startCheckout]);
 
   // QR auto-open: open the event picker directly if pack is found
@@ -206,7 +213,7 @@ export default function CheckoutPage() {
         const snap = await getDoc(doc(db, 'statpacks', raw));
         if (snap.exists()) {
           autoOpenedPackId.current = raw;
-          startCheckout(raw);
+          startCheckout({ ...snap.data(), id: snap.id });
           return;
         }
       } catch { /* fall through to list match */ }
@@ -216,7 +223,7 @@ export default function CheckoutPage() {
       );
       if (found) {
         autoOpenedPackId.current = raw;
-        startCheckout(found.id);
+        startCheckout(found);
       }
     })();
   }, [statpacks, initialPackQuery, user, router, startCheckout]);
@@ -229,7 +236,7 @@ export default function CheckoutPage() {
       p.id?.toLowerCase().includes(value.toLowerCase())
     );
     if (found) {
-      startCheckout(found.id);
+      startCheckout(found);
     } else {
       alert(`No statpack found matching: ${value}`);
     }
