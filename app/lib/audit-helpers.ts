@@ -21,13 +21,13 @@ import {
   serverTimestamp,
   setDoc,
   deleteDoc,
-  addDoc,
   Timestamp,
 } from 'firebase/firestore';
 import { db } from '@/firebase';
 import type { InventoryItem, ItemExistence, User } from '@/app/types';
 import { addAuditEventToBatch } from '@/app/lib/audit';
 import { determineIsAsset } from '@/app/lib/inventory';
+import { buildAuditCountPlan } from '@/app/lib/audit-count';
 import { batchHasStock, computeBagStock, getExistence, isAuditCurrent } from '@/app/lib/item-status';
 
 // ─── Permission helpers ───────────────────────────────────────────────────────
@@ -344,6 +344,8 @@ export interface AuditEntry {
   itemId: string;
   /** For disposables: counted number of unopened boxes/bags */
   countedBoxes?: number;
+  /** Individually counted loose reserve units, separate from sealed packages. */
+  countedLooseUnits?: number;
   /** For assets: verified status */
   assetVerified?: boolean;
   assetCondition?: string;
@@ -369,134 +371,75 @@ export async function submitAuditEntries(
   items: InventoryItem[],
   user: { uid: string; email?: string | null; displayName?: string | null },
   zone: string
-): Promise<{ success: boolean; itemsUpdated: number; variances: number }> {
+): Promise<{ success: boolean; itemsUpdated: number; variances: number; unresolved: number }> {
   const batch = writeBatch(db);
-  const logsToWrite: Record<string, unknown>[] = [];
   let variances = 0;
-
+  let unresolved = 0;
+  let itemsUpdated = 0;
   for (const entry of entries) {
-    const item = items.find((x) => x.id === entry.itemId);
+    const item = items.find(x => x.id === entry.itemId);
     if (!item) continue;
-
     const isAsset = determineIsAsset(item);
-
-    if (isAsset) {
-      // Asset audit: verify status and condition
-      batch.update(doc(db, 'inventory', entry.itemId), {
-        auditVerified: true,
-        auditCondition: entry.condition,
-        auditNotes: entry.notes ?? null,
-        lastAuditDate: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      // Disposable audit
-      const countedBoxes = entry.countedBoxes ?? 0;
-      const bag = computeBagStock(item);
-      const systemBoxes = bag.hasBagTracking ? bag.totalBags : (item.unopenedBoxes ?? 0);
-
-      if (countedBoxes !== systemBoxes) variances++;
-
-      if (bag.hasBagTracking) {
-        // Bag-tracked items: batches are the source of truth. Overwriting the
-        // item-level box count would silently desync from the batches, so only
-        // mark the item verified; variances stay in the audit log for manual
-        // batch reconciliation.
-        batch.update(doc(db, 'inventory', entry.itemId), {
-          auditVerified: true,
-          auditCondition: entry.condition,
-          auditNotes: entry.notes ?? null,
-          lastAuditDate: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      } else {
-        batch.update(doc(db, 'inventory', entry.itemId), {
-          unopenedBoxes: countedBoxes,
-          // Also sync totalStockQuantity for legacy compat
-          totalStockQuantity: countedBoxes * (entry.itemsPerBox ?? item.itemsPerBox ?? 1),
-          // Allow auditors to correct or record observed items-per-box
-          itemsPerBox: entry.itemsPerBox ?? item.itemsPerBox ?? 1,
-          auditVerified: true,
-          auditCondition: entry.condition,
-          auditNotes: entry.notes ?? null,
-          lastAuditDate: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
-    }
-
+    const count = isAsset ? null : buildAuditCountPlan(item, entry);
+    if (count?.variance) variances++;
+    if (count?.unresolved) unresolved++;
+    const verified = isAsset || count!.verified;
+    batch.update(doc(db, 'inventory', item.id), {
+      ...(count?.patch ?? {}),
+      auditVerified: verified,
+      auditCondition: entry.condition,
+      auditNotes: entry.notes ?? null,
+      // A count difference is an observation awaiting reconciliation. An old
+      // current-cycle stamp must not continue to imply it was verified.
+      lastAuditDate: verified ? serverTimestamp() : null,
+      updatedAt: serverTimestamp(),
+    });
+    const details = {
+      zone, isAsset, verified,
+      scannedBarcode: entry.scannedBarcode ?? null,
+      ...(count ? {
+        countedBoxes: count.boxes, countedLooseUnits: count.loose,
+        countedTotalUnits: count.total,
+        systemBoxes: count.systemBoxes, systemLooseUnits: count.systemLoose,
+        systemTotalUnits: count.systemTotal,
+        variance: count.boxes - count.systemBoxes,
+        looseVariance: count.loose - count.systemLoose,
+        unresolved: count.unresolved,
+        itemsPerBox: count.perPackage,
+        lotNumber: entry.lotNumber ?? null,
+        batchDate: entry.batchDate ?? null,
+        expirationDate: entry.expirationDate ?? null,
+      } : {}),
+    };
     addAuditEventToBatch(batch, {
-      eventType: isAsset ? 'audit_asset_verified' : 'audit_box_count_verified',
-      source: 'supply_audit',
-      sourceId: entry.itemId,
-      actor: {
-        userId: user.uid,
-        userEmail: user.email ?? null,
+      eventType: isAsset ? 'audit_asset_verified' : verified ? 'audit_box_count_verified' : 'audit_count_observed',
+      source: 'supply_audit', sourceId: item.id,
+      actor: { userId: user.uid, userEmail: user.email ?? null },
+      targets: [{ collection: 'inventory', docId: item.id }],
+      before: isAsset ? { assetStatus: item.assetStatus ?? null } : {
+        unopenedBoxes: count!.systemBoxes, looseUnits: count!.systemLoose,
+        totalStockQuantity: count!.systemTotal,
       },
-      targets: [{ collection: 'inventory', docId: entry.itemId }],
-      before: isAsset
-        ? { assetStatus: item.assetStatus }
-        : { unopenedBoxes: item.unopenedBoxes ?? 0 },
-      after: isAsset
-        ? { auditVerified: true, condition: entry.condition }
-        : {
-            unopenedBoxes: entry.countedBoxes ?? 0,
-            condition: entry.condition,
-            itemsPerBox: entry.itemsPerBox ?? item.itemsPerBox ?? 1,
-            lotNumber: entry.lotNumber ?? null,
-            batchDate: entry.batchDate ?? null,
-            expirationDate: entry.expirationDate ?? null,
-          },
-      // Firestore rejects an explicit `undefined` field — omit the key
-      // entirely rather than setting `details: undefined` when nothing was scanned.
-      ...(entry.scannedBarcode ? { details: { scannedBarcode: entry.scannedBarcode } } : {}),
+      after: isAsset ? { auditVerified: true, condition: entry.condition } : {
+        ...count!.patch, auditVerified: verified, condition: entry.condition,
+        unresolved: count!.unresolved,
+      },
+      details,
     });
-
-    logsToWrite.push({
+    // Quantity changes and their history commit together.
+    batch.set(doc(collection(db, 'inventory_logs')), {
       action: isAsset ? 'audit_asset_verified' : 'audit_box_count',
-      itemId: entry.itemId,
-      itemName: item.name,
-      userId: user.uid,
-      userName: user.displayName || user.email || 'Unknown',
+      itemId: item.id, itemName: item.name,
+      userId: user.uid, userName: user.displayName || user.email || 'Unknown',
       timestamp: serverTimestamp(),
-      notes: isAsset
-        ? `Asset audit: condition ${entry.condition}`
-        : `Box audit: counted ${entry.countedBoxes} boxes (system had ${item.unopenedBoxes ?? 0}), condition ${entry.condition}`,
-      details: {
-        zone,
-        isAsset,
-        scannedBarcode: entry.scannedBarcode ?? null,
-        ...(isAsset
-          ? {}
-          : {
-              countedBoxes: entry.countedBoxes,
-              systemBoxes: item.unopenedBoxes ?? 0,
-              variance: (entry.countedBoxes ?? 0) - (item.unopenedBoxes ?? 0),
-              itemsPerBox: entry.itemsPerBox ?? item.itemsPerBox ?? 1,
-              lotNumber: entry.lotNumber ?? null,
-              batchDate: entry.batchDate ?? null,
-              expirationDate: entry.expirationDate ?? null,
-            }),
-      },
+      notes: isAsset ? `Asset audit: condition ${entry.condition}`
+        : `Count: ${count!.boxes} sealed + ${count!.loose} loose = ${count!.total ?? 'unknown'} units; ${count!.unresolved ? 'unresolved observation' : verified ? 'verified' : 'variance recorded; verification pending'}`,
+      details,
     });
+    itemsUpdated++;
   }
-
   await batch.commit();
-
-  // Write logs non-transactionally (acceptable for audit trail)
-  for (const log of logsToWrite) {
-    try {
-      await addDoc(collection(db, 'inventory_logs'), log);
-    } catch (e) {
-      console.warn('Failed to write audit log:', e);
-    }
-  }
-
-  return {
-    success: true,
-    itemsUpdated: entries.length,
-    variances,
-  };
+  return { success: true, itemsUpdated, variances, unresolved };
 }
 
 // ─── Restock decision helpers ─────────────────────────────────────────────────

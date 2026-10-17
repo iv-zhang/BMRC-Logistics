@@ -58,7 +58,8 @@ export function computeBagStock(item: InventoryItem, now = new Date()): BagStock
   const batches = item.batches || [];
   const hasBagTracking = batches.some(
     b => (b.bagCount !== undefined && b.bagCount > 0) ||
-         (b.itemsPerBag !== undefined && (b.itemsPerBag ?? 0) > 0),
+         (b.itemsPerBag !== undefined && (b.itemsPerBag ?? 0) > 0) ||
+         (b.looseItems ?? 0) > 0,
   );
   if (hasBagTracking) {
     let totalBags = 0, totalLoose = 0, totalItems = 0, availableItems = 0;
@@ -76,7 +77,7 @@ export function computeBagStock(item: InventoryItem, now = new Date()): BagStock
     return { totalBags, totalLoose, totalItems, availableItems, hasBagTracking: true };
   }
   const boxes = item.unopenedBoxes ?? 0, perBox = item.itemsPerBox ?? 0, loose = item.looseUnits ?? 0;
-  const totalItems = perBox > 0 ? boxes * perBox + loose : boxes;
+  const totalItems = perBox > 0 ? boxes * perBox + loose : boxes + loose;
   // Box-tracked stock has no per-lot quantity (quantity pools onto unopenedBoxes
   // and lots are stock:0 tombstones — see B-5), so availability equals physical.
   return {

@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node ./scripts/test-audit-restock.cjs && tsx ./scripts/test-roles.ts && tsx ./scripts/test-statpack-status.ts",
+    "test": "node ./scripts/test-audit-restock.cjs && tsx ./scripts/test-roles.ts && tsx ./scripts/test-statpack-status.ts && tsx ./scripts/test-audit-count.ts",
     "test:roles": "tsx ./scripts/test-roles.ts",
     "migrate:batch-locations": "node ./scripts/migrate-batch-locations.js --dry-run",
     "migrate:normalize-inventory": "node ./scripts/normalize-inventory.cjs --dry-run",

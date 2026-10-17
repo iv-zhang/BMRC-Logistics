@@ -21,6 +21,7 @@ import PanelShell from '@/app/components/panel-shell';
 import { determineIsAsset } from '@/app/lib/inventory';
 import { computeBagStock, displayLocation, getItemStatus } from '@/app/lib/item-status';
 import { parseGs1Barcode } from '@/app/lib/gs1';
+import { buildAuditCountPlan } from '@/app/lib/audit-count';
 import { submitAuditEntries } from '@/app/lib/audit-helpers';
 import {
   addShipment,
@@ -105,7 +106,9 @@ export default function AuditActionDrawer({
   );
 
   // Count state
-  const [countedBoxes, setCountedBoxes] = useState(0);
+  const [countedBoxes, setCountedBoxes] = useState('');
+  const [showSealedCount, setShowSealedCount] = useState(false);
+  const [countedLoose, setCountedLoose] = useState('');
   const [condition, setCondition] = useState<ConditionValue>('Good');
   const [countExp, setCountExp] = useState('');
   const [countLot, setCountLot] = useState('');
@@ -153,7 +156,9 @@ export default function AuditActionDrawer({
   useEffect(() => {
     if (!item) return;
     setAction(initialAction);
-    setCountedBoxes(systemBoxes);
+    setCountedBoxes('');
+    setShowSealedCount(false);
+    setCountedLoose('');
     setCondition('Good');
     setCountExp('');
     setCountLot('');
@@ -179,7 +184,31 @@ export default function AuditActionDrawer({
 
   if (!item || !actor) return null;
 
-  const variance = countedBoxes - systemBoxes;
+  const packageSizes = new Set((item.batches ?? []).map(b => b.itemsPerBag).filter((n): n is number => !!n && n > 0));
+  const missingSealedConversion = (item.batches ?? []).some(b => (b.bagCount ?? 0) > 0 && !(b.itemsPerBag && b.itemsPerBag > 0));
+  const knownPackageSize = bag?.hasBagTracking
+    ? !missingSealedConversion && packageSizes.size === 1 ? [...packageSizes][0] : undefined
+    : item.itemsPerBox;
+  const looseOnlyDefault = systemBoxes === 0 && (!knownPackageSize || knownPackageSize <= 1);
+  const looseOnly = looseOnlyDefault && !showSealedCount;
+  const validCount = countedLoose.trim() !== '' && (looseOnly || countedBoxes.trim() !== '') &&
+    [Number(countedLoose), looseOnly ? 0 : Number(countedBoxes)].every(n => Number.isSafeInteger(n) && n >= 0);
+  let countPlan: ReturnType<typeof buildAuditCountPlan> | null = null;
+  if (validCount) {
+    try {
+      countPlan = buildAuditCountPlan(item, {
+        countedBoxes: looseOnly ? 0 : Number(countedBoxes), countedLooseUnits: Number(countedLoose),
+      });
+    } catch {
+      // A safe package count can still overflow after unit conversion.
+      // Keep submission disabled; the writer enforces the same bounds.
+    }
+  }
+  const countSummary = countPlan
+    ? looseOnly ? `${countPlan.loose} units`
+      : knownPackageSize ? `${countPlan.boxes} ${bag?.hasBagTracking ? 'bags' : 'boxes'} × ${knownPackageSize} + ${countPlan.loose} loose = ${countPlan.total ?? 'unknown'} units`
+        : `${countPlan.boxes} sealed + ${countPlan.loose} loose — total units unknown`
+    : 'Enter the quantities you observed, including zero.';
   const perUnitNum = Math.max(1, Number(shipPerUnit) || 1);
 
   const canSubmit =
@@ -187,17 +216,18 @@ export default function AuditActionDrawer({
       ? Boolean(moveLoc?.zoneId || moveArea)
       : action === 'shipment'
         ? shipQty > 0
-        : true;
+        : action === 'count' ? isAsset || countPlan !== null : true;
 
   const handleSubmit = async () => {
     setSaving(true);
     try {
       if (action === 'count') {
-        await submitAuditEntries(
+        const result = await submitAuditEntries(
           [
             {
               itemId: item.id,
-              countedBoxes: isAsset ? undefined : countedBoxes,
+              countedBoxes: isAsset ? undefined : looseOnly ? 0 : Number(countedBoxes),
+              countedLooseUnits: isAsset ? undefined : Number(countedLoose),
               condition,
               notes: countNotes || undefined,
               expirationDate: countExp || undefined,
@@ -212,7 +242,7 @@ export default function AuditActionDrawer({
         onResult(
           isAsset
             ? `${item.name} verified`
-            : `${item.name} counted — ${countedBoxes} boxes`,
+            : `${item.name}: ${countSummary}${result.unresolved ? ' — unresolved observation' : result.variances ? ' — variance recorded; verification pending' : ' — verified'}`,
           true
         );
       } else if (action === 'move') {
@@ -370,7 +400,7 @@ export default function AuditActionDrawer({
               <div className="flex gap-3">
                 <div className="flex-1 bg-content2 rounded-large p-4">
                   <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1.5">
-                    {isAsset ? 'Status' : 'System Boxes'}
+                    {isAsset ? 'Status' : 'System sealed packages'}
                   </div>
                   <div className="font-mono text-[28px] font-semibold tabular-nums leading-tight text-foreground">
                     {isAsset ? (item.assetStatus || '—') : systemBoxes}
@@ -382,7 +412,7 @@ export default function AuditActionDrawer({
                       Total Units
                     </div>
                     <div className="font-mono text-[28px] font-semibold tabular-nums leading-tight text-foreground">
-                      {bag?.totalItems ?? 0}
+                      {systemBoxes > 0 && !knownPackageSize ? 'Unknown' : bag?.totalItems ?? 0}
                     </div>
                   </div>
                 )}
@@ -390,19 +420,25 @@ export default function AuditActionDrawer({
 
               {!isAsset && (
                 <div>
-                  <label className="text-sm font-semibold text-foreground block mb-2">
-                    Count sealed boxes/bags on hand
-                  </label>
-                  <CountControl
-                    value={countedBoxes}
-                    onChange={setCountedBoxes}
-                    label=""
-                    presets={[1, 5, 10]}
-                  />
-                  {variance !== 0 && (
+                  {looseOnly && (
+                    <button type="button" onClick={() => setShowSealedCount(true)}
+                      className="mb-3 text-sm font-semibold text-primary underline underline-offset-2">
+                      Also count sealed packages
+                    </button>
+                  )}
+                  {!looseOnly && (
+                    <Input type="number" min={0} step={1} label="Sealed boxes / bags observed"
+                      value={countedBoxes} onValueChange={setCountedBoxes} placeholder="Enter count" />
+                  )}
+                  <Input type="number" min={0} step={1}
+                    label={looseOnly ? 'Individual units observed' : 'Loose units observed'}
+                    value={countedLoose} onValueChange={setCountedLoose} placeholder="Enter count"
+                    className={looseOnly ? '' : 'mt-3'} />
+                  <div className="mt-2 text-sm text-foreground-600">{countSummary}</div>
+                  {countPlan && (countPlan.variance || countPlan.unresolved) && (
                     <div className="mt-2 flex items-center gap-1.5 text-xs text-warning font-semibold">
                       <AlertTriangle size={12} className="flex-none" />
-                      Variance: {variance > 0 ? '+' : ''}{variance} boxes vs system
+                      {countPlan.unresolved ? 'Unresolved observation — quantities need reconciliation.' : 'Count differs from system — recorded without verification.'}
                     </div>
                   )}
                 </div>
