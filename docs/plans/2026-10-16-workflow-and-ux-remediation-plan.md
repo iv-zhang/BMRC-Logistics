@@ -4,14 +4,17 @@
 
 ## Implementation progress — 2026-10-16
 
-- **Scope:** Phase 1 is provisionally mapped to **Batch 0**, the first release in this plan; the scope clarification is pending. 0b/0c and the independent 0d input slice are underway. The explicit 0e maintenance-policy decision remains pending; no maintenance behavior change is authorized by elapsed time.
+- **Scope:** Phase 1 is provisionally mapped to **Batch 0**, the first release in this plan; the scope clarification is pending. 0b/0c are implemented and emulator-verified; the independent 0d input slice is implemented with writer verification, with responsive UI verification underway. The explicit 0e maintenance-policy decision remains pending; no maintenance behavior change is authorized by elapsed time.
 - **Branch:** `codex/workflow-remediation-phase-1`, based on freshly fetched `origin/main` `fdbf6574a51257cd05d52dff65f2af947817b1e5`. Preserve Release A / Release B as separate implementation commits and verification records; do not claim a live release from a PR.
 - **Cost:** bounded implementation delegated to lower-cost models; orchestration reserved for cross-file review and verification. No unrelated branch integration or production data writes.
 - **0a audit complete (shipping pending):** [branch/worktree inventory](2026-10-16-branch-worktree-audit.md) records all 17 worktrees and 51 refs. Three old worktrees have uncommitted edits even though their HEADs are merged; all are preserved. `381cec5` is already in the release base and will not be replayed.
-- **Deployment evidence:** [successful live workflow run](https://github.com/iv-zhang/BMRC-Logistics/actions/runs/38683048735) deployed commit `fdbf657` on 2026-10-15 UTC, Hosting artifact `f7c8b66e27d6406a`. Its companion duplicate workflow failed. Job output masks project/site/build configuration, so this alone does not verify the compiled app’s backend or rule out a later manual deployment.
+- **Deployment evidence:** [successful live workflow run](https://github.com/iv-zhang/BMRC-Logistics/actions/runs/38683048735) deployed commit `fdbf657` on 2026-10-15 UTC, Hosting artifact `f7c8b66e27d6406a`. Its companion duplicate workflow failed. Job output masks project/site/build configuration. A read-only public-site check of `https://bmrc-logistics.web.app/__/firebase/init.json` and all 16 script chunks found compiled `projectId: "bmrc-logistics"` in `/_next/static/chunks/7e7f02e9cb2ba964.js`, matching the site’s metadata. This confirms current backend alignment; the run log alone cannot rule out a later manual deployment.
 - **CI decision:** reuse the reviewed two-file repair from `1087471` / [existing PR #7](https://github.com/iv-zhang/BMRC-Logistics/pull/7): remove the stale placeholder-env live workflow and serialize the remaining live workflow. Existing branch/PR stays intact; the Phase 1 PR will explain the overlap.
-- **New finding:** the check-off loader also defaults missing status to `Ready`, so fixing only the badge fallback would leave false-ready behavior. Remove that loader default as part of 0c.
-- **Verification:** source audit only so far. Build, targeted regression, invariant/property suites for 0d, and emulator UI journey pending. Live validation remains pending merge/deploy and a real next-shift observation.
+- **New findings fixed:** the check-off loader also defaulted missing status to `Ready`; removed that default. The status lookup rejects inherited object keys (`__proto__`, `constructor`, `toString`) as Unknown.
+- **New finding deferred:** dashboard reads honor effective test identity, but check-off submission still attributes checkout to raw auth UID. Normal signed-in member ownership is runtime-verified; test-identity write consistency is separate follow-up (D-18), not claimed fixed by 0b.
+- **Verification checkpoint:** production static build passes; `npm run test` passes (69 audit/restock + 133 role checks, plus new actual status/count-helper regressions). Two targeted emulator UI tests pass: short checkout → holder-only dashboard → used-nothing return preserving zero shortage → no assigned pack; and explicit In Use/Unknown display. Guarded actual count writer tests pass. Seven property checks pass, each at 500 runs.
+- **Baseline issues reproduced:** invariants report **70 pass / 2 fail**, identically on this branch and an untouched `origin/main` archive: INV-2 expects per-lot totals for scalar box stock (D-12); INV-10 expects same-SKU class/field pools (D-11). Do not silently expand either model. Full `npx tsc --noEmit` still reports only the two dormant O₂ Vitest test files’ undeclared dependency/old fixture errors; touched count/helper/smoke files lint clean. The dashboard/check-off pages have existing lint debt; no new lint diagnostics were introduced.
+- **Remaining:** responsive audit UI checks and code checkpoint commits; 0e policy decision; PR/main deployment; real next-shift observation. The approved Release A grouping remains pending 0e. This branch prepares reviewable changes and does not claim a completed live release.
 
 ## Context & design principles
 
@@ -66,7 +69,9 @@ Base Release A on **current `origin/main`**: rebase or merge any remaining fix/r
 
 **Done when:** the combined release's live SHA/backend are recorded and next-shift observation confirms short-pack checkout without a Ready override. Check dashboard assignment/real status and return's preserved shortages during the normal journey; mark live validation pending until observed.
 
-### [ ] 0b. Fix My Assigned Packs · S
+### [x] 0b. Fix My Assigned Packs · S
+
+**Progress:** canonical query implemented; emulator holder-only checkout/dashboard/return journey passes. Natural live journey pending deployment.
 
 **Files/approach:** change `app/dashboard/member-dashboard.tsx` to query `assignedToUserId`, matching [inventory.ts:783](../../app/lib/inventory.ts#L783). Preserve effective-identity scoping (D-18; [CLAUDE.md:73](../../CLAUDE.md#L73)); no new assignment field or migration by default.
 
@@ -74,7 +79,9 @@ Base Release A on **current `origin/main`**: rebase or merge any remaining fix/r
 
 **Done when:** the pack appears only for its holder after checkout and disappears after return.
 
-### [ ] 0c. Display the real pack status · S
+### [x] 0c. Display the real pack status · S
+
+**Progress:** explicit pure mapping and loader fallback repair implemented; all declared statuses, persisted maintenance, missing/unknown/prototype keys tested; In Use and Unknown driven in the emulator.
 
 **Files/approach:** replace `statusInfo` in `app/statpacks/check-off/page.tsx` with an explicit mapping for the declared statuses, including Pending Initial Check and CRITICAL - EXPIRED ITEMS ([types.ts:730](../../app/types.ts#L730)), plus safe display of persisted In Maintenance. Missing/unrecognized values show neutral Unknown, never green Ready. Do not change derived readiness rules.
 

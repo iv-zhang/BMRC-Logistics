@@ -188,7 +188,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
     // Listen for statpacks assigned to this user
     const packsQuery = query(
       collection(db, 'statpacks'),
-      where('assignedTo', '==', userData.id)
+      where('assignedToUserId', '==', userData.id)
     );
 
     const unsubPacks = onSnapshot(packsQuery, (snapshot) => {

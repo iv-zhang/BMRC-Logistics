@@ -22,6 +22,7 @@ import StatpackRestockChips from '@/app/components/statpack-restock-chips';
 import CheckinUsedPicker, { type CheckinUsedPick } from '@/app/components/statpacks/checkin-used-picker';
 import ThingsToFixCard, { type FixItem } from '@/app/components/statpacks/things-to-fix-card';
 import type { Statpack, StatpackItem, StatpackPocket, InventoryItem, ExchangeBag, ExchangeBagAssignment } from '@/app/types';
+import { getStatpackStatusInfo } from '@/app/lib/statpack-status';
 
 // ─── types & constants ───────────────────────────────────────────────────────
 
@@ -1046,7 +1047,7 @@ export default function StatpackCheckOffPage() {
           id: snap.id,
           name: String(data.name || ''),
           type: data.type ?? 'Primary',
-          status: data.status ?? 'Ready',
+          status: data.status as Statpack['status'],
           currentLocation: data.currentLocation,
           isCheckedOut: data.isCheckedOut ?? false,
           assignedToUserId: data.assignedToUserId,
@@ -1389,12 +1390,7 @@ export default function StatpackCheckOffPage() {
     });
   }, [pack, fixList, flagList]);
 
-  const statusInfo = useMemo(() => {
-    const s = pack?.status ?? 'Ready';
-    if (s.includes('Expired')) return { label: 'Expired Items', color: 'text-danger', bg: 'bg-danger-50 dark:bg-danger-900/20' };
-    if (s === 'Restock Needed') return { label: 'Restock Needed', color: 'text-warning', bg: 'bg-warning-50 dark:bg-warning-900/20' };
-    return { label: 'Ready', color: 'text-success', bg: 'bg-success-50 dark:bg-success-900/20' };
-  }, [pack]);
+  const statusInfo = useMemo(() => getStatpackStatusInfo(pack?.status), [pack?.status]);
 
   const modeTitle = mode === 'checkout' ? 'Checkout Verification'
     : mode === 'checkin' ? 'Check-In Verification' : 'Inventory Audit';

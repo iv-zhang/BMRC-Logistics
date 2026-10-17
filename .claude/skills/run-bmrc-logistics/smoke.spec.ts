@@ -410,34 +410,187 @@ test('member dashboard (signed in, member override)', async ({ page }) => {
 // held up by its shortage — the amber "Flagged for restock" card shows instead
 // of a blocking "need fixing" count, and the submit goes through.
 test('restock-needed pack is flagged but can still be checked out', async ({ page }) => {
-  const PACK = `Smoke Short Pack ${Date.now()}`;
-  const packId = await createDoc('statpacks', {
-    name: PACK,
-    type: 'Primary',
-    status: 'Restock Needed',
-    isCheckedOut: false,
-    currentLocation: 'MRC1',
-    compartments: [{ id: 'main', name: 'Main', parentPocket: 'main', isSealed: false }],
-    contents: [{ itemId: 'gauze-2x2', batchId: '', requiredQuantity: 20, currentQuantity: 0, pocket: 'main' }],
-    sharpsContainer: { status: 'ok' },
-  });
-  await signIn(page);
+  const testRunId = `smoke-restock-${Date.now()}`;
+  const purpose = 'Verify short-pack checkout assignment, member dashboard ownership, and quick check-in status preservation';
+  const PACK = `[TEST] Smoke Short Pack ${testRunId}`;
+  const OTHER_PACK = `[TEST] Smoke Other Holder Pack ${testRunId}`;
+  const otherMemberId = `__test_smoke_other_${testRunId.replace(/[^a-zA-Z0-9]/g, '')}`;
+  const packIds: string[] = [];
+  const fixtureRefs: Array<{ collection: string; id: string }> = [];
+  let packId = '';
 
-  await page.goto('/statpacks/checkout', { waitUntil: 'domcontentloaded' });
-  await page.waitForLoadState('load');
-  await page.waitForTimeout(2500);
-  const skip = page.getByText('Skip Tutorial');
-  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
-  await expect(page.getByText(PACK).first()).toBeVisible({ timeout: 10_000 });
-  await page.screenshot({ path: join(SHOTS, 'checkout-list-restock-needed.png'), fullPage: true });
+  try {
+    const metadata = { isTest: true, testRunId, purpose };
+    const otherMemberDocId = await createDoc('users', {
+      id: otherMemberId,
+      fullName: `[TEST] Other Member ${testRunId}`,
+      email: `${otherMemberId}@bmrc.test`,
+      role: 'member',
+      ...metadata,
+    }, otherMemberId);
+    fixtureRefs.push({ collection: 'users', id: otherMemberDocId });
 
-  await page.goto(`/statpacks/check-off?id=${packId}&mode=checkout`, { waitUntil: 'domcontentloaded' });
-  await page.waitForLoadState('load');
-  await page.waitForTimeout(2500);
-  await expect(page.getByText('Flagged for restock', { exact: false }).first()).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByText(/need(s)? fixing/)).toHaveCount(0);
-  await page.screenshot({ path: join(SHOTS, 'checkoff-restock-flag.png'), fullPage: true });
+    packId = await createDoc('statpacks', {
+      ...metadata,
+      name: PACK,
+      type: 'Primary',
+      status: 'Restock Needed',
+      isCheckedOut: false,
+      currentLocation: 'MRC1',
+      compartments: [{ id: 'main', name: 'Main', parentPocket: 'main', isSealed: false }],
+      contents: [{ itemId: 'gauze-2x2', batchId: '', requiredQuantity: 20, currentQuantity: 0, pocket: 'main' }],
+      sharpsContainer: { status: 'ok' },
+    });
+    packIds.push(packId);
+    fixtureRefs.push({ collection: 'statpacks', id: packId });
 
-  await page.getByRole('button', { name: 'Complete Checkout' }).click();
-  await expect.poll(async () => (await getDocById('statpacks', packId))?.isCheckedOut, { timeout: 15_000 }).toBe(true);
+    const otherPackId = await createDoc('statpacks', {
+      ...metadata,
+      name: OTHER_PACK,
+      type: 'Primary',
+      status: 'In Use',
+      isCheckedOut: true,
+      assignedToUserId: otherMemberId,
+      assignedToUserName: `[TEST] Other Member ${testRunId}`,
+      currentLocation: 'MRC1',
+      compartments: [{ id: 'main', name: 'Main', parentPocket: 'main', isSealed: false }],
+      contents: [],
+    });
+    packIds.push(otherPackId);
+    fixtureRefs.push({ collection: 'statpacks', id: otherPackId });
+
+    await signIn(page);
+    // A role override keeps the signed-in emulator user id intact, matching the
+    // user id currently written by logStatpackCheckOff for assignedToUserId.
+    await page.addInitScript(() => localStorage.setItem('bmrc_role_override', 'member'));
+
+    await page.goto('/statpacks/checkout', { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('load');
+    await page.waitForTimeout(2500);
+    const skip = page.getByText('Skip Tutorial');
+    if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+    await expect(page.getByText(PACK).first()).toBeVisible({ timeout: 10_000 });
+    await page.screenshot({ path: join(SHOTS, 'checkout-list-restock-needed.png'), fullPage: true });
+
+    await page.goto(`/statpacks/check-off?id=${packId}&mode=checkout`, { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('load');
+    await page.waitForTimeout(2500);
+    await expect(page.getByText('Flagged for restock', { exact: false }).first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText(/need(s)? fixing/)).toHaveCount(0);
+    await page.screenshot({ path: join(SHOTS, 'checkoff-restock-flag.png'), fullPage: true });
+
+    await page.getByRole('button', { name: 'Complete Checkout' }).click();
+    await expect.poll(async () => (await getDocById('statpacks', packId))?.isCheckedOut, { timeout: 15_000 }).toBe(true);
+    const checkedOut = await getDocById('statpacks', packId);
+    expect(checkedOut?.status).toBe('In Use');
+    expect(checkedOut?.assignedToUserId).toBeTruthy();
+
+    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('load');
+    await page.waitForTimeout(2500);
+    const dashboardSkip = page.getByText('Skip Tutorial');
+    if (await dashboardSkip.isVisible().catch(() => false)) { await dashboardSkip.click(); await page.waitForTimeout(400); }
+    await expect(page.getByText('My Assigned Packs')).toBeVisible();
+    await expect(page.getByText(PACK, { exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText(OTHER_PACK, { exact: true })).toHaveCount(0);
+    await expect(page.getByText('In Use', { exact: true }).first()).toBeVisible();
+
+    await page.goto(`/statpacks/check-off?id=${packId}&mode=checkin`, { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('load');
+    await page.waitForTimeout(2000);
+    await page.getByRole('button', { name: /No, used nothing/ }).click();
+    await expect.poll(async () => {
+      const pack = await getDocById('statpacks', packId);
+      return pack?.isCheckedOut === false && pack?.status === 'Restock Needed';
+    }, { timeout: 15_000 }).toBe(true);
+
+    const checkedIn = await getDocById('statpacks', packId);
+    expect(checkedIn?.contents?.[0]?.currentQuantity).toBe(0);
+    expect(checkedIn?.assignedToUserId).toBeNull();
+    const checkinLog = (await listCollection('statpack_logs')).find(
+      (log) => log.statpackId === packId && log.action === 'checkin',
+    );
+    expect(checkinLog?.quickCheckin).toBe(true);
+
+    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('load');
+    await page.waitForTimeout(2500);
+    await expect(page.getByText(PACK, { exact: true })).toHaveCount(0);
+    await expect(page.getByText('No packs currently assigned.', { exact: false })).toBeVisible();
+  } finally {
+    // App-generated logs/tasks do not carry fixture markers. Keep their exact
+    // refs in a testRunId-scoped manifest for emulator cleanup and attribution.
+    const [logs, tasks, notifications] = await Promise.all([
+      listCollection('statpack_logs'),
+      listCollection('team_tasks'),
+      listCollection('notifications'),
+    ]);
+    const generatedRefs = [
+      ...logs.filter((log) => packIds.includes(log.statpackId)).map((log) => ({ collection: 'statpack_logs', id: log.id })),
+      ...tasks.filter((task) => packIds.includes(task.linkedStatpackId)).map((task) => ({ collection: 'team_tasks', id: task.id })),
+      ...notifications.filter((notification) => packIds.some((id) => notification.link === `/statpacks/${id}`)).map((notification) => ({ collection: 'notifications', id: notification.id })),
+    ];
+    await createDoc('test_cleanup_manifests', {
+      isTest: true,
+      testRunId,
+      purpose,
+      fixtures: fixtureRefs,
+      generated: generatedRefs,
+      createdAt: new Date(),
+    }, testRunId);
+  }
+});
+
+test('check-off displays In Use and Unknown statuses explicitly', async ({ page }) => {
+  const testRunId = `smoke-status-${Date.now()}`;
+  const purpose = 'Verify status labels on the shared statpack check-off surface';
+  const metadata = { isTest: true, testRunId, purpose };
+  const inUseName = `[TEST] Smoke In Use ${testRunId}`;
+  const unknownName = `[TEST] Smoke Unknown ${testRunId}`;
+  const fixtureRefs: Array<{ collection: string; id: string }> = [];
+  try {
+    const inUseId = await createDoc('statpacks', {
+      ...metadata,
+      name: inUseName,
+      type: 'Primary',
+      status: 'In Use',
+      isCheckedOut: true,
+      assignedToUserId: '__test_status_holder',
+      currentLocation: 'MRC1',
+      compartments: [{ id: 'main', name: 'Main', parentPocket: 'main', isSealed: false }],
+      contents: [],
+    });
+    fixtureRefs.push({ collection: 'statpacks', id: inUseId });
+    const unknownId = await createDoc('statpacks', {
+      ...metadata,
+      name: unknownName,
+      type: 'Primary',
+      status: 'Future Status',
+      isCheckedOut: false,
+      currentLocation: 'MRC1',
+      compartments: [{ id: 'main', name: 'Main', parentPocket: 'main', isSealed: false }],
+      contents: [],
+    });
+    fixtureRefs.push({ collection: 'statpacks', id: unknownId });
+    await signIn(page);
+
+    await page.goto(`/statpacks/check-off?id=${inUseId}&mode=audit`, { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('load');
+    await page.waitForTimeout(1500);
+    await expect(page.getByText('In Use', { exact: true }).first()).toBeVisible();
+
+    await page.goto(`/statpacks/check-off?id=${unknownId}&mode=audit`, { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('load');
+    await page.waitForTimeout(1500);
+    await expect(page.getByText('Unknown', { exact: true }).first()).toBeVisible();
+  } finally {
+    await createDoc('test_cleanup_manifests', {
+      isTest: true,
+      testRunId,
+      purpose,
+      fixtures: fixtureRefs,
+      generated: [],
+      createdAt: new Date(),
+    }, testRunId);
+  }
 });
