@@ -22,12 +22,13 @@ import {
   setDoc,
   deleteDoc,
   Timestamp,
+  runTransaction,
 } from 'firebase/firestore';
 import { db } from '@/firebase';
 import type { InventoryItem, ItemExistence, User } from '@/app/types';
-import { addAuditEventToBatch } from '@/app/lib/audit';
+import { addAuditEventToBatch, deepRemoveUndefined } from '@/app/lib/audit';
 import { determineIsAsset } from '@/app/lib/inventory';
-import { buildAuditCountPlan } from '@/app/lib/audit-count';
+import { auditStockFingerprint, buildAuditCountPlan } from '@/app/lib/audit-count';
 import { batchHasStock, computeBagStock, getExistence, isAuditCurrent } from '@/app/lib/item-status';
 
 // ─── Permission helpers ───────────────────────────────────────────────────────
@@ -344,6 +345,9 @@ export interface AuditEntry {
   itemId: string;
   /** For disposables: counted number of unopened boxes/bags */
   countedBoxes?: number;
+  /** Required for an explicit absolute stock correction; also guards quick matches. */
+  expectedStockFingerprint?: string;
+  reconcileCount?: boolean;
   /** Individually counted loose reserve units, separate from sealed packages. */
   countedLooseUnits?: number;
   /** For assets: verified status */
@@ -364,7 +368,7 @@ export interface AuditEntry {
 
 /**
  * Submit a batch of audit entries. Uses box-based counting for disposables.
- * All writes are atomic via WriteBatch.
+ * Canonical reads, corrections, observations, and history commit in one transaction.
  */
 export async function submitAuditEntries(
   entries: AuditEntry[],
@@ -372,74 +376,101 @@ export async function submitAuditEntries(
   user: { uid: string; email?: string | null; displayName?: string | null },
   zone: string
 ): Promise<{ success: boolean; itemsUpdated: number; variances: number; unresolved: number }> {
-  const batch = writeBatch(db);
-  let variances = 0;
-  let unresolved = 0;
-  let itemsUpdated = 0;
-  for (const entry of entries) {
-    const item = items.find(x => x.id === entry.itemId);
-    if (!item) continue;
-    const isAsset = determineIsAsset(item);
-    const count = isAsset ? null : buildAuditCountPlan(item, entry);
-    if (count?.variance) variances++;
-    if (count?.unresolved) unresolved++;
-    const verified = isAsset || count!.verified;
-    batch.update(doc(db, 'inventory', item.id), {
-      ...(count?.patch ?? {}),
-      auditVerified: verified,
-      auditCondition: entry.condition,
-      auditNotes: entry.notes ?? null,
-      // A count difference is an observation awaiting reconciliation. An old
-      // current-cycle stamp must not continue to imply it was verified.
-      lastAuditDate: verified ? serverTimestamp() : null,
-      updatedAt: serverTimestamp(),
-    });
-    const details = {
-      zone, isAsset, verified,
-      scannedBarcode: entry.scannedBarcode ?? null,
-      ...(count ? {
-        countedBoxes: count.boxes, countedLooseUnits: count.loose,
-        countedTotalUnits: count.total,
-        systemBoxes: count.systemBoxes, systemLooseUnits: count.systemLoose,
-        systemTotalUnits: count.systemTotal,
-        variance: count.boxes - count.systemBoxes,
-        looseVariance: count.loose - count.systemLoose,
-        unresolved: count.unresolved,
-        itemsPerBox: count.perPackage,
-        lotNumber: entry.lotNumber ?? null,
-        batchDate: entry.batchDate ?? null,
-        expirationDate: entry.expirationDate ?? null,
-      } : {}),
-    };
-    addAuditEventToBatch(batch, {
-      eventType: isAsset ? 'audit_asset_verified' : verified ? 'audit_box_count_verified' : 'audit_count_observed',
-      source: 'supply_audit', sourceId: item.id,
-      actor: { userId: user.uid, userEmail: user.email ?? null },
-      targets: [{ collection: 'inventory', docId: item.id }],
-      before: isAsset ? { assetStatus: item.assetStatus ?? null } : {
-        unopenedBoxes: count!.systemBoxes, looseUnits: count!.systemLoose,
-        totalStockQuantity: count!.systemTotal,
-      },
-      after: isAsset ? { auditVerified: true, condition: entry.condition } : {
-        ...count!.patch, auditVerified: verified, condition: entry.condition,
-        unresolved: count!.unresolved,
-      },
-      details,
-    });
-    // Quantity changes and their history commit together.
-    batch.set(doc(collection(db, 'inventory_logs')), {
-      action: isAsset ? 'audit_asset_verified' : 'audit_box_count',
-      itemId: item.id, itemName: item.name,
-      userId: user.uid, userName: user.displayName || user.email || 'Unknown',
-      timestamp: serverTimestamp(),
-      notes: isAsset ? `Asset audit: condition ${entry.condition}`
-        : `Count: ${count!.boxes} sealed + ${count!.loose} loose = ${count!.total ?? 'unknown'} units; ${count!.unresolved ? 'unresolved observation' : verified ? 'verified' : 'variance recorded; verification pending'}`,
-      details,
-    });
-    itemsUpdated++;
+  if (new Set(entries.map(entry => entry.itemId)).size !== entries.length) {
+    throw new Error('Count each item once per submission');
   }
-  await batch.commit();
-  return { success: true, itemsUpdated, variances, unresolved };
+  return runTransaction(db, async transaction => {
+    // All reads precede writes. Transaction retries recheck the physical snapshot
+    // instead of replaying absolute counts over a receipt or reserve transfer.
+    const snapshots = await Promise.all(entries.map(entry => transaction.get(doc(db, 'inventory', entry.itemId))));
+    let variances = 0;
+    let unresolved = 0;
+    let itemsUpdated = 0;
+    for (const [index, entry] of entries.entries()) {
+      const snapshot = snapshots[index];
+      if (!snapshot.exists()) throw new Error('Inventory item no longer exists. Refresh and recount.');
+      const item = { ...snapshot.data(), id: snapshot.id } as InventoryItem;
+      const isAsset = determineIsAsset(item);
+      const fingerprint = auditStockFingerprint(item);
+      if (!isAsset) {
+        const expected = entry.expectedStockFingerprint ?? (entry.reconcileCount ? undefined :
+          (() => { const original = items.find(x => x.id === entry.itemId); return original && auditStockFingerprint(original); })());
+        if (!expected || expected !== fingerprint) {
+          throw new Error('Stock changed since this count was opened. Refresh and recount before saving.');
+        }
+      }
+      const count = isAsset ? null : buildAuditCountPlan(item, entry);
+      if (count?.variance) variances++;
+      if (count?.unresolved) unresolved++;
+      const verified = isAsset || count!.verified;
+      transaction.update(doc(db, 'inventory', item.id), {
+        ...(count?.patch ?? {}),
+        auditCountObservation: count && !verified ? {
+          status: 'unresolved', stockFingerprint: fingerprint,
+          expected: { boxes: count.systemBoxes, loose: count.systemLoose, total: count.systemTotal },
+          observed: { boxes: count.boxes, loose: count.loose, total: count.total },
+          delta: { boxes: count.boxes - count.systemBoxes, loose: count.loose - count.systemLoose,
+            total: count.total !== null && count.systemTotal !== null ? count.total - count.systemTotal : null },
+          canReconcile: count.canReconcile,
+          observedAt: serverTimestamp(), observedBy: user.uid,
+        } : null,
+        auditVerified: verified,
+        auditCondition: entry.condition,
+        auditNotes: entry.notes ?? null,
+        // A count difference is an observation awaiting reconciliation. An old
+        // current-cycle stamp must not continue to imply it was verified.
+        lastAuditDate: verified ? serverTimestamp() : null,
+        updatedAt: serverTimestamp(),
+      });
+      const details = {
+        zone, isAsset, verified,
+        reconciled: !!(entry.reconcileCount && count?.variance && verified),
+        stockFingerprint: fingerprint,
+        scannedBarcode: entry.scannedBarcode ?? null,
+        ...(count ? {
+          countedBoxes: count.boxes, countedLooseUnits: count.loose,
+          countedTotalUnits: count.total,
+          systemBoxes: count.systemBoxes, systemLooseUnits: count.systemLoose,
+          systemTotalUnits: count.systemTotal,
+          variance: count.boxes - count.systemBoxes,
+          looseVariance: count.loose - count.systemLoose,
+          unresolved: count.unresolved,
+          itemsPerBox: count.perPackage,
+          lotNumber: entry.lotNumber ?? null,
+          batchDate: entry.batchDate ?? null,
+          expirationDate: entry.expirationDate ?? null,
+        } : {}),
+      };
+      transaction.set(doc(collection(db, 'auditEvents')), deepRemoveUndefined({
+        timestamp: serverTimestamp(),
+        eventType: isAsset ? 'audit_asset_verified' : entry.reconcileCount && verified && count?.variance ? 'audit_count_reconciled' : verified ? 'audit_box_count_verified' : 'audit_count_observed',
+        source: 'supply_audit', sourceId: item.id,
+        actor: { userId: user.uid, userEmail: user.email ?? null },
+        targets: [{ collection: 'inventory', docId: item.id }],
+        before: isAsset ? { assetStatus: item.assetStatus ?? null } : {
+          unopenedBoxes: count!.systemBoxes, looseUnits: count!.systemLoose,
+          totalStockQuantity: count!.systemTotal,
+        },
+        after: isAsset ? { auditVerified: true, condition: entry.condition } : {
+          ...count!.patch, auditVerified: verified, condition: entry.condition,
+          unresolved: count!.unresolved,
+        },
+        details,
+      }));
+      // Quantity changes and their history commit together.
+      transaction.set(doc(collection(db, 'inventory_logs')), {
+        action: isAsset ? 'audit_asset_verified' : 'audit_box_count',
+        itemId: item.id, itemName: item.name,
+        userId: user.uid, userName: user.displayName || user.email || 'Unknown',
+        timestamp: serverTimestamp(),
+        notes: isAsset ? `Asset audit: condition ${entry.condition}`
+          : `Count: ${count!.boxes} sealed + ${count!.loose} loose = ${count!.total ?? 'unknown'} units; ${count!.unresolved ? 'unresolved observation' : verified ? 'verified' : 'variance recorded; verification pending'}`,
+        details,
+      });
+      itemsUpdated++;
+    }
+    return { success: true, itemsUpdated, variances, unresolved };
+  });
 }
 
 // ─── Restock decision helpers ─────────────────────────────────────────────────

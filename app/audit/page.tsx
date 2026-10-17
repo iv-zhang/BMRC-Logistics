@@ -47,7 +47,7 @@ import {
   updateDoc,
 } from 'firebase/firestore';
 import { db } from '@/firebase';
-import type { InventoryItem, Statpack, StatpackItem, StorageLocationRef } from '@/app/types';
+import type { Container, InventoryItem, Statpack, StatpackItem, StorageLocationRef } from '@/app/types';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import StatpackRestockChips from '@/app/components/statpack-restock-chips';
 import StatpackReadyOverride from '@/app/components/statpack-ready-override';
@@ -95,7 +95,7 @@ function toDate(val: unknown): Date | undefined {
 
 export default function AuditPage() {
   const router = useRouter();
-  const { loading: authLoading, user, userData, role } = useUserRole();
+  const { loading: authLoading, user, userData, role, effectiveUid } = useUserRole();
 
   // Zones for quick filtering (from org-config — live, admin-overridable).
   const { locations } = useOrgConfig();
@@ -107,6 +107,9 @@ export default function AuditPage() {
 
   // Core state
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [containers, setContainers] = useState<Container[]>([]);
+  const [selectedContainer, setSelectedContainer] = useState(() => typeof window === 'undefined' ? '' : new URLSearchParams(window.location.search).get('container') || '');
+  const containerMemberIds = useMemo(() => new Set(inventory.filter(i => i.storageLocation?.containerId === selectedContainer).map(i => i.id)), [inventory, selectedContainer]);
   const [statpacks, setStatpacks] = useState<Statpack[]>([]);
   const [snapshot, setSnapshot] = useState<AuditSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -119,7 +122,9 @@ export default function AuditPage() {
     // Deep-link support (e.g. /audit?tab=statpacks) — window.location avoids the
     // Suspense requirement that useSearchParams imposes under output: export.
     if (typeof window === 'undefined') return 'disposables';
-    const t = new URLSearchParams(window.location.search).get('tab');
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('container')) return 'disposables';
+    const t = params.get('tab');
     const valid: AuditTab[] = ['disposables', 'assets', 'statpacks', 'restock'];
     return valid.includes(t as AuditTab) ? (t as AuditTab) : 'disposables';
   });
@@ -192,6 +197,25 @@ export default function AuditPage() {
     return () => unsub();
   }, [user]);
 
+  useEffect(() => {
+    if (!user) return;
+    return onSnapshot(collection(db, 'containers'), snap => {
+      setContainers(snap.docs.map(d => ({ ...d.data(), id: d.id }) as Container).sort((a, b) => a.name.localeCompare(b.name)));
+    });
+  }, [user]);
+
+  const openContainer = (id: string) => {
+    setSelectedContainer(id);
+    setSelectedZone('all');
+    setSearchQuery('');
+    setSelectedIds(new Set());
+    setActiveTab('disposables');
+    const url = new URL(window.location.href);
+    if (id) { url.searchParams.set('container', id); url.searchParams.set('tab', 'disposables'); }
+    else url.searchParams.delete('container');
+    window.history.replaceState(null, '', url);
+  };
+
   // ─── Load statpacks (real-time) for the biweekly audit tab ───────────────
   useEffect(() => {
     if (!user) return;
@@ -209,12 +233,12 @@ export default function AuditPage() {
     if (inventory.length === 0) return;
     refreshSnapshot();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inventory, selectedZone]);
+  }, [inventory, selectedZone, selectedContainer]);
 
   const refreshSnapshot = useCallback(async () => {
     setRefreshing(true);
     try {
-      const zone = selectedZone === 'all' ? undefined : selectedZone;
+      const zone = selectedContainer || selectedZone === 'all' ? undefined : selectedZone;
       const snap = await generateAuditSnapshot(zone);
       setSnapshot(snap);
       setRestockDecisions(analyzeRestockNeeds(snap.disposables));
@@ -227,12 +251,13 @@ export default function AuditPage() {
       auditLog.error('Failed to generate snapshot', e);
     }
     setRefreshing(false);
-  }, [selectedZone]);
+  }, [selectedZone, selectedContainer]);
 
   // ─── Filtered items — search covers name, category, and location ──────────
   const filteredDisposables = useMemo(() => {
     if (!snapshot) return [];
     let items = snapshot.disposables;
+    if (selectedContainer) return items.filter(i => containerMemberIds.has(i.id));
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       items = items.filter(
@@ -247,11 +272,12 @@ export default function AuditPage() {
       items = items.filter((i) => !i.auditVerified);
     }
     return items;
-  }, [snapshot, searchQuery, dueOnly]);
+  }, [snapshot, searchQuery, dueOnly, selectedContainer, containerMemberIds]);
 
   const filteredAssets = useMemo(() => {
     if (!snapshot) return [];
     let items = snapshot.assets;
+    if (selectedContainer) return items.filter(i => containerMemberIds.has(i.id));
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       items = items.filter(
@@ -269,7 +295,7 @@ export default function AuditPage() {
       items = items.filter((i) => !trainerIds.has(i.id));
     }
     return items;
-  }, [snapshot, searchQuery, dueOnly, hideTrainers, trainerIds]);
+  }, [snapshot, searchQuery, dueOnly, hideTrainers, trainerIds, selectedContainer, containerMemberIds]);
 
   // ─── Statpacks with biweekly audit status ─────────────────────────────────
   const statpackRows = useMemo(() => {
@@ -394,7 +420,7 @@ export default function AuditPage() {
         statpackId: String(draft.id),
         statpackName: draft.name,
         action: 'content_edit',
-        userId: user.uid,
+        userId: effectiveUid || user.uid,
         userName: userData?.fullName || user.displayName || user.email || 'Unknown',
         timestamp: serverTimestamp(),
         clientTimestamp: new Date(),
@@ -451,7 +477,7 @@ export default function AuditPage() {
   // ─── Actor shape shared by the single-item drawer and bulk move ──────────
   const actor: AuditActor | null = user
     ? {
-        uid: user.uid,
+        uid: effectiveUid || user.uid,
         name: userData?.fullName || user.displayName || user.email || 'Unknown',
         email: user.email,
       }
@@ -536,7 +562,7 @@ export default function AuditPage() {
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap min-w-0">
             <Button
               size="sm"
               variant="flat"
@@ -570,7 +596,7 @@ export default function AuditPage() {
               startContent={<ScanLine size={15} />}
               onPress={() => setScannerOpen(true)}
             >
-              Scan item
+              Scan item or bin
             </Button>
           </div>
         </div>
@@ -619,6 +645,22 @@ export default function AuditPage() {
           )}
         </div>
 
+        {(activeTab === 'disposables' || activeTab === 'assets') && (
+          <div className="bg-content1 border border-divider rounded-large p-3 mb-4 space-y-2">
+            <label htmlFor="audit-container" className="block text-sm font-semibold">Open a bin or tote</label>
+            <select id="audit-container" className="w-full min-w-0 rounded-medium bg-content2 p-2 text-sm" value={selectedContainer} onChange={e => openContainer(e.target.value)}>
+              <option value="">All bins and totes</option>
+              {selectedContainer && !containers.some(c => c.id === selectedContainer) && <option value={selectedContainer}>Unknown container ({selectedContainer})</option>}
+              {containers.map(c => <option key={c.id} value={c.id}>{c.name} ({c.id})</option>)}
+            </select>
+            {selectedContainer && <div className="text-sm" data-testid="active-audit-container">
+              <p>{containers.find(c => c.id === selectedContainer)?.name ?? selectedContainer} · {containerMemberIds.size} size-specific items. Count or report in any order; revisit any item.</p>
+              <p className="text-xs text-foreground-500">All members stay visible, including verified items. Search, location, due and trainer filters apply again when you leave this bin.</p>
+              <Button size="sm" variant="flat" className="mt-2" onPress={() => openContainer('')}>Leave bin / tote</Button>
+            </div>}
+          </div>
+        )}
+
         {/* ── Filter bar ─────────────────────────────────────────────────── */}
         <div className="bg-content1 border border-divider rounded-large p-3 mb-4 flex items-center gap-3 flex-wrap">
           {/* Tab toggle */}
@@ -645,6 +687,7 @@ export default function AuditPage() {
             <Select
               size="sm"
               aria-label="Location filter"
+              isDisabled={Boolean(selectedContainer)}
               selectedKeys={[selectedZone]}
               onSelectionChange={(keys) => {
                 const selected = Array.from(keys)[0] as string | undefined;
@@ -662,9 +705,10 @@ export default function AuditPage() {
             <Search size={15} className="text-foreground-400 flex-none" />
             <input
               value={searchQuery}
+              disabled={Boolean(selectedContainer) && (activeTab === 'disposables' || activeTab === 'assets')}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search items, categories, locations…"
-              className="flex-1 text-sm bg-transparent outline-none py-2 text-foreground placeholder:text-foreground-400"
+              className="min-w-0 flex-1 text-sm bg-transparent outline-none py-2 text-foreground placeholder:text-foreground-400"
             />
             {searchQuery && (
               <button onClick={() => setSearchQuery('')} className="text-foreground-400 hover:text-foreground-600 transition-colors">
@@ -674,6 +718,7 @@ export default function AuditPage() {
           </div>
 
           <button
+            disabled={Boolean(selectedContainer) && (activeTab === 'disposables' || activeTab === 'assets')}
             onClick={() => setDueOnly(!dueOnly)}
             className={`px-3 py-1.5 rounded-medium text-xs font-semibold border transition-colors duration-150 ${
               dueOnly
@@ -686,6 +731,7 @@ export default function AuditPage() {
 
           {activeTab === 'assets' && (
             <button
+              disabled={Boolean(selectedContainer)}
               onClick={() => setHideTrainers(!hideTrainers)}
               className={`px-3 py-1.5 rounded-medium text-xs font-semibold border transition-colors duration-150 ${
                 hideTrainers
@@ -733,7 +779,7 @@ export default function AuditPage() {
               filteredDisposables.map((item) => {
                 const isSelected = selectedIds.has(item.id);
                 return (
-                  <div key={item.id} className="flex items-center gap-2">
+                  <div key={item.id} data-testid={`audit-item-${item.id}`} className="flex items-center gap-2 min-w-0">
                     <button
                       type="button"
                       onClick={() => toggleSelect(item.id)}
@@ -747,6 +793,7 @@ export default function AuditPage() {
                       {isSelected && <Check size={13} strokeWidth={3.5} className="text-white" />}
                     </button>
                     <div className="flex-1 min-w-0">
+                      {inventory.find(i => i.id === item.id)?.auditCountObservation?.status === 'unresolved' && <p className="text-sm text-warning font-semibold mb-1">Unresolved count — reconciliation needed</p>}
                       <DisposableAuditCard
                         item={item}
                         onAction={(d, action) => openDrawer(d.id, action)}
@@ -772,7 +819,7 @@ export default function AuditPage() {
                 const isSelected = selectedIds.has(item.id);
                 const isTrainer = trainerIds.has(item.id);
                 return (
-                  <div key={item.id} className="flex items-center gap-2">
+                  <div key={item.id} data-testid={`audit-item-${item.id}`} className="flex items-center gap-2 min-w-0">
                     <button
                       type="button"
                       onClick={() => toggleSelect(item.id)}
@@ -949,7 +996,7 @@ export default function AuditPage() {
       {/* Action drawer */}
       {drawerItem && actor && (
         <AuditActionDrawer
-          item={drawerItem}
+          item={inventory.find(i => i.id === drawerItem.id) ?? drawerItem}
           initialAction={drawerAction}
           actor={actor}
           zoneLabel={actorZone}
@@ -1045,6 +1092,8 @@ export default function AuditPage() {
         onClose={() => setScannerOpen(false)}
         onDetected={(val) => {
           setScannerOpen(false);
+          const scannedContainer = containers.find(c => c.id === val || c.barcode === val);
+          if (scannedContainer) { openContainer(scannedContainer.id); return; }
           const match = inventory.find(
             (i) => i.barcode === val || i.qr === val || i.assignedBarcode === val || i.assetSerial === val
           );

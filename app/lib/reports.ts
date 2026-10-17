@@ -15,7 +15,7 @@ import {
   DocumentData,
 } from 'firebase/firestore';
 import { db } from '@/firebase';
-import { recordAuditEvent } from './audit';
+import { deepRemoveUndefined, recordAuditEvent } from './audit';
 import type { IssueReport } from '@/app/types';
 
 /**
@@ -38,7 +38,7 @@ export async function createReport(params: {
   target?: { collection?: string; docId?: string };
 }) {
   // Create the report document
-  const reportData: Partial<IssueReport> = {
+  const reportData: Partial<IssueReport> = deepRemoveUndefined({
     reporter: params.reporter,
     type: params.type,
     priority: params.priority,
@@ -53,12 +53,12 @@ export async function createReport(params: {
     attachments: [],
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
-  };
+  });
 
   const reportRef = await addDoc(collection(db, 'issue_reports'), reportData as DocumentData);
 
   // Log audit event
-  await recordAuditEvent({
+  await recordAuditEvent(deepRemoveUndefined({
     eventType: 'issue_report_created',
     source: 'issue_reports',
     sourceId: reportRef.id,
@@ -79,7 +79,7 @@ export async function createReport(params: {
       title: params.title,
       isAnonymous: params.reporter.isAnonymous,
     },
-  });
+  }));
 
   return reportRef.id;
 }

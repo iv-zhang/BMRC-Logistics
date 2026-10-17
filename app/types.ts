@@ -429,6 +429,18 @@ export interface InventoryBatch {
  */
 export type ItemExistence = 'confirmed' | 'unverified' | 'retired';
 
+/** A physical count awaiting an explicit, provenance-preserving correction. */
+export interface AuditCountObservation {
+  expected: { boxes: number; loose: number; total: number | null };
+  observed: { boxes: number; loose: number; total: number | null };
+  delta: { boxes: number; loose: number; total: number | null };
+  stockFingerprint: string;
+  status: 'unresolved';
+  canReconcile: boolean;
+  observedAt: Date | FieldValue;
+  observedBy: string;
+}
+
 export interface InventoryItem {
   id: string;
   /**
@@ -591,6 +603,7 @@ export interface InventoryItem {
 
   // Audit tracking
   auditVerified?: boolean; // Semester audit verification flag
+  auditCountObservation?: AuditCountObservation | null;
   // QC/Condition recorded during audit: Good (default), Damaged, or Expired
   auditCondition?: 'Good' | 'Damaged' | 'Expired';
   auditNotes?: string;

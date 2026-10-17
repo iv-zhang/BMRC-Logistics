@@ -1,5 +1,7 @@
 'use client';
 
+import { statpackEntryKey } from '@/app/lib/statpack-entry-identity';
+
 import React, { useMemo, useState } from 'react';
 import { Button, Input } from '@heroui/react';
 import { Search, Minus, Plus, Check, ArrowRight } from 'lucide-react';
@@ -43,7 +45,9 @@ function isAssetContent(it: StatpackItem): boolean {
 }
 
 function itemName(it: StatpackItem): string {
-  return it.itemDetails?.name || `Item ${it.itemId.slice(-6)}`;
+  const name = it.itemDetails?.name || `Item ${it.itemId.slice(-6)}`;
+  const variant = it.variantName || it.itemDetails?.variantLabel;
+  return variant && !name.includes(variant) ? `${name} · ${variant}` : name;
 }
 
 // The ceiling on how much of an item can be reported "used" — same fallback
@@ -81,31 +85,31 @@ export default function CheckinUsedPicker({ items, onContinue }: CheckinUsedPick
     const clamped = Math.max(0, Math.min(ceiling, next));
     setUsedQty(prev => {
       const copy = { ...prev };
-      if (clamped <= 0) delete copy[it.itemId];
-      else copy[it.itemId] = clamped;
+      if (clamped <= 0) delete copy[statpackEntryKey(it)];
+      else copy[statpackEntryKey(it)] = clamped;
       return copy;
     });
   };
 
   const tap = (it: StatpackItem) => {
-    if ((usedQty[it.itemId] ?? 0) > 0) {
+    if ((usedQty[statpackEntryKey(it)] ?? 0) > 0) {
       setUsedQty(prev => {
         const copy = { ...prev };
-        delete copy[it.itemId];
+        delete copy[statpackEntryKey(it)];
         return copy;
       });
       return;
     }
     const ceiling = ceilingFor(it);
     if (ceiling <= 0) return; // nothing on hand to report as used
-    setUsedQty(prev => ({ ...prev, [it.itemId]: Math.min(1, ceiling) }));
+    setUsedQty(prev => ({ ...prev, [statpackEntryKey(it)]: Math.min(1, ceiling) }));
   };
 
   const handleContinue = () => {
     const picks: CheckinUsedPick[] = consumables
-      .filter(it => (usedQty[it.itemId] ?? 0) > 0)
+      .filter(it => (usedQty[statpackEntryKey(it)] ?? 0) > 0)
       .map(it => {
-        const used = usedQty[it.itemId];
+        const used = usedQty[statpackEntryKey(it)];
         const counted = Math.max(0, ceilingFor(it) - used);
         return {
           itemId: it.itemId,
@@ -158,13 +162,15 @@ export default function CheckinUsedPicker({ items, onContinue }: CheckinUsedPick
             <div className="flex flex-col gap-2">
               {pk.items.map(it => {
                 const name = itemName(it);
-                const used = usedQty[it.itemId] ?? 0;
+                const used = usedQty[statpackEntryKey(it)] ?? 0;
                 const touched = used > 0;
                 const ceiling = ceilingFor(it);
                 const disabled = ceiling <= 0;
                 return (
                   <div
-                    key={it.itemId}
+                    key={statpackEntryKey(it)}
+                    data-used-pocket={it.pocket}
+                    data-sku={it.itemId}
                     onClick={disabled ? undefined : () => tap(it)}
                     className={`border rounded-xl px-3 py-3 transition-all duration-150 ${
                       disabled
@@ -185,7 +191,7 @@ export default function CheckinUsedPicker({ items, onContinue }: CheckinUsedPick
                           {name}
                         </div>
                         <div className={`text-xs font-medium ${touched ? 'text-white/70' : 'text-foreground-500'}`}>
-                          {disabled ? 'None on hand' : `${ceiling} on hand`}
+                          {disabled ? 'None on hand' : `${ceiling} on hand · ${it.requiredQuantity} required`}
                         </div>
                       </div>
                       {touched && (

@@ -1,5 +1,7 @@
 'use client';
 
+import { statpackEntryKey } from '@/app/lib/statpack-entry-identity';
+
 import { canManageLogistics } from '@/app/lib/roles';
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -118,7 +120,7 @@ export default function StatpackCheckOffModal({
       statpack.contents.forEach(item => {
         // In usage reporting mode default to 1 used (so user can adjust),
         // otherwise default to requiredQuantity for verification flows.
-        initialCounts[item.itemId] = checkinUsageMode ? 1 : item.requiredQuantity;
+        initialCounts[statpackEntryKey(item)] = checkinUsageMode ? 1 : item.requiredQuantity;
       });
       setCheckCounts(initialCounts);
     }
@@ -168,7 +170,7 @@ export default function StatpackCheckOffModal({
     setScanningItemId(null);
     
     // Find the statpack item
-    const statpackItem = statpack?.contents.find(i => i.itemId === itemId);
+    const statpackItem = statpack?.contents.find(i => statpackEntryKey(i) === itemId);
     if (!statpackItem) return;
     
     // Parse GS1 for expiration
@@ -208,7 +210,7 @@ export default function StatpackCheckOffModal({
     handleOxygenReading(itemId, psi);
     
     // Re-verify if item has rules
-    const statpackItem = statpack?.contents.find(i => i.itemId === itemId);
+    const statpackItem = statpack?.contents.find(i => statpackEntryKey(i) === itemId);
     const verification = itemVerifications[itemId];
     if (statpackItem?.verificationRules && verification) {
       const warnings = await verifyAssetAgainstRules({
@@ -235,7 +237,7 @@ export default function StatpackCheckOffModal({
     // Validate O₂ PSI requirements before checkout
     if (action === 'checkout') {
       const oxygenItems = (statpack.contents || []).filter(item => item.itemDetails?.isOxygen);
-      const missingO2 = oxygenItems.filter(item => !oxygenReadings[item.itemId]);
+      const missingO2 = oxygenItems.filter(item => !oxygenReadings[statpackEntryKey(item)]);
       
       if (missingO2.length > 0) {
         setInlineAlert({
@@ -248,7 +250,7 @@ export default function StatpackCheckOffModal({
       
       // Check if any readings are below minimum threshold
       const lowO2Items = oxygenItems.filter(item => {
-        const reading = Number(oxygenReadings[item.itemId]);
+        const reading = Number(oxygenReadings[statpackEntryKey(item)]);
         const minPsi = item.itemDetails?.verificationPolicy?.requireO2PsiMin || THRESHOLDS.o2PsiMin;
         return reading < minPsi;
       });
@@ -266,14 +268,14 @@ export default function StatpackCheckOffModal({
     setSubmitting(true);
     try {
       const checkEntries = (statpack.contents || []).map(item => {
-        const counted = checkCounts[item.itemId] ?? (checkinUsageMode ? 1 : item.requiredQuantity);
-        const used = checkinUsageMode ? checkedItems.has(item.itemId) : false;
+        const counted = checkCounts[statpackEntryKey(item)] ?? (checkinUsageMode ? 1 : item.requiredQuantity);
+        const used = checkinUsageMode ? checkedItems.has(statpackEntryKey(item)) : false;
         
         // Build assetCheckResult if we have O₂ reading for this item
-        const o2Reading = oxygenReadings[item.itemId] ? Number(oxygenReadings[item.itemId]) : undefined;
+        const o2Reading = oxygenReadings[statpackEntryKey(item)] ? Number(oxygenReadings[statpackEntryKey(item)]) : undefined;
         const assetCheckResult = o2Reading !== undefined ? { oxygenPsi: o2Reading } : undefined;
         
-        const shortageNote = shortageReasons[item.itemId] ? `Shortage reason: ${shortageReasons[item.itemId]}` : '';
+        const shortageNote = shortageReasons[statpackEntryKey(item)] ? `Shortage reason: ${shortageReasons[statpackEntryKey(item)]}` : '';
         const baseEntry = {
           itemId: item.itemId,
           itemName: item.itemDetails?.name || 'Unknown',
@@ -288,8 +290,8 @@ export default function StatpackCheckOffModal({
           notes: shortageNote,
           assetCheckResult,
           // Include restock tracking data when checking in
-          restockStatus: restockStatuses[item.itemId] ?? (counted < item.requiredQuantity ? undefined : 'not_needed' as const),
-          restockNotes: restockNotes[item.itemId] || undefined,
+          restockStatus: restockStatuses[statpackEntryKey(item)] ?? (counted < item.requiredQuantity ? undefined : 'not_needed' as const),
+          restockNotes: restockNotes[statpackEntryKey(item)] || undefined,
         };
         
         if (checkinUsageMode && used) {
@@ -413,7 +415,7 @@ export default function StatpackCheckOffModal({
   if (!statpack) return null;
 
   const totalItems = statpack.contents?.length || 0;
-  const checkedCount = statpack.contents?.filter(item => checkedItems.has(item.itemId)).length || 0;
+  const checkedCount = statpack.contents?.filter(item => checkedItems.has(statpackEntryKey(item))).length || 0;
   const allItemsChecked = totalItems > 0 && checkedCount === totalItems;
   const progressPct = totalItems > 0 ? Math.round((checkedCount / totalItems) * 100) : 0;
 
@@ -532,10 +534,10 @@ export default function StatpackCheckOffModal({
                 <div className="flex items-center gap-2">
                   <Button size="sm" variant="light" onPress={() => {
                     // Mark all items as checked and set counts to requiredQuantity
-                    const allIds = (statpack?.contents || []).map(i => i.itemId).filter(Boolean) as string[];
+                    const allIds = (statpack?.contents || []).map(statpackEntryKey).filter(Boolean) as string[];
                     const counts: Record<string, number> = {};
                     (statpack?.contents || []).forEach(it => {
-                      counts[it.itemId] = checkinUsageMode ? (checkCounts[it.itemId] ?? 1) : (it.requiredQuantity ?? 1);
+                      counts[statpackEntryKey(it)] = checkinUsageMode ? (checkCounts[statpackEntryKey(it)] ?? 1) : (it.requiredQuantity ?? 1);
                     });
                     setCheckCounts(counts);
                     setCheckedItems(new Set(allIds));
@@ -546,7 +548,7 @@ export default function StatpackCheckOffModal({
               )}
             </div>
             {(statpack.contents || []).map(item => {
-              const itemId = item.itemId;
+              const itemId = statpackEntryKey(item);
               const isChecked = checkedItems.has(itemId);
               const counted = checkCounts[itemId] ?? (checkinUsageMode ? 1 : item.requiredQuantity);
               const ok = counted >= item.requiredQuantity;
@@ -842,7 +844,7 @@ export default function StatpackCheckOffModal({
                                         onClick={(e) => e.stopPropagation()}
                                         onValueChange={async (v) => {
                                           const parsed = v ? new Date(v) : undefined;
-                                          const statpackItem = statpack?.contents.find(i => i.itemId === itemId);
+                                          const statpackItem = statpack?.contents.find(i => statpackEntryKey(i) === itemId);
                                           if (!statpackItem) return;
                                           const currentVerif = itemVerifications[itemId];
                                           const warnings = await verifyAssetAgainstRules({
@@ -996,11 +998,11 @@ export default function StatpackCheckOffModal({
                 .filter(item => item.itemDetails?.isOxygen)
                 .map(item => (
                   <Input
-                    key={item.itemId}
+                    key={statpackEntryKey(item)}
                     type="number"
                     label={`${item.itemDetails?.name || 'Oxygen'} PSI`}
-                    value={oxygenReadings[item.itemId] || ''}
-                    onChange={e => handleOxygenReading(item.itemId, e.target.value)}
+                    value={oxygenReadings[statpackEntryKey(item)] || ''}
+                    onChange={e => handleOxygenReading(statpackEntryKey(item), e.target.value)}
                     placeholder="e.g., 2000"
                     size="sm"
                     isRequired
@@ -1019,11 +1021,11 @@ export default function StatpackCheckOffModal({
                 .filter(item => item.itemDetails?.isOxygen)
                 .map(item => (
                   <Input
-                    key={item.itemId}
+                    key={statpackEntryKey(item)}
                     type="number"
                     label={`${item.itemDetails?.name || 'Oxygen'} PSI`}
-                    value={oxygenReadings[item.itemId] || ''}
-                    onChange={e => handleOxygenReading(item.itemId, e.target.value)}
+                    value={oxygenReadings[statpackEntryKey(item)] || ''}
+                    onChange={e => handleOxygenReading(statpackEntryKey(item), e.target.value)}
                     placeholder="e.g., 2000"
                     size="sm"
                   />
