@@ -17,6 +17,7 @@ import {
   getDocs,
   increment,
   query,
+  runTransaction,
   serverTimestamp,
   updateDoc,
   where,
@@ -194,6 +195,14 @@ export interface ShipmentInput {
   idempotencyKey?: string;
 }
 
+/** Thrown when the same shipment (idempotency key / recent heuristic) is already logged. */
+export class DuplicateShipmentError extends Error {
+  constructor(message = 'Duplicate shipment detected — this delivery appears already logged') {
+    super(message);
+    this.name = 'DuplicateShipmentError';
+  }
+}
+
 /**
  * Record a new shipment for an existing item. Bag-tracked items get a sealed
  * batch (batches are their stock source of truth); box-tracked items get an
@@ -260,7 +269,7 @@ export async function addShipment(
     });
   }
   if (isDuplicate) {
-    throw new Error('Duplicate shipment detected — this delivery appears already logged');
+    throw new DuplicateShipmentError();
   }
 
   const bagTracked = computeBagStock(item).hasBagTracking;
@@ -268,6 +277,7 @@ export async function addShipment(
     ? new Date(input.expirationMonth + '-01')
     : undefined;
   const itemRef = doc(db, 'inventory', item.id);
+  let itemPayload: Record<string, unknown>;
 
   if (bagTracked) {
     const newBatch = removeUndefined({
@@ -284,10 +294,10 @@ export async function addShipment(
       notes: input.notes || undefined,
       purchase: input.purchase || undefined,
     });
-    await updateDoc(itemRef, {
+    itemPayload = {
       batches: arrayUnion(newBatch),
       updatedAt: serverTimestamp(),
-    });
+    };
   } else {
     const payload: Record<string, unknown> = {
       unopenedBoxes: increment(input.qty),
@@ -308,10 +318,10 @@ export async function addShipment(
         purchase: input.purchase || undefined,
       }));
     }
-    await updateDoc(itemRef, payload);
+    itemPayload = payload;
   }
 
-  await addDoc(collection(db, 'inventory_logs'), removeUndefined({
+  const logFields = removeUndefined({
     itemId: item.id,
     itemName: item.name,
     action: 'intake',
@@ -330,7 +340,23 @@ export async function addShipment(
       scannedBarcode: input.scannedBarcode || undefined,
       idempotencyKey: input.idempotencyKey || undefined,
     }),
-  }));
+  });
+
+  if (input.idempotencyKey) {
+    // Retry-safe path: stock write + log are one atomic unit, and the log has
+    // a deterministic id derived from the key, so a retry after any partial
+    // failure either finds the log (no-op) or redoes the whole unit.
+    const logRef = doc(db, 'inventory_logs', `intake_${input.idempotencyKey.replace(/\//g, '_')}`);
+    await runTransaction(db, async (transaction) => {
+      const existing = await transaction.get(logRef);
+      if (existing.exists()) throw new DuplicateShipmentError();
+      transaction.update(itemRef, itemPayload);
+      transaction.set(logRef, logFields);
+    });
+  } else {
+    await updateDoc(itemRef, itemPayload);
+    await addDoc(collection(db, 'inventory_logs'), logFields);
+  }
 
   await recordAuditEvent({
     eventType: 'shipment_received',

@@ -25,6 +25,7 @@ import { useUserRole } from '@/app/hooks/useUserRole';
 import type { Statpack, User, AppNotification, ShiftRequest } from '@/app/types';
 import { subscribeUserNotifications, markNotificationRead } from '@/app/lib/notifications';
 import { subscribeMyRequests } from '@/app/lib/events';
+import LoadFailureNotice, { describeLoadError } from '@/app/components/load-failure-notice';
 import { toJsDate, formatEventDate } from '@/app/components/events/event-utils';
 import StatpackRestockChips from '@/app/components/statpack-restock-chips';
 import {
@@ -66,6 +67,8 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
   const [loading, setLoading] = useState(true);
   const [upcomingShifts, setUpcomingShifts] = useState<ShiftRequest[]>([]);
   const [shiftsLoading, setShiftsLoading] = useState(true);
+  const [shiftsError, setShiftsError] = useState<unknown>(null);
+  const [shiftsRetry, setShiftsRetry] = useState(0);
   const [lowStockItems, setLowStockItems] = useState<any[]>([]);
   const [expiringItems, setExpiringItems] = useState<any[]>([]);
   const [purchaseHistoryMap, setPurchaseHistoryMap] = useState<Record<string, any[]>>({});
@@ -238,10 +241,16 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
           return da - db_;
         });
       setUpcomingShifts(upcoming);
+      setShiftsError(null);
       setShiftsLoading(false);
+    }, {
+      onError: (err) => {
+        setShiftsError(err ?? true);
+        setShiftsLoading(false);
+      },
     });
     return () => unsub();
-  }, [userData.id]);
+  }, [userData.id, shiftsRetry]);
 
   const formatTimestamp = (date: Date) => {
     const now = new Date();
@@ -495,6 +504,17 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
                 <p className="text-foreground-500 text-xs md:text-sm">
                   Loading...
                 </p>
+              ) : shiftsError != null ? (
+                <LoadFailureNotice
+                  compact
+                  testId="my-shifts-load-error"
+                  title="Shifts couldn't load"
+                  message={describeLoadError(shiftsError)}
+                  onRetry={() => {
+                    setShiftsLoading(true);
+                    setShiftsRetry((k) => k + 1);
+                  }}
+                />
               ) : upcomingShifts.length === 0 ? (
                 <p className="text-foreground-500 text-xs md:text-sm">
                   No upcoming shifts. Sign up above to get on the schedule.

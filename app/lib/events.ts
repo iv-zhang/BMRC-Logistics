@@ -32,6 +32,7 @@ import {
   serverTimestamp,
   Timestamp,
   type FieldValue,
+  type Query,
 } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { deepRemoveUndefined } from '@/app/lib/audit';
@@ -759,57 +760,85 @@ export async function getSignedUpUserIds(eventId: string): Promise<string[]> {
 // Subscriptions
 // ---------------------------------------------------------------------------
 
-export function subscribeEvents(cb: (events: Event[]) => void): () => void {
-  const q = query(collection(db, 'events'), orderBy('date', 'asc'));
+/** Optional hooks so callers can tell failure / cache-only data from "empty". */
+export interface SubscriptionOptions {
+  /** When provided, errors are reported here and `cb([])` is NOT called. */
+  onError?: (err: unknown) => void;
+  /** Called on every snapshot: true when data came only from the local cache. */
+  onCacheState?: (fromCache: boolean) => void;
+}
+
+function subscribeList<T>(
+  q: Query,
+  label: string,
+  cb: (rows: T[]) => void,
+  opts?: SubscriptionOptions,
+): () => void {
+  // A Firestore client whose internal queue has already failed throws here
+  // synchronously; report it like any other load error instead of crashing
+  // the page (the notice then offers Retry, and reload recovers the client).
+  try {
+    return listenList(q, label, cb, opts);
+  } catch (err) {
+    console.error(`${label} subscription could not start:`, err);
+    if (opts?.onError) opts.onError(err);
+    else cb([]);
+    return () => {};
+  }
+}
+
+function listenList<T>(
+  q: Query,
+  label: string,
+  cb: (rows: T[]) => void,
+  opts?: SubscriptionOptions,
+): () => void {
   return onSnapshot(
     q,
-    (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Event) }))),
+    { includeMetadataChanges: !!opts?.onCacheState },
+    (snap) => {
+      opts?.onCacheState?.(snap.metadata.fromCache);
+      cb(snap.docs.map((d) => ({ id: d.id, ...(d.data() as object) }) as T));
+    },
     (err) => {
-      console.error('events subscription error:', err);
-      cb([]);
+      console.error(`${label} subscription error:`, err);
+      if (opts?.onError) opts.onError(err);
+      else cb([]);
     },
   );
+}
+
+export function subscribeEvents(
+  cb: (events: Event[]) => void,
+  opts?: SubscriptionOptions,
+): () => void {
+  const q = query(collection(db, 'events'), orderBy('date', 'asc'));
+  return subscribeList<Event>(q, 'events', cb, opts);
 }
 
 export function subscribeEventRequests(
   eventId: string,
   cb: (requests: ShiftRequest[]) => void,
+  opts?: SubscriptionOptions,
 ): () => void {
   const q = query(collection(db, 'shift_requests'), where('eventId', '==', eventId));
-  return onSnapshot(
-    q,
-    (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...(d.data() as ShiftRequest) }))),
-    (err) => {
-      console.error('event requests subscription error:', err);
-      cb([]);
-    },
-  );
+  return subscribeList<ShiftRequest>(q, 'event requests', cb, opts);
 }
 
 export function subscribeMyRequests(
   userId: string,
   cb: (requests: ShiftRequest[]) => void,
+  opts?: SubscriptionOptions,
 ): () => void {
   const q = query(collection(db, 'shift_requests'), where('userId', '==', userId));
-  return onSnapshot(
-    q,
-    (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...(d.data() as ShiftRequest) }))),
-    (err) => {
-      console.error('my requests subscription error:', err);
-      cb([]);
-    },
-  );
+  return subscribeList<ShiftRequest>(q, 'my requests', cb, opts);
 }
 
 /** All pending requests across events (admin/medops inbox). */
-export function subscribePendingRequests(cb: (requests: ShiftRequest[]) => void): () => void {
+export function subscribePendingRequests(
+  cb: (requests: ShiftRequest[]) => void,
+  opts?: SubscriptionOptions,
+): () => void {
   const q = query(collection(db, 'shift_requests'), where('status', '==', 'pending'));
-  return onSnapshot(
-    q,
-    (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...(d.data() as ShiftRequest) }))),
-    (err) => {
-      console.error('pending requests subscription error:', err);
-      cb([]);
-    },
-  );
+  return subscribeList<ShiftRequest>(q, 'pending requests', cb, opts);
 }

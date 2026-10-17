@@ -34,6 +34,7 @@ import {
   shiftHours,
 } from './event-utils';
 import PanelShell from '@/app/components/panel-shell';
+import LoadFailureNotice, { describeLoadError } from '@/app/components/load-failure-notice';
 
 const STATUS_CHIP: Record<EventStatus, { label: string; color: 'primary' | 'default' | 'danger' }> = {
   draft: { label: 'Draft', color: 'default' },
@@ -140,16 +141,41 @@ export default function EventDetailDrawer({
   const [decidingId, setDecidingId] = useState<string | null>(null);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
+  const [requestsError, setRequestsError] = useState<unknown>(null);
+  const [requestsRetry, setRequestsRetry] = useState(0);
 
   useEffect(() => {
     if (!event.id) return;
     setLoadingRequests(true);
-    const unsub = subscribeEventRequests(event.id, (r) => {
-      setRequests(r);
-      setLoadingRequests(false);
-    });
+    const unsub = subscribeEventRequests(
+      event.id,
+      (r) => {
+        setRequests(r);
+        setRequestsError(null);
+        setLoadingRequests(false);
+      },
+      {
+        onError: (err) => {
+          setRequestsError(err ?? true);
+          setLoadingRequests(false);
+        },
+      },
+    );
     return () => unsub();
-  }, [event.id]);
+  }, [event.id, requestsRetry]);
+
+  const requestsFailure = requestsError != null && (
+    <LoadFailureNotice
+      compact
+      testId="event-requests-load-error"
+      title="Sign-ups couldn't load"
+      message={describeLoadError(requestsError)}
+      onRetry={() => {
+        setLoadingRequests(true);
+        setRequestsRetry((k) => k + 1);
+      }}
+    />
+  );
 
   const myActiveRequest = useMemo(
     () => requests.find((r) => r.userId === actor.uid && (r.status === 'pending' || r.status === 'approved')),
@@ -501,6 +527,8 @@ export default function EventDetailDrawer({
           <div className={mobilePage === 'teams' ? 'block' : 'hidden md:block'}>
             <div className="flex flex-col gap-3">
               <div className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400">Teams</div>
+              {/* Members never see the manager request lists below, so the one Retry lives here. */}
+              {requestsFailure}
               {(event.teams || []).map((team) => (
                 <TeamCard
                   key={team.id}
@@ -511,6 +539,13 @@ export default function EventDetailDrawer({
                   actorUid={actor.uid}
                   actorName={actor.name}
                   myActiveRequest={myActiveRequest}
+                  requestHoldReason={
+                    requestsError != null
+                      ? "Sign-ups couldn't load. Retry above before requesting."
+                      : loadingRequests
+                        ? 'Waiting for sign-ups to load before you can request.'
+                        : null
+                  }
                   onRequested={() => onToast(true, 'Request sent')}
                   onError={(msg) => onToast(false, msg)}
                 />
@@ -552,6 +587,8 @@ export default function EventDetailDrawer({
                 <div className="flex justify-center py-4">
                   <Spinner size="sm" color="primary" />
                 </div>
+              ) : requestsError != null ? (
+                <p className="text-sm text-foreground-400">Sign-ups unavailable. Retry under Teams.</p>
               ) : scopedApproved.length === 0 ? (
                 <p className="text-sm text-foreground-400">No confirmed members yet.</p>
               ) : (
@@ -710,6 +747,8 @@ export default function EventDetailDrawer({
                 <div className="flex justify-center py-4">
                   <Spinner size="sm" color="primary" />
                 </div>
+              ) : requestsError != null ? (
+                <p className="text-sm text-foreground-400">Sign-ups unavailable. Retry under Teams.</p>
               ) : pending.length === 0 ? (
                 <p className="text-sm text-foreground-400">No pending requests for this event.</p>
               ) : (
