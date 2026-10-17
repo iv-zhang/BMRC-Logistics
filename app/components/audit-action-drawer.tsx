@@ -21,7 +21,7 @@ import PanelShell from '@/app/components/panel-shell';
 import { determineIsAsset } from '@/app/lib/inventory';
 import { computeBagStock, displayLocation, getItemStatus } from '@/app/lib/item-status';
 import { parseGs1Barcode } from '@/app/lib/gs1';
-import { buildAuditCountPlan } from '@/app/lib/audit-count';
+import { auditStockFingerprint, buildAuditCountPlan } from '@/app/lib/audit-count';
 import { submitAuditEntries } from '@/app/lib/audit-helpers';
 import {
   addShipment,
@@ -91,6 +91,9 @@ export default function AuditActionDrawer({
 }: AuditActionDrawerProps) {
   const [action, setAction] = useState<DrawerAction>(initialAction);
   const [saving, setSaving] = useState(false);
+  // Immutable opening snapshot: realtime receipts must never reset an entered count.
+  const [baseline, setBaseline] = useState<InventoryItem | null>(item);
+  const countItem = baseline ?? item;
 
   // Live location options (reflect admin org-config overrides).
   const { locations } = useOrgConfig();
@@ -143,11 +146,11 @@ export default function AuditActionDrawer({
   const [fixNotes, setFixNotes] = useState('');
 
   const isAsset = item ? determineIsAsset(item) : false;
-  const bag = useMemo(() => (item ? computeBagStock(item) : null), [item]);
+  const bag = useMemo(() => (countItem ? computeBagStock(countItem) : null), [countItem]);
   const systemBoxes = bag
     ? bag.hasBagTracking
       ? bag.totalBags
-      : item?.unopenedBoxes ?? 0
+      : countItem?.unopenedBoxes ?? 0
     : 0;
   const status = item ? getItemStatus(item) : 'ok';
   const location = item ? displayLocation(item) : '';
@@ -155,6 +158,7 @@ export default function AuditActionDrawer({
   // Reset form state whenever a different item (or entry action) is opened
   useEffect(() => {
     if (!item) return;
+    setBaseline(item);
     setAction(initialAction);
     setCountedBoxes('');
     setShowSealedCount(false);
@@ -182,13 +186,17 @@ export default function AuditActionDrawer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item?.id, initialAction]);
 
-  if (!item || !actor) return null;
+  if (!item || !actor || !countItem) return null;
 
-  const packageSizes = new Set((item.batches ?? []).map(b => b.itemsPerBag).filter((n): n is number => !!n && n > 0));
-  const missingSealedConversion = (item.batches ?? []).some(b => (b.bagCount ?? 0) > 0 && !(b.itemsPerBag && b.itemsPerBag > 0));
+  const baselineFingerprint = auditStockFingerprint(countItem);
+  const stockChanged = auditStockFingerprint(item) !== baselineFingerprint;
+  const observation = item.auditCountObservation;
+
+  const packageSizes = new Set((countItem.batches ?? []).map(b => b.itemsPerBag).filter((n): n is number => !!n && n > 0));
+  const missingSealedConversion = (countItem.batches ?? []).some(b => (b.bagCount ?? 0) > 0 && !(b.itemsPerBag && b.itemsPerBag > 0));
   const knownPackageSize = bag?.hasBagTracking
     ? !missingSealedConversion && packageSizes.size === 1 ? [...packageSizes][0] : undefined
-    : item.itemsPerBox;
+    : countItem.itemsPerBox;
   const looseOnlyDefault = systemBoxes === 0 && (!knownPackageSize || knownPackageSize <= 1);
   const looseOnly = looseOnlyDefault && !showSealedCount;
   const validCount = countedLoose.trim() !== '' && (looseOnly || countedBoxes.trim() !== '') &&
@@ -196,7 +204,7 @@ export default function AuditActionDrawer({
   let countPlan: ReturnType<typeof buildAuditCountPlan> | null = null;
   if (validCount) {
     try {
-      countPlan = buildAuditCountPlan(item, {
+      countPlan = buildAuditCountPlan(countItem, {
         countedBoxes: looseOnly ? 0 : Number(countedBoxes), countedLooseUnits: Number(countedLoose),
       });
     } catch {
@@ -218,7 +226,8 @@ export default function AuditActionDrawer({
         ? shipQty > 0
         : action === 'count' ? isAsset || countPlan !== null : true;
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (reconcileCount = false) => {
+    if (saving || !canSubmit || (action === 'count' && stockChanged)) return;
     setSaving(true);
     try {
       if (action === 'count') {
@@ -226,6 +235,8 @@ export default function AuditActionDrawer({
           [
             {
               itemId: item.id,
+              expectedStockFingerprint: baselineFingerprint,
+              reconcileCount,
               countedBoxes: isAsset ? undefined : looseOnly ? 0 : Number(countedBoxes),
               countedLooseUnits: isAsset ? undefined : Number(countedLoose),
               condition,
@@ -235,14 +246,14 @@ export default function AuditActionDrawer({
               scannedBarcode: scannedCode || undefined,
             },
           ],
-          [item],
+          [countItem],
           { uid: actor.uid, email: actor.email ?? null, displayName: actor.name },
           zoneLabel
         );
         onResult(
           isAsset
             ? `${item.name} verified`
-            : `${item.name}: ${countSummary}${result.unresolved ? ' — unresolved observation' : result.variances ? ' — variance recorded; verification pending' : ' — verified'}`,
+            : `${item.name}: ${countSummary}${result.unresolved ? ' — unresolved observation' : reconcileCount ? ' — corrected and verified' : result.variances ? ' — variance recorded; verification pending' : ' — verified'}`,
           true
         );
       } else if (action === 'move') {
@@ -398,9 +409,9 @@ export default function AuditActionDrawer({
           {action === 'count' && (
             <>
               <div className="flex gap-3">
-                <div className="flex-1 bg-content2 rounded-large p-4">
+                <div className="min-w-0 flex-1 bg-content2 rounded-large p-4">
                   <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1.5">
-                    {isAsset ? 'Status' : 'System sealed packages'}
+                    {isAsset ? 'Status' : 'Expected sealed packages'}
                   </div>
                   <div className="font-mono text-[28px] font-semibold tabular-nums leading-tight text-foreground">
                     {isAsset ? (item.assetStatus || '—') : systemBoxes}
@@ -420,6 +431,30 @@ export default function AuditActionDrawer({
 
               {!isAsset && (
                 <div>
+                  {stockChanged && <p role="alert" className="mb-3 text-sm text-danger">Stock changed while this count was open. Your input is preserved. Close and reopen to recount against current stock.</p>}
+                  <Button size="sm" variant="flat" className="mb-3 max-w-full whitespace-normal h-auto py-2"
+                    isDisabled={stockChanged} onPress={() => {
+                      setCountedBoxes(String(systemBoxes));
+                      setCountedLoose(String(bag?.totalLoose ?? 0));
+                    }}>
+                    Matches expected ({systemBoxes > 0 && !knownPackageSize ? `${systemBoxes} sealed + ${bag?.totalLoose ?? 0} loose` : `${bag?.totalItems ?? 0} units`})
+                  </Button>
+                  <p className="mb-3 text-xs text-foreground-500">Confirm only after physically counting, or enter your observed quantities below.</p>
+                  {observation?.status === 'unresolved' && (
+                    <div className="mb-3 p-3 rounded-large bg-warning-50 text-sm" data-testid="saved-audit-variance">
+                      <p className="font-semibold">Unresolved count recorded</p>
+                      <p>Expected: {observation.expected.boxes} sealed + {observation.expected.loose} loose ({observation.expected.total ?? 'unknown'} units)</p>
+                      <p>Observed: {observation.observed.boxes} sealed + {observation.observed.loose} loose ({observation.observed.total ?? 'unknown'} units)</p>
+                      <p>Delta: {observation.delta.total ?? 'unknown'} units; {observation.delta.boxes} sealed, {observation.delta.loose} loose</p>
+                      {observation.stockFingerprint === baselineFingerprint ? (
+                        <Button size="sm" variant="flat" className="mt-2" onPress={() => {
+                          setShowSealedCount(observation.observed.boxes > 0);
+                          setCountedBoxes(String(observation.observed.boxes));
+                          setCountedLoose(String(observation.observed.loose));
+                        }}>Use recorded observation</Button>
+                      ) : <p>Stock has changed since this observation. Count again before correcting.</p>}
+                    </div>
+                  )}
                   {looseOnly && (
                     <button type="button" onClick={() => setShowSealedCount(true)}
                       className="mb-3 text-sm font-semibold text-primary underline underline-offset-2">
@@ -435,6 +470,12 @@ export default function AuditActionDrawer({
                     value={countedLoose} onValueChange={setCountedLoose} placeholder="Enter count"
                     className={looseOnly ? '' : 'mt-3'} />
                   <div className="mt-2 text-sm text-foreground-600">{countSummary}</div>
+                  {countPlan && <div className="mt-2 text-sm" data-testid="audit-count-comparison">
+                    <p>Expected {countPlan.systemTotal ?? 'unknown'} units · Observed {countPlan.total ?? 'unknown'} units · Delta {countPlan.total !== null && countPlan.systemTotal !== null ? countPlan.total - countPlan.systemTotal : 'unknown'} units</p>
+                    <p className="text-xs text-foreground-500">Expected {countPlan.systemBoxes} sealed + {countPlan.systemLoose} loose · Observed {countPlan.boxes} sealed + {countPlan.loose} loose · Delta {countPlan.boxes - countPlan.systemBoxes} sealed, {countPlan.loose - countPlan.systemLoose} loose</p>
+                  </div>}
+                  {countPlan && !countPlan.canReconcile && <p className="mt-2 text-xs text-warning">Lot allocation or package conversion is ambiguous. Record this observation and reconcile the lot details separately.</p>}
+                  {countPlan?.variance && countPlan.canReconcile && <Button className="mt-3 max-w-full whitespace-normal h-auto py-2" color="warning" variant="flat" isDisabled={saving || stockChanged} onPress={() => handleSubmit(true)}>Apply observed count to stock</Button>}
                   {countPlan && (countPlan.variance || countPlan.unresolved) && (
                     <div className="mt-2 flex items-center gap-1.5 text-xs text-warning font-semibold">
                       <AlertTriangle size={12} className="flex-none" />
@@ -684,9 +725,9 @@ export default function AuditActionDrawer({
           <Button
             color="primary"
             className="flex-1"
-            onPress={handleSubmit}
+            onPress={() => handleSubmit()}
             isLoading={saving}
-            isDisabled={!canSubmit}
+            isDisabled={!canSubmit || (action === 'count' && stockChanged)}
           >
             {SUBMIT_LABEL[action]}
           </Button>

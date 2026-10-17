@@ -5,11 +5,37 @@ export interface AuditCountInput {
   countedBoxes?: number;
   countedLooseUnits?: number;
   itemsPerBox?: number;
+  /** Canonical quantities change only after an explicit correction action. */
+  reconcileCount?: boolean;
+  expectedStockFingerprint?: string;
 }
 
 function integer(value: number, label: string): number {
   if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${label} must be a nonnegative integer`);
   return value;
+}
+
+/** A deterministic stock snapshot, including lot metadata that a correction must preserve.
+ * Excludes audit stamps, notes, shelf stock, and other unrelated item edits.
+ */
+export function auditStockFingerprint(item: InventoryItem): string {
+  function canonical(value: unknown): unknown {
+    if (value === undefined) return null;
+    if (value instanceof Date) return value.toISOString();
+    if (value && typeof value === 'object' && 'toDate' in value && typeof value.toDate === 'function') {
+      return (value.toDate() as Date).toISOString();
+    }
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, val]) => [key, canonical(val)]));
+    }
+    return value;
+  }
+  return JSON.stringify(canonical({
+    unopenedBoxes: item.unopenedBoxes ?? 0, looseUnits: item.looseUnits ?? 0,
+    itemsPerBox: item.itemsPerBox, totalStockQuantity: item.totalStockQuantity,
+    batches: item.batches ?? [],
+  }));
 }
 
 /** Pure write plan, shared by the writer and regression tests. No lot allocation. */
@@ -31,10 +57,11 @@ export function buildAuditCountPlan(item: InventoryItem, input: AuditCountInput)
   const total = boxes === 0 ? loose : perPackage && perPackage > 0 ? boxes * perPackage + loose : null;
   if (total !== null) integer(total, 'Total units');
   const variance = boxes !== stock.totalBags || loose !== stock.totalLoose ||
-    (input.itemsPerBox !== undefined && input.itemsPerBox !== item.itemsPerBox && boxes > 0);
-  const unresolved = total === null || (stock.hasBagTracking && tracked.length !== 1 && variance);
+    (input.itemsPerBox !== undefined && input.itemsPerBox !== systemPerPackage && boxes > 0);
+  const cannotReconcile = total === null || (stock.hasBagTracking && (tracked.length !== 1 || (input.itemsPerBox !== undefined && input.itemsPerBox !== systemPerPackage)) && variance);
+  const unresolved = cannotReconcile || (variance && !input.reconcileCount);
   const patch: Record<string, unknown> = {};
-  if (!unresolved) {
+  if (input.reconcileCount && variance && !cannotReconcile) {
     if (stock.hasBagTracking && tracked.length === 1) {
       patch.batches = (item.batches ?? []).map(b => b === tracked[0]
         ? { ...b, bagCount: boxes, looseItems: loose, stock: total! }
@@ -48,7 +75,7 @@ export function buildAuditCountPlan(item: InventoryItem, input: AuditCountInput)
   }
   return {
     boxes, loose, perPackage: perPackage ?? null, total, variance, unresolved,
-    verified: !variance && !unresolved,
+    verified: !unresolved, canReconcile: !cannotReconcile,
     systemBoxes: stock.totalBags, systemLoose: stock.totalLoose,
     systemTotal: stock.totalBags > 0 && (!systemPerPackage || systemPerPackage <= 0) ? null : stock.totalItems,
     patch,

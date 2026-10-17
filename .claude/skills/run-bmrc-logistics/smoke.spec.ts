@@ -716,29 +716,32 @@ test('audit loose-only count works at desktop and phone widths', async ({ page }
       await expect(page.getByRole('spinbutton', { name: 'Sealed boxes / bags observed' })).toHaveCount(0);
       await looseInput.fill('12');
       await expect(page.getByText('12 units', { exact: true })).toBeVisible();
-      await expect(page.getByText('Count differs from system — recorded without verification.', { exact: true })).toBeVisible();
+      await expect(page.getByText('Unresolved observation — quantities need reconciliation.', { exact: true })).toBeVisible();
       await page.screenshot({ path: join(SHOTS, `audit-loose-count-${viewportName}.png`), fullPage: true });
       // Next's development issue badge overlaps the footer's right edge.
       // Click the exposed left side of the real button (no force/action bypass).
-      await page.getByRole('button', { name: 'Save count' }).click({ position: { x: 20, y: 15 } });
+      await page.getByRole('button', { name: 'Apply observed count to stock' }).click({ position: { x: 20, y: 15 } });
 
       await expect.poll(async () => (await getDocById('inventory', itemIds[i]))?.looseUnits, { timeout: 10_000 }).toBe(12);
       const saved = await getDocById('inventory', itemIds[i]);
       expect(saved?.unopenedBoxes).toBe(0);
       expect(saved?.looseUnits).toBe(12);
       expect(saved?.totalStockQuantity).toBe(12);
-      expect(saved?.auditVerified).toBe(false);
-      expect(saved?.lastAuditDate).toBeNull();
+      expect(saved?.auditVerified).toBe(true);
+      expect(saved?.lastAuditDate).toBeTruthy();
     }
   } finally {
-    const [logs, events] = await Promise.all([
+    const [logs, events, reports] = await Promise.all([
       listCollection('inventory_logs'),
       listCollection('auditEvents'),
+      listCollection('issue_reports'),
     ]);
     const generated = [
       ...logs.filter((log) => itemIds.includes(log.itemId)).map((log) => ({ collection: 'inventory_logs', id: log.id })),
       ...events.filter((event) => itemIds.includes(event.sourceId)).map((event) => ({ collection: 'auditEvents', id: event.id })),
+      ...reports.filter((report) => itemIds.includes(report.target?.docId)).map((report) => ({ collection: 'issue_reports', id: report.id })),
     ];
+    await test.info().attach('cleanup-manifest', { body: JSON.stringify({ testRunId, purpose, fixtures: fixtureRefs, generated }, null, 2), contentType: 'application/json' });
     await createDoc('test_cleanup_manifests', {
       isTest: true,
       testRunId,
@@ -815,11 +818,11 @@ test('audit package and loose count works at desktop and phone widths', async ({
       await sealedInput.fill('2');
       await looseInput.fill('7');
       await expect(page.getByText('2 bags × 10 + 7 loose = 27 units', { exact: true })).toBeVisible();
-      await expect(page.getByText('Count differs from system — recorded without verification.', { exact: true })).toBeVisible();
+      await expect(page.getByText('Unresolved observation — quantities need reconciliation.', { exact: true })).toBeVisible();
       await page.screenshot({ path: join(SHOTS, `audit-package-loose-count-${viewportName}.png`), fullPage: true });
       // Next's development issue badge overlaps the footer's right edge.
       // Click the exposed left side of the real button (no force/action bypass).
-      await page.getByRole('button', { name: 'Save count' }).click({ position: { x: 20, y: 15 } });
+      await page.getByRole('button', { name: 'Apply observed count to stock' }).click({ position: { x: 20, y: 15 } });
 
       await expect.poll(async () => (await getDocById('inventory', itemIds[i]))?.totalStockQuantity, { timeout: 10_000 }).toBe(27);
       const saved = await getDocById('inventory', itemIds[i]);
@@ -830,18 +833,21 @@ test('audit package and loose count works at desktop and phone widths', async ({
       expect(saved?.batches?.[0]?.itemsPerBag).toBe(10);
       expect(saved?.batches?.[0]?.looseItems).toBe(7);
       expect(saved?.batches?.[0]?.stock).toBe(27);
-      expect(saved?.auditVerified).toBe(false);
-      expect(saved?.lastAuditDate).toBeNull();
+      expect(saved?.auditVerified).toBe(true);
+      expect(saved?.lastAuditDate).toBeTruthy();
     }
   } finally {
-    const [logs, events] = await Promise.all([
+    const [logs, events, reports] = await Promise.all([
       listCollection('inventory_logs'),
       listCollection('auditEvents'),
+      listCollection('issue_reports'),
     ]);
     const generated = [
       ...logs.filter((log) => itemIds.includes(log.itemId)).map((log) => ({ collection: 'inventory_logs', id: log.id })),
       ...events.filter((event) => itemIds.includes(event.sourceId)).map((event) => ({ collection: 'auditEvents', id: event.id })),
+      ...reports.filter((report) => itemIds.includes(report.target?.docId)).map((report) => ({ collection: 'issue_reports', id: report.id })),
     ];
+    await test.info().attach('cleanup-manifest', { body: JSON.stringify({ testRunId, purpose, fixtures: fixtureRefs, generated }, null, 2), contentType: 'application/json' });
     await createDoc('test_cleanup_manifests', {
       isTest: true,
       testRunId,

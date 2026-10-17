@@ -1,5 +1,7 @@
 'use client';
 
+import { statpackEntryKey } from '@/app/lib/statpack-entry-identity';
+
 import { canManageLogistics } from '@/app/lib/roles';
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
@@ -166,7 +168,7 @@ function isItemReady(
   today: Date,
 ): boolean {
   const { needExp, needPsi, needAED, minPsi, hasRules } = rules;
-  if (!hasRules) return verifiedSet.has(item.itemId);
+  if (!hasRules) return verifiedSet.has(statpackEntryKey(item));
   if (needExp && (!checks.exp || isMonthExpired(checks.exp, today))) return false;
   if (needPsi && (!checks.psi || Number(checks.psi) < minPsi || !checks.regulatorOk)) return false;
   if (needAED && (!checks.padsSealed || !checks.batteryOk || !checks.padExp || isMonthExpired(checks.padExp, today))) return false;
@@ -252,7 +254,9 @@ function ItemRow({
   const d = item.itemDetails as any;
   const isOxygen = d?.isOxygen === true;
   const serial = item.serialNumber || d?.assetSerial;
-  const itemName = d?.name || `Item ${item.itemId.slice(-6)}`;
+  const baseName = d?.name || `Item ${item.itemId.slice(-6)}`;
+  const variant = item.variantName || d?.variantLabel;
+  const itemName = variant && !baseName.includes(variant) ? `${baseName} · ${variant}` : baseName;
   const sub = isOxygen && serial
     ? `Serial ${serial} · max ${d?.maxPsi ?? 2000} PSI`
     : serial
@@ -305,7 +309,8 @@ function ItemRow({
 
   return (
     <div
-      data-item-id={item.itemId}
+      data-item-id={statpackEntryKey(item)}
+      data-sku={item.itemId}
       onClick={hasRules ? undefined : onToggle}
       className={`border rounded-xl px-3 py-3 transition-all duration-150 scroll-mt-20 ${rowBase} ${highlight ? 'ring-2 ring-danger ring-offset-2 ring-offset-background' : ''}`}
     >
@@ -353,13 +358,14 @@ function ItemRow({
             )}
           </div>
           <span className={`text-xs font-medium ${V ? 'text-white/70' : 'text-foreground-500'}`}>
-            {sub}
+            {POCKETS.find(pk => pk.id === item.pocket)?.name || 'Unassigned pocket'} · {sub}
           </span>
         </div>
 
         <div className="flex items-center gap-1.5 flex-none" onClick={e => e.stopPropagation()}>
           <button
             onClick={onMinus}
+            aria-label={`Decrease ${itemName} count`}
             className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors duration-150 ${
               V ? 'bg-white/15 hover:bg-white/25 text-white' : 'bg-content3 hover:bg-content3/80 text-foreground-500'
             }`}
@@ -380,6 +386,7 @@ function ItemRow({
           </div>
           <button
             onClick={onPlus}
+            aria-label={`Increase ${itemName} count`}
             className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors duration-150 ${
               V
                 ? 'bg-white/20 hover:bg-white/30 text-white'
@@ -1069,7 +1076,7 @@ export default function StatpackCheckOffPage() {
         // Start from ACTUAL counts — currentQuantity — so depletion is visible. Fall back to par only when missing.
         const counts: Record<string, number> = {};
         contents.forEach(it => {
-          counts[it.itemId] = typeof it.currentQuantity === 'number' ? it.currentQuantity : it.requiredQuantity;
+          counts[statpackEntryKey(it)] = typeof it.currentQuantity === 'number' ? it.currentQuantity : it.requiredQuantity;
         });
         setItemCounts(counts);
 
@@ -1172,7 +1179,7 @@ export default function StatpackCheckOffPage() {
   const allItems = useMemo(() => pack?.contents ?? [], [pack]);
 
   const countOf = useCallback((it: StatpackItem) =>
-    itemCounts[it.itemId] ?? (typeof it.currentQuantity === 'number' ? it.currentQuantity : it.requiredQuantity),
+    itemCounts[statpackEntryKey(it)] ?? (typeof it.currentQuantity === 'number' ? it.currentQuantity : it.requiredQuantity),
     [itemCounts]);
 
   const bagsByPocket = useMemo(() => {
@@ -1195,7 +1202,7 @@ export default function StatpackCheckOffPage() {
   }, [pack, bagsByPocket]);
 
   const verifiedCount = useMemo(() =>
-    allItems.filter(it => isItemReady(it, deriveRules(it), verifiedSet, itemChecks[it.itemId] ?? {}, today)).length,
+    allItems.filter(it => isItemReady(it, deriveRules(it), verifiedSet, itemChecks[statpackEntryKey(it)] ?? {}, today)).length,
     [allItems, verifiedSet, itemChecks, today]
   );
   const totalItems = allItems.length;
@@ -1208,7 +1215,7 @@ export default function StatpackCheckOffPage() {
   const expCount = useMemo(() =>
     allItems.filter(it => {
       const rules = deriveRules(it);
-      const exp = effectiveExpDate(it, rules, itemChecks[it.itemId] ?? {});
+      const exp = effectiveExpDate(it, rules, itemChecks[statpackEntryKey(it)] ?? {});
       if (!exp) return false;
       const dd = daysUntil(exp, today);
       return dd >= 0 && dd <= THRESHOLDS.expirationWarningDays;
@@ -1232,11 +1239,11 @@ export default function StatpackCheckOffPage() {
 
     allItems.forEach((it, idx) => {
       const rules = deriveRules(it);
-      const chk = itemChecks[it.itemId] ?? {};
+      const chk = itemChecks[statpackEntryKey(it)] ?? {};
       const display = (it.itemDetails as any)?.name || `Item ${it.itemId.slice(-6)}`;
       const pName = pocketNameOf(it.pocket);
       const base = {
-        itemId: it.itemId,
+        itemId: statpackEntryKey(it),
         pocket: it.pocket,
         pocketName: pName ?? 'Not in a pocket',
         reachable: !!pName,
@@ -1247,7 +1254,7 @@ export default function StatpackCheckOffPage() {
         const missing = missingCheckFields(rules, chk);
         list.push({
           ...base,
-          key: `checks:${it.itemId}:${idx}`,
+          key: `checks:${statpackEntryKey(it)}:${idx}`,
           kind: 'checks',
           headline: missing.length
             ? `Still needs ${joinList(missing)} filled in`
@@ -1262,7 +1269,7 @@ export default function StatpackCheckOffPage() {
 
       const found = countOf(it);
       const iss = computeIssue(it, rules, found, chk, today);
-      if (iss.blocking && !isResolved(resolution[it.itemId])) {
+      if (iss.blocking && !isResolved(resolution[statpackEntryKey(it)])) {
         const details: string[] = [];
         // Blocking problems lead; a shortage on the same item rides along after them.
         if (iss.expired) {
@@ -1279,7 +1286,7 @@ export default function StatpackCheckOffPage() {
 
         list.push({
           ...base,
-          key: `issue:${it.itemId}:${idx}`,
+          key: `issue:${statpackEntryKey(it)}:${idx}`,
           kind: 'issue',
           headline: details[0],
           details,
@@ -1326,17 +1333,17 @@ export default function StatpackCheckOffPage() {
 
     allItems.forEach((it, idx) => {
       const rules = deriveRules(it);
-      const chk = itemChecks[it.itemId] ?? {};
+      const chk = itemChecks[statpackEntryKey(it)] ?? {};
       if (rules.hasRules && !checksComplete(rules, chk)) return;   // already a blocker
 
       const found = countOf(it);
       const iss = computeIssue(it, rules, found, chk, today);
-      if (iss.short && !iss.blocking && !resolution[it.itemId]) {
+      if (iss.short && !iss.blocking && !resolution[statpackEntryKey(it)]) {
         const pName = pocketNameOf(it.pocket);
         list.push({
-          key: `restock-flag:${it.itemId}:${idx}`,
+          key: `restock-flag:${statpackEntryKey(it)}:${idx}`,
           kind: 'restock-flag',
-          itemId: it.itemId,
+          itemId: statpackEntryKey(it),
           pocket: it.pocket,
           pocketName: pName ?? 'Not in a pocket',
           reachable: !!pName,
@@ -1439,7 +1446,7 @@ export default function StatpackCheckOffPage() {
 
   // Only satisfies no-rule items — never implies an item with unmet required checks is ready.
   const markSimpleVerified = useCallback(() => {
-    setVerifiedSet(new Set(allItems.filter(it => !deriveRules(it).hasRules).map(it => it.itemId)));
+    setVerifiedSet(new Set(allItems.filter(it => !deriveRules(it).hasRules).map(statpackEntryKey)));
   }, [allItems]);
 
   // Build the check-off payload + a plain-language summary for the check-in review.
@@ -1478,14 +1485,17 @@ export default function StatpackCheckOffPage() {
 
     const checkEntries = allItems.map(it => {
       const rules = deriveRules(it);
-      const chk = itemChecks[it.itemId] ?? {};
+      const chk = itemChecks[statpackEntryKey(it)] ?? {};
       const found = countOf(it);
-      const res = resolution[it.itemId];
+      const res = resolution[statpackEntryKey(it)];
       const iss = computeIssue(it, rules, found, chk, today);
-      const name = (it.itemDetails as any)?.name || 'Unknown';
+      const baseName = (it.itemDetails as any)?.name || 'Unknown';
+      const variant = it.variantName || it.itemDetails?.variantLabel;
+      const displayName = variant && !baseName.includes(variant) ? `${baseName} · ${variant}` : baseName;
+      const name = `${displayName} — ${POCKETS.find(pk => pk.id === it.pocket)?.name || 'Unassigned pocket'}`;
 
       if (rules.needPsi && chk.psi) {
-        oxygenReadings[it.itemId] = chk.psi;
+        oxygenReadings[statpackEntryKey(it)] = chk.psi;
         summary.psi.push({ name, psi: Number(chk.psi) });
       }
 
@@ -1504,7 +1514,7 @@ export default function StatpackCheckOffPage() {
 
       return {
         itemId: it.itemId,
-        itemName: name,
+        itemName: displayName,
         batchId: it.batchId,
         compartmentId: it.compartmentId,
         pocket: it.pocket,
@@ -1657,7 +1667,7 @@ export default function StatpackCheckOffPage() {
   // Step 1 picker "Continue" — queue the picks for the Step 2 review sheet.
   const handleFastPathContinue = useCallback((picks: CheckinUsedPick[]) => {
     const summary: ReviewSummaryShape = {
-      used: picks.map(p => ({ name: p.itemName, qty: p.usedQty })),
+      used: picks.map(p => ({ name: `${p.itemName} — ${POCKETS.find(pk => pk.id === p.pocket)?.name || 'Unassigned pocket'}`, qty: p.usedQty })),
       restocked: [],
       reported: [],
       acknowledged: [],
@@ -1953,10 +1963,27 @@ export default function StatpackCheckOffPage() {
             </div>
           </div>
 
+          {/* Pocket shortcuts retain the physical order and reveal unfinished pockets. */}
+          <nav aria-label="Pocket progress" className="flex flex-wrap gap-2">
+            {pocketGroups.map(pk => {
+              const remaining = pk.items.filter(it => !isItemReady(it, deriveRules(it), verifiedSet, itemChecks[statpackEntryKey(it)] ?? {}, today)).length;
+              return (
+                <button key={pk.id} type="button"
+                  className="text-xs font-semibold rounded-lg px-3 py-2 bg-content1 border border-divider text-primary"
+                  onClick={() => {
+                    setPocketExpanded(prev => ({ ...prev, [pk.id]: true }));
+                    setPendingScroll({ sel: `[data-pocket-id="${pk.id}"]`, n: ++scrollNonce.current });
+                  }}>
+                  {pk.name} · {remaining ? `${remaining} remaining` : 'Verified'}
+                </button>
+              );
+            })}
+          </nav>
+
           {/* Pocket accordion groups */}
           {pocketGroups.map(pk => {
             const pVer = pk.items.filter(it =>
-              isItemReady(it, deriveRules(it), verifiedSet, itemChecks[it.itemId] ?? {}, today)
+              isItemReady(it, deriveRules(it), verifiedSet, itemChecks[statpackEntryKey(it)] ?? {}, today)
             ).length;
             const pTot = pk.items.length;
             const pkPct = pTot > 0 ? Math.round(pVer / pTot * 100) : 0;
@@ -1965,7 +1992,7 @@ export default function StatpackCheckOffPage() {
             const pFix = fixCountByPocket[pk.id] ?? 0;
 
             return (
-              <div key={pk.id} className="bg-content1 border border-divider rounded-2xl overflow-hidden">
+              <div key={pk.id} data-pocket-id={pk.id} className="bg-content1 border border-divider rounded-2xl overflow-hidden scroll-mt-20">
                 <button
                   className="w-full flex items-center gap-3 px-4 py-3 hover:bg-content2 transition-colors duration-150 text-left"
                   onClick={() => setPocketExpanded(p => ({ ...p, [pk.id]: !p[pk.id] }))}
@@ -2024,12 +2051,12 @@ export default function StatpackCheckOffPage() {
                     ))}
                     {pk.items.map(it => {
                       const rules = deriveRules(it);
-                      const chk = itemChecks[it.itemId] ?? {};
+                      const chk = itemChecks[statpackEntryKey(it)] ?? {};
                       const found = countOf(it);
                       const iss = computeIssue(it, rules, found, chk, today);
                       return (
                         <ItemRow
-                          key={it.itemId}
+                          key={statpackEntryKey(it)}
                           item={it}
                           found={found}
                           checks={chk}
@@ -2037,23 +2064,23 @@ export default function StatpackCheckOffPage() {
                           today={today}
                           mode={mode}
                           issue={iss}
-                          resolution={resolution[it.itemId]}
-                          highlight={flashId === it.itemId}
-                          onToggle={() => toggleVerify(it.itemId)}
-                          onMinus={e => adjustCount(it.itemId, -1, e)}
-                          onPlus={e => adjustCount(it.itemId, 1, e)}
-                          onCheck={(key, val) => updateCheck(it.itemId, key, val)}
+                          resolution={resolution[statpackEntryKey(it)]}
+                          highlight={flashId === statpackEntryKey(it)}
+                          onToggle={() => toggleVerify(statpackEntryKey(it))}
+                          onMinus={e => adjustCount(statpackEntryKey(it), -1, e)}
+                          onPlus={e => adjustCount(statpackEntryKey(it), 1, e)}
+                          onCheck={(key, val) => updateCheck(statpackEntryKey(it), key, val)}
                           onRestock={() => {
-                            setItemCounts(prev => ({ ...prev, [it.itemId]: it.requiredQuantity }));
-                            setResolution(prev => ({ ...prev, [it.itemId]: { kind: 'restocked' } }));
+                            setItemCounts(prev => ({ ...prev, [statpackEntryKey(it)]: it.requiredQuantity }));
+                            setResolution(prev => ({ ...prev, [statpackEntryKey(it)]: { kind: 'restocked' } }));
                             showToast(`Set to par: ${(it.itemDetails as any)?.name ?? 'item'}`, true);
                           }}
                           onReport={(issueType, quantity, notes) => {
-                            setResolution(prev => ({ ...prev, [it.itemId]: { kind: 'reported', issueType, quantity, notes } }));
+                            setResolution(prev => ({ ...prev, [statpackEntryKey(it)]: { kind: 'reported', issueType, quantity, notes } }));
                             showToast('Issue reported to admin', false);
                           }}
                           onAcknowledge={(rsn) => {
-                            setResolution(prev => ({ ...prev, [it.itemId]: { kind: 'acknowledged', reason: rsn } }));
+                            setResolution(prev => ({ ...prev, [statpackEntryKey(it)]: { kind: 'acknowledged', reason: rsn } }));
                             showToast('Acknowledged — recorded on the log', true);
                           }}
                         />

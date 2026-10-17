@@ -5,7 +5,7 @@ import type { InventoryItem } from '../app/types';
 process.env.FIRESTORE_EMULATOR_HOST ||= '127.0.0.1:8080';
 // Guard executes before importing any application Firebase clients.
 await import('./emulator/guard');
-const { buildAuditCountPlan } = await import('../app/lib/audit-count');
+const { buildAuditCountPlan, auditStockFingerprint } = await import('../app/lib/audit-count');
 const { computeBagStock } = await import('../app/lib/item-status');
 const base = {
   id: 'audit-count-test', name: 'OPA', category: 'Airway',
@@ -17,15 +17,18 @@ for (const [name, quantity] of [['OPA', 12], ['Splints', 6], ['Cold packs', 60]]
   const item = { ...base, name };
   const plan = buildAuditCountPlan(item, { countedBoxes: 0, countedLooseUnits: quantity });
   assert.equal(plan.total, quantity);
-  assert.equal(plan.patch.looseUnits, quantity);
-  assert.equal(plan.patch.totalStockQuantity, quantity);
+  assert.deepEqual(plan.patch, {});
+  const correction = buildAuditCountPlan(item, { countedBoxes: 0, countedLooseUnits: quantity, reconcileCount: true });
+  assert.equal(correction.verified, true);
+  assert.equal(correction.patch.looseUnits, quantity);
+  assert.equal(correction.patch.totalStockQuantity, quantity);
   assert.equal(plan.verified, false);
   assert.equal('itemsPerBox' in plan.patch, false);
-  assert.equal(computeBagStock({ ...item, ...plan.patch }).totalItems, quantity);
+  assert.equal(computeBagStock({ ...item, ...correction.patch }).totalItems, quantity);
 }
 assert.equal(computeBagStock({ ...base, looseUnits: 12 }).totalItems, 12);
 const bagItem = { ...base, itemsPerBox: 10, batches: [{ id: 'lot-a', bagCount: 1, itemsPerBag: 10, looseItems: 0, stock: 10 }] };
-const bagPlan = buildAuditCountPlan(bagItem, { countedBoxes: 2, countedLooseUnits: 7 });
+const bagPlan = buildAuditCountPlan(bagItem, { countedBoxes: 2, countedLooseUnits: 7, reconcileCount: true });
 assert.equal(bagPlan.total, 27);
 assert.equal(computeBagStock({ ...bagItem, ...bagPlan.patch }).totalItems, 27);
 assert.equal(bagPlan.patch.totalStockQuantity, 27);
@@ -67,5 +70,17 @@ assert.equal(mixedMissingSize.total, null);
 assert.equal(mixedMissingSize.systemTotal, null);
 assert.equal(mixedMissingSize.unresolved, true);
 assert.deepEqual(mixedMissingSize.patch, {});
+
+const observed = buildAuditCountPlan(bagItem, { countedBoxes: 2, countedLooseUnits: 7 });
+assert.equal(observed.unresolved, true);
+assert.equal(observed.canReconcile, true);
+assert.deepEqual(observed.patch, {});
+assert.equal(buildAuditCountPlan(multiple, { countedBoxes: 1, reconcileCount: true }).verified, false);
+assert.equal(buildAuditCountPlan(bagItem, { countedBoxes: 1, itemsPerBox: 99, reconcileCount: true }).canReconcile, false);
+assert.equal(auditStockFingerprint(base), auditStockFingerprint({ ...base, auditVerified: true, updatedAt: new Date() }));
+assert.notEqual(auditStockFingerprint(base), auditStockFingerprint({ ...base, looseUnits: 1 }));
+assert.notEqual(auditStockFingerprint(bagItem), auditStockFingerprint({ ...bagItem, batches: [...bagItem.batches, { id: 'receipt', stock: 0 }] }));
+assert.equal(auditStockFingerprint({ ...base, batches: [{ id: 'lot', stock: 0, expirationDate: new Date('2030-01-01') }] }),
+  auditStockFingerprint({ ...base, batches: [{ id: 'lot', stock: 0, expirationDate: { toDate: () => new Date('2030-01-01') } }] } as unknown as InventoryItem));
 
 console.log('Audit count pure write-plan and stock-math cases passed');

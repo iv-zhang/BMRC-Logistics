@@ -8,6 +8,7 @@ import { getAssetCategoriesRuntime, getThresholds } from '@/app/lib/org-config-s
 import { endEventShifts } from '@/app/lib/events';
 import { flagStatpackRestock } from '@/app/lib/statpack-restock-flag';
 import { getStatpackCheckoutUnavailableReason } from '@/app/lib/statpack-checkout';
+import { findStatpackContentIndex } from '@/app/lib/statpack-content-match';
 
 /**
  * Fetch an inventory item by ID and return enriched itemDetails + suggested verification rules.
@@ -627,19 +628,9 @@ export async function logStatpackCheckOff(params: {
         ? spData.contents.map((c: any) => ({ ...c }))
         : [];
       const usedIdx = new Set<number>();
-      // Match a check entry to a pack content, disambiguating repeated itemIds
-      // across pockets: compartmentId first, then pocket, then itemId alone.
-      const matchIndex = (e: any): number => {
-        if (e.compartmentId) {
-          const i = contents.findIndex((c, idx) => !usedIdx.has(idx) && c.itemId === e.itemId && c.compartmentId && c.compartmentId === e.compartmentId);
-          if (i >= 0) return i;
-        }
-        if (e.pocket) {
-          const i = contents.findIndex((c, idx) => !usedIdx.has(idx) && c.itemId === e.itemId && c.pocket && c.pocket === e.pocket);
-          if (i >= 0) return i;
-        }
-        return contents.findIndex((c, idx) => !usedIdx.has(idx) && c.itemId === e.itemId);
-      };
+      // Compartment names may repeat between pockets; honor all supplied identity.
+      const matchIndex = (e: typeof checkEntries[number]): number =>
+        findStatpackContentIndex(contents, e, usedIdx);
 
       // Accumulate status signals while we walk the entries.
       let anyExpired = false;
@@ -656,10 +647,11 @@ export async function logStatpackCheckOff(params: {
       const nowMs = Date.now();
       // Items explicitly restocked THIS pass, so the post-loop untouched-contents
       // scan below doesn't re-flag something the crew just fixed.
-      const restockedItemIds = new Set<string>();
+      const restockedIndices = new Set<number>();
 
       for (const e of (checkEntries || [])) {
         const idx = matchIndex(e);
+        if (idx < 0) throw new Error('Pack contents changed or the item location no longer matches. Reload and verify the pack again.');
         const content = idx >= 0 ? contents[idx] : undefined;
         if (idx >= 0) usedIdx.add(idx);
 
@@ -682,7 +674,7 @@ export async function logStatpackCheckOff(params: {
         const expiredByIssue = Boolean(e.issue && (e.issue.type === 'broken' || e.issue.type === 'expired'));
         if (expiredByDate || expiredByIssue) anyExpired = true;
 
-        if (e.restockStatus === 'restocked') restockedItemIds.add(e.itemId);
+        if (idx >= 0 && e.restockStatus === 'restocked') restockedIndices.add(idx);
 
         if (!isAssetEntry && typeof e.requiredQuantity === 'number' && e.requiredQuantity > 0) {
           if (typeof e.countedQuantity !== 'number' || !Number.isFinite(e.countedQuantity)) {
@@ -720,7 +712,7 @@ export async function logStatpackCheckOff(params: {
       // Behaviour-preserving for full submissions and audits: every item is
       // present in `checkEntries` either way, so this only adds signal for
       // items the crew did NOT touch this pass.
-      for (const c of contents) {
+      for (const [index, c] of contents.entries()) {
         if (!c) continue;
         const isAssetContent = Boolean(c.serialNumber) || Boolean(c.assetInstanceId) || Boolean(c.itemDetails?.isAsset);
         if (isAssetContent) continue;
@@ -731,7 +723,7 @@ export async function logStatpackCheckOff(params: {
         const current = c.currentQuantity;
         if (typeof current !== 'number' || !Number.isFinite(current)) continue; // never counted, not zero
 
-        if (current <= 0 && !restockedItemIds.has(c.itemId)) {
+        if (current <= 0 && !restockedIndices.has(index)) {
           anyOutConsumable = true;
         }
       }
