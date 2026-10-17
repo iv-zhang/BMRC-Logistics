@@ -10,8 +10,11 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
-import type { Statpack, InventoryItem, StatpackLog, StatpackItem } from '@/app/types';
+import type { Statpack, InventoryItem, StatpackLog } from '@/app/types';
 import { getPackShortages } from '@/app/lib/statpack-shortages';
+import { computeBagStock } from '@/app/lib/item-status';
+import { useOrgConfig } from '@/app/hooks/useOrgConfig';
+import { getLowReserveItems, getDashboardExpiryAlerts, hydrateDashboardInventory, hydrateDashboardPack, type DashboardExpiryAlert } from '@/app/lib/dashboard-summary';
 import MemberDashboard from './member-dashboard';
 import {
   AlertTriangle, ChevronDown, Search, X, ArrowUpRight, Clock, AlertCircle,
@@ -19,14 +22,6 @@ import {
 } from 'lucide-react';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
-
-function daysUntil(date: Date): number {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  return Math.round((d.getTime() - today.getTime()) / 86400000);
-}
 
 function fmtDate(date: Date): string {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -44,7 +39,7 @@ function getPackTier(pack: Statpack): PackTier {
   if (pack.status === 'In Use') return 'inuse';
   const today = new Date();
   const hasExpired = pack.contents?.some(
-    c => c.expirationDate && new Date(c.expirationDate as Date) < today,
+    c => (c.effectiveExpiration ?? c.expirationDate) && new Date((c.effectiveExpiration ?? c.expirationDate) as Date) < today,
   );
   if (!hasExpired && pack.status === 'Ready') return 'ready';
   return 'attention';
@@ -55,7 +50,7 @@ interface PackChip { label: string; color: 'success' | 'danger' | 'warning' | 'p
 function getPackChips(pack: Statpack): PackChip[] {
   const today = new Date();
   const expiredContents = pack.contents?.filter(
-    c => c.expirationDate && new Date(c.expirationDate as Date) < today,
+    c => (c.effectiveExpiration ?? c.expirationDate) && new Date((c.effectiveExpiration ?? c.expirationDate) as Date) < today,
   ) ?? [];
   const shortages = getPackShortages(pack);
   const chips: PackChip[] = [];
@@ -96,13 +91,7 @@ const TIER_SOFT_BG: Record<PackTier, string> = {
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
-interface ExpiryAlert {
-  name: string;
-  src: 'Bag' | 'Shelf';
-  loc: string;
-  expDate: Date;
-  daysLeft: number;
-}
+type ExpiryAlert = DashboardExpiryAlert;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PAGE ENTRY POINT
@@ -111,12 +100,30 @@ interface ExpiryAlert {
 export default function DashboardPage() {
   const router = useRouter();
   const { loading: authLoading, user, userData, role } = useUserRole();
+  const { thresholds } = useOrgConfig();
   const [dataLoading, setDataLoading] = useState(true);
+  const [offline, setOffline] = useState(false);
+  const [cachedDatasets, setCachedDatasets] = useState<string[]>([]);
+  const [loadErrors, setLoadErrors] = useState<string[]>([]);
+  const [retryKey, setRetryKey] = useState(0);
   const [statpacks, setStatpacks] = useState<Statpack[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [packLogs, setPackLogs] = useState<Record<string, StatpackLog[]>>({});
   const [loadingLogs, setLoadingLogs] = useState<Record<string, boolean>>({});
   const [recentLogs, setRecentLogs] = useState<StatpackLog[]>([]);
+  const [recentLogsError, setRecentLogsError] = useState(false);
+  const [packLogErrors, setPackLogErrors] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    const updateConnection = () => setOffline(!navigator.onLine);
+    updateConnection();
+    window.addEventListener('online', updateConnection);
+    window.addEventListener('offline', updateConnection);
+    return () => {
+      window.removeEventListener('online', updateConnection);
+      window.removeEventListener('offline', updateConnection);
+    };
+  }, []);
 
   useEffect(() => {
     if (authLoading) return;
@@ -124,47 +131,31 @@ export default function DashboardPage() {
   }, [authLoading, user, router]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || !role || !canManageLogistics(role)) return;
     setDataLoading(true);
+    setLoadErrors([]);
+    setCachedDatasets([]);
     let packsOk = false, invOk = false;
     const done = () => { if (packsOk && invOk) setDataLoading(false); };
 
-    const toDate = (v: unknown): Date | undefined => {
-      if (v instanceof Timestamp) return v.toDate();
-      if (v instanceof Date) return v;
-      return undefined;
-    };
-
-    const unsubPacks = onSnapshot(collection(db, 'statpacks'), snap => {
-      setStatpacks(snap.docs.map(doc => {
-        const d = doc.data();
-        return {
-          id: doc.id, ...d,
-          lastCheckedAt: toDate(d.lastCheckedAt),
-          contents: Array.isArray(d.contents)
-            ? d.contents.map((item: StatpackItem) => ({
-                ...item, expirationDate: toDate(item.expirationDate),
-              }))
-            : [],
-        };
-      }) as Statpack[]);
+    const unsubPacks = onSnapshot(collection(db, 'statpacks'), { includeMetadataChanges: true }, snap => {
+      setCachedDatasets(prev => [...prev.filter(name => name !== 'statpacks'), ...(snap.metadata.fromCache ? ['statpacks'] : [])]);
+      setStatpacks(snap.docs.map(doc => hydrateDashboardPack(doc.id, doc.data())));
       packsOk = true; done();
-    }, () => { packsOk = true; done(); });
+    }, () => { setLoadErrors(prev => [...prev.filter(e => e !== 'statpacks'), 'statpacks']); packsOk = true; done(); });
 
-    const unsubInv = onSnapshot(collection(db, 'inventory'), snap => {
-      setInventory(snap.docs.map(doc => {
-        const d = doc.data();
-        return { id: doc.id, ...d, expirationDate: toDate(d.expirationDate) };
-      }) as InventoryItem[]);
+    const unsubInv = onSnapshot(collection(db, 'inventory'), { includeMetadataChanges: true }, snap => {
+      setCachedDatasets(prev => [...prev.filter(name => name !== 'inventory'), ...(snap.metadata.fromCache ? ['inventory'] : [])]);
+      setInventory(snap.docs.map(doc => hydrateDashboardInventory(doc.id, doc.data())));
       invOk = true; done();
-    }, () => { invOk = true; done(); });
+    }, () => { setLoadErrors(prev => [...prev.filter(e => e !== 'inventory'), 'inventory']); invOk = true; done(); });
 
     return () => { unsubPacks(); unsubInv(); };
-  }, [user]);
+  }, [user, role, retryKey]);
 
   // Recent global activity — powers the mobile dashboard feed
   useEffect(() => {
-    if (!user) return;
+    if (!user || !role || !canManageLogistics(role)) return;
     let cancelled = false;
     (async () => {
       try {
@@ -181,48 +172,20 @@ export default function DashboardPage() {
             : null;
           return { id: doc.id, ...d, timestamp: ts } as StatpackLog;
         }));
-      } catch { /* silent */ }
+      } catch { if (!cancelled) { setRecentLogs([]); setRecentLogsError(true); } }
     })();
     return () => { cancelled = true; };
-  }, [user]);
+  }, [user, role]);
 
   const lowStockItems = useMemo(
-    () => inventory.filter(it => (it.totalStockQuantity ?? 0) <= it.reorderThreshold),
-    [inventory],
+    () => { void thresholds; return getLowReserveItems(inventory); },
+    [inventory, thresholds],
   );
 
-  const expiryAlerts: ExpiryAlert[] = useMemo(() => {
-    const out: ExpiryAlert[] = [];
-    statpacks.forEach(pack => {
-      pack.contents?.forEach(item => {
-        if (!item.expirationDate) return;
-        const d = daysUntil(item.expirationDate as Date);
-        if (d <= 60) out.push({
-          name: item.itemDetails?.name || 'Unknown Item',
-          src: 'Bag',
-          loc: pack.name,
-          expDate: item.expirationDate as Date,
-          daysLeft: d,
-        });
-      });
-    });
-    inventory.forEach(item => {
-      if (!item.batches?.length) return;
-      const dates = (item.batches as { expirationDate?: string }[])
-        .map(b => b.expirationDate ? new Date(b.expirationDate) : null)
-        .filter((d): d is Date => d !== null);
-      if (!dates.length) return;
-      const earliest = dates.reduce((a, b) => (a < b ? a : b));
-      const d = daysUntil(earliest);
-      if (d <= 60) {
-        let loc = item.location || 'HQ';
-        if (item.room) loc += ` · ${item.room}`;
-        if (item.shelf) loc += ` · ${item.shelf}`;
-        out.push({ name: item.name, src: 'Shelf', loc, expDate: earliest, daysLeft: d });
-      }
-    });
-    return out.sort((a, b) => a.daysLeft - b.daysLeft);
-  }, [statpacks, inventory]);
+  const expiryAlerts: ExpiryAlert[] = useMemo(
+    () => { void thresholds; return getDashboardExpiryAlerts(statpacks, inventory); },
+    [statpacks, inventory, thresholds],
+  );
 
   const handleExpandPack = async (packId: string) => {
     if (packLogs[packId] !== undefined) return;
@@ -244,12 +207,12 @@ export default function DashboardPage() {
           return { id: doc.id, ...d, timestamp: ts } as StatpackLog;
         }),
       }));
-    } catch { /* silent */ } finally {
+    } catch { setPackLogs(prev => ({ ...prev, [packId]: [] })); setPackLogErrors(prev => ({ ...prev, [packId]: true })); } finally {
       setLoadingLogs(prev => ({ ...prev, [packId]: false }));
     }
   };
 
-  if (authLoading || dataLoading) {
+  if (authLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center">
         <Spinner size="lg" color="primary" />
@@ -259,6 +222,32 @@ export default function DashboardPage() {
 
   if (role && !canManageLogistics(role) && userData) {
     return <MemberDashboard userData={userData} />;
+  }
+
+  if (role && canManageLogistics(role) && (offline || loadErrors.length > 0 || cachedDatasets.length > 0)) {
+    const datasetNames = loadErrors.map(e => e === 'statpacks' ? 'statpack' : 'inventory').join(' and ');
+    return (
+      <main className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6 flex items-center justify-center">
+        <section role="alert" className="w-full max-w-lg rounded-2xl border border-warning bg-content1 p-6">
+          <h1 className="text-lg font-bold text-foreground">
+            {offline ? 'Dashboard is offline' : loadErrors.length ? 'Dashboard data unavailable' : 'Waiting for live dashboard data'}
+          </h1>
+          <p className="mt-2 text-sm text-foreground-500">
+            {offline ? 'Reconnect to load current stock and pack status.' : loadErrors.length
+              ? `Could not load ${datasetNames} data. Check your connection or access, then try again.`
+              : 'Current stock and pack status have not been confirmed. The dashboard will return when the connection recovers.'}
+          </p>
+          <div className="mt-5 flex flex-wrap gap-3">
+            <button className="rounded-lg bg-primary px-4 py-2 text-white" onClick={() => { setDataLoading(true); setRetryKey(k => k + 1); }}>Retry</button>
+            <button className="rounded-lg border border-divider px-4 py-2 text-foreground" onClick={() => router.push('/inventory')}>Open inventory</button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (!role || !canManageLogistics(role) || dataLoading) {
+    return <div className="min-h-screen flex items-center justify-center"><Spinner size="lg" color="primary" /></div>;
   }
 
   const userName = userData?.fullName || user?.email?.split('@')[0] || 'there';
@@ -273,6 +262,7 @@ export default function DashboardPage() {
           expiryAlerts={expiryAlerts}
           packLogs={packLogs}
           loadingLogs={loadingLogs}
+          packLogErrors={packLogErrors}
           onExpandPack={handleExpandPack}
         />
       </div>
@@ -284,6 +274,7 @@ export default function DashboardPage() {
           lowStockItems={lowStockItems}
           expiryAlerts={expiryAlerts}
           recentLogs={recentLogs}
+          recentLogsError={recentLogsError}
         />
       </div>
     </>
@@ -300,12 +291,13 @@ interface AdminDashboardProps {
   expiryAlerts: ExpiryAlert[];
   packLogs: Record<string, StatpackLog[]>;
   loadingLogs: Record<string, boolean>;
+  packLogErrors: Record<string, boolean>;
   onExpandPack: (packId: string) => void;
 }
 
 function AdminDashboard({
   statpacks, lowStockItems, expiryAlerts,
-  packLogs, loadingLogs, onExpandPack,
+  packLogs, loadingLogs, packLogErrors, onExpandPack,
 }: AdminDashboardProps) {
   const router = useRouter();
   const [expandedPackId, setExpandedPackId] = useState<string | null>(null);
@@ -331,7 +323,7 @@ function AdminDashboard({
   const selectedPack    = expandedPackId ? statpacks.find(p => p.id === expandedPackId) ?? null : null;
   const selectedTier    = selectedPack ? getPackTier(selectedPack) : null;
   const selectedExpired = useMemo(() => selectedPack?.contents?.filter(
-    c => c.expirationDate && new Date(c.expirationDate as Date) < today,
+    c => (c.effectiveExpiration ?? c.expirationDate) && new Date((c.effectiveExpiration ?? c.expirationDate) as Date) < today,
   ) ?? [], [selectedPack, today]);
   const selectedLogs    = packLogs[expandedPackId ?? ''] ?? [];
   const isLoadingLogs   = loadingLogs[expandedPackId ?? ''] ?? false;
@@ -548,7 +540,7 @@ function AdminDashboard({
                       })}
                     </div>
                   ) : (
-                    <p className="text-[11.5px] text-foreground-400 py-0.5">No recent activity.</p>
+                    <p className="text-[11.5px] text-foreground-400 py-0.5">{packLogErrors[expandedPackId ?? ''] ? 'Activity could not be loaded.' : 'No recent activity.'}</p>
                   )}
                 </div>
                 </motion.div>
@@ -561,7 +553,7 @@ function AdminDashboard({
           {/* ── Alert cards ────────────────────────────────────── */}
           <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))' }}>
 
-            {/* Supply Closet Low */}
+            {/* Low reserve */}
             <div
               className="bg-content1 border border-divider rounded-[16px] overflow-hidden"
               style={{ boxShadow: '0 1px 3px rgba(0,0,0,.04)' }}
@@ -571,7 +563,7 @@ function AdminDashboard({
                   <AlertTriangle size={17} />
                 </div>
                 <div className="flex-1 min-w-0 cursor-pointer" onClick={() => setModalSection('low')}>
-                  <div className="text-[14.5px] font-bold tracking-tight text-foreground">Supply Closet Low</div>
+                  <div className="text-[14.5px] font-bold tracking-tight text-foreground">Low reserve</div>
                 </div>
                 <span className="font-mono text-sm font-semibold px-3 py-1 rounded-full bg-danger-50 dark:bg-danger-900/20 text-danger whitespace-nowrap flex-none tabular-nums">
                   {lowStockItems.length}
@@ -586,7 +578,8 @@ function AdminDashboard({
               </div>
               <div className="overflow-y-auto" style={{ maxHeight: 256 }}>
                 {lowStockItems.length > 0 ? lowStockItems.map(item => {
-                  const out = (item.totalStockQuantity ?? 0) <= 0;
+                  const available = computeBagStock(item).availableItems;
+                  const out = available <= 0;
                   return (
                     <div key={item.id} className="flex items-center justify-between gap-3 px-[17px] py-3 border-b border-divider last:border-0 hover:bg-content2 transition-colors duration-150">
                       <div className="min-w-0">
@@ -596,19 +589,19 @@ function AdminDashboard({
                       <div className="text-right flex-none">
                         <div className="flex items-baseline gap-1 justify-end">
                           <span className={`font-mono text-[15px] font-semibold tabular-nums ${out ? 'text-danger' : 'text-warning'}`}>
-                            {item.totalStockQuantity ?? 0}
+                            {available}
                           </span>
-                          <span className="text-[11.5px] text-foreground-400">/ {item.reorderThreshold}</span>
+                          <span className="text-[11.5px] text-foreground-400">{item.reorderThreshold > 0 ? `/ ${item.reorderThreshold} reorder level` : 'available reserve'}</span>
                         </div>
                         <div className={`text-[10.5px] font-semibold ${out ? 'text-danger' : 'text-warning'}`}>
-                          {out ? 'Out of stock' : 'Reorder needed'}
+                          {out ? 'No available reserve' : 'Reorder needed'}
                         </div>
                       </div>
                     </div>
                   );
                 }) : (
                   <div className="px-6 py-6 text-center text-[12.5px] text-foreground-400">
-                    All stock levels healthy.
+                    No low reserve stock found.
                   </div>
                 )}
               </div>
@@ -640,7 +633,7 @@ function AdminDashboard({
               <div className="overflow-y-auto" style={{ maxHeight: 256 }}>
                 {expiryAlerts.length > 0 ? expiryAlerts.map((alert, i) => {
                   const expired = alert.daysLeft < 0;
-                  const srcCls  = alert.src === 'Bag'
+                  const srcCls  = alert.src === 'Pack'
                     ? 'bg-primary-50 dark:bg-primary-900/20 text-primary'
                     : 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300';
                   return (
@@ -697,7 +690,7 @@ function AdminDashboard({
               </div>
               <div className="flex-1 min-w-0">
                 <div className="text-lg font-bold tracking-tight text-foreground">
-                  {modalSection === 'low' ? 'Supply Closet Low' : 'Expiring Items'}
+                  {modalSection === 'low' ? 'Low reserve' : 'Expiring Items'}
                 </div>
                 <div className="text-[12px] text-foreground-400 font-medium">
                   {(modalSection === 'low' ? lowStockItems.length : expiryAlerts.length)} items
@@ -717,10 +710,11 @@ function AdminDashboard({
               {modalSection === 'low' ? (
                 lowStockItems.length === 0 ? (
                   <div className="flex items-center justify-center h-full text-[13px] text-foreground-400">
-                    All stock levels healthy.
+                    No low reserve stock found.
                   </div>
                 ) : lowStockItems.map(item => {
-                  const out = (item.totalStockQuantity ?? 0) <= 0;
+                  const available = computeBagStock(item).availableItems;
+                  const out = available <= 0;
                   return (
                     <div key={item.id} className="flex items-center justify-between gap-3 px-[22px] py-3.5 border-b border-divider last:border-0 hover:bg-content2 transition-colors duration-150">
                       <div className="min-w-0">
@@ -730,12 +724,12 @@ function AdminDashboard({
                       <div className="text-right flex-none">
                         <div className="flex items-baseline gap-1 justify-end">
                           <span className={`font-mono text-[16px] font-semibold tabular-nums ${out ? 'text-danger' : 'text-warning'}`}>
-                            {item.totalStockQuantity ?? 0}
+                            {available}
                           </span>
-                          <span className="text-[12px] text-foreground-400">/ {item.reorderThreshold}</span>
+                          <span className="text-[12px] text-foreground-400">{item.reorderThreshold > 0 ? `/ ${item.reorderThreshold} reorder level` : 'available reserve'}</span>
                         </div>
                         <div className={`text-[11px] font-semibold ${out ? 'text-danger' : 'text-warning'}`}>
-                          {out ? 'Out of stock' : 'Reorder needed'}
+                          {out ? 'No available reserve' : 'Reorder needed'}
                         </div>
                       </div>
                     </div>
@@ -748,7 +742,7 @@ function AdminDashboard({
                   </div>
                 ) : expiryAlerts.map((alert, i) => {
                   const expired = alert.daysLeft < 0;
-                  const srcCls  = alert.src === 'Bag'
+                  const srcCls  = alert.src === 'Pack'
                     ? 'bg-primary-50 dark:bg-primary-900/20 text-primary'
                     : 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300';
                   return (
@@ -792,6 +786,7 @@ interface MobileDashboardProps {
   lowStockItems: InventoryItem[];
   expiryAlerts: ExpiryAlert[];
   recentLogs: StatpackLog[];
+  recentLogsError: boolean;
 }
 
 const LOG_META: Record<StatpackLog['action'], { label: string; cls: string }> = {
@@ -824,7 +819,7 @@ function relTime(d: Date | unknown): string {
 }
 
 function MobileDashboard({
-  userName, statpacks, lowStockItems, expiryAlerts, recentLogs,
+  userName, statpacks, lowStockItems, expiryAlerts, recentLogs, recentLogsError,
 }: MobileDashboardProps) {
   const router = useRouter();
   const [modalSection, setModalSection] = useState<'low' | 'exp' | null>(null);
@@ -835,7 +830,7 @@ function MobileDashboard({
   const attnCount   = useMemo(() => statpacks.filter(p => getPackTier(p) === 'attention').length, [statpacks]);
   const frac        = total ? readyCount / total : 0;
 
-  const outOfStock   = useMemo(() => lowStockItems.filter(i => (i.totalStockQuantity ?? 0) <= 0).length, [lowStockItems]);
+  const outOfStock   = useMemo(() => lowStockItems.filter(i => computeBagStock(i).availableItems <= 0).length, [lowStockItems]);
   const expiringSoon = useMemo(() => expiryAlerts.filter(a => a.daysLeft >= 0 && a.daysLeft <= 7).length, [expiryAlerts]);
   const expiredCount = useMemo(() => expiryAlerts.filter(a => a.daysLeft < 0).length, [expiryAlerts]);
 
@@ -944,8 +939,8 @@ function MobileDashboard({
             </div>
             <div>
               <div className="text-[28px] font-bold tracking-tight text-foreground tabular-nums leading-none">{lowStockItems.length}</div>
-              <div className="text-[12.5px] font-semibold text-foreground-500 mt-1">Low supply</div>
-              <div className="text-[11px] font-semibold text-danger mt-0.5">{outOfStock} out of stock</div>
+              <div className="text-[12.5px] font-semibold text-foreground-500 mt-1">Low reserve</div>
+              <div className="text-[11px] font-semibold text-danger mt-0.5">{outOfStock} with no available reserve</div>
             </div>
           </button>
           <button
@@ -993,7 +988,7 @@ function MobileDashboard({
               </div>
             );
           }) : (
-            <p className="text-[12px] text-foreground-400 py-4 text-center">No recent activity.</p>
+            <p className="text-[12px] text-foreground-400 py-4 text-center">{recentLogsError ? 'Recent activity could not be loaded. Open history for your records.' : 'No recent activity.'}</p>
           )}
         </div>
       </div>
@@ -1027,7 +1022,7 @@ function MobileDashboard({
               </div>
               <div className="flex-1 min-w-0">
                 <div className="text-base font-bold tracking-tight text-foreground">
-                  {modalSection === 'low' ? 'Low supply' : 'Expiring items'}
+                  {modalSection === 'low' ? 'Low reserve' : 'Expiring items'}
                 </div>
                 <div className="text-[11.5px] text-foreground-400 font-medium">
                   {(modalSection === 'low' ? lowStockItems.length : expiryAlerts.length)} items
@@ -1044,9 +1039,10 @@ function MobileDashboard({
             <div className="overflow-y-auto">
               {modalSection === 'low' ? (
                 lowStockItems.length === 0 ? (
-                  <div className="px-6 py-10 text-center text-[13px] text-foreground-400">All stock levels healthy.</div>
+                  <div className="px-6 py-10 text-center text-[13px] text-foreground-400">No low reserve stock found.</div>
                 ) : lowStockItems.map(item => {
-                  const out = (item.totalStockQuantity ?? 0) <= 0;
+                  const available = computeBagStock(item).availableItems;
+                  const out = available <= 0;
                   return (
                     <div key={item.id} className="flex items-center justify-between gap-3 px-5 py-3.5 border-b border-divider last:border-0">
                       <div className="min-w-0">
@@ -1056,12 +1052,12 @@ function MobileDashboard({
                       <div className="text-right flex-none">
                         <div className="flex items-baseline gap-1 justify-end">
                           <span className={`font-mono text-[15px] font-semibold tabular-nums ${out ? 'text-danger' : 'text-warning'}`}>
-                            {item.totalStockQuantity ?? 0}
+                            {available}
                           </span>
-                          <span className="text-[11.5px] text-foreground-400">/ {item.reorderThreshold}</span>
+                          <span className="text-[11.5px] text-foreground-400">{item.reorderThreshold > 0 ? `/ ${item.reorderThreshold} reorder level` : 'available reserve'}</span>
                         </div>
                         <div className={`text-[10.5px] font-semibold ${out ? 'text-danger' : 'text-warning'}`}>
-                          {out ? 'Out of stock' : 'Reorder needed'}
+                          {out ? 'No available reserve' : 'Reorder needed'}
                         </div>
                       </div>
                     </div>
@@ -1072,7 +1068,7 @@ function MobileDashboard({
                   <div className="px-6 py-10 text-center text-[13px] text-foreground-400">No immediate expirations.</div>
                 ) : expiryAlerts.map((alert, i) => {
                   const expired = alert.daysLeft < 0;
-                  const srcCls  = alert.src === 'Bag'
+                  const srcCls  = alert.src === 'Pack'
                     ? 'bg-primary-50 dark:bg-primary-900/20 text-primary'
                     : 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300';
                   return (
