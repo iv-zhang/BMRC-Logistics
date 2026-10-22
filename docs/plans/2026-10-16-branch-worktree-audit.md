@@ -91,3 +91,18 @@ All 51 branch refs present in the captured ref inventory are listed. Counts use 
 ## Scope note
 
 This file records the branch/worktree portion of plan item 0a. It does not integrate, rebase, clean, or delete any branch/worktree, and does not verify live Hosting state.
+
+## 2026-10-17 disposition: platform-overhaul wave-2a branches
+
+Decided by reviewing each branch's unique commits against current `origin/main`:
+
+| Branch | Decision |
+|---|---|
+| `plan/platform-overhaul` | **Bring in.** The plan docs (`docs/plans/platform-overhaul.md`, `findings.md`, `h6-h7-proposal.md`) are added to `main`, with the plan marked paused. Its `CLAUDE.md` commit-rule change is dropped because `main`'s current wording supersedes it. |
+| `feat/inventory-hygiene-w2` | **Bring in.** H3 (`3ace209`) is a read-only report script plus tests. It goes in the same PR as the docs. |
+| `feat/roles-access-w2` | **Bring in, separately.** R4 per-role production rules (`313143a`) are re-cut onto current `main` as their own PR and re-checked against the write paths added since 2026-09-30. Merging does not deploy rules; a human runs `firebase deploy --only firestore:rules`. |
+| `feat/assets-expiry` | **Park.** A1/A2 are lib-only (asset lifecycle, fiscal year, expiry buckets, valuation) and no page uses them. Keep the branch and its worktree until A3+ (the asset register / finance screens) is scheduled. |
+
+The integration merge commits on the three feature branches already landed in `main` through PRs #3–#6.
+
+Once both PRs merge, the branches they replace (`plan/platform-overhaul`, `feat/inventory-hygiene-w2`, `feat/roles-access-w2`) and their clean worktrees (`.claude/worktrees/w2-hygiene`, `.claude/worktrees/w2-roles`) can be deleted. Each deletion needs the user's approval.

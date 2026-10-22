@@ -70,6 +70,13 @@ When the expensive tier has not been run, **say so explicitly** — report the c
 - **Firebase**: Firestore (real-time `onSnapshot` listeners everywhere, no REST layer), Firebase Auth.
 - **HeroUI** (`@heroui/react`) for all UI components; **Tailwind CSS 4** for utility classes; **Lucide React** for icons.
 - **`next-themes`** for dark/light mode; theme wrapping lives in `app/providers.tsx`.
+- **Fonts**: Hanken Grotesk (sans) + Geist Mono (mono) via `next/font/google` in `app/layout.tsx`; color tokens are the HeroUI theme in `tailwind.config.ts`.
+- **No custom backend**: static export on Firebase Hosting; the browser talks to Firestore directly, so `firestore.prod.rules` is the only real security boundary.
+
+Full stack table, design system, and the ranked production-gap list (undeployed rules, no backups, CI runs no checks, open registration, no error pages/monitoring, …) live in [docs/tech-stack-and-gaps.md](docs/tech-stack-and-gaps.md). When a change touches one of those gaps:
+- **Any new Firestore write** must get a rule in `firestore.prod.rules` (both its own `match` and the catch-all exclusion) plus a case in `app/lib/__tests__/rules.test.ts`. Remember that merging does not deploy rules.
+- **CI does not run lint/tsc/tests**, so the verification tiers in Workflow are the only gate before live.
+- Fixing gaps #1 (rules deploy) or #4 (registration) is **stop-and-ask**; the rest are ordinary tasks.
 
 ### Auth & Roles
 `app/hooks/useUserRole.tsx` is the single source of auth state. It combines Firebase Auth with a Firestore `users/{uid}` doc fetch to expose `{ user, userData, role, effectiveUid, loading }`.
