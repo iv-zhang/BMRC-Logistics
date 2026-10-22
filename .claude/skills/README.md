@@ -17,7 +17,7 @@ overview; these load on demand when a task matches.
 | `bmrc-testing` | Running/writing tests, the emulator harness, seeding, end-to-end verification of a change. |
 | `bmrc-migrations` | Anything in `scripts/` against live data; schema changes, backfills, data fixes. |
 | `bmrc-debugging` | Any bug hunt — symptom → cause → fix playbook for the recurring failure classes. |
-| `bmrc-ui` (in `.claude/commands/`) | Anything the user can see — layout, components, colors, responsiveness. |
+| `bmrc-ui` | UI/UX reviews and changes, user-facing copy, layout, forms, navigation, and new feature flows. Uses the shared `docs/ui-ux-standards.md`; `.claude/commands/bmrc-ui.md` is a compatibility entrypoint. |
 
 Typical feature touches several: e.g. "add a field to the audit Count action"
 = `bmrc-audit-workbench` (write helper + triple write) + `bmrc-domain` (does
@@ -31,7 +31,7 @@ it affect stock math?) + `bmrc-ui` (drawer UI) + `bmrc-testing` (verify).
 3. Business logic lives in `app/lib/` (pure, headless, testable); components
    call helpers. Status/stock math is imported from `item-status.ts`, never
    re-derived.
-4. "Done" = `npm run lint` + `npm run build` pass, the relevant test tier is
-   green, and the affected flow was driven against the emulator.
-5. Match the existing style of the file you're editing; the inventory page and
-   dashboard are the canonical UI references.
+4. Follow the verification tiers in `CLAUDE.md`; report which checks ran and
+   distinguish source/build checks from emulator or real-user validation.
+5. Use `bmrc-ui` and `docs/ui-ux-standards.md` for UI and app copy. Match the
+   appropriate existing layout family, without copying its known defects.
