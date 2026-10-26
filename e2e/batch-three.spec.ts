@@ -4,7 +4,7 @@
  *  - buy-list delivery -> stock intake (post now, partial, intake later)
  *
  * Run with both emulators, e.g.
- *   E2E_PORT=3123 npx firebase-tools@13.35.1 emulators:exec --config firebase.emulator.json \
+ *   E2E_PORT=3123 npx firebase emulators:exec --config firebase.emulator.json \
  *     --only firestore,auth --project demo-bmrc-logistics "npx playwright test e2e/batch-three.spec.ts"
  *
  * Harness copied from dashboard-remediation.spec.ts: loopback-only emulator

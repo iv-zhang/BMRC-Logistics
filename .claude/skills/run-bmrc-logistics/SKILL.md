@@ -42,7 +42,7 @@ Already satisfied on this machine; the exact tools/versions used:
 
 ```bash
 node -v          # v24.2.0
-firebase --version   # 14.12.1  (firebase-tools; provides the Firestore emulator)
+npx firebase --version   # 15.30.2  (firebase-tools devDependency; provides the Firestore emulator)
 ```
 
 The Firestore emulator needs a JRE (`java`) on PATH — `firebase emulators:exec`

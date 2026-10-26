@@ -367,7 +367,7 @@ Not run: `npm run build`, smoke driver (no page changed in 2a).
 1. H3 counts: in `.claude/worktrees/w2-hygiene`, `GOOGLE_APPLICATION_CREDENTIALS=<key.json> npm run report:existence`
    (read-only; add `-- --list` for the unverified items with stock). Compare confirmed/unverified with the shelves.
 2. Rules: in `.claude/worktrees/w2-roles`,
-   `npx firebase-tools@13.35.1 emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics "./node_modules/.bin/tsx --test app/lib/__tests__/rules.test.ts"`
+   `npx firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics "./node_modules/.bin/tsx --test app/lib/__tests__/rules.test.ts"`
    and read the write table in `docs/plans/log/feat-roles-access.md` on that branch.
 3. FY/bucket numbers: `app/lib/__tests__/{fiscal,expiry,valuation}.test.ts` on `feat/assets-expiry`.
 4. The open questions in §8 and [h6-h7-proposal.md](h6-h7-proposal.md).
@@ -431,7 +431,8 @@ stay here; delete a line once it's done.
 - 2026-09-30 · `@firebase/rules-unit-testing` is in `package.json` (from the rules branch) but was not installed locally. ·
   Run `npm install` after pulling `main`.
 - 2026-09-30 · The `firebase` CLI is not in `node_modules/.bin`, so `npm run test:rules` and the other `emulators:exec`
-  scripts fail as written; they run with `npx firebase-tools@13.35.1 emulators:exec ...` (JDK 21 needs that version). ·
-  Add `firebase-tools@13.35.1` as a devDependency or change the scripts (T-D1).
+  scripts fail as written unless a global CLI is installed. · **Fixed 2026-10-26:** `firebase-tools` is now a pinned
+  devDependency (`15.30.2`, which works with JDK 21; the old 13.35.1 pin was stale), so npm scripts use
+  `node_modules/.bin/firebase` and ad-hoc commands use `npx firebase …`.
 - 2026-09-30 · Some R4 denials are reached through a rules *evaluation error* (e.g. a `get()` on a missing doc) rather
   than a clean `false`. Still fail-closed, but it hides real mistakes in the emulator log. · Tidy in R-seam.

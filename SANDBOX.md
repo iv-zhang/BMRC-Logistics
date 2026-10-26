@@ -14,8 +14,9 @@ npm run dev:sandbox
 ```
 
 That one command boots the Firestore + Auth emulators, seeds a synthetic dataset
-**and** one login per role, then starts the dev server. Requires the Firebase CLI
-and `tsx` (already a dev dependency).
+**and** one login per role, then starts the dev server. Requires a Java runtime (for
+the emulators); the Firebase CLI (`firebase-tools`) and `tsx` are dev dependencies, so
+`npm install` is enough. Outside npm scripts, run the pinned CLI as `npx firebase …`.
 
 - App: the URL Next prints (usually http://localhost:3000)
 - Emulator UI (inspect/reset data): http://127.0.0.1:4000

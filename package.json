@@ -65,6 +65,7 @@
     "eslint-config-next": "16.1.1",
     "fast-check": "^4.8.0",
     "firebase-admin": "^13.6.1",
+    "firebase-tools": "15.30.2",
     "tailwindcss": "^4",
     "tsx": "^4.23.0",
     "typescript": "^5"

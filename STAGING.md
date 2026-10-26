@@ -23,7 +23,7 @@ A real, cloud-based Firebase project (`bmrc-staging`, separate from prod `bmrc-l
 
 4. **Deploy security rules to staging**:
    ```bash
-   firebase deploy --only firestore:rules --project staging
+   npx firebase deploy --only firestore:rules --project staging
    ```
    (The `.firebaserc` alias `staging → bmrc-staging` is already configured. This deploys the rules named by
    `firebase.json`, which is `firestore.prod.rules`; the open `firestore.rules` is emulator-only and is only ever
