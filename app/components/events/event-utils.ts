@@ -5,6 +5,7 @@
 
 import type { Timestamp, FieldValue } from 'firebase/firestore';
 import type { Event, EventTeam, ShiftRequest } from '@/app/types';
+import { coerceDate } from '@/app/lib/timestamps';
 
 /**
  * Coerce a Firestore Timestamp / Date / FieldValue-ish value to a Date, or null.
@@ -13,22 +14,7 @@ import type { Event, EventTeam, ShiftRequest } from '@/app/types';
  * so this keeps them displaying instead of crashing / showing "No date".
  */
 export function toJsDate(value: Date | Timestamp | FieldValue | null | undefined): Date | null {
-  if (!value) return null;
-  if (value instanceof Date) return value;
-  const maybe = value as {
-    toDate?: () => Date;
-    seconds?: number; _seconds?: number;
-    nanoseconds?: number; _nanoseconds?: number;
-  };
-  if (typeof maybe.toDate === 'function') return maybe.toDate();
-  const secs = typeof maybe.seconds === 'number' ? maybe.seconds
-    : typeof maybe._seconds === 'number' ? maybe._seconds : undefined;
-  if (typeof secs === 'number') {
-    const nanos = maybe.nanoseconds ?? maybe._nanoseconds ?? 0;
-    const d = new Date(secs * 1000 + Math.floor(nanos / 1e6));
-    return Number.isNaN(d.getTime()) ? null : d;
-  }
-  return null;
+  return coerceDate(value) ?? null;
 }
 
 export function formatEventDate(value: Event['date'] | undefined): string {

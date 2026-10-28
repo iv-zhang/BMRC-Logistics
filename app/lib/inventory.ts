@@ -9,6 +9,7 @@ import { endEventShifts } from '@/app/lib/events';
 import { flagStatpackRestock } from '@/app/lib/statpack-restock-flag';
 import { getStatpackCheckoutUnavailableReason } from '@/app/lib/statpack-checkout';
 import { findStatpackContentIndex } from '@/app/lib/statpack-content-match';
+import { coerceDate } from '@/app/lib/timestamps';
 
 /**
  * Fetch an inventory item by ID and return enriched itemDetails + suggested verification rules.
@@ -287,13 +288,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Coerce a Date | Firestore Timestamp | ISO-string | ms into epoch ms (or undefined). */
 function toMillisLoose(v: unknown): number | undefined {
-  if (v === null || v === undefined) return undefined;
-  if (v instanceof Date) return v.getTime();
-  const anyV = v as { toMillis?: () => number; toDate?: () => Date };
-  if (typeof anyV.toMillis === 'function') return anyV.toMillis();
-  if (typeof anyV.toDate === 'function') return anyV.toDate().getTime();
-  const t = new Date(v as string | number).getTime();
-  return Number.isNaN(t) ? undefined : t;
+  return coerceDate(v)?.getTime();
 }
 
 /**

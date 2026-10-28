@@ -24,7 +24,7 @@ import BarcodeScanner from '@/app/components/barcode-scanner';
 import StatpackHistory from '@/app/components/statpack-history';
 import StatpackRestockChips from '@/app/components/statpack-restock-chips';
 import StatpackReadyOverride from '@/app/components/statpack-ready-override';
-import { updateStatpackDetails } from '@/app/lib/statpacks';
+import { buildStatpackEditorPatch, updateStatpackDetails } from '@/app/lib/statpacks';
 import { computeStatpackAssetValue } from '@/app/lib/inventory';
 import { subscribeExchangeBags, resolveBagAssignments } from '@/app/lib/exchange-bags';
 import { getPackShortages, formatShortage } from '@/app/lib/statpack-shortages';
@@ -161,7 +161,7 @@ export default function StatpackDetailClient() {
       setIsEditingSummary(false);
     } catch (err) {
       console.error('Failed to save summary:', err);
-      alert('Failed to save changes');
+      alert(err instanceof Error ? err.message : 'Failed to save changes');
     }
   };
 
@@ -192,21 +192,20 @@ export default function StatpackDetailClient() {
     editorDisclosure.onOpen();
   };
 
-  const saveEditor = async (draft: Statpack) => {
+  const saveEditor = async (draft: Statpack, seed: Statpack) => {
     try {
-      // Never write the id back into the doc body.
-      const { id: _draftId, ...draftBody } = draft;
-      void _draftId;
       await updateStatpackDetails(
-        pack?.id ?? statpackId,
-        { ...draftBody, contentsUpdatedAt: serverTimestamp() },
+        seed.id ?? statpackId,
+        buildStatpackEditorPatch(draft, seed),
         { uid: effectiveUid ?? user?.uid, name: fullName || user?.displayName || 'Unknown' },
-        { status: pack?.status, name: pack?.name },
+        { status: seed.status, name: seed.name },
+        undefined,
+        seed,
       );
       editorDisclosure.onClose();
     } catch (err) {
       console.error('Failed to save statpack:', err);
-      alert('Failed to save statpack');
+      throw err;
     }
   };
 
@@ -354,11 +353,12 @@ export default function StatpackDetailClient() {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <Input label="Name" value={summaryForm.name} onValueChange={(v) => setSummaryForm({ ...summaryForm, name: v })} />
                 <Select label="Status" selectedKeys={[summaryForm.status || 'Ready']} onChange={(e) => setSummaryForm({ ...summaryForm, status: e.target.value })}>
-                  <SelectItem key="Ready">Ready</SelectItem>
+                  <SelectItem key="Ready" isDisabled={!!pack.isCheckedOut}>Ready</SelectItem>
                   <SelectItem key="In Use">In Use</SelectItem>
-                  <SelectItem key="Not Ready">Not Ready</SelectItem>
-                  <SelectItem key="Pending Initial Check">Pending Initial Check</SelectItem>
+                  <SelectItem key="Not Ready" isDisabled={!!pack.isCheckedOut}>Not Ready</SelectItem>
+                  <SelectItem key="Pending Initial Check" isDisabled={!!pack.isCheckedOut}>Pending Initial Check</SelectItem>
                 </Select>
+                {pack.isCheckedOut && <p className="col-span-2 text-xs text-foreground-500">Check this pack in before changing its status.</p>}
                 <Input label="Location" value={summaryForm.currentLocation} onValueChange={(v) => setSummaryForm({ ...summaryForm, currentLocation: v })} />
                 <Input label="Asset Value" type="number" value={summaryForm.assetValue} onValueChange={(v) => setSummaryForm({ ...summaryForm, assetValue: v })} />
                 <div className="col-span-2 flex gap-2">

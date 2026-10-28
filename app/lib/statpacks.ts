@@ -1,11 +1,12 @@
 'use client';
 
-import { collection, doc, getDoc, setDoc, serverTimestamp, query, where, getDocs, writeBatch } from 'firebase/firestore';
+import { collection, doc, getDoc, setDoc, serverTimestamp, query, where, getDocs, writeBatch, runTransaction } from 'firebase/firestore';
 import { db } from '@/firebase';
 import type { Statpack, StatpackShortageSnapshot } from '@/app/types';
 import { computeStatpackAssetValue } from '@/app/lib/inventory';
 import { getPackShortages } from '@/app/lib/statpack-shortages';
 import { recordAuditEvent, deepRemoveUndefined } from '@/app/lib/audit';
+import { coerceTimestamp } from '@/app/lib/timestamps';
 
 /**
  * Duplicate a statpack: create a copy with new ID, sanitized timestamps, and " (copy)" suffix
@@ -98,89 +99,111 @@ export async function duplicateStatpack(statpackId: string): Promise<string> {
   }
 }
 
+/** The only fields a contents editor may persist from its draft. */
+export function buildStatpackEditorPatch(draft: Statpack, seed: Statpack): Record<string, unknown> {
+  // Normalize nested inventory convenience dates too: old JSON-cloned drafts
+  // can carry map dates in itemDetails, batches, and asset verification data.
+  const normalize = (value: unknown, key = ''): unknown => {
+    if (value === null || value === undefined) return value;
+    if (value instanceof Date || /(?:At|Date|Expiration)$/.test(key) ||
+        ['assetLastChecked', 'timestamp', 'date', 'at', 'expiresOn'].includes(key)) {
+      const timestamp = coerceTimestamp(value);
+      if (timestamp) return timestamp;
+      if (value !== '') throw new Error('An item date could not be read. Reopen the editor.');
+      return undefined;
+    }
+    if (Array.isArray(value)) return value.map((v) => normalize(v));
+    if (typeof value === 'object') {
+      // Timestamp instances and serialized Timestamp maps can occur anywhere.
+      const timestamp = coerceTimestamp(value);
+      if (timestamp) return timestamp;
+      return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, normalize(v, k)]));
+    }
+    return value;
+  };
+  return deepRemoveUndefined({
+    name: draft.name,
+    currentLocation: draft.currentLocation,
+    contents: normalize(draft.contents),
+    exchangeBagAssignments: draft.exchangeBagAssignments,
+    assetValue: draft.assetValue,
+    ...(draft.status !== seed.status ? { status: draft.status } : {}),
+    contentsUpdatedAt: serverTimestamp(),
+  });
+}
+
 /**
- * Persist an edited statpack's contents/config (the StatpackEditorModal save
- * path). Both call sites that used to do a raw `updateDoc(doc(db,'statpacks',id),
- * {...draft})` with no sanitization and no logging should route through here
- * instead:
- *  - strips `undefined` values (Firestore rejects them — the raw updateDoc
- *    call sites did not do this),
- *  - stamps `contentsUpdatedAt` (declared on the type, previously written
- *    nowhere), which drives the "contents changed since last audit" indicator,
- *  - emits a `statpack_logs` row with `action: 'content_edit'` (declared on
- *    `StatpackLog['action']`, previously never emitted) so the edit shows up
- *    in the pack's activity log.
- *
- * `draft` must carry its Firestore id (`draft.id`).
+ * Save a contents-editor draft with its immutable opening snapshot. Ownership
+ * and safety observations are never copied from the draft into the document.
  */
 export async function saveStatpackContents(
   draft: Statpack,
   actor: { uid?: string; name?: string },
-  previousStatus?: string,
+  seed: Statpack,
 ): Promise<void> {
   if (!draft.id) throw new Error('Cannot save statpack contents without an id');
-
-  const { id, ...rest } = draft;
-  const payload = deepRemoveUndefined({
-    ...rest,
-    contentsUpdatedAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  }) as Record<string, unknown>;
-
-  const logPayload = deepRemoveUndefined({
-    statpackId: id,
-    statpackName: draft.name,
-    // A status edit made in the editor is labelled as such (issue #20).
-    action: previousStatus && previousStatus !== draft.status ? 'status_change' : 'content_edit',
-    ...(previousStatus && previousStatus !== draft.status
-      ? { statusChange: { from: previousStatus, to: draft.status } }
-      : {}),
-    userId: actor.uid || 'unknown',
-    userName: actor.name || 'Unknown',
-    timestamp: serverTimestamp(),
-  }) as Record<string, unknown>;
-
-  const batch = writeBatch(db);
-  batch.update(doc(db, 'statpacks', id), payload);
-  batch.set(doc(collection(db, 'statpack_logs')), logPayload);
-  await batch.commit();
+  await updateStatpackDetails(draft.id, buildStatpackEditorPatch(draft, seed), actor, seed, undefined, seed);
 }
 
 /**
- * Persist an admin "edit details" change (name / status / location / value /
- * etc.) AND write the matching `statpack_logs` row in one atomic batch. A
- * status change logs `action: 'status_change'` with `statusChange {from,to}`;
- * anything else logs `content_edit`. Previously these edits were raw updateDocs
- * that changed e.g. a pack's status to "In Use" with no Activity-log trace.
+ * Atomically update details and their activity log against the live pack.
+ * Contents writes must include the editor's opening snapshot for concurrency
+ * checks. Non-editor maintenance/details callers do not need an editor seed.
  */
 export async function updateStatpackDetails(
   packId: string,
   patch: Record<string, unknown>,
   actor: { uid?: string; name?: string },
-  previous: { status?: string; name?: string },
+  _previous: { status?: string; name?: string },
   note?: string,
+  editorSeed?: Statpack,
 ): Promise<void> {
   if (!packId) throw new Error('Cannot update statpack details without an id');
-  const nextStatus = typeof patch.status === 'string' ? patch.status : undefined;
-  const statusChanged = !!nextStatus && !!previous.status && nextStatus !== previous.status;
-  const name = (typeof patch.name === 'string' && patch.name) || previous.name || '';
-
-  const payload = deepRemoveUndefined({ ...patch, updatedAt: serverTimestamp() }) as Record<string, unknown>;
-  const logPayload = deepRemoveUndefined({
-    statpackId: packId,
-    statpackName: name,
-    action: statusChanged ? 'status_change' : 'content_edit',
-    statusChange: statusChanged ? { from: previous.status, to: nextStatus } : undefined,
-    userId: actor.uid || 'unknown',
-    userName: actor.name || 'Unknown',
-    timestamp: serverTimestamp(),
-    notes: note?.trim() || undefined,
-  }) as Record<string, unknown>;
-
-  const batch = writeBatch(db);
-  batch.update(doc(db, 'statpacks', packId), payload);
-  batch.set(doc(collection(db, 'statpack_logs')), logPayload);
-  await batch.commit();
+  if ('contents' in patch && !editorSeed) {
+    throw new Error('Reopen the editor before saving contents.');
+  }
+  const packRef = doc(db, 'statpacks', packId);
+  const logRef = doc(collection(db, 'statpack_logs'));
+  const payload = deepRemoveUndefined({ ...patch, updatedAt: serverTimestamp() });
+  await runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(packRef);
+    if (!snapshot.exists()) throw new Error('Statpack not found');
+    const live = snapshot.data();
+    const nextStatus = typeof patch.status === 'string' ? patch.status : undefined;
+    if (live.isCheckedOut && nextStatus !== undefined && nextStatus !== 'In Use') {
+      throw new Error('Check this pack in first.');
+    }
+    if ('contents' in patch) {
+      if (!Array.isArray(patch.contents)) throw new Error('Pack contents must be a list.');
+      if (patch.contents.length < (Array.isArray(live.contents) ? live.contents.length : 0)) {
+        throw new Error("Items can't be removed. Set par to 0 instead.");
+      }
+    }
+    if (editorSeed) {
+      const dateVersion = (value: unknown) => {
+        const timestamp = coerceTimestamp(value);
+        return timestamp ? `${timestamp.seconds}:${timestamp.nanoseconds}` : JSON.stringify(value ?? null);
+      };
+      if (live.isCheckedOut !== editorSeed.isCheckedOut || live.status !== editorSeed.status ||
+          dateVersion(live.lastCheckedAt) !== dateVersion(editorSeed.lastCheckedAt) ||
+          dateVersion(live.lastAuditAt) !== dateVersion(editorSeed.lastAuditAt)) {
+        throw new Error('This pack changed since you opened it. Reopen the editor.');
+      }
+    }
+    const statusChanged = nextStatus !== undefined && nextStatus !== live.status;
+    const logPayload = deepRemoveUndefined({
+      statpackId: packId,
+      statpackName: (typeof patch.name === 'string' && patch.name) || live.name || '',
+      action: statusChanged ? 'status_change' : 'content_edit',
+      statusChange: statusChanged ? { from: live.status, to: nextStatus } : undefined,
+      userId: actor.uid || 'unknown',
+      userName: actor.name || 'Unknown',
+      timestamp: serverTimestamp(),
+      notes: note?.trim() || undefined,
+    });
+    transaction.update(packRef, payload);
+    transaction.set(logRef, logPayload);
+  });
 }
 
 /**

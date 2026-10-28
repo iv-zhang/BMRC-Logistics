@@ -35,7 +35,7 @@ interface SortableStatpackItemProps {
   item: StatpackItem;
   index: number;
   onUpdate: (index: number, patch: Partial<StatpackItem>) => void;
-  onRemove: (index: number) => void;
+  onRemove?: (index: number) => void;
   onAttachAsset?: (index: number, itemName: string) => void;
   onEditAssetPolicy?: (assetInstanceId: string) => void;
 }
@@ -312,7 +312,7 @@ function SortableStatpackItem({ item, index, onUpdate, onRemove, onAttachAsset, 
               <ShieldCheck size={14} />
             </Button>
           )}
-          <Button
+          {onRemove && <Button
             isIconOnly
             size="sm"
             variant="light"
@@ -320,7 +320,7 @@ function SortableStatpackItem({ item, index, onUpdate, onRemove, onAttachAsset, 
             onPress={() => onRemove(index)}
           >
             <X size={14} />
-          </Button>
+          </Button>}
         </div>
       </div>
     </div>
@@ -331,7 +331,7 @@ interface SortableStatpackContentListProps {
   items: StatpackItem[];
   onReorder: (newItems: StatpackItem[]) => void;
   onUpdateItem: (index: number, patch: Partial<StatpackItem>) => void;
-  onRemoveItem: (index: number) => void;
+  onRemoveItem?: (index: number) => void;
   onAttachAsset?: (index: number, itemName: string) => void;
   onEditAssetPolicy?: (assetInstanceId: string) => void;
 }
