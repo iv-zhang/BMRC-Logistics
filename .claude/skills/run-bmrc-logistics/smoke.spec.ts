@@ -26,6 +26,7 @@
  */
 import { test, expect } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { createDoc, getDocById, listCollection } from '../../../e2e/emu-rest';
@@ -53,6 +54,13 @@ async function shoot(page: import('@playwright/test').Page, path: string, name: 
 const ADMIN_EMAIL = 'smoke-admin@example.com';
 const ADMIN_PASSWORD = 'test1234';
 
+// Drive the same guarded domain helper used by the app, in a short-lived Node
+// process, for state transitions that are the setup to an editor UI assertion.
+async function runStatpackCheckoff(input: { statpackId: string; itemId: string; action: 'checkout' | 'checkin' }) {
+  const source = `(async () => { await import('./scripts/emulator/guard.ts'); const { logStatpackCheckOff } = await import('./app/lib/inventory.ts'); const { db } = await import('./firebase.ts'); const { terminate } = await import('firebase/firestore'); try { await logStatpackCheckOff({ statpackId: ${JSON.stringify(input.statpackId)}, statpackName: 'Editor smoke pack', action: ${JSON.stringify(input.action)}, userId: 'smoke-member', userName: 'Smoke Member', userRole: 'admin', checkEntries: [{ itemId: ${JSON.stringify(input.itemId)}, itemName: 'Smoke checklist gauze', requiredQuantity: 1, countedQuantity: 1, ok: true }] }); } finally { await terminate(db); } })().catch((error) => { console.error(error); process.exitCode = 1; });`;
+  execFileSync('./node_modules/.bin/tsx', ['-e', source], { stdio: 'pipe', env: process.env, timeout: 30_000 });
+}
+
 // Sign in through the real /login form so onAuthStateChanged fires with a real
 // Firebase user — the only thing that opens the auth-gated pages.
 async function signIn(page: import('@playwright/test').Page) {
@@ -70,7 +78,25 @@ async function signIn(page: import('@playwright/test').Page) {
   await expect(email).toHaveValue(ADMIN_EMAIL);
   await expect(pw).toHaveValue(ADMIN_PASSWORD);
   await page.getByRole('button', { name: 'Sign In' }).click();
-  // handleSubmit routes to /dashboard on success.
+  // Dev full reloads can occasionally remount the form between fill and submit.
+  // Retry once only when both controlled inputs demonstrably reset blank; a
+  // retained value means a genuine auth error and should fail without masking it.
+  try {
+    await page.waitForURL((u) => !u.pathname.startsWith('/login'), { timeout: 12_000 });
+    return;
+  } catch {
+    if (!page.url().includes('/login')) return;
+  }
+  const emailValue = await email.inputValue();
+  const passwordValue = await pw.inputValue();
+  if (emailValue !== '' || passwordValue !== '') {
+    throw new Error(`Sign-in stayed on /login with form values retained (email=${emailValue ? 'present' : 'blank'}, password=${passwordValue ? 'present' : 'blank'}).`);
+  }
+  await email.fill(ADMIN_EMAIL);
+  await pw.fill(ADMIN_PASSWORD);
+  await expect(email).toHaveValue(ADMIN_EMAIL);
+  await expect(pw).toHaveValue(ADMIN_PASSWORD);
+  await page.getByRole('button', { name: 'Sign In' }).click();
   await page.waitForURL((u) => !u.pathname.startsWith('/login'), { timeout: 25_000 });
 }
 
@@ -152,6 +178,88 @@ test('audit statpacks tab edits pack contents', async ({ page }) => {
   await page.screenshot({ path: join(SHOTS, 'audit-edit-contents.png'), fullPage: true });
   await page.getByRole('button', { name: 'Save changes' }).click();
   await expect(page.getByText('contents saved', { exact: false })).toBeVisible({ timeout: 10_000 });
+});
+
+// The audit list intentionally disables edits while checked out. Assets is the
+// supported editor entry point for a live pack and enforces the transaction guard.
+test('checked-out pack editor preserves ownership and keeps par-zero checklist item', async ({ page }) => {
+  await signIn(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const packName = `Editor ownership ${Date.now()}`;
+  const itemId = `smoke-par-${Date.now()}`;
+  const packId = await createDoc('statpacks', {
+    name: packName, type: 'Primary', status: 'Ready', isCheckedOut: false,
+    currentLocation: 'Bay 1',
+    contents: [{ itemId, requiredQuantity: 1, currentQuantity: 1,
+      pocket: 'main', itemDetails: { name: 'Smoke checklist gauze', category: 'Consumables' }, verificationRules: {} }],
+  });
+  await runStatpackCheckoff({ statpackId: packId, itemId, action: 'checkout' });
+  const checkedOut = await getDocById('statpacks', packId);
+  expect(checkedOut?.isCheckedOut).toBe(true);
+  expect(checkedOut?.status).toBe('In Use');
+  expect(typeof checkedOut?.checkedOutAt).toBe('string');
+  await page.goto('/assets', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await expect(page.getByText(packName)).toBeVisible({ timeout: 15_000 });
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) await skip.click();
+  await page.getByText(packName, { exact: true }).click();
+  await expect(page.getByText('Statpack Editor')).toBeVisible();
+  await page.getByText('In Use', { exact: true }).last().click();
+  await expect(page.getByRole('button', { name: 'Ready', exact: true })).toBeDisabled();
+  await page.screenshot({ path: join(SHOTS, 'statpack-editor-checked-out-desktop.png') });
+  await page.getByText('Smoke checklist gauze', { exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Remove', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Decrease par level' }).click();
+  await expect(page.getByText('Set par to 0 to stop stocking this item. It stays on the checklist.')).toBeVisible();
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  await expect(page.getByText('Statpack Editor')).toBeHidden({ timeout: 10_000 });
+  const saved = await getDocById('statpacks', packId);
+  expect(saved?.isCheckedOut).toBe(true);
+  expect(saved?.status).toBe('In Use');
+  // emu-rest exposes Firestore timestampValue as its ISO string; a parseable
+  // value proves the ownership timestamp is stored as a timestamp field.
+  expect(typeof saved?.checkedOutAt).toBe('string');
+  expect(Number.isNaN(Date.parse(saved!.checkedOutAt))).toBe(false);
+  expect(saved?.checkedOutAt).toBe(checkedOut?.checkedOutAt);
+  expect(saved?.contents).toHaveLength(1);
+  expect(saved?.contents[0].requiredQuantity).toBe(0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/statpacks/check-off?id=${packId}&mode=audit`, { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await expect(page.getByText('Smoke checklist gauze')).toBeVisible({ timeout: 15_000 });
+  await page.screenshot({ path: join(SHOTS, 'statpack-editor-checked-out-mobile.png'), fullPage: true });
+});
+
+// As above, use Assets because /audit deliberately disables editing checked-out rows.
+test('editor retains a draft when a concurrent real check-in makes it stale', async ({ page }) => {
+  await signIn(page);
+  const packName = `Editor stale ${Date.now()}`;
+  const itemId = `smoke-stale-${Date.now()}`;
+  const packId = await createDoc('statpacks', {
+    name: packName, type: 'Primary', status: 'Ready', isCheckedOut: false,
+    contents: [{ itemId, requiredQuantity: 1, currentQuantity: 1, pocket: 'main', itemDetails: { name: 'Smoke checklist gauze', category: 'Consumables' }, verificationRules: {} }],
+  });
+  await runStatpackCheckoff({ statpackId: packId, itemId, action: 'checkout' });
+  await page.goto('/assets', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await expect(page.getByText(packName)).toBeVisible({ timeout: 15_000 });
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) await skip.click();
+  await page.getByText(packName, { exact: true }).click();
+  await expect(page.getByText('Statpack Editor')).toBeVisible();
+  await page.getByText('Smoke checklist gauze', { exact: true }).click();
+  await page.getByRole('button', { name: 'Decrease par level' }).click();
+  // A real check-in updates lastCheckedAt/status/ownership during the open edit.
+  await runStatpackCheckoff({ statpackId: packId, itemId, action: 'checkin' });
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'This pack changed since you opened it.' }))
+    .toHaveText('This pack changed since you opened it. Reopen the editor.');
+  await expect(page.getByText('Set par to 0 to stop stocking this item. It stays on the checklist.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Save changes' })).toBeVisible();
+  await page.screenshot({ path: join(SHOTS, 'statpack-editor-stale-draft.png'), fullPage: true });
+  const saved = await getDocById('statpacks', packId);
+  expect(saved?.contents[0].requiredQuantity).toBe(1);
 });
 
 // AUTH-GATED: without a real Firebase user these redirect to /login. We capture

@@ -28,6 +28,7 @@ import ThingsToFixCard, { type FixItem } from '@/app/components/statpacks/things
 import type { Statpack, StatpackItem, StatpackPocket, InventoryItem, ExchangeBag, ExchangeBagAssignment } from '@/app/types';
 import { getStatpackStatusInfo } from '@/app/lib/statpack-status';
 import { getStatpackCheckoutUnavailableReason } from '@/app/lib/statpack-checkout';
+import { coerceDate } from '@/app/lib/timestamps';
 
 // ─── types & constants ───────────────────────────────────────────────────────
 
@@ -1030,9 +1031,7 @@ export default function StatpackCheckOffPage() {
       const rawContents: StatpackItem[] = Array.isArray(data.contents)
         ? data.contents.map((it: StatpackItem & { expirationDate?: unknown }) => ({
             ...it,
-            expirationDate: it.expirationDate instanceof Timestamp
-              ? it.expirationDate.toDate()
-              : it.expirationDate instanceof Date ? it.expirationDate : undefined,
+            expirationDate: coerceDate(it.expirationDate),
           }))
         : [];
 

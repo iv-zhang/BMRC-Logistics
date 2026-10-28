@@ -489,3 +489,21 @@ meaning off.
 **Data:** `scripts/normalize-expiration-months.cjs` (dry-run by default) rewrites legacy end-of-month and UTC-midnight values on `statpacks.contents[].expirationDate` and `inventory.batches[].expirationDate` to this shape.
 
 **Do not regress:** don't reintroduce end-of-month (`parseMonthInput(..., 'end')`) for expirations; day-precise date inputs (`parseDateInput`) stay day-precise.
+
+### D-33 — Statpack editor items stay on the checklist
+
+**Decision (2026-10-27):** the statpack editor may add items and change their par,
+pocket, lot, or serial, but cannot remove checklist items. Set par to 0 to stop
+stocking an item; the item remains visible during check-off. A par-0 consumable
+does not create a shortage or block Ready solely because its count is 0.
+
+**Enforcement:** remove item-removal controls from both editors and reject a
+contents save inside its transaction when its array is shorter than the live
+document's. Do not compare entry keys: a valid pocket move or lot/serial swap
+changes them. Custom warnings, exchange-bag assignments, and deleting a whole
+statpack are outside this item-removal rule.
+
+**Related safeguards:** checked-out packs must be checked in before being put
+into maintenance or pending initial check. Editor saves retain their opening
+snapshot and reject when live ownership, status, check-in, or audit observations
+have changed, preserving the unsaved draft for review.

@@ -42,14 +42,13 @@ import {
   onSnapshot,
   orderBy,
   query,
-  serverTimestamp,
   Timestamp,
   updateDoc,
 } from 'firebase/firestore';
 import { db } from '@/firebase';
 import type { Container, InventoryItem, Statpack, StatpackItem, StorageLocationRef } from '@/app/types';
 import { useUserRole } from '@/app/hooks/useUserRole';
-import { updateStatpackDetails } from '@/app/lib/statpacks';
+import { buildStatpackEditorPatch, updateStatpackDetails } from '@/app/lib/statpacks';
 import StatpackRestockChips from '@/app/components/statpack-restock-chips';
 import StatpackReadyOverride from '@/app/components/statpack-ready-override';
 import {
@@ -380,8 +379,7 @@ export default function AuditPage() {
 
   // ─── Statpack expected-contents editing ───────────────────────────────────
   const openContentEditor = useCallback((pack: Statpack) => {
-    // Deep-clone so in-modal edits never mutate the live onSnapshot array.
-    setEditingPack(JSON.parse(JSON.stringify(pack)) as Statpack);
+    setEditingPack(pack);
   }, []);
 
   const contentEditSummary = (before: StatpackItem[], after: StatpackItem[]): string => {
@@ -405,7 +403,7 @@ export default function AuditPage() {
     return parts.length ? parts.join('. ') : 'Contents edited (no add/remove/par changes)';
   };
 
-  const saveContentEdit = async (draft: Statpack) => {
+  const saveContentEdit = async (draft: Statpack, seed: Statpack) => {
     if (!user || savingPack) return;
     // Check-off entry matching applies counts to the first row matching
     // itemId + pocket + compartment, so duplicates silently miss updates.
@@ -426,27 +424,28 @@ export default function AuditPage() {
     }
     setSavingPack(true);
     try {
-      const original = statpacks.find((p) => p.id === draft.id);
-      const { id: _id, ...docFields } = draft;
-      void _id;
+      const original = seed;
       // One atomic write: pack update + statpack_logs row (status_change when
       // the status moved, else content_edit).
       await updateStatpackDetails(
         String(draft.id),
-        { ...docFields, contentsUpdatedAt: serverTimestamp() },
+        buildStatpackEditorPatch(draft, seed),
         {
           uid: effectiveUid || user.uid,
           name: userData?.fullName || user.displayName || user.email || 'Unknown',
         },
         { status: original?.status, name: original?.name ?? draft.name },
         contentEditSummary(original?.contents ?? [], draft.contents),
+        seed,
       );
       setEditingPack(null);
       showToast(`${draft.name} contents saved`, true);
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Failed to save contents', false);
+      throw e;
+    } finally {
+      setSavingPack(false);
     }
-    setSavingPack(false);
   };
 
   // ─── Multi-select + bulk move ─────────────────────────────────────────────

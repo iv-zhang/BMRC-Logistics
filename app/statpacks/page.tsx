@@ -31,7 +31,7 @@ import StatpackWidget from '@/app/components/statpack-widget';
 import StatpackLogHistory from '@/app/components/statpack-log-history';
 import StatpackImportModal from '@/app/components/statpack-import-modal';
 import { useUserRole } from '@/app/hooks/useUserRole';
-import { duplicateStatpack, updateStatpackDetails } from '@/app/lib/statpacks';
+import { buildStatpackEditorPatch, duplicateStatpack, updateStatpackDetails } from '@/app/lib/statpacks';
 import { useOrgConfig } from '@/app/hooks/useOrgConfig';
 import { canManageLogistics, canViewLogisticsArea } from '@/app/lib/roles';
 import { fetchAndEnrichItemDetails } from '@/app/lib/inventory';
@@ -62,6 +62,7 @@ export default function StatpacksListPage() {
   const [deletingPack, setDeletingPack] = useState<Statpack | null>(null);
   const [deletingPackLoading, setDeletingPackLoading] = useState(false);
   const [editingPack, setEditingPack] = useState<Statpack | null>(null);
+  const editorSeedRef = useRef<Statpack | null>(null);
   const checkoffDisclosure = useDisclosure();
   const [checkoffAction, setCheckoffAction] = useState<'checkin' | 'maintenance' | 'checkout'>('checkin');
   const importModalDisclosure = useDisclosure();
@@ -229,16 +230,6 @@ export default function StatpacksListPage() {
     });
   };
 
-  const removeContentItem = (index: number) => {
-    setEditingPack(prev => {
-      const base = prev || selectedPack;
-      if (!base) return prev;
-      const contents = Array.isArray(base.contents) ? [...base.contents] : [];
-      contents.splice(index, 1);
-      return ({ ...base, contents } as Statpack);
-    });
-  };
-
   const handleImportComplete = (items: StatpackItem[]) => {
     setEditingPack(prev => {
       const base = prev || selectedPack;
@@ -257,122 +248,6 @@ export default function StatpacksListPage() {
     }
     const d = typeof v === 'string' ? new Date(v) : v instanceof Date ? v : new Date(v as number);
     return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
-  };
-
-  // Remove `undefined` values recursively to make objects safe for Firestore
-  const sanitizeForFirestore = (v: unknown): unknown => {
-    if (v === undefined) return undefined;
-    if (v === null) return null;
-    if (v instanceof Date) return v;
-    if (Array.isArray(v)) {
-      return v.map((it) => sanitizeForFirestore(it)).filter((it) => it !== undefined);
-    }
-    if (typeof v === 'object') {
-      const out: Record<string, unknown> = {};
-      Object.keys(v).forEach((k) => {
-        const s = sanitizeForFirestore((v as Record<string, unknown>)[k]);
-        if (s !== undefined) out[k] = s;
-      });
-      return out;
-    }
-    return v;
-  };
-
-  // Build an explicit, whitelist-based payload for statpack updates to avoid
-  // sending any unexpected/undefined values to Firestore.
-  const buildStatpackUpdate = (pack: Record<string, unknown> | null) => {
-    if (!pack) return {};
-    const out: Record<string, unknown> = {};
-    const pickIf = (key: string, val: unknown) => {
-      if (val !== undefined) out[key] = val;
-    };
-
-    pickIf('name', pack.name);
-    pickIf('type', pack.type);
-    pickIf('status', pack.status);
-    pickIf('currentLocation', pack.currentLocation);
-    pickIf('assetValue', pack.assetValue);
-    pickIf('isCheckedOut', pack.isCheckedOut);
-    pickIf('assignedToUserId', pack.assignedToUserId);
-    pickIf('assignedToUserName', pack.assignedToUserName);
-    pickIf('checkedOutAt', pack.checkedOutAt instanceof Date ? pack.checkedOutAt : (pack.checkedOutAt ? new Date(pack.checkedOutAt as string | number) : undefined));
-    pickIf('lastCheckedBy', pack.lastCheckedBy);
-    pickIf('lastCheckedAt', pack.lastCheckedAt instanceof Date ? pack.lastCheckedAt : (pack.lastCheckedAt ? new Date(pack.lastCheckedAt as string | number) : undefined));
-
-    // compartments: canonicalize array entries
-    if (Array.isArray(pack.compartments)) {
-      out.compartments = pack.compartments.map((c: Record<string, unknown>) => {
-        const comp: Record<string, unknown> = {};
-        if (c.id !== undefined) comp.id = c.id;
-        if (c.name !== undefined) comp.name = c.name;
-        if (c.parentPocket !== undefined) comp.parentPocket = c.parentPocket;
-        if (typeof c.isSealed === 'boolean') comp.isSealed = c.isSealed;
-        if (c.sealNumber !== undefined) comp.sealNumber = c.sealNumber;
-        if (c.expirationDate instanceof Date) comp.expirationDate = c.expirationDate;
-        return comp;
-      });
-    }
-
-    // contents: whitelist per-item fields
-    if (Array.isArray(pack.contents)) {
-      out.contents = pack.contents.map((it: Record<string, unknown>) => {
-        const ci: Record<string, unknown> = {};
-        if (it.itemId !== undefined) ci.itemId = it.itemId;
-        if (it.itemDetails !== undefined) ci.itemDetails = it.itemDetails;
-        if (it.variantId !== undefined) ci.variantId = it.variantId;
-        if (it.variantName !== undefined) ci.variantName = it.variantName;
-        if (it.requiredQuantity !== undefined) ci.requiredQuantity = it.requiredQuantity;
-        if (it.currentQuantity !== undefined) ci.currentQuantity = it.currentQuantity;
-        if (it.pocket !== undefined) ci.pocket = it.pocket;
-        if (it.compartmentId !== undefined) ci.compartmentId = it.compartmentId;
-        if (it.batchId !== undefined) ci.batchId = it.batchId;
-        if (it.serialNumber !== undefined) ci.serialNumber = it.serialNumber;
-        if (it.assetInstanceId !== undefined) ci.assetInstanceId = it.assetInstanceId;
-        if (it.expirationDate instanceof Date) ci.expirationDate = it.expirationDate;
-        if (it.lotNumber !== undefined) ci.lotNumber = it.lotNumber;
-        if (it.effectiveExpiration instanceof Date) ci.effectiveExpiration = it.effectiveExpiration;
-        if (it.requiresExpirationCheck !== undefined) ci.requiresExpirationCheck = it.requiresExpirationCheck;
-        if (it.itemValue !== undefined) ci.itemValue = it.itemValue;
-        if (it.verificationRules !== undefined) ci.verificationRules = it.verificationRules;
-        if (it.customWarnings !== undefined) ci.customWarnings = it.customWarnings;
-        return ci;
-      });
-    }
-
-    // Maintenance logs (optional)
-    if (Array.isArray(pack.maintenance_logs)) {
-      out.maintenance_logs = pack.maintenance_logs.map((m: Record<string, unknown>) => ({
-        id: m.id,
-        timestamp: m.timestamp instanceof Date ? m.timestamp : (m.timestamp ? new Date(m.timestamp as string | number) : undefined),
-        serviceType: m.serviceType,
-        reason: m.reason,
-        technician: m.technician,
-        notes: m.notes,
-        status: m.status,
-        completedAt: m.completedAt instanceof Date ? m.completedAt : (m.completedAt ? new Date(m.completedAt as string | number) : undefined),
-      }));
-    }
-
-    return out;
-  };
-
-  // Recursively remove invalid Date objects (which would throw on toISOString)
-  const stripInvalidDates = (v: unknown): unknown => {
-    if (v === undefined) return undefined;
-    if (v === null) return null;
-    if (v instanceof Date) return isNaN(v.getTime()) ? undefined : v;
-    if (Array.isArray(v)) {
-      return v.map((it) => stripInvalidDates(it)).filter((it) => it !== undefined);
-    }
-    if (typeof v === 'object') {
-      const out: Record<string, unknown> = {};
-      Object.keys(v).forEach((k) => {
-        const s = stripInvalidDates((v as Record<string, unknown>)[k]);
-        if (s !== undefined) out[k] = s;
-      });
-      return out;
-    }
-    return v;
   };
 
   useEffect(() => {
@@ -517,6 +392,7 @@ export default function StatpacksListPage() {
 
   const handleOpenEditor = (pack: Statpack) => {
     setSelectedPack(pack);
+    editorSeedRef.current = pack;
     setEditingPack(null);
     editorDisclosure.onOpen();
   };
@@ -554,6 +430,7 @@ export default function StatpacksListPage() {
       newPackDisclosure.onClose();
       // Open the existing editor on the new pack so contents can be added.
       setSelectedPack({ id: ref.id, name, type: newPackType, status: 'Pending Initial Check', compartments: [], contents: [], isCheckedOut: false, currentLocation: '' } as unknown as Statpack);
+      editorSeedRef.current = { id: ref.id, name, type: newPackType, status: 'Pending Initial Check', compartments: [], contents: [], isCheckedOut: false, currentLocation: '' } as unknown as Statpack;
       setEditingPack(null);
       editorDisclosure.onOpen();
     } catch (e) {
@@ -976,10 +853,11 @@ export default function StatpacksListPage() {
                   <div className="flex-[0.3] min-w-[160px]">
                     <p className="text-sm font-semibold">Status</p>
                     <Select className="w-full" selectedKeys={[String((editingPack?.status ?? selectedPack?.status) || 'Ready')]} onChange={(e) => setEditingPack(prev => ({ ...(prev || selectedPack), status: e.target.value } as Statpack))}>
-                      <SelectItem key="Ready">Ready</SelectItem>
+                      <SelectItem key="Ready" isDisabled={!!editorSeedRef.current?.isCheckedOut}>Ready</SelectItem>
                       <SelectItem key="In Use">In Use</SelectItem>
-                      <SelectItem key="Not Ready">Not Ready</SelectItem>
+                      <SelectItem key="Not Ready" isDisabled={!!editorSeedRef.current?.isCheckedOut}>Not Ready</SelectItem>
                     </Select>
+                    {editorSeedRef.current?.isCheckedOut && <p className="mt-1 text-xs text-foreground-500">Check this pack in before changing its status.</p>}
                   </div>
                 </div>
 
@@ -1087,21 +965,17 @@ export default function StatpacksListPage() {
                         updateEditingContent(gi, patch);
                       };
 
-                      const handleRemoveVisible = (visibleIndex: number) => {
-                        const gi = getGlobalIndex(visibleIndex);
-                        if (gi === -1) return;
-                        removeContentItem(gi);
-                      };
-
                       return (
+                        <>
+                        <p className="mb-2 text-xs text-foreground-500">Set par to 0 to stop stocking an item. It stays on the checklist.</p>
                         <SortableStatpackContentList
                           items={visibleContents}
                           onReorder={handleReorder}
                           onUpdateItem={handleUpdateVisible}
-                          onRemoveItem={handleRemoveVisible}
                           onAttachAsset={canManage ? handleAttachAsset : undefined}
                           onEditAssetPolicy={canManage ? handleEditAssetPolicy : undefined}
                         />
+                        </>
                       );
                     })()}
                   </div>
@@ -1117,26 +991,15 @@ export default function StatpacksListPage() {
                   const packToSave = editingPack || selectedPack;
                   if (!packToSave) return;
                   try {
-                    // normalize expiration date strings to Date objects
-                    const normalized = { ...packToSave } as unknown as Record<string, unknown>;
-                    if (Array.isArray(normalized.contents)) {
-                      normalized.contents = normalized.contents.map((it: Record<string, unknown>) => {
-                        const copy = { ...it };
-                        if (copy.expirationDate && typeof copy.expirationDate === 'string' && copy.expirationDate.length > 0) {
-                          copy.expirationDate = new Date(copy.expirationDate);
-                        }
-                        return copy;
-                      });
-                    }
-                    // Build a whitelist payload and send only allowed fields to Firestore
-                    const payload = buildStatpackUpdate(normalized);
-                    const cleaned = stripInvalidDates(payload);
-                    const previous = statpacks.find((p) => p.id === packToSave.id);
+                    const seed = editorSeedRef.current;
+                    if (!seed) throw new Error('Reopen the editor before saving.');
                     await updateStatpackDetails(
                       packToSave.id as string,
-                      { ...(cleaned as Record<string, unknown>), contentsUpdatedAt: serverTimestamp() },
+                      buildStatpackEditorPatch(packToSave, seed),
                       { uid: effectiveUid || user?.uid, name: actorName },
-                      { status: previous?.status, name: previous?.name },
+                      { status: seed.status, name: seed.name },
+                      undefined,
+                      seed,
                     );
                     editorDisclosure.onClose();
                     setEditingPack(null);
@@ -1150,7 +1013,7 @@ export default function StatpacksListPage() {
                     // refresh handled by snapshot listener
                   } catch (err) {
                     console.error('Failed to save statpack', err);
-                    alert('Failed to save statpack');
+                    alert(err instanceof Error ? err.message : 'Failed to save statpack');
                   }
                 }}>Save</Button>
               )}

@@ -15,7 +15,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Autocomplete, AutocompleteItem } from '@heroui/react';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { collection, onSnapshot, Timestamp } from 'firebase/firestore';
 import { db } from '@/firebase';
 import {
   Plus, Minus, Link2, Search, MapPin, ChevronDown, Pencil, X, Check,
@@ -137,6 +137,16 @@ function resolveBatchForItem(item: InventoryItem): InventoryBatch | null {
 type Popover = null | 'name' | 'status' | 'location' | 'additem';
 type RightTab = 'contents' | 'bags';
 
+function cloneEditorValue<T>(value: T): T {
+  if (value instanceof Timestamp) return new Timestamp(value.seconds, value.nanoseconds) as T;
+  if (value instanceof Date) return new Date(value.getTime()) as T;
+  if (Array.isArray(value)) return value.map(cloneEditorValue) as T;
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, cloneEditorValue(entry)])) as T;
+  }
+  return value;
+}
+
 export default function StatpackEditorModal({
   pack,
   isOpen,
@@ -149,12 +159,14 @@ export default function StatpackEditorModal({
   isOpen: boolean;
   onClose: () => void;
   /** Persist the edited pack. Should write to Firestore and resolve. */
-  onSave: (draft: Statpack) => Promise<void> | void;
+  onSave: (draft: Statpack, seed: Statpack) => Promise<void> | void;
   /** Delete the pack (and route away). */
   onDelete?: () => Promise<void> | void;
   canDelete?: boolean;
 }) {
   const [draft, setDraft] = useState<Statpack | null>(null);
+  const openingSeed = useRef<Statpack | null>(null);
+  const [saveError, setSaveError] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
   const [pocket, setPocket] = useState<Pocket | 'all'>('all');
   const [search, setSearch] = useState('');
@@ -187,16 +199,17 @@ export default function StatpackEditorModal({
   // transition (and once `pack` first becomes available if it opened early).
   const seededRef = useRef(false);
   useEffect(() => {
-    if (!isOpen) { seededRef.current = false; return; }
+    if (!isOpen) { seededRef.current = false; openingSeed.current = null; return; }
     if (!seededRef.current && pack) {
-      const seeded = JSON.parse(JSON.stringify(pack)) as Statpack;
+      openingSeed.current = cloneEditorValue(pack);
+      const seeded = cloneEditorValue(pack);
       // Normalize the legacy flat `exchangeBagIds` into pocket-aware assignments
       // once, at seed time, via the shared resolver — never read either raw
       // field directly elsewhere in this component.
       seeded.exchangeBagAssignments = resolveBagAssignments(seeded);
       setDraft(seeded);
       setFilter('all'); setPocket('all'); setSearch('');
-      setExpanded(null); setPopover(null); setRightTab('contents'); setAddItemError('');
+      setExpanded(null); setPopover(null); setRightTab('contents'); setAddItemError(''); setSaveError('');
       seededRef.current = true;
     }
   }, [isOpen, pack]);
@@ -232,9 +245,9 @@ export default function StatpackEditorModal({
   }, [isOpen]);
 
   const patchPack = (fn: (p: Statpack) => void) =>
-    setDraft(prev => { if (!prev) return prev; const next = structuredClone(prev); fn(next); return next; });
+    setDraft(prev => { if (!prev) return prev; const next = cloneEditorValue(prev); fn(next); return next; });
   const patchItem = (idx: number, fn: (it: StatpackItem) => void) =>
-    setDraft(prev => { if (!prev) return prev; const next = structuredClone(prev); const it = next.contents[idx]; if (it) fn(it); return next; });
+    setDraft(prev => { if (!prev) return prev; const next = cloneEditorValue(prev); const it = next.contents[idx]; if (it) fn(it); return next; });
   const patchBagAssignment = (idx: number, fn: (a: ExchangeBagAssignment) => void) =>
     patchPack(p => {
       const list = [...(p.exchangeBagAssignments ?? [])];
@@ -351,12 +364,15 @@ export default function StatpackEditorModal({
     patchPack(p => { p.exchangeBagAssignments = (p.exchangeBagAssignments ?? []).filter((_, i) => i !== idx); });
 
   const doSave = async () => {
-    if (!draft) return;
+    if (!draft || !openingSeed.current) return;
     setSaving(true);
+    setSaveError('');
     try {
       // recompute a fresh asset value from contents so the summary stays in sync
       const value = items.reduce((s, i) => s + itemValue(i) * (i.requiredQuantity || 0), 0);
-      await onSave({ ...draft, assetValue: value });
+      await onSave({ ...draft, assetValue: value }, openingSeed.current);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'Failed to save statpack. Try again.');
     } finally {
       setSaving(false);
     }
@@ -436,14 +452,16 @@ export default function StatpackEditorModal({
                 <div data-keepopen="" className="absolute top-[calc(100%+8px)] right-0 z-40 w-56 max-w-[calc(100vw-2rem)] bg-content1 border border-divider rounded-large shadow-xl p-1.5 flex flex-col gap-0.5">
                   {STATUS_OPTIONS.map(s => {
                     const m = statusMeta(s); const active = draft.status === s;
+                    const disabled = !!openingSeed.current?.isCheckedOut && s !== 'In Use';
                     return (
-                      <button key={s} onClick={() => { patchPack(p => { p.status = s; }); setPopover(null); }}
-                        className={`flex items-center gap-2 rounded-medium px-2.5 py-3 md:py-2 text-left transition-colors ${active ? m.soft : 'hover:bg-content2'}`}>
+                      <button key={s} disabled={disabled} onClick={() => { patchPack(p => { p.status = s; }); setPopover(null); }}
+                        className={`flex items-center gap-2 rounded-medium px-2.5 py-3 md:py-2 text-left transition-colors ${disabled ? 'opacity-40 cursor-not-allowed' : active ? m.soft : 'hover:bg-content2'}`}>
                         <span className={`w-2 h-2 rounded-[3px] ${m.dot}`} />
                         <span className={`text-[13px] font-semibold ${m.text}`}>{s}</span>
                       </button>
                     );
                   })}
+                  {openingSeed.current?.isCheckedOut && <p className="px-2.5 py-2 text-xs text-foreground-500">Check this pack in before changing its status.</p>}
                 </div>
               )}
             </div>
@@ -639,7 +657,6 @@ export default function StatpackEditorModal({
                       expanded={expanded === idx}
                       onToggleExpand={() => setExpanded(expanded === idx ? null : idx)}
                       patch={(fn) => patchItem(idx, fn)}
-                      onRemove={() => { patchPack(p => { p.contents.splice(idx, 1); }); setExpanded(null); }}
                     />
                   ))}
 
@@ -690,7 +707,8 @@ export default function StatpackEditorModal({
             {/* footer — on phone the body is the scroller, so this must stick or Save
                 scrolls off the end of a long pack. Needs its own bg: sticky chrome over
                 scrolling content bleeds through otherwise. */}
-            <div className="border-t border-divider bg-content1 px-[18px] py-3 flex items-center gap-2.5 flex-none max-md:sticky max-md:bottom-0 max-md:z-10">
+            <div className="border-t border-divider bg-content1 px-[18px] py-3 flex flex-wrap items-center gap-2.5 flex-none max-md:sticky max-md:bottom-0 max-md:z-10">
+              {saveError && <p role="alert" className="w-full text-xs text-danger">{saveError}</p>}
               {/* Desktop keeps Delete here; on phone it lives in the danger zone above. */}
               {canDelete && onDelete && (
                 <button onClick={() => onDelete()} className="hidden md:flex items-center gap-1.5 text-[12.5px] font-semibold text-danger px-1 py-2 hover:opacity-80 transition-opacity">
@@ -764,13 +782,12 @@ function MetaRow({ label, value, valueClass = 'text-foreground' }: { label: stri
 // ── statpack activity log (left column) ────────────────────────────
 // ── item row ───────────────────────────────────────────────────────
 function ItemRow({
-  it, expanded, onToggleExpand, patch, onRemove,
+  it, expanded, onToggleExpand, patch,
 }: {
   it: StatpackItem;
   expanded: boolean;
   onToggleExpand: () => void;
   patch: (fn: (it: StatpackItem) => void) => void;
-  onRemove: () => void;
 }) {
   const cat = getCatCfg(itemCategory(it));
   const asset = isAsset(it);
@@ -856,6 +873,7 @@ function ItemRow({
                 onDec={() => patch(x => { x.requiredQuantity = Math.max(0, x.requiredQuantity - 1); })}
                 onInc={() => patch(x => { x.requiredQuantity += 1; })}
                 onInput={(n) => patch(x => { x.requiredQuantity = n; })} editable />
+              <span className="text-[10.5px] text-foreground-500">Set par to 0 to stop stocking this item. It stays on the checklist.</span>
             </Field>
             <Field label="On-hand quantity">
               <Stepper value={it.currentQuantity} valueClass={short ? 'text-warning' : 'text-success'}
@@ -922,13 +940,6 @@ function ItemRow({
             </button>
           </div>
 
-          {/* footer actions */}
-          <div className="flex items-center gap-2 mt-3 pt-3 border-t border-divider">
-            <button onClick={onRemove}
-              className="flex items-center gap-1.5 text-xs font-semibold text-danger bg-danger-50 dark:bg-danger-900/20 rounded-medium px-3 py-3 md:py-2 hover:opacity-80 transition-opacity">
-              <Trash2 size={13} /> Remove
-            </button>
-          </div>
         </div>
       )}
     </div>

@@ -174,7 +174,7 @@ export default function AssetsPage() {
   
   const openStatpackEditorModal = (asset: AssetRecord) => {
     if (!asset || asset.type !== 'statpack') return;
-    const pack = JSON.parse(JSON.stringify(asset.data)) as Statpack;
+    const pack = asset.data as Statpack;
     // preserve the Firestore document id so saving updates the existing statpack
     const packWithId = { ...pack, id: asset.id } as Statpack;
     setEditingPack(packWithId);
@@ -193,18 +193,18 @@ export default function AssetsPage() {
   // through the shared helper so the write is sanitized (removeUndefined),
   // stamps `contentsUpdatedAt`, and logs a `content_edit` statpack_logs row —
   // previously this was a raw updateDoc with none of that.
-  const saveStatpackDraft = async (draft: Statpack) => {
+  const saveStatpackDraft = async (draft: Statpack, seed: Statpack) => {
     try {
       await saveStatpackContents(
         draft,
         { uid: effectiveUid ?? undefined, name: actorName },
-        editingPack?.status,
+        seed,
       );
       statpackDisclosure.onClose();
       setEditingPack(null);
     } catch (err) {
       console.error('Failed to save statpack:', err);
-      alert('Failed to save statpack');
+      throw err;
     }
   };
   const deleteStatpackFromEditor = async () => {
@@ -395,7 +395,7 @@ export default function AssetsPage() {
       setSelectedAsset(null);
     } catch (error) {
       console.error('Failed to submit maintenance:', error);
-      alert('Failed to record maintenance');
+      alert(error instanceof Error ? error.message : 'Failed to record maintenance');
     }
   };
 
@@ -428,7 +428,7 @@ export default function AssetsPage() {
       }
     } catch (error) {
       console.error('Failed to complete maintenance:', error);
-      alert('Failed to complete maintenance');
+      alert(error instanceof Error ? error.message : 'Failed to complete maintenance');
     }
   };
 
@@ -595,7 +595,7 @@ export default function AssetsPage() {
       setIsEditingDetails(false);
     } catch (error) {
       console.error('Failed to save details:', error);
-      alert('Failed to save changes');
+      alert(error instanceof Error ? error.message : 'Failed to save changes');
     }
   };
 
@@ -1191,9 +1191,10 @@ export default function AssetsPage() {
                     ? ['Ready', 'Not Ready']
                     : ['Ready', 'In Use', 'Not Ready', 'Pending Initial Check']
                   ).map((statusKey) => (
-                    <SelectItem key={statusKey}>{statusKey}</SelectItem>
+                    <SelectItem key={statusKey} isDisabled={selectedAsset?.type === 'statpack' && !!(selectedAsset.data as Statpack).isCheckedOut && statusKey !== 'In Use'}>{statusKey}</SelectItem>
                   ))}
                 </Select>
+                {selectedAsset?.type === 'statpack' && !!(selectedAsset.data as Statpack).isCheckedOut && <p className="col-span-2 text-xs text-foreground-500">Check this pack in before changing its status.</p>}
                 <Input
                   label="Location"
                   value={detailsForm.currentLocation}
