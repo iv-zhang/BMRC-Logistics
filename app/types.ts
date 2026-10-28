@@ -903,7 +903,9 @@ export interface StatpackLog {
   id?: string;
   statpackId: string;
   statpackName: string;
-  action: 'checkout' | 'checkin' | 'restock' | 'created' | 'maintenance' | 'audit' | 'content_edit';
+  action: 'checkout' | 'checkin' | 'restock' | 'created' | 'maintenance' | 'audit' | 'content_edit' | 'status_change';
+  /** Manual status transition (admin edit / Ready override); set on status_change and content_edit rows. */
+  statusChange?: { from: string; to: string };
   pairId?: string; // Explicit pairing between checkout + checkin
   quickCheckin?: boolean; // True when member used quick check-in (no items used)
   /** Event this checkout was for (set on checkout, carried onto the paired checkin). */
@@ -1189,6 +1191,7 @@ export interface InventoryLog {
   location?: string; // Where the action took place or asset was located
   notes?: string; // Additional context/reason
   newStatus?: string; // For status change events
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- free-form event payload read as ReactNode by consumers
   details?: Record<string, any>; // Catch-all for additional event data
 }
 
@@ -1643,5 +1646,6 @@ export interface ApparelClaim {
   /** Groups claimed→released/expired/picked_up/paid/loaned/returned into one lifecycle. */
   pairId?: string;
   notes?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- free-form event payload read as ReactNode by consumers
   details?: Record<string, any>;
 }

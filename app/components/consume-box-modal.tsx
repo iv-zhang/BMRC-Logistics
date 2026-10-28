@@ -18,6 +18,8 @@ import type { InventoryItem, InventoryBatch, PurchaseInfo } from '@/app/types';
 import { consumeBox } from '@/app/lib/inventory';
 import { auth } from '@/firebase';
 
+type SelectChildren = Extract<React.ComponentProps<typeof Select>['children'], React.ReactElement>;
+
 interface ConsumeBoxModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -92,9 +94,9 @@ export default function ConsumeBoxModal({
 
       if (onSuccess) onSuccess();
       onClose();
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Failed to consume box:', err);
-      setError(err.message || 'Failed to consume box');
+      setError((err instanceof Error && err.message) || "Failed to consume box");
     } finally {
       setIsSubmitting(false);
     }
@@ -167,7 +169,7 @@ export default function ConsumeBoxModal({
                     : 'date unknown'}
                   )
                 </SelectItem>
-              )) as any}
+              )) as unknown as SelectChildren}
             </Select>
 
             {/* Notes */}

@@ -298,7 +298,7 @@ function DroppableColumn({ status, children }: { status: TeamTaskStatus; childre
 
 export default function CommitteeBoardPage() {
   const router = useRouter();
-  const { user, userData, role, loading: authLoading } = useUserRole();
+  const { user, userData, role, effectiveUid, loading: authLoading } = useUserRole();
   const { tasks, loading: tasksLoading } = useTeamTasks();
   const { cards: auditCards } = useAuditTaskCards();
 
@@ -374,11 +374,11 @@ export default function CommitteeBoardPage() {
   const [opLoading, setOpLoading] = useState(false);
 
   const visibleTasks = useMemo(() => {
-    if (viewMode === 'mine' && user) {
-      return tasks.filter((t) => t.owners.some((o) => o.id === user.uid));
+    if (viewMode === 'mine' && effectiveUid) {
+      return tasks.filter((t) => t.owners.some((o) => o.id === effectiveUid));
     }
     return tasks;
-  }, [tasks, viewMode, user]);
+  }, [tasks, viewMode, effectiveUid]);
 
   const columns = useMemo(() => {
     const byStatus: Record<TeamTaskStatus, TeamTask[]> = {
@@ -395,7 +395,7 @@ export default function CommitteeBoardPage() {
 
   const resetForm = () => {
     setFormTitle('');
-    setFormOwnerIds(user?.uid ? [user.uid] : []);
+    setFormOwnerIds(effectiveUid ? [effectiveUid] : []);
     setFormDoD('');
     setFormDue('');
     setEditingTask(null);
@@ -436,7 +436,7 @@ export default function CommitteeBoardPage() {
           status: 'backlog',
           subtasks: [],
           updates: [],
-          createdBy: user?.uid ?? 'unknown',
+          createdBy: effectiveUid ?? 'unknown',
           createdByName: userData?.fullName ?? user?.email ?? 'Unknown',
           createdAt: serverTimestamp(),
         });
@@ -456,7 +456,7 @@ export default function CommitteeBoardPage() {
     const update: Record<string, unknown> = { status: newStatus };
     if (newStatus === 'done') {
       update.completedAt = serverTimestamp();
-      update.completedBy = user?.uid ?? 'unknown';
+      update.completedBy = effectiveUid ?? 'unknown';
       update.completedByName = userData?.fullName ?? user?.email ?? 'Unknown';
     } else if (task.status === 'done') {
       update.completedAt = null;
@@ -520,7 +520,7 @@ export default function CommitteeBoardPage() {
         updates: arrayUnion({
           id: `u-${Date.now()}`,
           text,
-          authorId: user?.uid ?? 'unknown',
+          authorId: effectiveUid ?? 'unknown',
           authorName: userData?.fullName ?? user?.email ?? 'Unknown',
           createdAt: Timestamp.now(),
         }),
@@ -569,7 +569,7 @@ export default function CommitteeBoardPage() {
     );
   }
 
-  const canContribute = !!drawerTask && (isAdmin || drawerTask.owners.some((o) => o.id === user?.uid));
+  const canContribute = !!drawerTask && (isAdmin || drawerTask.owners.some((o) => o.id === effectiveUid));
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
@@ -697,7 +697,7 @@ export default function CommitteeBoardPage() {
                           key={task.id}
                           task={task}
                           isAdmin={isAdmin}
-                          userUid={user?.uid}
+                          userUid={effectiveUid ?? undefined}
                           onOpen={(t) => setDrawerId(t.id ?? null)}
                           onEdit={openEdit}
                           onDelete={handleDelete}

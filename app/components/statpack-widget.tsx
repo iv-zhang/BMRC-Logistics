@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
+import { canManageLogistics } from '@/app/lib/roles';
 import {
   Button,
   Chip,
@@ -257,7 +258,7 @@ export default function StatpackWidget({
             <QrCode size={14} />
           </button>
         </Tooltip>
-        {userRole === 'admin' && onAudit && (
+        {canManageLogistics(userRole) && onAudit && (
           <Tooltip content="Run audit">
             <button
               onClick={() => onAudit(statpack)}
@@ -268,7 +269,7 @@ export default function StatpackWidget({
             </button>
           </Tooltip>
         )}
-        {userRole === 'admin' && onDuplicate && (
+        {canManageLogistics(userRole) && onDuplicate && (
           <Tooltip content="Duplicate statpack">
             <Button
               size="sm"

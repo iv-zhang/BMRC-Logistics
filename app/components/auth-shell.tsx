@@ -1,7 +1,9 @@
 'use client';
-import React, { useEffect, useState } from 'react';
+import React, { useSyncExternalStore } from 'react';
 import Image from 'next/image';
 import { useTheme } from 'next-themes';
+
+const subscribeNoop = () => () => {};
 
 export interface AuthShellProps {
   title: string;
@@ -16,8 +18,8 @@ export interface AuthShellProps {
  */
 export default function AuthShell({ title, subtitle, children }: AuthShellProps) {
   const { theme } = useTheme();
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  // false on the server / first hydration pass, true after mount (no setState-in-effect).
+  const mounted = useSyncExternalStore(subscribeNoop, () => true, () => false);
   const isDark = mounted && theme === 'dark';
 
   return (

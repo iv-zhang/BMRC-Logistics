@@ -29,6 +29,7 @@ import { collection, onSnapshot, orderBy, query, Timestamp } from 'firebase/fire
 import { db } from '@/firebase';
 import type { InventoryItem, InventoryBatch, Statpack } from '@/app/types';
 import { useUserRole } from '@/app/hooks/useUserRole';
+import LoadFailureNotice, { describeLoadError } from '@/app/components/load-failure-notice';
 import {
   buildExceptions,
   type ReconciliationException,
@@ -109,6 +110,7 @@ export default function ReconciliationPage() {
   const [statpacks, setStatpacks] = useState<Statpack[]>([]);
   const [invLoaded, setInvLoaded] = useState(false);
   const [packsLoaded, setPacksLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<unknown>(null);
 
   // ── Live inventory ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -117,6 +119,9 @@ export default function ReconciliationPage() {
     const unsub = onSnapshot(q, (snap) => {
       setInventory(snap.docs.map((d) => hydrateItem(d.id, d.data())));
       setInvLoaded(true);
+    }, (err) => {
+      console.error('Reconciliation: inventory listener failed', err);
+      setLoadError(err);
     });
     return () => unsub();
   }, [user, isAdmin]);
@@ -134,6 +139,9 @@ export default function ReconciliationPage() {
         })) as Statpack[],
       );
       setPacksLoaded(true);
+    }, (err) => {
+      console.error('Reconciliation: statpacks listener failed', err);
+      setLoadError(err);
     });
     return () => unsub();
   }, [user, isAdmin]);
@@ -155,13 +163,27 @@ export default function ReconciliationPage() {
     return g;
   }, [exceptions]);
 
-  const loading = authLoading || (isAdmin && (!invLoaded || !packsLoaded));
+  const loading = authLoading || (isAdmin && !loadError && (!invLoaded || !packsLoaded));
 
   // ── Loading ──────────────────────────────────────────────────────────────────
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center">
         <Spinner size="lg" color="primary" />
+      </div>
+    );
+  }
+
+  if (isAdmin && loadError) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center p-4">
+        <div className="max-w-md w-full">
+          <LoadFailureNotice
+            title="Couldn't load the exceptions report"
+            message={describeLoadError(loadError)}
+            onRetry={() => window.location.reload()}
+          />
+        </div>
       </div>
     );
   }

@@ -3,35 +3,35 @@
  * Tests verifyAssetAgainstRules function with various O₂ scenarios
  */
 
-import { describe, it, expect, vi } from 'vitest';
-import { verifyAssetAgainstRules } from '../inventory';
-import type { StatpackItem, AssetVerificationRules } from '@/app/types';
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
 
-// Mock Firestore
-vi.mock('@/firebase', () => ({
-  db: {},
-  auth: {},
-}));
+// The app's Firebase client is created at import time; point it at the (never
+// contacted here) emulator project so no real credentials are needed. Every test
+// passes `inventoryItem`, so verifyAssetAgainstRules never reads Firestore.
+process.env.FIRESTORE_EMULATOR_HOST ||= '127.0.0.1:8080';
+await import('../../../scripts/emulator/guard');
+const { verifyAssetAgainstRules: verifyRaw } = await import('../inventory');
+import type { StatpackItem, AssetVerificationRules, InventoryItem } from '@/app/types';
 
-vi.mock('firebase/firestore', () => ({
-  doc: vi.fn(),
-  getDoc: vi.fn(),
-  collection: vi.fn(),
-  runTransaction: vi.fn(),
-  serverTimestamp: vi.fn(() => new Date()),
-}));
+const verifyAssetAgainstRules = (params: Parameters<typeof verifyRaw>[0]) =>
+  verifyRaw({ inventoryItem: params.statpackItem.itemDetails, ...params });
 
 describe('O₂ PSI Validation', () => {
-  const createMockStatpackItem = (rules?: AssetVerificationRules): StatpackItem => ({
-    itemId: 'oxygen-tank-001',
-    itemDetails: {
-      name: 'Oxygen Tank D-Cylinder',
-      isOxygen: true,
-      verificationPolicy: rules,
-    },
-    requiredQuantity: 1,
-    pocket: 'main',
-  });
+  // Partial fixture cast: only the fields verifyAssetAgainstRules reads are populated.
+  const createMockStatpackItem = (rules?: AssetVerificationRules): StatpackItem =>
+    ({
+      itemId: 'oxygen-tank-001',
+      itemDetails: {
+        name: 'Oxygen Tank D-Cylinder',
+        isOxygen: true,
+        verificationPolicy: rules,
+      } as unknown as InventoryItem,
+      requiredQuantity: 1,
+      currentQuantity: 1,
+      batchId: 'batch-001',
+      pocket: 'main',
+    }) as unknown as StatpackItem;
 
   describe('Missing O₂ PSI', () => {
     it('should return warning when O₂ PSI is required but not provided', async () => {
@@ -42,10 +42,10 @@ describe('O₂ PSI Validation', () => {
         scannedO2Psi: undefined,
       });
 
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0].warningType).toBe('asset_status');
-      expect(warnings[0].message).toContain('O₂ PSI reading required');
-      expect(warnings[0].message).toContain('1800');
+      assert.equal(warnings.length, 1);
+      assert.equal(warnings[0].warningType, 'asset_status');
+      assert.ok(warnings[0].message.includes('O₂ PSI reading required'));
+      assert.ok(warnings[0].message.includes('1800'));
     });
 
     it('should return warning when O₂ PSI is null', async () => {
@@ -53,12 +53,12 @@ describe('O₂ PSI Validation', () => {
 
       const warnings = await verifyAssetAgainstRules({
         statpackItem,
-        scannedO2Psi: null as any,
+        scannedO2Psi: null as unknown as number,
       });
 
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0].warningType).toBe('asset_status');
-      expect(warnings[0].message).toContain('O₂ PSI reading required');
+      assert.equal(warnings.length, 1);
+      assert.equal(warnings[0].warningType, 'asset_status');
+      assert.ok(warnings[0].message.includes('O₂ PSI reading required'));
     });
   });
 
@@ -71,11 +71,11 @@ describe('O₂ PSI Validation', () => {
         scannedO2Psi: 1500,
       });
 
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0].warningType).toBe('asset_status');
-      expect(warnings[0].message).toContain('O₂ PSI too low');
-      expect(warnings[0].message).toContain('1500');
-      expect(warnings[0].message).toContain('1800');
+      assert.equal(warnings.length, 1);
+      assert.equal(warnings[0].warningType, 'asset_status');
+      assert.ok(warnings[0].message.includes('O₂ PSI too low'));
+      assert.ok(warnings[0].message.includes('1500'));
+      assert.ok(warnings[0].message.includes('1800'));
     });
 
     it('should return warning when O₂ PSI is at minimum threshold minus 1', async () => {
@@ -86,8 +86,8 @@ describe('O₂ PSI Validation', () => {
         scannedO2Psi: 1999,
       });
 
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0].message).toContain('O₂ PSI too low');
+      assert.equal(warnings.length, 1);
+      assert.ok(warnings[0].message.includes('O₂ PSI too low'));
     });
 
     it('should return warning for very low O₂ PSI (near empty)', async () => {
@@ -98,9 +98,9 @@ describe('O₂ PSI Validation', () => {
         scannedO2Psi: 500,
       });
 
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0].message).toContain('500');
-      expect(warnings[0].warningType).toBe('asset_status');
+      assert.equal(warnings.length, 1);
+      assert.ok(warnings[0].message.includes('500'));
+      assert.equal(warnings[0].warningType, 'asset_status');
     });
   });
 
@@ -113,7 +113,7 @@ describe('O₂ PSI Validation', () => {
         scannedO2Psi: 1800,
       });
 
-      expect(warnings).toHaveLength(0);
+      assert.equal(warnings.length, 0);
     });
 
     it('should return no warnings when O₂ PSI is above minimum threshold', async () => {
@@ -124,7 +124,7 @@ describe('O₂ PSI Validation', () => {
         scannedO2Psi: 2000,
       });
 
-      expect(warnings).toHaveLength(0);
+      assert.equal(warnings.length, 0);
     });
 
     it('should return no warnings when O₂ PSI is at full capacity', async () => {
@@ -135,7 +135,7 @@ describe('O₂ PSI Validation', () => {
         scannedO2Psi: 2200,
       });
 
-      expect(warnings).toHaveLength(0);
+      assert.equal(warnings.length, 0);
     });
   });
 
@@ -148,7 +148,7 @@ describe('O₂ PSI Validation', () => {
         scannedO2Psi: undefined,
       });
 
-      expect(warnings).toHaveLength(0);
+      assert.equal(warnings.length, 0);
     });
 
     it('should return no warnings when requireO2PsiMin is 0', async () => {
@@ -159,7 +159,7 @@ describe('O₂ PSI Validation', () => {
         scannedO2Psi: undefined,
       });
 
-      expect(warnings).toHaveLength(0);
+      assert.equal(warnings.length, 0);
     });
 
     it('should handle O₂ PSI of 0 (empty tank)', async () => {
@@ -170,9 +170,9 @@ describe('O₂ PSI Validation', () => {
         scannedO2Psi: 0,
       });
 
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0].message).toContain('O₂ PSI too low');
-      expect(warnings[0].message).toContain('0');
+      assert.equal(warnings.length, 1);
+      assert.ok(warnings[0].message.includes('O₂ PSI too low'));
+      assert.ok(warnings[0].message.includes('0'));
     });
 
     it('should handle negative O₂ PSI (sensor error)', async () => {
@@ -183,8 +183,8 @@ describe('O₂ PSI Validation', () => {
         scannedO2Psi: -100,
       });
 
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0].message).toContain('O₂ PSI too low');
+      assert.equal(warnings.length, 1);
+      assert.ok(warnings[0].message.includes('O₂ PSI too low'));
     });
 
     it('should handle extremely high O₂ PSI (overpressure)', async () => {
@@ -197,7 +197,7 @@ describe('O₂ PSI Validation', () => {
         scannedO2Psi: 5000,
       });
 
-      expect(warnings).toHaveLength(0);
+      assert.equal(warnings.length, 0);
     });
   });
 
@@ -213,8 +213,8 @@ describe('O₂ PSI Validation', () => {
         scannedO2Psi: 1500,
       });
 
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0].message).toContain('O₂ PSI too low');
+      assert.equal(warnings.length, 1);
+      assert.ok(warnings[0].message.includes('O₂ PSI too low'));
       // Advisory only affects severity, not whether warnings are returned
     });
   });

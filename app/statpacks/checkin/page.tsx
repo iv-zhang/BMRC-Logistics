@@ -29,12 +29,13 @@ import { useUserRole } from '@/app/hooks/useUserRole';
 
 export default function CheckinPage() {
   const router = useRouter();
-  const { role } = useUserRole();
+  const { role, effectiveUid } = useUserRole();
   const isAdmin = canManageLogistics(role);
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [statpacks, setStatpacks] = useState<Statpack[]>([]);
   const [filteredPacks, setFilteredPacks] = useState<Statpack[]>([]);
   const [loading, setLoading] = useState(true);
+  const [authResolved, setAuthResolved] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
@@ -53,13 +54,20 @@ export default function CheckinPage() {
   const [selectedAssetSerial, setSelectedAssetSerial] = useState<string | null>(null);
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => setUser(u));
+    const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setAuthResolved(true); });
     return () => unsub();
   }, []);
 
   useEffect(() => {
+    if (authResolved && !user) {
+      router.replace(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+    }
+  }, [authResolved, user, router]);
+
+  useEffect(() => {
     if (!user) return;
     setLoading(true);
+    setLoadError(null);
     // No where(): status+name needs a composite index; filter client-side (see statpack-checkout.ts).
     const q = query(collection(db, 'statpacks'), orderBy('name'));
     const unsub = onSnapshot(q, (snap) => {
@@ -97,8 +105,8 @@ export default function CheckinPage() {
   useEffect(() => {
     if (!searchQuery.trim()) {
       const sorted = [...statpacks].sort((a, b) => {
-        const aIsUsers = a.assignedToUserId === user?.uid ? 0 : 1;
-        const bIsUsers = b.assignedToUserId === user?.uid ? 0 : 1;
+        const aIsUsers = a.assignedToUserId === effectiveUid ? 0 : 1;
+        const bIsUsers = b.assignedToUserId === effectiveUid ? 0 : 1;
         return aIsUsers - bIsUsers;
       });
       setFilteredPacks(sorted);
@@ -111,7 +119,7 @@ export default function CheckinPage() {
       p.id?.toLowerCase().includes(q) ||
       p.assignedToUserName?.toLowerCase().includes(q)
     ));
-  }, [searchQuery, statpacks, user]);
+  }, [searchQuery, statpacks, effectiveUid]);
 
   // Asset items (checked-out only for check-in)
   useEffect(() => {
@@ -132,7 +140,7 @@ export default function CheckinPage() {
       setAssetItems(checkedOut);
       setFilteredAssetItems(checkedOut);
       setAssetLoading(false);
-    });
+    }, (err) => { console.error(err); setAssetLoading(false); });
     return () => unsub();
   }, [user]);
 
@@ -150,13 +158,13 @@ export default function CheckinPage() {
 
   // Navigate to checkoff page on pack selection
   const handleSelectPack = useCallback((pack: Statpack) => {
-    if (!isAdmin && pack.assignedToUserId && pack.assignedToUserId !== user?.uid) {
+    if (!isAdmin && pack.assignedToUserId && pack.assignedToUserId !== effectiveUid) {
       const assignee = pack.assignedToUserName || 'another member';
       alert(`This pack is assigned to ${assignee}. Only they or an admin can check it in.`);
       return;
     }
     router.push(`/statpacks/check-off?id=${pack.id}&mode=checkin`);
-  }, [router, user, isAdmin]);
+  }, [router, effectiveUid, isAdmin]);
 
   const handleScanDetected = (value: string) => {
     setScannerOpen(false);
@@ -277,7 +285,7 @@ export default function CheckinPage() {
                     </Card>
                   ) : (
                     filteredPacks.map((pack) => {
-                      const isYours = !pack.assignedToUserId || pack.assignedToUserId === user?.uid;
+                      const isYours = !pack.assignedToUserId || pack.assignedToUserId === effectiveUid;
                       return (
                         <Card
                           key={pack.id}

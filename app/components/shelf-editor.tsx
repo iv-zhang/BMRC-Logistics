@@ -120,7 +120,7 @@ export default function ShelfEditor({ shelf, zones, isOpen, onOpenChange, onSave
           barcode: barcode || null,
           numberOfLevels: numberOfLevels ?? null,
           updatedAt: serverTimestamp(),
-        } as any);
+        });
 
         if (trimmedName !== (shelf.name || '')) {
           await propagateShelfRename(shelf.id, trimmedName);
@@ -138,7 +138,7 @@ export default function ShelfEditor({ shelf, zones, isOpen, onOpenChange, onSave
           numberOfLevels: numberOfLevels ?? null,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
-        } as any);
+        });
       }
       onSave();
     } catch (e) {
@@ -164,11 +164,11 @@ export default function ShelfEditor({ shelf, zones, isOpen, onOpenChange, onSave
 
             <div>
               <Select label="Zone" size="sm" selectedKeys={[zoneId ?? '']} onChange={(e) => setZoneId(e.target.value || undefined)}>
-                <SelectItem key="">-- None --</SelectItem>
                 {(
-                  zones.map(z => (
-                    <SelectItem key={z.id}>{z.name}</SelectItem>
-                  )) as unknown as any
+                  [
+                    <SelectItem key="">-- None --</SelectItem>,
+                    ...zones.map((z) => <SelectItem key={z.id}>{z.name}</SelectItem>),
+                  ] as unknown as React.ComponentProps<typeof Select>['children']
                 )}
               </Select>
             </div>

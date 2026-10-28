@@ -120,7 +120,8 @@ export default function AssetAttachModal({
           const matchesModel = item.assetModel?.toLowerCase().includes(searchLower) ?? false;
 
           // Check per-instance serials/barcodes/model fields
-          const matchesInstance = (item.assets || []).some((inst: any) => {
+          const matchesInstance = (item.assets || []).some((instance) => {
+            const inst = instance as unknown as Record<string, string | undefined>;
             const s = ((inst.serial || inst.assetTag || inst.barcode || inst.assignedBarcode || inst.model || inst.assetModel) || '').toString().toLowerCase();
             return s.includes(searchLower);
           });

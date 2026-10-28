@@ -6,12 +6,14 @@
  *
  * **Desktop and mobile get separate tours** (`TOURS.desktop` / `TOURS.mobile`),
  * because the two viewports genuinely expose different navigation:
- *   - Below `sm` the icon rail is hidden app-wide and replaced by the bottom nav
+ *   - Below `md` the icon rail is hidden app-wide and replaced by the bottom nav
  *     bar — and on the *member* dashboard even that bar is hidden (see
  *     `sidebar-layout.tsx`), so a phone tour there may only point at on-page cards.
- *   - The member/FTO/MedOps sidebar only ever contains Dashboard + the profile
- *     row, so their desktop tours point at dashboard cards too, not rail items
- *     that don't exist for them.
+ *   - The sidebar differs per role (see `app-sidebar.tsx`): member/FTO has
+ *     Dashboard/Shifts/History/Uniform Exchange, MedOps has Dashboard/Shifts/
+ *     Roster/Stats/Uniform Exchange (plus the profile row). Rail items carry
+ *     `data-tour="<nav key>"`, but only point a step at an item that exists in
+ *     that role's sidebar — logistics items (inventory, audit, ...) do not.
  * Listing a step whose target is never present is not "safe" — it makes the tour
  * skip several steps at once, which is what the old shared list did. Only list a
  * target you know renders for that role on that viewport.

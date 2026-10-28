@@ -29,8 +29,14 @@
     "seed:staging": "tsx ./scripts/seed-staging.ts",
     "dev:staging": "node ./scripts/dev-staging.mjs",
     "test:rules": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx --test app/lib/__tests__/rules.test.ts\"",
+    "test:o2": "tsx --test app/lib/__tests__/o2-validation.test.ts && firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx --test app/lib/__tests__/o2-checkout-integration.test.ts\"",
     "test:events": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx ./scripts/emulator/run-events.ts\"",
-    "test:buylist-intake": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx ./scripts/emulator/run-buy-list-intake.ts\""
+    "test:buylist-intake": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx ./scripts/emulator/run-buy-list-intake.ts\"",
+    "test:statpack-status-log": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx --test app/lib/__tests__/statpack-status-log.test.ts\"",
+    "migrate:normalize-expiration-months": "node ./scripts/normalize-expiration-months.cjs",
+    "rehearse:expiration-months": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"node ./scripts/emulator/rehearse-expiration-months.cjs\"",
+    "repair:statpack-dates": "node ./scripts/repair-statpack-dates.cjs",
+    "rehearse:statpack-dates": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"node ./scripts/emulator/rehearse-statpack-dates.cjs\""
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

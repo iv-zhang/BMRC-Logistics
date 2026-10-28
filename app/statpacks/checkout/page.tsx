@@ -45,6 +45,7 @@ export default function CheckoutPage() {
   const router = useRouter();
   const [initialPackQuery, setInitialPackQuery] = useState<string | null>(null);
   const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [authResolved, setAuthResolved] = useState(false);
   const [statpacks, setStatpacks] = useState<Statpack[]>([]);
   const [filteredPacks, setFilteredPacks] = useState<Statpack[]>([]);
   const [loading, setLoading] = useState(true);
@@ -76,7 +77,7 @@ export default function CheckoutPage() {
   const [selectedAssetSerial, setSelectedAssetSerial] = useState<string | null>(null);
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => setUser(u));
+    const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setAuthResolved(true); });
     return () => unsub();
   }, []);
 
@@ -214,8 +215,9 @@ export default function CheckoutPage() {
   useEffect(() => {
     const raw = initialPackQuery;
     if (!raw || autoOpenedPackId.current === raw) return;
+    if (!authResolved) return;
     if (!user) {
-      router.push(`/login?next=${encodeURIComponent(window.location.href)}`);
+      router.replace(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
       return;
     }
     (async () => {
@@ -236,7 +238,7 @@ export default function CheckoutPage() {
         startCheckout(found);
       }
     })();
-  }, [statpacks, initialPackQuery, user, router, startCheckout]);
+  }, [statpacks, initialPackQuery, user, authResolved, router, startCheckout]);
 
   const handleScanDetected = (value: string) => {
     setScannerOpen(false);
@@ -277,6 +279,13 @@ export default function CheckoutPage() {
     if (status === 'In Use') return 'warning';
     return 'default';
   };
+
+  // Logged-out visitors are sent to login once auth has resolved (no endless spinner).
+  useEffect(() => {
+    if (authResolved && !user) {
+      router.replace(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+    }
+  }, [authResolved, user, router]);
 
   if (!user || loading) {
     return (

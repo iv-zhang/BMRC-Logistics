@@ -24,7 +24,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/firebase';
 import type { StorageZone, LocationType } from '@/app/types';
-import { getLocationNames, getRoomNames } from '@/app/config/org-config';
+import { useOrgConfig } from '@/app/hooks/useOrgConfig';
 
 interface Props {
   zone: StorageZone | null;
@@ -68,8 +68,9 @@ export default function ZoneEditor({ zone, isOpen, onOpenChange, onSave, prefill
   const [description, setDescription] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const locationNames = getLocationNames();
-  const roomNames = locationType === 'HQ' ? getRoomNames('hq') : [];
+  const { locations } = useOrgConfig();
+  const locationNames = locations.map((l) => l.name);
+  const roomNames = locations.find((l) => l.name === locationType)?.rooms.map((r) => r.name) ?? [];
 
   useEffect(() => {
     if (zone) {
@@ -104,7 +105,7 @@ export default function ZoneEditor({ zone, isOpen, onOpenChange, onSave, prefill
           level: level || null,
           description: description || null,
           updatedAt: serverTimestamp(),
-        } as any);
+        });
 
         if (trimmedName !== (zone.name || '')) {
           await propagateZoneRename(zone.id, trimmedName);
@@ -118,7 +119,7 @@ export default function ZoneEditor({ zone, isOpen, onOpenChange, onSave, prefill
           description: description || null,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
-        } as any);
+        });
       }
       onSave();
     } catch (e) {
@@ -150,7 +151,7 @@ export default function ZoneEditor({ zone, isOpen, onOpenChange, onSave, prefill
                 onChange={(e) => {
                   const val = e.target.value;
                   setLocationType(val);
-                  if (val !== 'HQ') setRoom(undefined);
+                  setRoom(undefined);
                 }}
               >
                 {locationNames.map((n) => (
@@ -159,7 +160,7 @@ export default function ZoneEditor({ zone, isOpen, onOpenChange, onSave, prefill
               </Select>
             </div>
 
-            {locationType === 'HQ' && (
+            {roomNames.length > 0 && (
               <div>
                 <Select
                   label="Room"
@@ -171,7 +172,7 @@ export default function ZoneEditor({ zone, isOpen, onOpenChange, onSave, prefill
                     [
                       <SelectItem key="">-- None --</SelectItem>,
                       ...roomNames.map((r) => <SelectItem key={r}>{r}</SelectItem>),
-                    ] as unknown as any
+                    ] as unknown as React.ComponentProps<typeof Select>['children']
                   )}
                 </Select>
               </div>
@@ -188,7 +189,7 @@ export default function ZoneEditor({ zone, isOpen, onOpenChange, onSave, prefill
                   [
                     <SelectItem key="">-- Unspecified --</SelectItem>,
                     ...LEVEL_OPTIONS.map((o) => <SelectItem key={o.key}>{o.label}</SelectItem>),
-                  ] as unknown as any
+                  ] as unknown as React.ComponentProps<typeof Select>['children']
                 )}
               </Select>
             </div>

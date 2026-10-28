@@ -30,9 +30,9 @@ export default function TileCatalog({
   const tilesForDashboard = allTiles.filter((t) => t.dashboard === dashboard);
 
   const content = (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3 md:h-full md:min-h-0">
       {/* Tiles section */}
-      <div className="bg-content1 border border-divider rounded-large p-3">
+      <div className="bg-content1 border border-divider rounded-large p-3 md:flex-1 md:min-h-0 md:overflow-y-auto">
         <p className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400 mb-3">
           Tiles
         </p>
@@ -101,7 +101,7 @@ export default function TileCatalog({
   return (
     <>
       {/* Desktop: fixed left rail */}
-      <aside className="hidden md:flex md:w-64 md:flex-none md:flex-col md:gap-3">
+      <aside className="hidden md:flex md:w-full md:h-full md:min-h-0 md:flex-col md:gap-3">
         {content}
       </aside>
 

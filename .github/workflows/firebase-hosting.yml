@@ -42,6 +42,9 @@ jobs:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_BMRC_LOGISTICS }}
           projectId: bmrc-logistics
+          # Pinned: firebase-tools 15.34.1 (2026-10-21) added a serviceusage API check the
+          # deploy service account can't pass (403) — every deploy since has failed.
+          firebaseToolsVersion: 15.34.0
           channelId: live
         env:
           FIREBASE_CLI_EXPERIMENTS: webframeworks

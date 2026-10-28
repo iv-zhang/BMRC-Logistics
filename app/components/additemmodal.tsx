@@ -7,7 +7,7 @@ import {
 import { Trash2, Plus, Package, Boxes, Wind, CalendarClock, ChevronDown, AlertTriangle } from 'lucide-react';
 
 import { InventoryItem, ItemCategory, InventoryBatch, BatchStatus, StorageLocationRef } from '@/app/types';
-import { doc, collection as coll, query as q, where, limit, getDocs, writeBatch } from 'firebase/firestore';
+import { doc, collection as coll, query as q, where, limit, getDocs, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { safeParseDate } from '@/app/utils/inventoryNormalization';
 import { addAuditEventToBatch } from '@/app/lib/audit';
@@ -15,10 +15,11 @@ import { levenshtein } from '@/app/lib/inventory-merge';
 import StorageLocationPicker from '@/app/components/storage-location-picker';
 import { useStorageLocations } from '@/app/hooks/useStorageLocations';
 import { useOrgConfig } from '@/app/hooks/useOrgConfig';
+import { useUserRole } from '@/app/hooks/useUserRole';
+import { parseDateInput, toDateInputValue } from '@/app/lib/dates';
 import { deriveItemName, parseLegacyName } from '@/app/lib/item-naming';
 
 // Constants
-const CATEGORIES: ItemCategory[] = ['Airway', 'Trauma', 'Vitals', 'Meds', 'PPE', 'Splinting', 'Hygiene', 'First Aid', 'Other'];
 const BATCH_STATUSES: { key: BatchStatus; label: string; color: 'default' | 'success' | 'primary' | 'warning' | 'danger' }[] = [
   { key: 'sealed', label: 'Sealed', color: 'success' },
   { key: 'open', label: 'Open', color: 'primary' },
@@ -94,7 +95,10 @@ export default function InventoryModal({
 }: InventoryModalProps) {
   // --- Storage data (shared across pickers) ---
   const storageData = useStorageLocations();
-  const { itemFamilies } = useOrgConfig();
+  const { itemFamilies, itemCategories } = useOrgConfig();
+  const CATEGORIES = itemCategories as readonly ItemCategory[]; // live, admin-editable
+  const { effectiveUid, fullName } = useUserRole();
+  const [submitting, setSubmitting] = useState(false);
 
   // --- Form state ---
   const getInitialFormData = (data?: InventoryItem | null): InventoryFormState => {
@@ -163,15 +167,22 @@ export default function InventoryModal({
     [formData.family, formData.variantLabel],
   );
 
-  // Reset form when initialData changes or modal opens
-  useEffect(() => {
+  // Reset form when initialData changes while the modal is open
+  // (previous-value-in-render pattern; deliberately not keyed on isOpen).
+  const [prevInitialData, setPrevInitialData] = useState(initialData);
+  if (prevInitialData !== initialData) {
+    setPrevInitialData(initialData);
     if (isOpen) {
-      const newData = getInitialFormData(initialData);
-      // Use flushSync to avoid batching issues
-      setFormData(newData);
+      setFormData(getInitialFormData(initialData));
       setError('');
     }
-  }, [initialData]); // Only depend on initialData, not isOpen
+  }
+
+  // Duplicate lookup only runs for a searchable name/sku/barcode; otherwise show none.
+  const dupName = derivedName.trim();
+  const canSearchDuplicates =
+    !((!dupName || dupName.length < 2) && !(formData.sku ?? '').trim() && !(formData.barcode ?? '').trim());
+  const visibleDuplicates = canSearchDuplicates ? duplicates : [];
 
   // --- Duplicate detection --- (levenshtein is shared from app/lib/inventory-merge.ts)
   useEffect(() => {
@@ -179,10 +190,7 @@ export default function InventoryModal({
     const name = derivedName.trim();
     const sku = (formData.sku ?? '').trim();
     const barcode = (formData.barcode ?? '').trim();
-    if ((!name || name.length < 2) && !sku && !barcode) { 
-      setDuplicates([]); 
-      return; 
-    }
+    if ((!name || name.length < 2) && !sku && !barcode) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(async () => {
       setCheckingDuplicates(true);
@@ -275,14 +283,15 @@ export default function InventoryModal({
   // --- Date helper ---
   const getDateString = (date?: Date | string | unknown) => {
     if (!date) return '';
-    const d = new Date(date as string | Date);
+    // 'YYYY-MM-DD' strings must be parsed as LOCAL dates (new Date() treats them as UTC).
+    const d = typeof date === 'string' ? (parseDateInput(date) ?? new Date(date)) : new Date(date as Date);
     if (isNaN(d.getTime())) return '';
-    return d.toISOString().split('T')[0];
+    return toDateInputValue(d);
   };
 
   // --- Submit ---
   const handleSubmit = async (onClose: () => void) => {
-    if (!formData.family?.trim()) return;
+    if (!formData.family?.trim() || submitting) return;
 
     // Compute total stock from batches
     const batchTotal = formData.batches.reduce((a, b) => a + Number(b.stock ?? 0), 0);
@@ -365,10 +374,15 @@ export default function InventoryModal({
     if (initialData?.id) {
       onUpdateItem(initialData.id, payload as Partial<InventoryItem>);
     } else {
+      setSubmitting(true);
       try {
         const batch = writeBatch(db);
         const newRef = doc(coll(db, 'inventory'));
-        const payloadRecord = payloadToWrite as Record<string, unknown>;
+        const payloadRecord = {
+          ...(payloadToWrite as Record<string, unknown>),
+          createdAt: serverTimestamp(),
+          ...(effectiveUid ? { createdBy: effectiveUid } : {}),
+        } as Record<string, unknown>;
         batch.set(newRef, payloadRecord);
         // Build after object with only defined fields
         const afterRecord: Record<string, unknown> = {};
@@ -380,10 +394,11 @@ export default function InventoryModal({
           eventType: 'inventory.create',
           source: 'inventory',
           sourceId: newRef.id,
+          ...(effectiveUid ? { actor: { userId: effectiveUid, userName: fullName || '' } } : {}),
           after: afterRecord,
         });
         await batch.commit();
-        onAddItem({ ...payloadRecord, id: newRef.id });
+        onAddItem({ ...payloadRecord, id: newRef.id } as Partial<InventoryItem>);
       } catch (err: unknown) {
         console.error('Create item failed', err);
         let errorMessage = 'Failed to create item. Please try again.';
@@ -395,8 +410,10 @@ export default function InventoryModal({
           errorMessage = String((err as Record<string, unknown>).message);
         }
         setError(errorMessage);
+        setSubmitting(false);
         return;
       }
+      setSubmitting(false);
     }
     onClose();
   };
@@ -451,7 +468,7 @@ export default function InventoryModal({
               )}
 
               {/* Asset guard */}
-              {initialData && (initialData as any).isAsset && (
+              {initialData && initialData.isAsset && (
                 <div className="p-3 bg-danger-50 dark:bg-danger-950/20 rounded-large border border-danger/30 text-sm">
                   <strong>Asset Detected</strong> — This item is tracked as an asset. Please use the Assets page to edit it.
                 </div>
@@ -507,14 +524,14 @@ export default function InventoryModal({
                   />
 
                   {/* Duplicate suggestions */}
-                  {(checkingDuplicates || duplicates.length > 0) && (
+                  {(checkingDuplicates || visibleDuplicates.length > 0) && (
                     <div className="md:col-span-2">
                       {checkingDuplicates ? (
                         <p className="text-xs text-default-400">Checking for similar items…</p>
                       ) : (
                         <div className="p-2 bg-warning-50 dark:bg-warning-900/10 rounded-md border border-warning-200 text-sm space-y-1">
                           <p className="text-xs font-semibold">Similar items found:</p>
-                          {duplicates.map((d) => (
+                          {visibleDuplicates.map((d) => (
                             <div key={String(d.id)} className="flex items-center justify-between text-xs">
                               <span>{String(d.name)} {d.unit ? `(${String(d.unit)})` : ''}</span>
                               <Button size="sm" variant="flat" onPress={() => {
@@ -676,7 +693,7 @@ export default function InventoryModal({
                             label="Expiration"
                             variant="bordered"
                             value={getDateString(b.expirationDate as string | Date | unknown)}
-                            onValueChange={(v) => updateBatch(b.id, 'expirationDate', v ? new Date(v) : undefined)}
+                            onValueChange={(v) => updateBatch(b.id, 'expirationDate', parseDateInput(v) ?? undefined)}
                           />
                           <Select
                             size="sm"
@@ -701,7 +718,7 @@ export default function InventoryModal({
                             label="Received"
                             variant="bordered"
                             value={getDateString(b.receivedAt as string | Date | unknown)}
-                            onValueChange={(v) => updateBatch(b.id, 'receivedAt', v ? new Date(v) : undefined)}
+                            onValueChange={(v) => updateBatch(b.id, 'receivedAt', parseDateInput(v) ?? undefined)}
                           />
                         </div>
 
@@ -902,6 +919,7 @@ export default function InventoryModal({
                 onPress={() => handleSubmit(() => closeModal())}
                 className="font-semibold shadow-lg"
                 isDisabled={!formData.family?.trim()}
+                isLoading={submitting}
               >
                 {isEditMode ? 'Save Changes' : 'Add Item'}
               </Button>

@@ -39,7 +39,7 @@ interface LogEntry {
   timestamp: string;
   level: 'info' | 'pass' | 'fail' | 'warn' | 'error';
   message: string;
-  data?: any;
+  data?: unknown;
   durationMs?: number;
 }
 
@@ -148,8 +148,8 @@ export default function AuditDebugPanel({
     for (let i = 0; i < tests.length; i++) {
       try {
         await tests[i]();
-      } catch (err: any) {
-        addLog({ level: 'error', message: `Test crashed: ${err.message}`, data: err.stack });
+      } catch (err: unknown) {
+        addLog({ level: 'error', message: `Test crashed: ${err instanceof Error ? err.message : String(err)}`, data: err instanceof Error ? err.stack : undefined });
       }
       setProgress(((i + 1) / tests.length) * 100);
     }
@@ -436,8 +436,8 @@ export default function AuditDebugPanel({
       } else {
         addLog({ level: 'warn', message: `Snapshot generation slow: ${dur}ms (target < 2000ms)`, durationMs: dur });
       }
-    } catch (err: any) {
-      addLog({ level: 'error', message: `Snapshot generation failed: ${err.message}` });
+    } catch (err: unknown) {
+      addLog({ level: 'error', message: `Snapshot generation failed: ${err instanceof Error ? err.message : String(err)}` });
     }
 
     // Benchmark restock analysis (pure computation)
@@ -594,7 +594,7 @@ export default function AuditDebugPanel({
             {log.durationMs !== undefined && (
               <span className="opacity-50 ml-1">({log.durationMs}ms)</span>
             )}
-            {log.data && (
+            {Boolean(log.data) && (
               <details className="ml-4 opacity-70">
                 <summary className="cursor-pointer">details</summary>
                 <pre className="whitespace-pre-wrap text-[10px] leading-tight mt-0.5">

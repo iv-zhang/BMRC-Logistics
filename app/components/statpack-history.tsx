@@ -95,6 +95,7 @@ export default function StatpackHistory({ statpackId, maxRows = 12 }: StatpackHi
     if (action === 'checkin') return 'success';
     if (action === 'maintenance') return 'secondary';
     if (action === 'restock') return 'primary';
+    if (action === 'status_change') return 'warning';
     return 'default';
   };
 
@@ -178,6 +179,9 @@ export default function StatpackHistory({ statpackId, maxRows = 12 }: StatpackHi
                         <Chip size="sm" variant="solid" color={getActionColor(log?.action || '')} className="capitalize">
                           {log?.action === 'checkin' ? 'Check-in' : log?.action === 'checkout' ? 'Check-out' : log?.action?.replace(/_/g, ' ') || 'log'}
                         </Chip>
+                        {log?.statusChange && (
+                          <Chip size="sm" variant="flat" color="warning">{log.statusChange.from} → {log.statusChange.to}</Chip>
+                        )}
                         {isQuickCheckin && (
                           <Chip size="sm" variant="flat" color="warning">⚡ Quick</Chip>
                         )}

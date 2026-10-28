@@ -62,8 +62,8 @@ export default function BarcodeScanner({ isOpen, onClose, onDetected, minLength 
         if (videoRef.current) videoRef.current.srcObject = stream;
         try {
           await videoRef.current?.play();
-        } catch (playErr: any) {
-          if (playErr && playErr.name === 'AbortError') {
+        } catch (playErr: unknown) {
+          if (playErr instanceof Error && playErr.name === 'AbortError') {
             console.warn('video play aborted (ignored)');
           } else {
             console.warn('video play failed', playErr);
@@ -219,7 +219,7 @@ export default function BarcodeScanner({ isOpen, onClose, onDetected, minLength 
                 autoFocus
                 isClearable
                 onClear={() => setManualValue('')}
-                onKeyDown={(e: any) => { if (e.key === 'Enter') handleManualSubmit(); }}
+                onKeyDown={(e: React.KeyboardEvent) => { if (e.key === 'Enter') handleManualSubmit(); }}
                 size="lg"
                 classNames={{ input: 'font-mono text-lg' }}
               />

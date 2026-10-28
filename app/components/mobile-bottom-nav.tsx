@@ -7,7 +7,9 @@ import {
   Home, Boxes, Package, CheckSquare, MoreHorizontal,
   User, X, SquareKanban, CalendarDays, Users, History,
 } from 'lucide-react';
-import { ADMIN_NAV, type LucideIcon } from './app-sidebar';
+import { isEventManagerRole } from '@/app/lib/events';
+import { ADMIN_NAV, MEDOPS_NAV, type LucideIcon } from './app-sidebar';
+import NotificationBell from './notification-bell';
 
 interface Tab { key: string; label: string; Icon: LucideIcon; path: string; }
 
@@ -34,14 +36,16 @@ const MEDOPS_TABS: Tab[] = [
 export default function MobileBottomNav() {
   const pathname = usePathname() ?? '';
   const router = useRouter();
-  const { role, user, userData, isRoleOverridden } = useUserRole();
+  const { role, user, userData } = useUserRole();
   const [moreOpen, setMoreOpen] = useState(false);
 
   const isAdmin = canManageLogistics(role);
-  const isMedOps = role === 'medops';
+  // Event-manager roles that aren't logistics admins (medops): events/roster/stats only (D-13).
+  const isMedOps = !isAdmin && isEventManagerRole(role);
+  const hasMore = isAdmin || isMedOps;
+  const moreSections = isAdmin ? ADMIN_NAV : MEDOPS_NAV;
   // Real (non-overridden) role — an override can drop `role` to 'member', so this
   // is how an admin testing a member role stays able to exit back to admin view.
-  const isRealAdmin = canManageLogistics(userData?.role);
   // Committee members get a Board tab; admins reach the board via the More sheet (ADMIN_NAV)
   const memberTabs = userData?.isCommitteeMember === true
     ? [...MEMBER_TABS, { key: 'committee-board', label: 'Board', Icon: SquareKanban, path: '/committee-board' }]
@@ -65,7 +69,7 @@ export default function MobileBottomNav() {
   return (
     <>
       <nav
-        className="sm:hidden fixed left-0 right-0 bottom-0 z-30 bg-background/85 backdrop-blur-md border-t border-divider px-2 pt-2 pb-[max(env(safe-area-inset-bottom),8px)] flex"
+        className="md:hidden fixed left-0 right-0 bottom-0 z-30 bg-background/85 backdrop-blur-md border-t border-divider px-2 pt-2 pb-[max(env(safe-area-inset-bottom),8px)] flex"
         style={{ transform: 'translateZ(0)', willChange: 'transform', WebkitBackfaceVisibility: 'hidden' }}
       >
         {tabs.map(({ key, label, Icon, path }) => {
@@ -78,8 +82,8 @@ export default function MobileBottomNav() {
           );
         })}
 
-        {/* Members: Report shortcut. Admins: More sheet. */}
-        {isAdmin ? (
+        {/* Members: Profile shortcut. Admins/medops: More sheet. */}
+        {hasMore ? (
           <button data-tour="more" onClick={() => setMoreOpen(true)} className={tabBtnCls(moreOpen || !primaryActive)}>
             <MoreHorizontal size={22} />
             <span className={`text-[10px] ${moreOpen || !primaryActive ? 'font-semibold' : 'font-medium'}`}>More</span>
@@ -94,7 +98,7 @@ export default function MobileBottomNav() {
 
       {/* More sheet — full navigation for admins */}
       {moreOpen && (
-        <div className="sm:hidden fixed inset-0 z-50 flex flex-col justify-end" onClick={() => setMoreOpen(false)}>
+        <div className="md:hidden fixed inset-0 z-50 flex flex-col justify-end" onClick={() => setMoreOpen(false)}>
           <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
           <div
             className="relative bg-content1 rounded-t-[22px] flex flex-col overflow-hidden max-h-[85vh]"
@@ -110,6 +114,7 @@ export default function MobileBottomNav() {
                 <div className="text-[14px] font-bold tracking-tight text-foreground truncate">{userName}</div>
                 <div className="text-[11.5px] text-foreground-400 font-medium capitalize">{userData?.role ?? role ?? 'member'}</div>
               </div>
+              <NotificationBell />
               <button
                 onClick={() => setMoreOpen(false)}
                 aria-label="Close"
@@ -121,7 +126,7 @@ export default function MobileBottomNav() {
 
             {/* Nav sections */}
             <div className="overflow-y-auto px-3 py-3">
-              {ADMIN_NAV.map((section, si) => (
+              {moreSections.map((section, si) => (
                 <div key={si} className={si > 0 ? 'mt-3' : ''}>
                   {section.label && (
                     <div className="text-[10px] font-semibold uppercase tracking-widest text-foreground-400 px-2.5 pb-1.5">

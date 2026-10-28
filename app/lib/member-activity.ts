@@ -41,6 +41,7 @@ const STATPACK_ACTION_LABELS: Record<string, string> = {
   created: 'Created',
   maintenance: 'Serviced',
   content_edit: 'Edited contents of',
+  status_change: 'Changed status of',
 };
 
 function humanize(raw: string): string {

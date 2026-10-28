@@ -23,7 +23,7 @@ import { AlertTriangle, Upload } from 'lucide-react';
 
 import type { ParsedSheetRow } from '@/app/lib/statpack-import';
 import { parseSheetPaste, normalizePocket } from '@/app/lib/statpack-import';
-import type { StatpackItem } from '@/app/types';
+import type { StatpackItem, InventoryItem } from '@/app/types';
 
 interface StatpackImportModalProps {
   isOpen: boolean;
@@ -89,7 +89,7 @@ export default function StatpackImportModal({ isOpen, onOpenChange, onImportComp
           tracksExpiration: false,
           createdAt: new Date(),
           updatedAt: new Date(),
-        } as any,
+        } as InventoryItem,
       }));
 
       onImportComplete(items);

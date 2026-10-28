@@ -9,11 +9,13 @@ import { OrgConfigProvider } from "@/app/hooks/useOrgConfig";
 
 // Provide a small global helper to toggle `inert` on the app root when overlays open.
 // This dynamically loads the wicg-inert polyfill if needed.
+type InertWindow = Window & { __wicgInertLoaded?: boolean; setAppInert?: (value: boolean) => void };
+
 function ensureInertSupport() {
   if (typeof window === 'undefined') return;
-  if (!(document as any).hasOwnProperty('inert') && !(window as any).__wicgInertLoaded) {
+  if (!Object.prototype.hasOwnProperty.call(document, 'inert') && !(window as InertWindow).__wicgInertLoaded) {
     // dynamic import; non-blocking
-    import('wicg-inert').then(() => { (window as any).__wicgInertLoaded = true; }).catch(() => {});
+    import('wicg-inert').then(() => { (window as InertWindow).__wicgInertLoaded = true; }).catch(() => {});
   }
 }
 
@@ -40,8 +42,8 @@ function setAppRootInert(value: boolean) {
   } catch (e) {
     // fallback for servers or if inert not available
     try {
-      // @ts-ignore
-      (root as any).inert = value;
+      // `inert` is missing from older DOM lib typings for HTMLElement.
+      (root as HTMLElement & { inert?: boolean }).inert = value;
     } catch (_) {}
   }
 }
@@ -49,7 +51,7 @@ function setAppRootInert(value: boolean) {
 // expose for components to call (safe noop on server)
 if (typeof window !== 'undefined') {
   ensureInertSupport();
-  (window as any).setAppInert = setAppRootInert;
+  (window as InertWindow).setAppInert = setAppRootInert;
 }
 
 export interface ProvidersProps {

@@ -20,7 +20,7 @@ const TYPE_ICONS: Record<string, React.ComponentType<{ size?: number; className?
 
 export default function VehicleCheckinPickerPage() {
   const router = useRouter();
-  const { user, role, loading: authLoading } = useUserRole();
+  const { user, role, effectiveUid, loading: authLoading } = useUserRole();
   const isAdmin = canManageLogistics(role);
   const { vehicles: vehicleTypes } = useOrgConfig();
   const { vehicles, loading } = useVehicles();
@@ -33,12 +33,12 @@ export default function VehicleCheckinPickerPage() {
   const handleSelect = useCallback((vehicle: Vehicle) => {
     // Non-admins can only check in a vehicle they took out (same rule as statpacks;
     // the transaction in checkinVehicle enforces it too).
-    if (!isAdmin && vehicle.assignedToUserId && vehicle.assignedToUserId !== user?.uid) {
+    if (!isAdmin && vehicle.assignedToUserId && vehicle.assignedToUserId !== effectiveUid) {
       alert(`This vehicle was checked out by ${vehicle.assignedToUserName ?? 'another member'}. Only they (or an admin) can check it in.`);
       return;
     }
     router.push(`/vehicles/check-off?id=${vehicle.id}&mode=checkin`);
-  }, [router, isAdmin, user]);
+  }, [router, isAdmin, effectiveUid]);
 
   const typeName = (typeId: string) => vehicleTypes.find((t) => t.id === typeId)?.name ?? typeId;
   const typeIcon = (typeId: string) => {
@@ -50,8 +50,8 @@ export default function VehicleCheckinPickerPage() {
     .filter((v) => v.isCheckedOut)
     .sort((a, b) => {
       // Own vehicles float to the top.
-      const aMine = a.assignedToUserId === user?.uid ? 0 : 1;
-      const bMine = b.assignedToUserId === user?.uid ? 0 : 1;
+      const aMine = a.assignedToUserId === effectiveUid ? 0 : 1;
+      const bMine = b.assignedToUserId === effectiveUid ? 0 : 1;
       if (aMine !== bMine) return aMine - bMine;
       return a.name.localeCompare(b.name);
     });
@@ -117,7 +117,7 @@ export default function VehicleCheckinPickerPage() {
           ) : (
             filtered.map((vehicle) => {
               const Icon = typeIcon(vehicle.typeId);
-              const isMine = vehicle.assignedToUserId === user?.uid;
+              const isMine = vehicle.assignedToUserId === effectiveUid;
               return (
                 <Card
                   key={vehicle.id}

@@ -24,7 +24,7 @@ function toDate(value: unknown): Date | null {
 
 export default function VehicleCheckOffPage() {
   const router = useRouter();
-  const { user, role, fullName, loading: authLoading } = useUserRole();
+  const { user, role, fullName, effectiveUid, loading: authLoading } = useUserRole();
   const isAdmin = canManageLogistics(role);
   // Subscribing to org config keeps reading-field lookups reactive to admin edits.
   const { loading: configLoading } = useOrgConfig();
@@ -168,7 +168,7 @@ export default function VehicleCheckOffPage() {
       if (mode === 'checkout') {
         await checkoutVehicle({
           vehicleId: vehicle.id,
-          userId: user.uid,
+          userId: effectiveUid ?? user.uid,
           userName: fullName || user.email || 'Unknown',
           crewNames,
           preReadings: readings,
@@ -180,7 +180,7 @@ export default function VehicleCheckOffPage() {
       } else {
         await checkinVehicle({
           vehicleId: vehicle.id,
-          userId: user.uid,
+          userId: effectiveUid ?? user.uid,
           userName: fullName || user.email || 'Unknown',
           userRole: role ?? undefined,
           postReadings: readings,
@@ -215,7 +215,7 @@ export default function VehicleCheckOffPage() {
           ? `This vehicle is already checked out${vehicle.assignedToUserName ? ` by ${vehicle.assignedToUserName}` : ''}.`
           : mode === 'checkin' && !vehicle.isCheckedOut
             ? 'This vehicle is not checked out.'
-            : mode === 'checkin' && !isAdmin && vehicle.assignedToUserId && vehicle.assignedToUserId !== user?.uid
+            : mode === 'checkin' && !isAdmin && vehicle.assignedToUserId && vehicle.assignedToUserId !== effectiveUid
               ? `This vehicle was checked out by ${vehicle.assignedToUserName ?? 'another member'} — only they (or an admin) can check it in.`
               : null;
 
