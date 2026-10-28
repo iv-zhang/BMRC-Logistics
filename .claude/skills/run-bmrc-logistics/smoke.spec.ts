@@ -639,6 +639,61 @@ test('maintenance pack is excluded from checkout and direct checkout is unavaila
   }
 });
 
+// Issue #23: the pickers filter client-side (no where+orderBy composite index).
+// A legacy pack with no status field reads as Ready on checkout, and a checked-out
+// pack whose status drifted to Ready is still offered on check-in.
+test('pickers list status-less and drifted checked-out packs', async ({ page }) => {
+  const testRunId = `smoke-pickers-${Date.now()}`;
+  const purpose = 'Verify checkout/check-in pickers list packs by client-side eligibility (issue #23)';
+  const metadata = { isTest: true, testRunId, purpose };
+  const noStatusName = `[TEST] Smoke No Status ${testRunId}`;
+  const driftedName = `[TEST] Smoke Drifted ${testRunId}`;
+  const base = {
+    ...metadata,
+    type: 'Primary',
+    currentLocation: 'MRC1',
+    compartments: [{ id: 'main', name: 'Main', parentPocket: 'main', isSealed: false }],
+    contents: [],
+  };
+  const fixtureRefs: Array<{ collection: string; id: string }> = [];
+  try {
+    const noStatusId = await createDoc('statpacks', { ...base, name: noStatusName, isCheckedOut: false });
+    fixtureRefs.push({ collection: 'statpacks', id: noStatusId });
+    const driftedId = await createDoc('statpacks', {
+      ...base,
+      name: driftedName,
+      status: 'Ready',
+      isCheckedOut: true,
+      assignedToUserName: '[TEST] Smoke Holder',
+    });
+    fixtureRefs.push({ collection: 'statpacks', id: driftedId });
+
+    await signIn(page);
+    await page.goto('/statpacks/checkout', { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('load');
+    await page.waitForTimeout(2000);
+    await expect(page.getByText('MRC1 Primary').first()).toBeVisible();
+    await expect(page.getByText(noStatusName).first()).toBeVisible();
+    await expect(page.getByText(driftedName, { exact: true })).toHaveCount(0);
+    await page.screenshot({ path: join(SHOTS, 'checkout-picker-eligibility.png'), fullPage: true });
+
+    await page.goto('/statpacks/checkin', { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('load');
+    await page.waitForTimeout(2000);
+    await expect(page.getByText(driftedName).first()).toBeVisible();
+    await expect(page.getByText(noStatusName, { exact: true })).toHaveCount(0);
+  } finally {
+    await createDoc('test_cleanup_manifests', {
+      isTest: true,
+      testRunId,
+      purpose,
+      fixtures: fixtureRefs,
+      generated: [],
+      createdAt: new Date(),
+    }, testRunId);
+  }
+});
+
 test('check-off displays In Use and Unknown statuses explicitly', async ({ page }) => {
   const testRunId = `smoke-status-${Date.now()}`;
   const purpose = 'Verify status labels on the shared statpack check-off surface';

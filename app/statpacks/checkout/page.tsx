@@ -32,7 +32,7 @@ import { subscribeEvents } from '@/app/lib/events';
 import LoadFailureNotice, { describeLoadError } from '@/app/components/load-failure-notice';
 import { toJsDate } from '@/app/components/events/event-utils';
 import CheckoutModal from '@/app/components/checkout-modal';
-import { getStatpackCheckoutUnavailableReason, STATPACK_CHECKOUT_PICKER_STATUSES } from '@/app/lib/statpack-checkout';
+import { getStatpackCheckoutUnavailableReason, isStatpackCheckoutPickerEligible, sortStatpacksByName } from '@/app/lib/statpack-checkout';
 
 const formatEventDate = (d: Event['date'] | undefined) => {
   const date = toJsDate(d);
@@ -49,6 +49,8 @@ export default function CheckoutPage() {
   const [statpacks, setStatpacks] = useState<Statpack[]>([]);
   const [filteredPacks, setFilteredPacks] = useState<Statpack[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const autoOpenedPackId = React.useRef<string | null>(null);
 
@@ -122,12 +124,9 @@ export default function CheckoutPage() {
   useEffect(() => {
     if (!user) return;
     setLoading(true);
-    const q = query(
-      collection(db, 'statpacks'),
-      // 'Restock Needed' is a flag, not a block — short packs can still go out (decisions.md D-8, 2nd amendment).
-      where('status', 'in', STATPACK_CHECKOUT_PICKER_STATUSES),
-      orderBy('name'),
-    );
+    // No where(): status+name needs a composite index; filter client-side (see statpack-checkout.ts).
+    // 'Restock Needed' is a flag, not a block — short packs can still go out (decisions.md D-8, 2nd amendment).
+    const q = query(collection(db, 'statpacks'), orderBy('name'));
     const unsub = onSnapshot(q, (snap) => {
       (async () => {
         try {
@@ -147,18 +146,20 @@ export default function CheckoutPage() {
                 : [],
             } as Statpack;
           });
-          const eligiblePacks = packs.filter(pack => !getStatpackCheckoutUnavailableReason(pack));
+          const eligiblePacks = sortStatpacksByName(packs.filter(isStatpackCheckoutPickerEligible));
+          setLoadError(null);
           setStatpacks(eligiblePacks);
           setFilteredPacks(eligiblePacks);
         } catch (err) {
           console.error('Failed to load statpacks:', err);
+          setLoadError(describeLoadError(err));
         } finally {
           setLoading(false);
         }
       })();
-    }, (err) => { console.error(err); setLoading(false); });
+    }, (err) => { console.error(err); setLoadError(describeLoadError(err)); setLoading(false); });
     return () => unsub();
-  }, [user]);
+  }, [user, retryKey]);
 
   useEffect(() => {
     if (!searchQuery.trim()) { setFilteredPacks(statpacks); return; }
@@ -354,7 +355,14 @@ export default function CheckoutPage() {
                 </Card>
 
                 <div className="space-y-3">
-                  {filteredPacks.length === 0 ? (
+                  {loadError ? (
+                    <LoadFailureNotice
+                      title="Couldn't load statpacks"
+                      message={loadError}
+                      onRetry={() => { setLoading(true); setRetryKey((k) => k + 1); }}
+                      testId="checkout-statpacks-load-error"
+                    />
+                  ) : filteredPacks.length === 0 ? (
                     <Card>
                       <CardBody className="text-center py-12">
                         <Package size={48} className="mx-auto mb-3 text-foreground-400" />
@@ -388,11 +396,11 @@ export default function CheckoutPage() {
                             <div className="flex flex-col items-end gap-2">
                               <div className="flex items-center gap-1 flex-wrap justify-end">
                                 <Chip
-                                  color={pack.status === 'Ready' ? 'success' : 'warning'}
+                                  color={(pack.status || 'Ready') === 'Ready' ? 'success' : 'warning'}
                                   size="sm"
                                   variant="flat"
                                 >
-                                  {pack.status}
+                                  {pack.status || 'Ready'}
                                 </Chip>
                                 <StatpackRestockChips pack={pack} showOverride={false} />
                               </div>

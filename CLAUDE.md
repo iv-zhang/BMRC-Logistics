@@ -154,6 +154,8 @@ The check-off page reads `id` and `mode` from `window.location.search` (not `use
 
 **`output: export` routing constraint:** All pack IDs are Firestore runtime IDs not known at build time, so dynamic `[id]/checkoff` routes cannot work. The pattern is: static route + query params. Always use `/statpacks/check-off?id=${packId}&mode=${mode}` — never a nested `[id]` segment — when navigating to the verification flow.
 
+**Picker queries need no composite index.** The checkout/check-in list pages read `statpacks` with `orderBy('name')` only and filter client-side (`isStatpackCheckoutPickerEligible` / `isStatpackCheckinPickerEligible` in `app/lib/statpack-checkout.ts`). A `where('status', …)` + `orderBy('name')` query needs a composite index that `firestore.indexes.json` doesn't define and the emulator never enforces — it silently showed "0 Available" in prod (issue #23).
+
 Audit mode logs `action: 'audit'` (never `'checkout'`) via `logStatpackCheckOff` — it stamps `lastAuditAt`/`lastAuditBy` on the pack without taking ownership. Statpack audits run on a biweekly cadence (`THRESHOLDS.statpackAuditIntervalDays`, checked by `isStatpackAuditCurrent` in `app/lib/item-status.ts`) and are surfaced on the `/audit` Statpacks tab.
 
 **Check-off persists state (not logging-only).** `logStatpackCheckOff` (in `app/lib/inventory.ts`) writes the pack, not just a `statpack_logs` row, inside its transaction:

@@ -22,9 +22,10 @@ import { auth, db } from '@/firebase';
 import type { InventoryItem, Statpack, StatpackItem } from '@/app/types';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import { findAssetByCode } from '@/app/lib/inventory';
+import { isStatpackCheckinPickerEligible, sortStatpacksByName } from '@/app/lib/statpack-checkout';
+import LoadFailureNotice, { describeLoadError } from '@/app/components/load-failure-notice';
 import CheckoutModal from '@/app/components/checkout-modal';
 import { useUserRole } from '@/app/hooks/useUserRole';
-import LoadFailureNotice, { describeLoadError } from '@/app/components/load-failure-notice';
 
 export default function CheckinPage() {
   const router = useRouter();
@@ -35,7 +36,8 @@ export default function CheckinPage() {
   const [filteredPacks, setFilteredPacks] = useState<Statpack[]>([]);
   const [loading, setLoading] = useState(true);
   const [authResolved, setAuthResolved] = useState(false);
-  const [loadError, setLoadError] = useState<unknown>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
 
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -66,13 +68,9 @@ export default function CheckinPage() {
     if (!user) return;
     setLoading(true);
     setLoadError(null);
-    const q = query(
-      collection(db, 'statpacks'),
-      where('status', '==', 'In Use'),
-      orderBy('name'),
-    );
+    // No where(): status+name needs a composite index; filter client-side (see statpack-checkout.ts).
+    const q = query(collection(db, 'statpacks'), orderBy('name'));
     const unsub = onSnapshot(q, (snap) => {
-      setLoadError(null);
       try {
         const packs: Statpack[] = snap.docs.map((d) => {
           const data = d.data();
@@ -90,16 +88,19 @@ export default function CheckinPage() {
               : [],
           } as Statpack;
         });
-        setStatpacks(packs);
-        setFilteredPacks(packs);
+        const eligible = sortStatpacksByName(packs.filter(isStatpackCheckinPickerEligible));
+        setLoadError(null);
+        setStatpacks(eligible);
+        setFilteredPacks(eligible);
       } catch (err) {
         console.error('Failed to load statpacks:', err);
+        setLoadError(describeLoadError(err));
       } finally {
         setLoading(false);
       }
-    }, (err) => { console.error(err); setLoadError(err ?? true); setLoading(false); });
+    }, (err) => { console.error(err); setLoadError(describeLoadError(err)); setLoading(false); });
     return () => unsub();
-  }, [user]);
+  }, [user, retryKey]);
 
   useEffect(() => {
     if (!searchQuery.trim()) {
@@ -234,9 +235,6 @@ export default function CheckinPage() {
           >
             <Tab key="statpacks" title={<div className="flex items-center gap-2"><Package size={16} />Statpacks</div>}>
               <div className="space-y-6 mt-4">
-                {loadError != null && (
-                  <LoadFailureNotice title="Couldn't load statpacks" message={describeLoadError(loadError)} />
-                )}
                 <Card>
                   <CardBody className="gap-4">
                     <div className="flex flex-col md:flex-row gap-3">
@@ -268,7 +266,14 @@ export default function CheckinPage() {
                 </Card>
 
                 <div className="space-y-3">
-                  {filteredPacks.length === 0 ? (
+                  {loadError ? (
+                    <LoadFailureNotice
+                      title="Couldn't load statpacks"
+                      message={loadError}
+                      onRetry={() => { setLoading(true); setRetryKey((k) => k + 1); }}
+                      testId="checkin-statpacks-load-error"
+                    />
+                  ) : filteredPacks.length === 0 ? (
                     <Card>
                       <CardBody className="text-center py-12">
                         <Package size={48} className="mx-auto mb-3 text-foreground-400" />
@@ -308,7 +313,7 @@ export default function CheckinPage() {
                                 </div>
                               </div>
                               <div className="flex flex-col items-end gap-2">
-                                <Chip color="warning" size="sm" variant="flat">{pack.status}</Chip>
+                                <Chip color="warning" size="sm" variant="flat">{pack.isCheckedOut ? 'In Use' : pack.status}</Chip>
                                 {!isYours && <Chip size="sm" color="danger" variant="flat">Not your pack</Chip>}
                                 {pack.contents && (
                                   <span className="text-xs text-foreground-500 tabular-nums">

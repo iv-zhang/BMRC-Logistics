@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { getStatpackStatusInfo } from '../app/lib/statpack-status';
 import {
   getStatpackCheckoutUnavailableReason,
+  isStatpackCheckinPickerEligible,
+  isStatpackCheckoutPickerEligible,
+  sortStatpacksByName,
   STATPACK_CHECKOUT_PICKER_STATUSES,
   STATPACK_MAINTENANCE_CHECKOUT_MESSAGE,
 } from '../app/lib/statpack-checkout';
@@ -52,3 +55,28 @@ for (const status of ['Expired Items', 'Pending Initial Check', 'Unexpected stat
   assert.equal(getStatpackCheckoutUnavailableReason({ status }), null);
 }
 console.log('Statpack checkout eligibility cases passed.');
+
+// Picker filters run client-side (issue #23); a missing status counts as Ready.
+for (const pack of [{ status: 'Ready' }, { status: 'Restock Needed' }, {}, { status: undefined, isCheckedOut: false }]) {
+  assert.equal(isStatpackCheckoutPickerEligible(pack), true, JSON.stringify(pack));
+}
+for (const pack of [
+  { status: 'Ready', isCheckedOut: true },
+  { status: 'In Maintenance' },
+  { status: 'In Use' },
+  { status: 'Expired Items' },
+  { status: 'Pending Initial Check' },
+  { status: 'CRITICAL - EXPIRED ITEMS' },
+]) {
+  assert.equal(isStatpackCheckoutPickerEligible(pack), false, JSON.stringify(pack));
+}
+for (const pack of [{ status: 'In Use' }, { status: 'Ready', isCheckedOut: true }]) {
+  assert.equal(isStatpackCheckinPickerEligible(pack), true, JSON.stringify(pack));
+}
+for (const pack of [{ status: 'Ready' }, {}]) {
+  assert.equal(isStatpackCheckinPickerEligible(pack), false, JSON.stringify(pack));
+}
+const unsorted = [{ name: 'b' }, {}, { name: 'a' }];
+assert.deepEqual(sortStatpacksByName(unsorted), [{}, { name: 'a' }, { name: 'b' }]);
+assert.deepEqual(unsorted, [{ name: 'b' }, {}, { name: 'a' }]);
+console.log('Statpack picker eligibility cases passed.');
