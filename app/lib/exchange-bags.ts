@@ -90,11 +90,21 @@ export function resolveBagAssignments(
 }
 
 /** Live subscription to all exchange bags, ordered by name. */
-export function subscribeExchangeBags(cb: (bags: ExchangeBag[]) => void): () => void {
+export function subscribeExchangeBags(
+  cb: (bags: ExchangeBag[]) => void,
+  onError?: (err: Error) => void,
+): () => void {
   const q = query(collection(db, 'exchange_bags'), orderBy('name'));
-  return onSnapshot(q, (snap) => {
-    cb(snap.docs.map((d) => hydrateBag(d.id, d.data())));
-  });
+  return onSnapshot(
+    q,
+    (snap) => {
+      cb(snap.docs.map((d) => hydrateBag(d.id, d.data())));
+    },
+    (err) => {
+      console.error('exchange_bags listener failed', err);
+      onError?.(err);
+    },
+  );
 }
 
 /** Create (no `id`) or update (with `id`) an exchange bag doc. Returns the id. */

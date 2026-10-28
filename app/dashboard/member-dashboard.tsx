@@ -1,6 +1,7 @@
 'use client';
 
 import { canManageLogistics } from '@/app/lib/roles';
+import { canUserAudit } from '@/app/lib/audit-helpers';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -60,18 +61,54 @@ interface MemberDashboardProps {
   userData: User;
 }
 
+/** A purchase_history doc (only the fields this dashboard reads). */
+interface PurchaseOption {
+  id: string;
+  itemId?: string;
+  pricePerUnit?: number;
+  supplierName?: string;
+  name?: string;
+  [key: string]: unknown;
+}
+
+const toDateSafe = (val: unknown): Date | undefined => {
+  if (!val) return undefined;
+  if (val instanceof Date) return val;
+  if (val instanceof Timestamp) return val.toDate();
+  if (typeof val === 'object' && typeof (val as { toDate?: unknown }).toDate === 'function') {
+    return (val as { toDate: () => Date }).toDate();
+  }
+  return undefined;
+};
+
+const getEarliestExpiration = (item: InventorySnapshot): Date | undefined => {
+  const dates: Date[] = [];
+  if (item.expirationDate) dates.push(item.expirationDate);
+  if (Array.isArray(item.batches)) {
+    item.batches.forEach((b) => {
+      const bd = toDateSafe(b.expirationDate);
+      if (bd) dates.push(bd);
+    });
+  }
+  if (dates.length === 0) return undefined;
+  return dates.reduce((earliest, current) => current < earliest ? current : earliest, dates[0]);
+};
+
+
 export default function MemberDashboard({ userData }: MemberDashboardProps) {
   const router = useRouter();
   const { role } = useUserRole();
   const [assignedPacks, setAssignedPacks] = useState<Statpack[]>([]);
   const [loading, setLoading] = useState(true);
+  const [packsError, setPacksError] = useState<unknown>(null);
+  const [inventoryError, setInventoryError] = useState<unknown>(null);
   const [upcomingShifts, setUpcomingShifts] = useState<ShiftRequest[]>([]);
   const [shiftsLoading, setShiftsLoading] = useState(true);
   const [shiftsError, setShiftsError] = useState<unknown>(null);
   const [shiftsRetry, setShiftsRetry] = useState(0);
-  const [lowStockItems, setLowStockItems] = useState<any[]>([]);
-  const [expiringItems, setExpiringItems] = useState<any[]>([]);
-  const [purchaseHistoryMap, setPurchaseHistoryMap] = useState<Record<string, any[]>>({});
+  const [lowStockItems, setLowStockItems] = useState<InventorySnapshot[]>([]);
+  const [expiringItems, setExpiringItems] = useState<InventorySnapshot[]>([]);
+  const [purchaseHistoryMap, setPurchaseHistoryMap] = useState<Record<string, PurchaseOption[]>>({});
   const [creatingRequest, setCreatingRequest] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const expiringCount = expiringItems.length;
@@ -80,39 +117,18 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
     return combined.slice(0, 5);
   }, [lowStockItems, expiringItems]);
 
-  const toDateSafe = (val: any): Date | undefined => {
-    if (!val) return undefined;
-    if (val instanceof Date) return val;
-    if (val instanceof Timestamp) return val.toDate();
-    if (typeof val === 'object' && typeof val.toDate === 'function') return val.toDate();
-    return undefined;
-  };
-
-  const getEarliestExpiration = (item: any): Date | undefined => {
-    const dates: Date[] = [];
-    if (item.expirationDate) dates.push(item.expirationDate);
-    if (Array.isArray(item.batches)) {
-      item.batches.forEach((b: any) => {
-        const bd = toDateSafe(b.expirationDate);
-        if (bd) dates.push(bd);
-      });
-    }
-    if (dates.length === 0) return undefined;
-    return dates.reduce((earliest, current) => current < earliest ? current : earliest, dates[0]);
-  };
-
   useEffect(() => {
     const invRef = collection(db, 'inventory');
     const unsubscribe = onSnapshot(invRef, (snapshot) => {
       const parsed: InventorySnapshot[] = snapshot.docs
         .filter((docSnap) => {
-          const data = docSnap.data() as any;
+          const data = docSnap.data();
           // CRITICAL: Exclude assets from member dashboard — only show disposables
           // Assets (isAsset=true) are managed via the /assets page and shouldn't appear in member restocking UI
           return !data.isAsset;
         })
         .map((docSnap) => {
-        const data = docSnap.data() as any;
+        const data = docSnap.data();
         // Calculate sealed inventory from unopened boxes in back room
         const sealedBoxCount = Number(data.unopenedBoxes ?? 0);
         const itemsPerBox = Number(data.itemsPerBox ?? 1);
@@ -130,7 +146,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
           tracksExpiration: data.tracksExpiration,
           expirationDate: toDateSafe(data.expirationDate),
           batches: Array.isArray(data.batches)
-            ? data.batches.map((b: any) => ({ ...b, expirationDate: toDateSafe(b.expirationDate) }))
+            ? data.batches.map((b: Record<string, unknown>) => ({ ...b, expirationDate: toDateSafe(b.expirationDate) }))
             : undefined,
         } as InventorySnapshot;
       });
@@ -148,6 +164,10 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
 
       setLowStockItems(low);
       setExpiringItems(expiring);
+      setInventoryError(null);
+    }, (err) => {
+      console.error('Failed to load inventory for dashboard', err);
+      setInventoryError(err ?? true);
     });
 
     return () => unsubscribe();
@@ -166,7 +186,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
         const { query: qf, where: wf, orderBy: ob, getDocs } = await import('firebase/firestore');
         const qRef = qf(collection(db, 'purchase_history'), wf('itemId', 'in', ids), ob('orderedAt', 'desc'));
         const snaps = await getDocs(qRef);
-        const map: Record<string, any[]> = {};
+        const map: Record<string, PurchaseOption[]> = {};
         snaps.forEach(s => {
           const d = s.data();
           const itemId = d.itemId;
@@ -214,6 +234,11 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
         } as Statpack;
       });
       setAssignedPacks(packs);
+      setPacksError(null);
+      setLoading(false);
+    }, (err) => {
+      console.error('Failed to load assigned packs', err);
+      setPacksError(err ?? true);
       setLoading(false);
     });
 
@@ -269,7 +294,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
     const list = purchaseHistoryMap[itemId] || [];
     if (!list || list.length === 0) return null;
     // choose by pricePerUnit if available
-    return list.reduce((best: any, cur: any) => {
+    return list.reduce<PurchaseOption | null>((best, cur) => {
       if (!best) return cur;
       const bp = typeof best.pricePerUnit === 'number' ? best.pricePerUnit : Infinity;
       const cp = typeof cur.pricePerUnit === 'number' ? cur.pricePerUnit : Infinity;
@@ -277,7 +302,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
     }, null);
   };
 
-  const createPurchaseRequest = async (item: InventorySnapshot, qty: number, supplier?: any) => {
+  const createPurchaseRequest = async (item: InventorySnapshot, qty: number, supplier?: PurchaseOption | null) => {
     if (!item || qty <= 0) return;
     setCreatingRequest(item.id);
     try {
@@ -403,7 +428,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
               </CardBody>
             </Card>
 
-            {role === 'admin' || role === 'quartermaster' || role === 'inventory_helper' ? (
+            {canManageLogistics(role) || canUserAudit(role ? { role: role, canAudit: false } : null) ? (
               <>
                 <Card
                   isPressable
@@ -419,6 +444,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
                   </CardBody>
                 </Card>
 
+                {canManageLogistics(role) && (
                 <Card
                   isPressable
                   onPress={() => router.push('/reports')}
@@ -432,11 +458,12 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
                     </p>
                   </CardBody>
                 </Card>
+                )}
               </>
             ) : null}
 
             {/* Audit button — visible to anyone with audit permission */}
-            {(userData.canAudit || role === 'admin' || role === 'quartermaster' || role === 'inventory_helper') && (
+            {(userData.canAudit || canManageLogistics(role) || canUserAudit(role ? { role: role, canAudit: false } : null)) && (
               <Card
                 isPressable
                 onPress={() => router.push('/audit')}
@@ -559,6 +586,9 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
             <h2 className="text-xl font-semibold mb-4">Smart Ordering</h2>
             <Card>
               <CardBody className="space-y-3">
+                {inventoryError != null && (
+                  <LoadFailureNotice compact title="Inventory couldn't load" message={describeLoadError(inventoryError)} />
+                )}
                 <p className="text-sm text-foreground-500">Suggested orders to meet par levels. Shows recent suppliers and the cheapest recent option.</p>
                 {(lowStockItems || []).slice(0, 8).map(item => {
                   const par = typeof item.reorderThreshold === 'number' ? item.reorderThreshold : 0;
@@ -579,12 +609,6 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
                       <div className="flex items-center gap-2">
                         <Button size="sm" variant="flat" onPress={() => createPurchaseRequest(item, suggested, cheapest)} isDisabled={suggested <= 0 || creatingRequest !== null}>
                           {creatingRequest === item.id ? 'Creating...' : `Request ${suggested}`}
-                        </Button>
-                        <Button size="sm" variant="light" onPress={() => {
-                          console.log('Purchase history for', item.id, purchaseHistoryMap[item.id] || []);
-                          alert('Opening purchase history in console (developer)');
-                        }}>
-                          Options
                         </Button>
                       </div>
                     </div>
@@ -625,6 +649,8 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
               <p className="text-foreground-500 text-xs md:text-sm">
                 Loading...
               </p>
+            ) : packsError != null ? (
+              <LoadFailureNotice compact title="Packs couldn't load" message={describeLoadError(packsError)} />
             ) : assignedPacks.length === 0 ? (
               <p className="text-foreground-500 text-xs md:text-sm">
                 No packs currently assigned. Packs appear here once you check them out.
@@ -635,7 +661,7 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
                   key={pack.id}
                   className="bg-content2 cursor-pointer hover:shadow-md transition-shadow"
                   isPressable
-                  onPress={() => router.push(`/statpacks/?id=${pack.id}`)}
+                  onPress={() => router.push(`/statpacks/check-off?id=${pack.id}&mode=checkin`)}
                 >
                   <CardBody className="py-2 md:py-3 px-3 md:px-4">
                     <div className="flex items-center justify-between gap-2">

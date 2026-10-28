@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Button, Input, Textarea, Spinner } from '@heroui/react';
 import { AlertTriangle, PackageCheck, PackagePlus, ScanBarcode, X } from 'lucide-react';
 import { doc, getDoc } from 'firebase/firestore';
@@ -110,6 +110,8 @@ async function buildReceivablesForItem(
 
 export default function ReceiveDrawer({ isOpen, onClose, item, actor, onReceived }: ReceiveDrawerProps) {
   const [receivables, setReceivables] = useState<ReceivableLine[]>([]);
+  // Set once a line was received; the effect below finishes when the list empties.
+  const finishWhenEmpty = useRef(false);
   const [forms, setForms] = useState<Record<string, LineFormState>>({});
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
@@ -128,6 +130,15 @@ export default function ReceiveDrawer({ isOpen, onClose, item, actor, onReceived
 
   // Load the purchase doc(s) behind this item's incoming orders whenever the
   // drawer opens for a given item.
+  // Side effect lives here, not in a state updater (updaters can run twice in StrictMode).
+  useEffect(() => {
+    if (finishWhenEmpty.current && receivables.length === 0) {
+      finishWhenEmpty.current = false;
+      finish();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [receivables]);
+
   useEffect(() => {
     let cancelled = false;
     async function load() {
@@ -196,14 +207,8 @@ export default function ReceiveDrawer({ isOpen, onClose, item, actor, onReceived
         notes: form.notes.trim() || undefined,
       };
       await receivePurchaseLine(r.purchase, r.line.lineId, receiveInput, actor);
-      setReceivables(prev => {
-        const next = prev.filter(x => x.key !== r.key);
-        if (next.length === 0) {
-          // Defer so React finishes this state update before we tear the drawer down.
-          setTimeout(finish, 0);
-        }
-        return next;
-      });
+      finishWhenEmpty.current = true;
+      setReceivables(prev => prev.filter(x => x.key !== r.key));
     } catch (e) {
       setLineErrors(prev => ({ ...prev, [r.key]: e instanceof Error ? e.message : 'Failed to receive this line.' }));
     } finally {

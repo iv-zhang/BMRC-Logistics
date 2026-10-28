@@ -122,7 +122,7 @@ export async function flagStatpackRestock(
         type: 'broadcast',
         title: `Restock needed: ${pack.name}`,
         body,
-        link: '/statpacks/' + pack.id,
+        link: `/statpacks/check-off?id=${pack.id}&mode=audit`,
       },
       actor,
     );

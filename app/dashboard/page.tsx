@@ -8,8 +8,10 @@ import {
   collection, onSnapshot, query, where, orderBy, limit,
   getDocs, Timestamp,
 } from 'firebase/firestore';
-import { db } from '@/firebase';
+import { signOut } from 'firebase/auth';
+import { auth, db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
+import NotificationBell from '@/app/components/notification-bell';
 import type { Statpack, InventoryItem, StatpackLog } from '@/app/types';
 import { getPackShortages } from '@/app/lib/statpack-shortages';
 import { computeBagStock } from '@/app/lib/item-status';
@@ -18,7 +20,7 @@ import { getLowReserveItems, getDashboardExpiryAlerts, hydrateDashboardInventory
 import MemberDashboard from './member-dashboard';
 import {
   AlertTriangle, ChevronDown, Search, X, ArrowUpRight, Clock, AlertCircle,
-  Bell, ArrowRightLeft, Plus, ScanLine, FileText, ChevronRight,
+  ArrowRightLeft, Plus, ScanLine, FileText, ChevronRight,
 } from 'lucide-react';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -99,7 +101,7 @@ type ExpiryAlert = DashboardExpiryAlert;
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { loading: authLoading, user, userData, role } = useUserRole();
+  const { loading: authLoading, user, userData, role, error: roleError } = useUserRole();
   const { thresholds } = useOrgConfig();
   const [dataLoading, setDataLoading] = useState(true);
   const [offline, setOffline] = useState(false);
@@ -217,6 +219,29 @@ export default function DashboardPage() {
       <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center">
         <Spinner size="lg" color="primary" />
       </div>
+    );
+  }
+
+  // Signed in but no account doc / role (missing doc or failed read): don't spin forever.
+  if (user && (!role || !userData)) {
+    return (
+      <main className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6 flex items-center justify-center">
+        <section role="alert" className="w-full max-w-lg rounded-2xl border border-warning bg-content1 p-6">
+          <h1 className="text-lg font-bold text-foreground">Could not load your account</h1>
+          <p className="mt-2 text-sm text-foreground-500">
+            {roleError ?? 'Your account profile could not be found. Try again, or sign out and back in.'}
+          </p>
+          <div className="mt-5 flex flex-wrap gap-3">
+            <button className="rounded-lg bg-primary px-4 py-2 text-white" onClick={() => window.location.reload()}>Retry</button>
+            <button
+              className="rounded-lg border border-divider px-4 py-2 text-foreground"
+              onClick={async () => { try { await signOut(auth); } finally { router.push('/login'); } }}
+            >
+              Sign out
+            </button>
+          </div>
+        </section>
+      </main>
     );
   }
 
@@ -518,7 +543,8 @@ function AdminDashboard({
                         const logLabel =
                           log.action === 'checkout' ? 'Checkout' :
                           log.action === 'checkin'  ? 'Check-in' :
-                          log.action === 'content_edit' ? 'Contents edited' : 'Maintenance';
+                          log.action === 'content_edit' ? 'Contents edited' :
+          log.action === 'status_change' ? 'Status change' : 'Maintenance';
                         const ts = log.timestamp instanceof Date ? log.timestamp : null;
                         const timeLabel = ts ? (() => {
                           const d = Math.round((today.getTime() - ts.getTime()) / 86400000);
@@ -797,6 +823,7 @@ const LOG_META: Record<StatpackLog['action'], { label: string; cls: string }> = 
   audit:       { label: 'Audit',    cls: 'bg-primary-50 dark:bg-primary-900/20 text-primary' },
   created:     { label: 'Created',  cls: 'bg-content3 text-foreground-500' },
   content_edit: { label: 'Contents edited', cls: 'bg-secondary-50 dark:bg-secondary-900/20 text-secondary' },
+  status_change: { label: 'Status change', cls: 'bg-warning-50 dark:bg-warning-900/20 text-warning' },
 };
 
 function greeting(): string {
@@ -860,12 +887,13 @@ function MobileDashboard({
           <div className="text-[11.5px] text-foreground-400 font-semibold">{greeting()}</div>
           <div className="text-base font-bold tracking-tight text-foreground truncate">{firstName}</div>
         </div>
+        <NotificationBell />
         <button
           onClick={() => router.push('/issue-reports')}
           className="w-10 h-10 rounded-[12px] border border-divider bg-content1 text-foreground-500 flex items-center justify-center flex-none relative active:scale-95 transition-transform"
           aria-label="Reports"
         >
-          <Bell size={19} />
+          <FileText size={19} />
           {expiredCount + outOfStock > 0 && (
             <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-danger border-2 border-content1" />
           )}

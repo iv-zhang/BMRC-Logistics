@@ -15,15 +15,16 @@ import {
   useDisclosure,
 } from '@heroui/react';
 import { Package, MapPin, Pencil, Save, X, Clock, Repeat, AlertTriangle } from 'lucide-react';
-import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { doc, onSnapshot, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
-import { auth, db } from '@/firebase';
-import type { Statpack, User, ExchangeBag, ExchangeBagAssignment, StatpackPocket } from '@/app/types';
+import { db } from '@/firebase';
+import { useUserRole } from '@/app/hooks/useUserRole';
+import type { Statpack, ExchangeBag, ExchangeBagAssignment, StatpackPocket } from '@/app/types';
 import StatpackEditorModal from '@/app/components/statpack-editor-modal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import StatpackHistory from '@/app/components/statpack-history';
 import StatpackRestockChips from '@/app/components/statpack-restock-chips';
 import StatpackReadyOverride from '@/app/components/statpack-ready-override';
+import { updateStatpackDetails } from '@/app/lib/statpacks';
 import { computeStatpackAssetValue } from '@/app/lib/inventory';
 import { subscribeExchangeBags, resolveBagAssignments } from '@/app/lib/exchange-bags';
 import { getPackShortages, formatShortage } from '@/app/lib/statpack-shortages';
@@ -48,8 +49,7 @@ export default function StatpackDetailClient() {
   
   const statpackId = Array.isArray(params?.id) ? params.id[0] : (params?.id as string);
 
-  const [user, setUser] = useState<FirebaseUser | null>(null);
-  const [userRole, setUserRole] = useState<User['role'] | null>(null);
+  const { user, role, effectiveUid, fullName, loading: authLoading } = useUserRole();
   const [loading, setLoading] = useState(true);
   const [pack, setPack] = useState<Statpack | null>(null);
 
@@ -65,35 +65,21 @@ export default function StatpackDetailClient() {
   const [savingBagLinks, setSavingBagLinks] = useState(false);
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (currentUser) => {
-      if (!currentUser) {
-        router.push('/login');
-        return;
-      }
-      setUser(currentUser);
-    });
-    return () => unsub();
-  }, [router]);
+    if (!authLoading && !user) router.push('/login');
+  }, [authLoading, user, router]);
+
+  const isPlaceholderId = !statpackId || statpackId === 'dummy' || statpackId === '_';
+  const canManage = canManageLogistics(role);
 
   useEffect(() => {
-    if (!user) return;
-    const userRef = doc(db, 'users', user.uid);
-    const unsub = onSnapshot(userRef, (snap) => {
-      const data = snap.data() as User | undefined;
-      setUserRole(data?.role ?? 'member');
-    });
-    return () => unsub();
-  }, [user]);
-
-  useEffect(() => {
-    if (!statpackId) return;
+    if (!statpackId || isPlaceholderId || !canManage) return;
     setLoading(true);
     const ref = doc(db, 'statpacks', statpackId);
     const unsub = onSnapshot(
       ref,
       (snapshot) => {
-        const data = snapshot.data() as Statpack | undefined;
-        setPack(data ?? null);
+        // snapshot.data() omits the doc id; writes and links below need it.
+        setPack(snapshot.exists() ? ({ ...(snapshot.data() as Statpack), id: snapshot.id } as Statpack) : null);
         setLoading(false);
       },
       (error) => {
@@ -102,12 +88,13 @@ export default function StatpackDetailClient() {
       }
     );
     return () => unsub();
-  }, [statpackId]);
+  }, [statpackId, isPlaceholderId, canManage]);
 
   useEffect(() => {
+    if (!canManage) return;
     const unsub = subscribeExchangeBags(setExchangeBags);
     return () => unsub();
-  }, []);
+  }, [canManage]);
 
   // Source of truth for display is always the read-time shim — never the raw
   // `exchangeBagAssignments`/`exchangeBagIds` fields directly.
@@ -160,13 +147,17 @@ export default function StatpackDetailClient() {
     if (!pack) return;
     const parsedValue = summaryForm.assetValue !== '' ? Number(summaryForm.assetValue) : undefined;
     try {
-      await updateDoc(doc(db, 'statpacks', pack.id as string), {
-        name: summaryForm.name || pack.name,
-        status: (summaryForm.status || pack.status) as Statpack['status'],
-        currentLocation: summaryForm.currentLocation || '',
-        assetValue: parsedValue,
-        updatedAt: serverTimestamp(),
-      });
+      await updateStatpackDetails(
+        pack.id as string,
+        {
+          name: summaryForm.name || pack.name,
+          status: (summaryForm.status || pack.status) as Statpack['status'],
+          currentLocation: summaryForm.currentLocation || '',
+          ...(parsedValue !== undefined && !Number.isNaN(parsedValue) ? { assetValue: parsedValue } : {}),
+        },
+        { uid: effectiveUid ?? user?.uid, name: fullName || user?.displayName || 'Unknown' },
+        { status: pack.status, name: pack.name },
+      );
       setIsEditingSummary(false);
     } catch (err) {
       console.error('Failed to save summary:', err);
@@ -203,10 +194,15 @@ export default function StatpackDetailClient() {
 
   const saveEditor = async (draft: Statpack) => {
     try {
-      await updateDoc(doc(db, 'statpacks', draft.id as string), {
-        ...draft,
-        updatedAt: serverTimestamp(),
-      });
+      // Never write the id back into the doc body.
+      const { id: _draftId, ...draftBody } = draft;
+      void _draftId;
+      await updateStatpackDetails(
+        pack?.id ?? statpackId,
+        { ...draftBody, contentsUpdatedAt: serverTimestamp() },
+        { uid: effectiveUid ?? user?.uid, name: fullName || user?.displayName || 'Unknown' },
+        { status: pack?.status, name: pack?.name },
+      );
       editorDisclosure.onClose();
     } catch (err) {
       console.error('Failed to save statpack:', err);
@@ -242,12 +238,31 @@ export default function StatpackDetailClient() {
     }
   };
 
-  if (statpackId === '_') {
+  if (authLoading || !user) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center"><Spinner size="lg" color="primary" /></div>
+    );
+  }
+
+  if (!canManage) {
     return (
       <div className="h-screen flex items-center justify-center">
         <Card className="w-full max-w-md">
           <CardBody className="text-center gap-4">
-            <p className="text-foreground-500">Statpack not found. Redirecting...</p>
+            <p className="text-foreground-500">Access denied. Admin or quartermaster access is required.</p>
+            <Button onPress={() => router.push('/dashboard')}>Back to Dashboard</Button>
+          </CardBody>
+        </Card>
+      </div>
+    );
+  }
+
+  if (isPlaceholderId) {
+    return (
+      <div className="h-screen flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardBody className="text-center gap-4">
+            <p className="text-foreground-500">No statpack selected. Open a statpack from the list.</p>
             <Button onPress={() => router.push('/statpacks')}>
               Back to Statpacks
             </Button>
@@ -257,15 +272,30 @@ export default function StatpackDetailClient() {
     );
   }
 
-  if (loading || !pack) return (
+  if (loading) return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center"><Spinner size="lg" color="primary" /></div>
   );
+
+  if (!pack) {
+    return (
+      <div className="h-screen flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardBody className="text-center gap-4">
+            <p className="text-foreground-500">Statpack not found. It may have been deleted.</p>
+            <Button onPress={() => router.push('/statpacks')}>
+              Back to Statpacks
+            </Button>
+          </CardBody>
+        </Card>
+      </div>
+    );
+  }
 
   // `setPack(snapshot.data())` doesn't include the doc id — the new
   // shortage/override components need a real `id` for writes, so build a
   // copy that carries it through.
   const packWithId: Statpack = { ...pack, id: statpackId };
-  const isAdmin = canManageLogistics(userRole);
+  const isAdmin = canManage;
   const shortages = getPackShortages(packWithId);
   const overrideEligible =
     isAdmin && !packWithId.isCheckedOut && packWithId.status !== 'Ready' && !packWithId.status.includes('Expired');
@@ -282,7 +312,7 @@ export default function StatpackDetailClient() {
             <Button variant="light" onPress={() => router.push('/assets')}>Back to Assets</Button>
             <Button variant="light" onPress={openScanner} startContent={<MapPin size={16} />}>Scan Location</Button>
             <Button color="primary" onPress={() => router.push(`/statpacks/check-off?id=${pack.id}&mode=audit`)}>Check-Off</Button>
-            {userRole === 'admin' && (
+            {isAdmin && (
               <Button variant="light" onPress={openEditor} startContent={<Pencil size={16} />}>Edit</Button>
             )}
           </div>
@@ -309,7 +339,7 @@ export default function StatpackDetailClient() {
                 <p className="text-sm font-semibold text-foreground-500">Asset Value</p>
                 <p className="text-sm">{pack.assetValue ? `$${pack.assetValue.toFixed(2)}` : '—'}</p>
               </div>
-              {userRole === 'admin' && (
+              {isAdmin && (
                 <div>
                   <p className="text-sm font-semibold text-foreground-500">Actions</p>
                   <div className="flex gap-2">
@@ -386,7 +416,7 @@ export default function StatpackDetailClient() {
               </>
             )}
 
-            {userRole === 'admin' && (
+            {isAdmin && (
               <>
                 <Divider />
                 <div>
@@ -518,7 +548,7 @@ export default function StatpackDetailClient() {
         onClose={editorDisclosure.onClose}
         onSave={saveEditor}
         onDelete={deleteStatpack}
-        canDelete={userRole === 'admin'}
+        canDelete={isAdmin}
       />
 
       <BarcodeScanner

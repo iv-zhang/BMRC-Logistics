@@ -76,6 +76,7 @@ export default function AuditPermissionModal({
 
   useEffect(() => {
     if (!isOpen) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- syncs with Firestore on open; loadMembers sets loading before its async fetch
     loadMembers();
   }, [isOpen, loadMembers]);
 

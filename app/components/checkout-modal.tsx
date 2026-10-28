@@ -9,6 +9,7 @@ import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
 import BarcodeScanner from './barcode-scanner';
 import { ScanLine, CheckCircle2, AlertTriangle, XCircle, LogOut, LogIn, MapPin, Package, FileText, User as UserIcon, CheckCircle } from 'lucide-react';
+import { parseDateInput, toDateInputValue } from '@/app/lib/dates';
 
 interface CheckoutModalProps {
   isOpen: boolean;
@@ -124,7 +125,7 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
     
     // Run verification if rules present (prefer statpackItem rules, fall back to inventory item policy)
     if (hasVerificationRules) {
-      const rulesSource = statpackItem?.verificationRules ? statpackItem : (asset ? ({ itemId: asset.id, itemDetails: asset, verificationRules: asset.verificationPolicy } as any) : null);
+      const rulesSource = statpackItem?.verificationRules ? statpackItem : (asset ? ({ itemId: asset.id, itemDetails: asset, verificationRules: asset.verificationPolicy } as unknown as typeof statpackItem) : null);
       if (rulesSource) {
         const warnings = await verifyAssetAgainstRules({
           statpackItem: rulesSource,
@@ -140,7 +141,7 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
 
   const runVerification = async () => {
     if (!hasVerificationRules) return;
-    const rulesSource = statpackItem?.verificationRules ? statpackItem : (asset ? ({ itemId: asset.id, itemDetails: asset, verificationRules: asset.verificationPolicy } as any) : null);
+    const rulesSource = statpackItem?.verificationRules ? statpackItem : (asset ? ({ itemId: asset.id, itemDetails: asset, verificationRules: asset.verificationPolicy } as unknown as typeof statpackItem) : null);
     if (!rulesSource) return;
 
     const warnings = await verifyAssetAgainstRules({
@@ -189,7 +190,7 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
     }
     
     // If expiration confirmation is required, ensure user provided/confirmed a date
-    const rulesSource = statpackItem?.verificationRules ? statpackItem : (asset ? ({ itemId: asset.id, itemDetails: asset, verificationRules: asset.verificationPolicy } as any) : null);
+    const rulesSource = statpackItem?.verificationRules ? statpackItem : (asset ? ({ itemId: asset.id, itemDetails: asset, verificationRules: asset.verificationPolicy } as unknown as typeof statpackItem) : null);
     const requireExpiration = !!(rulesSource?.verificationRules?.requireExpirationConfirmation || rulesSource?.verificationRules?.requireExpirationConfirmation === true);
     if (requireExpiration && !confirmedExpiration && !scannedExpiration) {
       setError('Please confirm the item expiration date before continuing.');
@@ -414,8 +415,8 @@ export default function CheckoutModal({ isOpen, onOpenChange, asset, mode, seria
                           size="md"
                           type="date"
                           placeholder="MM/YYYY"
-                          value={confirmedExpiration ? confirmedExpiration.toISOString().slice(0,10) : (scannedExpiration ? scannedExpiration.toISOString().slice(0,10) : '')}
-                          onValueChange={(v) => setConfirmedExpiration(v ? new Date(v) : null)}
+                          value={confirmedExpiration ? toDateInputValue(confirmedExpiration) : (scannedExpiration ? toDateInputValue(scannedExpiration) : '')}
+                          onValueChange={(v) => setConfirmedExpiration(v ? parseDateInput(v) : null)}
                           className="w-full"
                         />
                       </div>

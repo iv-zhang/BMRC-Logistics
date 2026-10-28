@@ -20,9 +20,8 @@ import {
   Tab,
 } from '@heroui/react';
 import { ScanLine, Search, ArrowLeft, Radio, Layers } from 'lucide-react';
-import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
-import { collection, query, where, getDocs, Timestamp, doc, getDoc } from 'firebase/firestore';
-import { auth, db } from '@/firebase';
+import { collection, query, where, getDocs, Timestamp } from 'firebase/firestore';
+import { db } from '@/firebase';
 import type { InventoryItem, AssetInstance } from '@/app/types';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import CheckoutModal from '@/app/components/checkout-modal';
@@ -32,8 +31,9 @@ import { useUserRole } from '@/app/hooks/useUserRole';
 
 export default function AssetCheckoutPage() {
   const router = useRouter();
-  const { user, role, fullName } = useUserRole();
-  const [loading, setLoading] = useState(true);
+  const { user, effectiveUid, fullName, loading: authLoading } = useUserRole();
+  const [dataLoading, setDataLoading] = useState(true);
+  const loading = authLoading || (!!user && dataLoading);
   const [searchQuery, setSearchQuery] = useState('');
   const [assets, setAssets] = useState<InventoryItem[]>([]);
   const [filteredAssets, setFilteredAssets] = useState<InventoryItem[]>([]);
@@ -48,10 +48,15 @@ export default function AssetCheckoutPage() {
   const multipleMatchDisclosure = useDisclosure();
   const [multipleMatches, setMultipleMatches] = useState<AssetScanMatch[]>([]);
 
+  // Logged out once auth resolves: send to /login instead of spinning forever.
+  useEffect(() => {
+    if (!authLoading && !user) router.replace('/login');
+  }, [authLoading, user, router]);
+
   useEffect(() => {
     if (!user) return;
 
-    setLoading(true);
+    setDataLoading(true);
     (async () => {
       try {
         const q = query(collection(db, 'inventory'), where('isAsset', '==', true));
@@ -69,7 +74,7 @@ export default function AssetCheckoutPage() {
       } catch (err) {
         console.error('Failed to load assets', err);
       } finally {
-        setLoading(false);
+        setDataLoading(false);
       }
     })();
   }, [user]);
@@ -145,36 +150,36 @@ export default function AssetCheckoutPage() {
 
   // Batch checkout handler
   const handleBatchCheckout = useCallback(async (items: BatchItem[], context: BatchContext) => {
-    if (!user) return;
+    if (!user || !effectiveUid) return;
     const assetList = items.map(i => ({
       itemId: i.item.id,
       instanceSerial: i.instance?.serial,
     }));
-    await batchCheckoutAssets(assetList, context, user.uid, fullName || user.displayName || 'Unknown');
+    await batchCheckoutAssets(assetList, context, effectiveUid, fullName || user.displayName || 'Unknown');
     // Refresh assets
     const q2 = query(collection(db, 'inventory'), where('isAsset', '==', true));
     const snap = await getDocs(q2);
     setAssets(snap.docs.map(d => ({ id: d.id, ...d.data() } as InventoryItem)));
     setActiveTab('single');
-  }, [user, fullName]);
+  }, [user, effectiveUid, fullName]);
 
   // Batch checkin handler
   const handleBatchCheckin = useCallback(async (items: BatchItem[], context: BatchContext) => {
-    if (!user) return;
+    if (!user || !effectiveUid) return;
     const assetList = items.map(i => ({
       itemId: i.item.id,
       instanceSerial: i.instance?.serial,
       condition: i.condition,
       notes: i.notes,
     }));
-    await batchCheckinAssets(assetList, context, user.uid, fullName || user.displayName || 'Unknown');
+    await batchCheckinAssets(assetList, context, effectiveUid, fullName || user.displayName || 'Unknown');
     const q2 = query(collection(db, 'inventory'), where('isAsset', '==', true));
     const snap = await getDocs(q2);
     setAssets(snap.docs.map(d => ({ id: d.id, ...d.data() } as InventoryItem)));
     setActiveTab('single');
-  }, [user, fullName]);
+  }, [user, effectiveUid, fullName]);
 
-  if (loading) {
+  if (loading || !user) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <Spinner />

@@ -1,6 +1,6 @@
 'use client';
 
-import { collection, doc, getDoc, setDoc, updateDoc, serverTimestamp, query, where, getDocs, writeBatch } from 'firebase/firestore';
+import { collection, doc, getDoc, setDoc, serverTimestamp, query, where, getDocs, writeBatch } from 'firebase/firestore';
 import { db } from '@/firebase';
 import type { Statpack, StatpackShortageSnapshot } from '@/app/types';
 import { computeStatpackAssetValue } from '@/app/lib/inventory';
@@ -87,7 +87,7 @@ export async function duplicateStatpack(statpackId: string): Promise<string> {
     };
     
     // Remove undefined values before writing to Firestore
-    const sanitized = removeUndefined(duplicate);
+    const sanitized = deepRemoveUndefined(duplicate);
     
     await setDoc(newRef, sanitized);
     
@@ -116,20 +116,25 @@ export async function duplicateStatpack(statpackId: string): Promise<string> {
 export async function saveStatpackContents(
   draft: Statpack,
   actor: { uid?: string; name?: string },
+  previousStatus?: string,
 ): Promise<void> {
   if (!draft.id) throw new Error('Cannot save statpack contents without an id');
 
   const { id, ...rest } = draft;
-  const payload = removeUndefined({
+  const payload = deepRemoveUndefined({
     ...rest,
     contentsUpdatedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   }) as Record<string, unknown>;
 
-  const logPayload = removeUndefined({
+  const logPayload = deepRemoveUndefined({
     statpackId: id,
     statpackName: draft.name,
-    action: 'content_edit',
+    // A status edit made in the editor is labelled as such (issue #20).
+    action: previousStatus && previousStatus !== draft.status ? 'status_change' : 'content_edit',
+    ...(previousStatus && previousStatus !== draft.status
+      ? { statusChange: { from: previousStatus, to: draft.status } }
+      : {}),
     userId: actor.uid || 'unknown',
     userName: actor.name || 'Unknown',
     timestamp: serverTimestamp(),
@@ -137,6 +142,43 @@ export async function saveStatpackContents(
 
   const batch = writeBatch(db);
   batch.update(doc(db, 'statpacks', id), payload);
+  batch.set(doc(collection(db, 'statpack_logs')), logPayload);
+  await batch.commit();
+}
+
+/**
+ * Persist an admin "edit details" change (name / status / location / value /
+ * etc.) AND write the matching `statpack_logs` row in one atomic batch. A
+ * status change logs `action: 'status_change'` with `statusChange {from,to}`;
+ * anything else logs `content_edit`. Previously these edits were raw updateDocs
+ * that changed e.g. a pack's status to "In Use" with no Activity-log trace.
+ */
+export async function updateStatpackDetails(
+  packId: string,
+  patch: Record<string, unknown>,
+  actor: { uid?: string; name?: string },
+  previous: { status?: string; name?: string },
+  note?: string,
+): Promise<void> {
+  if (!packId) throw new Error('Cannot update statpack details without an id');
+  const nextStatus = typeof patch.status === 'string' ? patch.status : undefined;
+  const statusChanged = !!nextStatus && !!previous.status && nextStatus !== previous.status;
+  const name = (typeof patch.name === 'string' && patch.name) || previous.name || '';
+
+  const payload = deepRemoveUndefined({ ...patch, updatedAt: serverTimestamp() }) as Record<string, unknown>;
+  const logPayload = deepRemoveUndefined({
+    statpackId: packId,
+    statpackName: name,
+    action: statusChanged ? 'status_change' : 'content_edit',
+    statusChange: statusChanged ? { from: previous.status, to: nextStatus } : undefined,
+    userId: actor.uid || 'unknown',
+    userName: actor.name || 'Unknown',
+    timestamp: serverTimestamp(),
+    notes: note?.trim() || undefined,
+  }) as Record<string, unknown>;
+
+  const batch = writeBatch(db);
+  batch.update(doc(db, 'statpacks', packId), payload);
   batch.set(doc(collection(db, 'statpack_logs')), logPayload);
   await batch.commit();
 }
@@ -197,7 +239,22 @@ export async function overrideStatpackReady(
     updatedAt: serverTimestamp(),
   });
 
-  await updateDoc(doc(db, 'statpacks', pack.id), payload as Record<string, unknown>);
+  const overrideNote = note?.trim();
+  const logPayload = deepRemoveUndefined({
+    statpackId: pack.id,
+    statpackName: pack.name,
+    action: 'status_change',
+    statusChange: { from: pack.status, to: 'Ready' },
+    userId: actor.uid || 'unknown',
+    userName: actor.name || 'Unknown',
+    timestamp: serverTimestamp(),
+    notes: overrideNote ? `Manual Ready override: ${overrideNote}` : 'Manual Ready override',
+  }) as Record<string, unknown>;
+
+  const batch = writeBatch(db);
+  batch.update(doc(db, 'statpacks', pack.id), payload as Record<string, unknown>);
+  batch.set(doc(collection(db, 'statpack_logs')), logPayload);
+  await batch.commit();
 
   // Best-effort ledger entry — an audit-log failure must never block the
   // override itself.
@@ -217,25 +274,3 @@ export async function overrideStatpackReady(
   }
 }
 
-/**
- * Remove undefined values from an object recursively
- */
-function removeUndefined(obj: unknown): unknown {
-  if (obj === undefined) return undefined;
-  if (obj === null) return null;
-  if (obj instanceof Date) return obj;
-  if (Array.isArray(obj)) {
-    return obj.map(item => removeUndefined(item)).filter(item => item !== undefined);
-  }
-  if (typeof obj === 'object') {
-    const result: Record<string, unknown> = {};
-    Object.keys(obj as Record<string, unknown>).forEach(key => {
-      const value = removeUndefined((obj as Record<string, unknown>)[key]);
-      if (value !== undefined) {
-        result[key] = value;
-      }
-    });
-    return result;
-  }
-  return obj;
-}

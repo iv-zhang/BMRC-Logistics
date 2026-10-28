@@ -39,6 +39,7 @@ import {
 import type { InventoryItem, MedicationLog } from '@/app/types';
 import { addDoc, collection, query, where, orderBy, onSnapshot, serverTimestamp, Timestamp, getDocs, limit } from 'firebase/firestore';
 import { db } from '@/firebase';
+import { parseDateInput } from '@/app/lib/dates';
 
 interface MedicationCabinetModalProps {
   isOpen: boolean;
@@ -194,11 +195,11 @@ export default function MedicationCabinetModal({
         medicationName: medication.name,
         action,
         lotNumber: lotNumber.trim(),
-        expirationDate: new Date(expirationDate),
+        expirationDate: parseDateInput(expirationDate) ?? new Date(expirationDate),
         quantity: qty,
         runningCount: newRunningCount,
         performedBy: { userId, userName },
-        timestamp: serverTimestamp() as any,
+        timestamp: serverTimestamp() as unknown as Timestamp,
       };
 
       if (witnessName.trim()) {
@@ -324,7 +325,7 @@ export default function MedicationCabinetModal({
                 </div>
 
                 {/* Expiration warning */}
-                {expirationDate && new Date(expirationDate).getTime() < Date.now() && (
+                {expirationDate && (parseDateInput(expirationDate)?.getTime() ?? NaN) < Date.now() && (
                   <Card className="bg-danger-50 border border-danger-200">
                     <CardBody className="py-2">
                       <div className="flex items-center gap-2">
@@ -336,7 +337,7 @@ export default function MedicationCabinetModal({
                 )}
 
                 {expirationDate && (() => {
-                  const daysUntil = Math.ceil((new Date(expirationDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+                  const daysUntil = Math.ceil(((parseDateInput(expirationDate)?.getTime() ?? NaN) - Date.now()) / (1000 * 60 * 60 * 24));
                   if (daysUntil > 0 && daysUntil <= 90) {
                     return (
                       <Card className="bg-warning-50 border border-warning-200">

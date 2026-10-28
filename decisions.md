@@ -474,8 +474,18 @@ meaning off.
 **Auto-flagging the logistics team:** Check-in now auto-creates a de-duplicated `team_tasks` card when the pack leaves with `getPackShortages(...).total > 0` (deliberately including *partial* shortages — the pack still derives `Ready` per the D-8 amendment, but logistics is told). After the transaction commits, best-effort, never throwing (matching `issue_reports` convention):
 1. **Status + chips** — free, derived from persisted `currentQuantity`.
 2. **Committee Board task** — helper `app/lib/statpack-restock-flag.ts` writes a doc with `title: 'Restock ${pack.name}'`, `definitionOfDone: 'All pack contents back to par quantity.'`, `subtasks` keyed to each shortage, and `linkedStatpackId: pack.id` (new optional field, ratified in TASK 2 of this entry). De-duplicated: if an open task for this pack exists, update its subtasks instead of creating a second card; otherwise every check-in of a chronically short pack spawns another.
-3. **In-app notification** — broadcasted to `['admin', 'quartermaster']` only (not `medops`, per D-13: medops never sees logistics surfaces). Links to `/statpacks/<id>`.
+3. **In-app notification** — broadcasted to `['admin', 'quartermaster']` only (not `medops`, per D-13: medops never sees logistics surfaces). Links to `/statpacks/check-off?id=<id>&mode=audit` (amended 2026-10-26: `/statpacks/<id>` 404s under static export).
 
 **This reverses documented non-behaviour:** `MODEL.md` explicitly states "post-event scan → auto-flag below-par item" does **not exist**; D-8 frames restock as human-pull, caught by the next crew or admin audit. Auto-creating a task and notification is a deliberate reversal, scoped to **statpacks only** — inventory below-par remains display-only. Not a silent patch.
 
 **Do not regress:** don't add a time/sharps/expiry input to the fast-path gate (the escape hatch covers those); don't include `medops` in the restock notification; don't let `anyOutConsumable` drift back to entry-only (statpacks short on untouched items must still derive `Restock Needed`); never remove the de-dupe check (a chronically short pack gets one card, not many).
+
+### D-32 — An expiration month means the first day of that month
+
+**Decision (2026-10-27):** wherever only a month is captured (receiving, intake, statpack check-off, statpack editor), `YYYY-MM` is stored as the **1st of that month at 00:00 local org time** (America/Los_Angeles). "Jun 2027" is treated as expired from 2027-06-01 on. All month inputs go through `parseMonthInput(value, 'start')` in `app/lib/dates.ts`; never `new Date('YYYY-MM-01')` (UTC midnight = previous month in Pacific time).
+
+**Why:** the app had three conflicting shapes — intake stored UTC midnight on the 1st (displayed a month early), check-off stored the last day 23:59:59, the editor stored local midnight on the 1st — so the same item could read "expired" in one view and "ok" in another. The conservative reading (earliest possible expiry) is the safe one for medical stock. When the app starts capturing an exact day, that day wins.
+
+**Data:** `scripts/normalize-expiration-months.cjs` (dry-run by default) rewrites legacy end-of-month and UTC-midnight values on `statpacks.contents[].expirationDate` and `inventory.batches[].expirationDate` to this shape.
+
+**Do not regress:** don't reintroduce end-of-month (`parseMonthInput(..., 'end')`) for expirations; day-precise date inputs (`parseDateInput`) stay day-precise.

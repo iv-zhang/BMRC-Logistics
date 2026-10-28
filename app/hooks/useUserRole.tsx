@@ -5,9 +5,12 @@ import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
 import type { User } from '@/app/types';
+import { canManageLogistics } from '@/app/lib/roles';
 
 interface UseUserRoleReturn {
   loading: boolean;
+  /** Set when the real `users/{uid}` read failed (so consumers can show an error instead of spinning). */
+  error: string | null;
   user: FirebaseUser | null;
   userData: User | null;
   role: User['role'] | null;
@@ -64,18 +67,25 @@ export function useUserRole(): UseUserRoleReturn {
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [userData, setUserData] = useState<User | null>(null);
-  const [roleOverride, setRoleOverride] = useState<User['role'] | null>(readRoleOverride);
+  const [error, setError] = useState<string | null>(null);
+  // Overrides are read in an effect (not a useState initializer) so the first
+  // client render matches the server render — avoids a hydration mismatch.
+  const [overridesRead, setOverridesRead] = useState(false);
+  const [roleOverride, setRoleOverride] = useState<User['role'] | null>(null);
   // A test identity fully swaps `userData`/`role` for a seeded `users/{__test_*}`
   // doc (see app/lib/test-identity.ts) so an admin can "become" a member/FTO/etc.
   // and have writes attributed to that identity, not their real account. The
   // real Firebase Auth `user` object underneath is untouched — auth stays real.
-  const [testIdentityId, setTestIdentityId] = useState<string | null>(readTestIdentityId);
+  const [testIdentityId, setTestIdentityId] = useState<string | null>(null);
   const [testIdentityData, setTestIdentityData] = useState<User | null>(null);
+  /** The identity id whose fetch has settled (success or failure). */
+  const [testIdentityResolvedId, setTestIdentityResolvedId] = useState<string | null>(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
-      
+      setError(null);
+
       if (currentUser) {
         try {
           const userRef = doc(db, 'users', currentUser.uid);
@@ -94,8 +104,9 @@ export function useUserRole(): UseUserRoleReturn {
               updatedAt: new Date(),
             });
           }
-        } catch (error) {
-          console.error('Error fetching user data:', error);
+        } catch (err) {
+          console.error('Error fetching user data:', err);
+          setError('Could not load your account. Check your connection and try again.');
           setUserData(null);
         }
       } else {
@@ -125,6 +136,11 @@ export function useUserRole(): UseUserRoleReturn {
       setTestIdentityId(readTestIdentityId());
     };
 
+    // Initial read (client only, after hydration).
+    onCustom();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- marks the post-hydration read as done
+    setOverridesRead(true);
+
     if (typeof window !== 'undefined') {
       window.addEventListener('storage', onStorage);
       window.addEventListener('bmrc-role-changed', onCustom as EventListener);
@@ -152,9 +168,13 @@ export function useUserRole(): UseUserRoleReturn {
         const snap = await getDoc(doc(db, 'users', testIdentityId));
         if (cancelled) return;
         setTestIdentityData(snap.exists() ? parseUserDoc(testIdentityId, snap.data()) : null);
+        setTestIdentityResolvedId(testIdentityId);
       } catch (error) {
         console.error('Error fetching test identity:', error);
-        if (!cancelled) setTestIdentityData(null);
+        if (!cancelled) {
+          setTestIdentityData(null);
+          setTestIdentityResolvedId(testIdentityId);
+        }
       }
     })();
     return () => {
@@ -162,24 +182,52 @@ export function useUserRole(): UseUserRoleReturn {
     };
   }, [testIdentityId]);
 
+  // Overrides are a testing tool for the REAL admin/quartermaster only (matches
+  // the switcher on /profile). For anyone else a stale/forged localStorage value
+  // is ignored — otherwise a member could set `bmrc_role_override=admin`.
+  const canOverride = canManageLogistics(userData?.role);
+
+  // Drop stale overrides left behind for a non-admin real user.
+  useEffect(() => {
+    if (loading || !user || !userData || canOverride) return;
+    try {
+      if (localStorage.getItem('bmrc_role_override') || localStorage.getItem('bmrc_test_identity')) {
+        localStorage.removeItem('bmrc_role_override');
+        localStorage.removeItem('bmrc_test_identity');
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- clearing stale overrides we just removed from storage
+        setRoleOverride(null);
+        setTestIdentityId(null);
+      }
+    } catch {}
+  }, [loading, user, userData, canOverride]);
+
+  const activeIdentityId = canOverride ? testIdentityId : null;
+  const activeRoleOverride = canOverride ? roleOverride : null;
+
   // A test identity takes full precedence (identity + role) only once its doc
   // has actually loaded for the CURRENT id — the `testIdentityData?.id` check
   // guards against briefly showing the previous identity's data while a new
   // fetch is in flight. The legacy role-only override is the fallback when no
   // identity is active.
   const activeTestIdentity =
-    testIdentityId && testIdentityData?.id === testIdentityId ? testIdentityData : null;
+    activeIdentityId && testIdentityData?.id === activeIdentityId ? testIdentityData : null;
   const effectiveUserData = activeTestIdentity ?? userData;
   const effectiveRole: User['role'] | null =
-    activeTestIdentity?.role ?? (roleOverride ?? (userData?.role || null));
+    activeTestIdentity?.role ?? (activeRoleOverride ?? (userData?.role || null));
+
+  // Stay loading until an active identity's doc has resolved (or failed) so
+  // consumers never flash the real role in between.
+  const identityPending =
+    !!activeIdentityId && testIdentityResolvedId !== activeIdentityId;
 
   return {
-    loading,
+    loading: loading || !overridesRead || identityPending,
+    error,
     user,
     userData: effectiveUserData,
     role: effectiveRole,
     fullName: effectiveUserData?.fullName || null,
-    isRoleOverridden: !!testIdentityId || roleOverride !== null,
+    isRoleOverridden: !!activeIdentityId || activeRoleOverride !== null,
     effectiveUid: effectiveUserData?.id ?? user?.uid ?? null,
   };
 }

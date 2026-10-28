@@ -35,6 +35,8 @@ import type {
   StorageLocationRef,
   StorageZone,
 } from '@/app/types';
+import { parseMonthInput } from '@/app/lib/dates';
+import { getLocationNames } from '@/app/config/org-config';
 
 const LOCATION_TYPES: LocationType[] = ['HQ', 'CPR Closet', 'Shed', 'Other'];
 
@@ -97,7 +99,8 @@ export async function moveItemLocation(
       const zone = zoneSnap.data() as Partial<StorageZone>;
       const zoneLoc = zone.locationType;
       resolvedLocation =
-        zoneLoc && LOCATION_TYPES.includes(zoneLoc as LocationType)
+        zoneLoc &&
+        (LOCATION_TYPES.includes(zoneLoc as LocationType) || getLocationNames().includes(zoneLoc))
           ? (zoneLoc as LocationType)
           : 'Other';
       resolvedRoom = zone.room ?? null;
@@ -274,7 +277,7 @@ export async function addShipment(
 
   const bagTracked = computeBagStock(item).hasBagTracking;
   const expirationDate = input.expirationMonth
-    ? new Date(input.expirationMonth + '-01')
+    ? parseMonthInput(input.expirationMonth, 'start') ?? undefined
     : undefined;
   const itemRef = doc(db, 'inventory', item.id);
   let itemPayload: Record<string, unknown>;

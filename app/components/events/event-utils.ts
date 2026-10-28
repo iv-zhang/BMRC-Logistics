@@ -152,7 +152,46 @@ export function eventEndDateTime(event: Event): Date | null {
   if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
   const d = new Date(day);
   d.setHours(hours, minutes, 0, 0);
+  // Overnight shift (e.g. 20:00-02:00): an end at/before the start belongs to the next day.
+  const start = eventCallDateTime(event);
+  if (start && d.getTime() <= start.getTime()) d.setDate(d.getDate() + 1);
   return d;
+}
+
+/**
+ * Place a manually entered "HH:mm" (retro attendance edit) on the right calendar
+ * day. On an overnight event, a time-of-day before the start (arrival: at/before
+ * the end; departure: before the start) is after midnight, so it rolls to the
+ * next day. Returns null for a malformed time.
+ */
+export function resolveShiftTime(event: Event, hhmm: string, kind: 'arrival' | 'departure'): Date | null {
+  const day = toJsDate(event.date);
+  if (!day) return null;
+  const match = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
+  if (!match) return null;
+  const d = new Date(day);
+  d.setHours(Number(match[1]), Number(match[2]), 0, 0);
+  const end = eventEndDateTime(event);
+  const start = eventCallDateTime(event);
+  if (end && start && end.getTime() > start.getTime()) {
+    const overnight = end.getDate() !== start.getDate();
+    if (overnight) {
+      const tod = d.getHours() * 60 + d.getMinutes();
+      const endTod = end.getHours() * 60 + end.getMinutes();
+      const roll = kind === 'departure' ? d.getTime() < start.getTime() : tod <= endTod;
+      if (roll) d.setDate(d.getDate() + 1);
+    }
+  }
+  return d;
+}
+
+/** "Xh Ym" for 60+ minutes, "Nm" below. */
+export function formatMinutes(total: number): string {
+  const m = Math.max(0, Math.round(total));
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  return r === 0 ? `${h}h` : `${h}h ${r}m`;
 }
 
 /** Minutes an arrival is after the event's call time (never negative). 0 if no call time is set. */

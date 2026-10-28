@@ -1,5 +1,5 @@
 "use client";
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Button,
@@ -17,11 +17,10 @@ import {
 } from '@heroui/react';
 import { Package, Clipboard, AlertTriangle, ClipboardList, FileSpreadsheet, Search, X, Plus, ArrowLeft, ShieldAlert } from 'lucide-react';
 import QRCode from 'qrcode';
-import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
-import { collection, onSnapshot, query, orderBy, updateDoc, doc, serverTimestamp, getDoc, getDocs, where, documentId, deleteDoc } from 'firebase/firestore';
-import { auth, db } from '@/firebase';
+import { collection, onSnapshot, query, orderBy, updateDoc, addDoc, doc, serverTimestamp, getDoc, getDocs, where, documentId, deleteDoc } from 'firebase/firestore';
+import { db } from '@/firebase';
 import { recordAuditEvent } from '@/app/lib/audit';
-import type { Statpack, StatpackPocket, StatpackItem } from '@/app/types';
+import type { Statpack, StatpackPocket, StatpackItem, InventoryItem } from '@/app/types';
 import StatpackCheckOffModal from '@/app/components/statpack-checkoff-modal';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import { BagVisualizer } from '@/app/components/statpackvisualizer';
@@ -32,18 +31,29 @@ import StatpackWidget from '@/app/components/statpack-widget';
 import StatpackLogHistory from '@/app/components/statpack-log-history';
 import StatpackImportModal from '@/app/components/statpack-import-modal';
 import { useUserRole } from '@/app/hooks/useUserRole';
-import { duplicateStatpack } from '@/app/lib/statpacks';
-import { THRESHOLDS } from '@/app/config/org-config';
+import { duplicateStatpack, updateStatpackDetails } from '@/app/lib/statpacks';
+import { useOrgConfig } from '@/app/hooks/useOrgConfig';
+import { canManageLogistics, canViewLogisticsArea } from '@/app/lib/roles';
 import { fetchAndEnrichItemDetails } from '@/app/lib/inventory';
 import { formatDuration } from '@/app/lib/logs';
 import { StatpackAssetSummary } from '@/app/components/asset-statpack-badge';
 
 export default function StatpacksListPage() {
   const router = useRouter();
-  const [user, setUser] = useState<FirebaseUser | null>(null);
   const [statpacks, setStatpacks] = useState<Statpack[]>([]);
   const [loading, setLoading] = useState(true);
-  const { role: userRole } = useUserRole();
+  const { user, role: userRole, effectiveUid, fullName, loading: authLoading } = useUserRole();
+  const { thresholds } = useOrgConfig();
+  const canView = canViewLogisticsArea(userRole, 'assets');
+  const canManage = canManageLogistics(userRole);
+  const actorName = fullName || user?.displayName || 'Unknown';
+  const loadSeq = useRef(0);
+
+  // New-statpack dialog (the old /statpacks/new route never existed)
+  const newPackDisclosure = useDisclosure();
+  const [newPackName, setNewPackName] = useState('');
+  const [newPackType, setNewPackType] = useState<Statpack['type']>('Primary');
+  const [creatingPack, setCreatingPack] = useState(false);
 
   const [selectedPack, setSelectedPack] = useState<Statpack | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -109,7 +119,7 @@ export default function StatpacksListPage() {
 
     // draw QR to canvas using qrcode lib
     await new Promise<void>((resolve, reject) => {
-      QRCode.toCanvas(canvas, text, { width: size, margin: 1 }, (err: any) => {
+      QRCode.toCanvas(canvas, text, { width: size, margin: 1 }, (err: Error | null | undefined) => {
         if (err) return reject(err);
         resolve();
       });
@@ -178,23 +188,18 @@ export default function StatpacksListPage() {
   const [attachingItemName, setAttachingItemName] = useState<string>('');
   const [attachPocket, setAttachPocket] = useState<string>('main');
   const assetModalDisclosure = useDisclosure();
-  const [editingAsset, setEditingAsset] = useState<any | null>(null);
+  const [editingAsset, setEditingAsset] = useState<InventoryItem | null>(null);
   const [selectedPocketView, setSelectedPocketView] = useState<'all' | StatpackPocket>('all');
 
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => setUser(u));
-    return () => unsub();
-  }, []);
-
-  const updateEditingContent = (index: number, patch: Partial<any>) => {
+  const updateEditingContent = (index: number, patch: Partial<StatpackItem>) => {
     setEditingPack(prev => {
       const base = prev || selectedPack;
       if (!base) return prev;
       const contents = Array.isArray(base.contents) ? [...base.contents] : [];
-      const existing = contents[index] || {};
+      const existing = contents[index] || ({} as StatpackItem);
       // If patch contains itemDetails, deep-merge it with existing.itemDetails
-      if (patch && (patch as any).itemDetails) {
-        const mergedDetails = { ...(existing.itemDetails || {}), ...(patch as any).itemDetails };
+      if (patch && patch.itemDetails) {
+        const mergedDetails = { ...(existing.itemDetails || {}), ...patch.itemDetails } as InventoryItem;
         contents[index] = { ...existing, ...patch, itemDetails: mergedDetails };
       } else {
         contents[index] = { ...existing, ...patch };
@@ -215,7 +220,7 @@ export default function StatpacksListPage() {
       compartmentId: undefined,
       batchId: '',
       itemValue: 0,
-    } as any;
+    } as unknown as StatpackItem;
     setEditingPack(prev => {
       const base = prev || selectedPack;
       if (!base) return prev;
@@ -243,19 +248,19 @@ export default function StatpacksListPage() {
     });
   };
 
-  const formatDateForInput = (v: any) => {
+  const formatDateForInput = (v: unknown) => {
     if (!v) return '';
     // Firestore Timestamp
-    if (v && typeof v.toDate === 'function') {
-      const d = v.toDate();
+    if (v && typeof (v as { toDate?: unknown }).toDate === 'function') {
+      const d = (v as { toDate: () => Date }).toDate();
       return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
     }
-    const d = typeof v === 'string' ? new Date(v) : v instanceof Date ? v : new Date(v);
+    const d = typeof v === 'string' ? new Date(v) : v instanceof Date ? v : new Date(v as number);
     return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
   };
 
   // Remove `undefined` values recursively to make objects safe for Firestore
-  const sanitizeForFirestore = (v: any): any => {
+  const sanitizeForFirestore = (v: unknown): unknown => {
     if (v === undefined) return undefined;
     if (v === null) return null;
     if (v instanceof Date) return v;
@@ -263,9 +268,9 @@ export default function StatpacksListPage() {
       return v.map((it) => sanitizeForFirestore(it)).filter((it) => it !== undefined);
     }
     if (typeof v === 'object') {
-      const out: any = {};
+      const out: Record<string, unknown> = {};
       Object.keys(v).forEach((k) => {
-        const s = sanitizeForFirestore(v[k]);
+        const s = sanitizeForFirestore((v as Record<string, unknown>)[k]);
         if (s !== undefined) out[k] = s;
       });
       return out;
@@ -275,10 +280,10 @@ export default function StatpacksListPage() {
 
   // Build an explicit, whitelist-based payload for statpack updates to avoid
   // sending any unexpected/undefined values to Firestore.
-  const buildStatpackUpdate = (pack: any) => {
+  const buildStatpackUpdate = (pack: Record<string, unknown> | null) => {
     if (!pack) return {};
-    const out: any = {};
-    const pickIf = (key: string, val: any) => {
+    const out: Record<string, unknown> = {};
+    const pickIf = (key: string, val: unknown) => {
       if (val !== undefined) out[key] = val;
     };
 
@@ -290,14 +295,14 @@ export default function StatpacksListPage() {
     pickIf('isCheckedOut', pack.isCheckedOut);
     pickIf('assignedToUserId', pack.assignedToUserId);
     pickIf('assignedToUserName', pack.assignedToUserName);
-    pickIf('checkedOutAt', pack.checkedOutAt instanceof Date ? pack.checkedOutAt : (pack.checkedOutAt ? new Date(pack.checkedOutAt) : undefined));
+    pickIf('checkedOutAt', pack.checkedOutAt instanceof Date ? pack.checkedOutAt : (pack.checkedOutAt ? new Date(pack.checkedOutAt as string | number) : undefined));
     pickIf('lastCheckedBy', pack.lastCheckedBy);
-    pickIf('lastCheckedAt', pack.lastCheckedAt instanceof Date ? pack.lastCheckedAt : (pack.lastCheckedAt ? new Date(pack.lastCheckedAt) : undefined));
+    pickIf('lastCheckedAt', pack.lastCheckedAt instanceof Date ? pack.lastCheckedAt : (pack.lastCheckedAt ? new Date(pack.lastCheckedAt as string | number) : undefined));
 
     // compartments: canonicalize array entries
     if (Array.isArray(pack.compartments)) {
-      out.compartments = pack.compartments.map((c: any) => {
-        const comp: any = {};
+      out.compartments = pack.compartments.map((c: Record<string, unknown>) => {
+        const comp: Record<string, unknown> = {};
         if (c.id !== undefined) comp.id = c.id;
         if (c.name !== undefined) comp.name = c.name;
         if (c.parentPocket !== undefined) comp.parentPocket = c.parentPocket;
@@ -310,8 +315,8 @@ export default function StatpacksListPage() {
 
     // contents: whitelist per-item fields
     if (Array.isArray(pack.contents)) {
-      out.contents = pack.contents.map((it: any) => {
-        const ci: any = {};
+      out.contents = pack.contents.map((it: Record<string, unknown>) => {
+        const ci: Record<string, unknown> = {};
         if (it.itemId !== undefined) ci.itemId = it.itemId;
         if (it.itemDetails !== undefined) ci.itemDetails = it.itemDetails;
         if (it.variantId !== undefined) ci.variantId = it.variantId;
@@ -336,15 +341,15 @@ export default function StatpacksListPage() {
 
     // Maintenance logs (optional)
     if (Array.isArray(pack.maintenance_logs)) {
-      out.maintenance_logs = pack.maintenance_logs.map((m: any) => ({
+      out.maintenance_logs = pack.maintenance_logs.map((m: Record<string, unknown>) => ({
         id: m.id,
-        timestamp: m.timestamp instanceof Date ? m.timestamp : (m.timestamp ? new Date(m.timestamp) : undefined),
+        timestamp: m.timestamp instanceof Date ? m.timestamp : (m.timestamp ? new Date(m.timestamp as string | number) : undefined),
         serviceType: m.serviceType,
         reason: m.reason,
         technician: m.technician,
         notes: m.notes,
         status: m.status,
-        completedAt: m.completedAt instanceof Date ? m.completedAt : (m.completedAt ? new Date(m.completedAt) : undefined),
+        completedAt: m.completedAt instanceof Date ? m.completedAt : (m.completedAt ? new Date(m.completedAt as string | number) : undefined),
       }));
     }
 
@@ -352,7 +357,7 @@ export default function StatpacksListPage() {
   };
 
   // Recursively remove invalid Date objects (which would throw on toISOString)
-  const stripInvalidDates = (v: any): any => {
+  const stripInvalidDates = (v: unknown): unknown => {
     if (v === undefined) return undefined;
     if (v === null) return null;
     if (v instanceof Date) return isNaN(v.getTime()) ? undefined : v;
@@ -360,9 +365,9 @@ export default function StatpacksListPage() {
       return v.map((it) => stripInvalidDates(it)).filter((it) => it !== undefined);
     }
     if (typeof v === 'object') {
-      const out: any = {};
+      const out: Record<string, unknown> = {};
       Object.keys(v).forEach((k) => {
-        const s = stripInvalidDates(v[k]);
+        const s = stripInvalidDates((v as Record<string, unknown>)[k]);
         if (s !== undefined) out[k] = s;
       });
       return out;
@@ -371,20 +376,24 @@ export default function StatpacksListPage() {
   };
 
   useEffect(() => {
+    if (authLoading || !canView) return;
     setLoading(true);
     const q = query(collection(db, 'statpacks'), orderBy('name'));
     const unsub = onSnapshot(
       q,
       (snap) => {
+        // Each snapshot starts an async enrichment run; only the newest run may
+        // publish, otherwise a slow stale run can overwrite fresher data.
+        const runId = ++loadSeq.current;
         (async () => {
           try {
-            const packs: Statpack[] = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
+            const packs: Statpack[] = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Statpack));
 
             const itemIds = packs
               .flatMap((p) => (p.contents || []).flatMap((i) => [i.itemId, i.assetInstanceId]))
               .filter((id): id is string => Boolean(id));
 
-            const map = new Map<string, any>();
+            const map = new Map<string, InventoryItem>();
             const uniqueIds = Array.from(new Set(itemIds)).filter(Boolean);
             const chunkArray = <T,>(items: T[], size: number) => {
               const chunks: T[][] = [];
@@ -399,11 +408,13 @@ export default function StatpacksListPage() {
               try {
                 const qInv = query(collection(db, 'inventory'), where(documentId(), 'in', chunk));
                 const snapInv = await getDocs(qInv);
-                snapInv.forEach((s) => map.set(s.id, { id: s.id, ...(s.data() as any) }));
+                snapInv.forEach((s) => map.set(s.id, { id: s.id, ...s.data() } as InventoryItem));
               } catch (e) {
                 // ignore
               }
+              if (runId !== loadSeq.current) return;
             }
+            if (runId !== loadSeq.current) return;
 
             const enriched = packs.map((p) => ({
               ...p,
@@ -418,7 +429,7 @@ export default function StatpacksListPage() {
                       if (!iv) return false;
                       if (iv.assetSerial && String(iv.assetSerial) === String(serial)) return true;
                       const instances = iv.assets || [];
-                      if (instances.some((a: any) => a.serial === serial || a.id === serial || a.assetTag === serial)) return true;
+                      if (instances.some((a: { serial?: string; id?: string; assetTag?: string }) => a.serial === serial || a.id === serial || a.assetTag === serial)) return true;
                       return false;
                     });
                   }
@@ -432,7 +443,7 @@ export default function StatpacksListPage() {
                   }
                 }
 
-                const merged = inv ? { ...(item.itemDetails || {}), ...inv } : (item.itemDetails || {});
+                const merged = (inv ? { ...(item.itemDetails || {}), ...inv } : (item.itemDetails || {})) as InventoryItem;
                 if (inv) merged.category = inv.category || inv.assetCategory || merged.category || 'Other';
 
                 return { ...item, itemDetails: merged };
@@ -443,7 +454,7 @@ export default function StatpacksListPage() {
             setLoading(false);
           } catch (err) {
             console.error('Failed to load statpacks:', err);
-            setLoading(false);
+            if (runId === loadSeq.current) setLoading(false);
           }
         })();
       },
@@ -452,8 +463,11 @@ export default function StatpacksListPage() {
         setLoading(false);
       }
     );
-    return () => unsub();
-  }, []);
+    return () => {
+      loadSeq.current++; // eslint-disable-line react-hooks/exhaustive-deps -- intentional: invalidates in-flight runs
+      unsub();
+    };
+  }, [authLoading, canView]);
 
   const openCheckin = (pack: Statpack) => {
     if (!pack.id) return;
@@ -507,6 +521,49 @@ export default function StatpacksListPage() {
     editorDisclosure.onOpen();
   };
 
+  const handleCreatePack = async () => {
+    const name = newPackName.trim();
+    if (!name || !canManage) return;
+    setCreatingPack(true);
+    try {
+      const ref = await addDoc(collection(db, 'statpacks'), {
+        name,
+        type: newPackType,
+        status: 'Pending Initial Check',
+        compartments: [],
+        contents: [],
+        isCheckedOut: false,
+        currentLocation: '',
+        assetValue: 0,
+        maintenance_logs: [],
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      try {
+        await recordAuditEvent({
+          eventType: 'create_statpack',
+          source: 'statpacks',
+          sourceId: ref.id,
+          actor: { userId: effectiveUid ?? null, userName: actorName },
+          targets: [{ collection: 'statpacks', docId: ref.id }],
+          details: { name },
+        });
+      } catch (e) {
+        console.error('Statpack created but audit event failed', e);
+      }
+      newPackDisclosure.onClose();
+      // Open the existing editor on the new pack so contents can be added.
+      setSelectedPack({ id: ref.id, name, type: newPackType, status: 'Pending Initial Check', compartments: [], contents: [], isCheckedOut: false, currentLocation: '' } as unknown as Statpack);
+      setEditingPack(null);
+      editorDisclosure.onOpen();
+    } catch (e) {
+      console.error('Failed to create statpack', e);
+      alert('Failed to create statpack. Please try again.');
+    } finally {
+      setCreatingPack(false);
+    }
+  };
+
   const handleGenerateQr = async (pack: Statpack) => {
     try {
       setSelectedPack(pack);
@@ -539,7 +596,7 @@ export default function StatpacksListPage() {
         return;
       }
       const data = snap.data();
-      setEditingAsset({ id: snap.id, ...(data as any) });
+      setEditingAsset({ id: snap.id, ...data } as InventoryItem);
       assetModalDisclosure.onOpen();
     } catch (err) {
       console.error('Failed to load asset for editing:', err);
@@ -560,7 +617,7 @@ export default function StatpacksListPage() {
       updateEditingContent(attachingItemIndex, {
         assetInstanceId: assetId,
         serialNumber: serial,
-        itemDetails: fullItemDetails as any,
+        itemDetails: fullItemDetails as InventoryItem,
         verificationRules: suggestedRules, // Auto-populate verification rules based on asset type
       });
     } else {
@@ -568,7 +625,7 @@ export default function StatpacksListPage() {
       const targetPocket = selectedPocketView !== 'all' ? selectedPocketView : attachPocket;
       const newItem: Statpack['contents'][0] = {
         itemId: assetId, // Use asset ID as itemId for linking
-        itemDetails: fullItemDetails as any,
+        itemDetails: fullItemDetails as InventoryItem,
         requiredQuantity: 1,
         currentQuantity: 1,
         pocket: targetPocket as unknown as StatpackPocket,
@@ -593,10 +650,10 @@ export default function StatpacksListPage() {
     setAttachingItemName('');
   };
 
-  if (loading) return <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center"><Spinner size="lg" color="primary" /></div>;
+  if (authLoading || (canView && loading)) return <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center"><Spinner size="lg" color="primary" /></div>;
 
-  // Restrict access: general members should not access the Statpacks management UI
-  if (!loading && userRole === 'member') {
+  // Statpack management is admin/QM/treasurer only (D-13: medops/FTO/members never see it)
+  if (!canView) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center p-4">
         <div className="bg-content1 border border-divider rounded-large max-w-md w-full text-center py-10 px-6">
@@ -612,7 +669,7 @@ export default function StatpacksListPage() {
   // ── Expiration warnings for items inside statpacks ─────────────────────
   const expirationWarnings = (() => {
     const now = new Date();
-    const in30Days = new Date(now.getTime() + THRESHOLDS.expirationCriticalDays * 24 * 60 * 60 * 1000);
+    const in30Days = new Date(now.getTime() + thresholds.expirationCriticalDays * 24 * 60 * 60 * 1000);
     const warnings: { packName: string; packId: string; itemName: string; expirationDate: Date; isExpired: boolean }[] = [];
 
     for (const pack of statpacks) {
@@ -700,7 +757,7 @@ export default function StatpacksListPage() {
             <Button size="sm" variant="flat" startContent={<ArrowLeft size={14} />} onPress={() => router.push('/assets')}>
               Assets
             </Button>
-            <Button color="primary" size="sm" startContent={<Plus size={15} />} onPress={() => router.push('/statpacks/new')}>
+            <Button color="primary" size="sm" isDisabled={!canManage} startContent={<Plus size={15} />} onPress={() => { setNewPackName(''); setNewPackType('Primary'); newPackDisclosure.onOpen(); }}>
               Add statpack
             </Button>
           </div>
@@ -859,8 +916,8 @@ export default function StatpacksListPage() {
         onOpenChange={(open) => (open ? checkoffDisclosure.onOpen() : checkoffDisclosure.onClose())}
         statpack={selectedPack}
         action={checkoffAction}
-        userId={user?.uid || 'unknown'}
-        userName={user?.displayName || 'Unknown'}
+        userId={effectiveUid || 'unknown'}
+        userName={actorName}
         onCheckOffComplete={() => checkoffDisclosure.onClose()}
       />
 
@@ -964,7 +1021,7 @@ export default function StatpacksListPage() {
                           const val = e.target.value;
                           setAttachPocket(val);
                           // Also update the pocket view so they stay in sync
-                          setSelectedPocketView(val as any);
+                          setSelectedPocketView(val as StatpackPocket);
                         }}
                       >
                         <SelectItem key="main">Main</SelectItem>
@@ -1003,7 +1060,7 @@ export default function StatpacksListPage() {
                         return allContents.findIndex((it) => it === item || (it.itemId && item.itemId && it.itemId === item.itemId) || (it.assetInstanceId && item.assetInstanceId && it.assetInstanceId === item.assetInstanceId));
                       };
 
-                      const handleReorder = (newVisibleItems: any[]) => {
+                      const handleReorder = (newVisibleItems: StatpackItem[]) => {
                         if (selectedPocketView === 'all') {
                           setEditingPack((prev) => ({ ...(prev || selectedPack), contents: newVisibleItems } as Statpack));
                           return;
@@ -1012,7 +1069,7 @@ export default function StatpacksListPage() {
                           const base2 = prev || selectedPack;
                           if (!base2) return prev;
                           const all2 = Array.isArray(base2.contents) ? [...base2.contents] : [];
-                          const merged: any[] = [];
+                          const merged: StatpackItem[] = [];
                           let vi = 0;
                           for (const it of all2) {
                             if (it.pocket !== selectedPocketView) merged.push(it);
@@ -1024,7 +1081,7 @@ export default function StatpacksListPage() {
                         });
                       };
 
-                      const handleUpdateVisible = (visibleIndex: number, patch: Partial<any>) => {
+                      const handleUpdateVisible = (visibleIndex: number, patch: Partial<StatpackItem>) => {
                         const gi = getGlobalIndex(visibleIndex);
                         if (gi === -1) return;
                         updateEditingContent(gi, patch);
@@ -1042,8 +1099,8 @@ export default function StatpacksListPage() {
                           onReorder={handleReorder}
                           onUpdateItem={handleUpdateVisible}
                           onRemoveItem={handleRemoveVisible}
-                          onAttachAsset={userRole === 'admin' ? handleAttachAsset : undefined}
-                          onEditAssetPolicy={userRole === 'admin' ? handleEditAssetPolicy : undefined}
+                          onAttachAsset={canManage ? handleAttachAsset : undefined}
+                          onEditAssetPolicy={canManage ? handleEditAssetPolicy : undefined}
                         />
                       );
                     })()}
@@ -1055,15 +1112,15 @@ export default function StatpacksListPage() {
           <ModalFooter>
             <div className="flex gap-2">
               <Button variant="light" onPress={() => { editorDisclosure.onClose(); setEditingPack(null); }}>Close</Button>
-              {userRole === 'admin' && (
+              {canManage && (
                 <Button color="primary" onPress={async () => {
                   const packToSave = editingPack || selectedPack;
                   if (!packToSave) return;
                   try {
                     // normalize expiration date strings to Date objects
-                    const normalized = { ...packToSave } as any;
+                    const normalized = { ...packToSave } as unknown as Record<string, unknown>;
                     if (Array.isArray(normalized.contents)) {
-                      normalized.contents = normalized.contents.map((it: any) => {
+                      normalized.contents = normalized.contents.map((it: Record<string, unknown>) => {
                         const copy = { ...it };
                         if (copy.expirationDate && typeof copy.expirationDate === 'string' && copy.expirationDate.length > 0) {
                           copy.expirationDate = new Date(copy.expirationDate);
@@ -1074,7 +1131,13 @@ export default function StatpacksListPage() {
                     // Build a whitelist payload and send only allowed fields to Firestore
                     const payload = buildStatpackUpdate(normalized);
                     const cleaned = stripInvalidDates(payload);
-                    await updateDoc(doc(db, 'statpacks', packToSave.id as string), { ...cleaned, updatedAt: serverTimestamp() } as any);
+                    const previous = statpacks.find((p) => p.id === packToSave.id);
+                    await updateStatpackDetails(
+                      packToSave.id as string,
+                      { ...(cleaned as Record<string, unknown>), contentsUpdatedAt: serverTimestamp() },
+                      { uid: effectiveUid || user?.uid, name: actorName },
+                      { status: previous?.status, name: previous?.name },
+                    );
                     editorDisclosure.onClose();
                     setEditingPack(null);
 
@@ -1091,12 +1154,30 @@ export default function StatpacksListPage() {
                   }
                 }}>Save</Button>
               )}
-              {userRole === 'admin' && (
+              {canManage && (
                 <Button color="danger" variant="light" onPress={() => { const packToDelete = editingPack || selectedPack; if (packToDelete) setDeletingPack(packToDelete); }}>
                   Delete
                 </Button>
               )}
             </div>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+
+      <Modal isOpen={newPackDisclosure.isOpen} onOpenChange={newPackDisclosure.onOpenChange} size="sm">
+        <ModalContent>
+          <ModalHeader>New statpack</ModalHeader>
+          <ModalBody>
+            <Input label="Name" autoFocus value={newPackName} onValueChange={setNewPackName} />
+            <Select label="Type" selectedKeys={[newPackType]} onChange={(e) => { if (e.target.value) setNewPackType(e.target.value as Statpack['type']); }}>
+              <SelectItem key="Primary">Primary</SelectItem>
+              <SelectItem key="Secondary">Secondary</SelectItem>
+              <SelectItem key="Event Bag">Event Bag</SelectItem>
+            </Select>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="light" onPress={newPackDisclosure.onClose}>Cancel</Button>
+            <Button color="primary" isLoading={creatingPack} isDisabled={!newPackName.trim()} onPress={handleCreatePack}>Create</Button>
           </ModalFooter>
         </ModalContent>
       </Modal>
@@ -1121,8 +1202,8 @@ export default function StatpacksListPage() {
                     source: 'statpacks',
                     sourceId: deletingPack.id as string,
                     actor: {
-                      userId: user?.uid ?? null,
-                      userName: user?.displayName ?? null,
+                      userId: effectiveUid ?? null,
+                      userName: actorName,
                     },
                     targets: [{ collection: 'statpacks', docId: deletingPack.id as string }],
                     details: { name: deletingPack.name },

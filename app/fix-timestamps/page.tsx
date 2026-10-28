@@ -3,10 +3,11 @@
 import React, { useState } from 'react';
 import { Button, Card, CardBody } from '@heroui/react';
 import { useUserRole } from '@/app/hooks/useUserRole';
+import { canManageLogistics } from '@/app/lib/roles';
 import { fixBrokenTimestamps } from '@/app/lib/fix-timestamps';
 
 export default function FixTimestampsPage() {
-  const { role } = useUserRole();
+  const { role, loading } = useUserRole();
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<{
     total: number;
@@ -33,10 +34,18 @@ export default function FixTimestampsPage() {
     }
   };
 
-  if (role !== 'admin') {
+  if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <Card><CardBody><p>Admin access required.</p></CardBody></Card>
+        <p className="text-default-500">Loading…</p>
+      </div>
+    );
+  }
+
+  if (!canManageLogistics(role)) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Card><CardBody><p>Admin or quartermaster access required.</p></CardBody></Card>
       </div>
     );
   }

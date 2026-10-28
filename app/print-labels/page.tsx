@@ -139,10 +139,17 @@ function PrintLabelsContent() {
         // than a per-id getDoc against a collection this page doesn't
         // otherwise know the shape of.
         const bagsById = await new Promise<Record<string, ExchangeBag>>((resolve) => {
-          const unsub = subscribeExchangeBags((bags) => {
-            unsub();
-            resolve(Object.fromEntries(bags.map((b) => [b.id, b])));
-          });
+          // On a read error, degrade to "no bags" instead of hanging the page.
+          const unsub = subscribeExchangeBags(
+            (bags) => {
+              unsub();
+              resolve(Object.fromEntries(bags.map((b) => [b.id, b])));
+            },
+            () => {
+              unsub();
+              resolve({});
+            },
+          );
         });
 
         // Fetch each asset

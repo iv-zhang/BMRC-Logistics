@@ -39,7 +39,7 @@ export default function IssueTriageModal({
   admins = [],
   onSuccess,
 }: IssueTriageModalProps) {
-  const { user } = useUserRole();
+  const { user, userData, effectiveUid } = useUserRole();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -50,18 +50,24 @@ export default function IssueTriageModal({
     comment: '',
   });
 
-  // Update triageData when report changes
+  // Reset the form only when a different report opens (not on every live
+  // snapshot of the same report, which would wipe in-progress edits). The
+  // latest report is read through a ref so the effect needs no stale closure.
+  const reportRef = React.useRef(report);
+  reportRef.current = report;
+  const reportId = report?.id;
   React.useEffect(() => {
-    if (report) {
+    const current = reportRef.current;
+    if (current) {
       setTriageData({
-        status: report.status,
-        priority: report.priority,
-        assignedTo: report.assignedTo?.userId || '',
+        status: current.status,
+        priority: current.priority,
+        assignedTo: current.assignedTo?.userId || '',
         comment: '',
       });
       setError(null);
     }
-  }, [report?.id, isOpen]);
+  }, [reportId, isOpen]);
 
   const handleSubmit = async () => {
     if (!report) return;
@@ -88,18 +94,18 @@ export default function IssueTriageModal({
       await updateReport(report.id, updates);
 
       // Add comment if provided
-      if (triageData.comment.trim() && user?.uid) {
+      if (triageData.comment.trim() && effectiveUid) {
         await addComment(report.id, {
-          userId: user.uid,
-          userName: user.displayName || 'Unknown',
+          userId: effectiveUid,
+          userName: userData?.fullName || user?.displayName || 'Unknown',
           message: triageData.comment,
         });
       }
 
       onOpenChange(false);
       onSuccess?.();
-    } catch (err: any) {
-      setError(err?.message || 'Failed to update report');
+    } catch (err: unknown) {
+      setError(err instanceof Error && err.message ? err.message : 'Failed to update report');
       console.error('Error updating report:', err);
     } finally {
       setSubmitting(false);

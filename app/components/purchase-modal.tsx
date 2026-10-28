@@ -2,7 +2,8 @@
 import React, { useEffect, useState } from 'react';
 import { Button, Autocomplete, AutocompleteItem } from '@heroui/react';
 import { Receipt, X, Plus, Trash2, AlertTriangle } from 'lucide-react';
-import type { ItemCategory } from '@/app/types';
+import { useOrgConfig } from '@/app/hooks/useOrgConfig';
+import { parseDateInput, toDateInputValue } from '@/app/lib/dates';
 import { logPurchase, purchaseTotal, type PurchaseActor, type PurchaseInput, type PurchaseLineInput } from '@/app/lib/purchases';
 import { addVendor, seedVendorsIfMissing, subscribeVendors, type Vendor } from '@/app/lib/vendors';
 
@@ -27,10 +28,6 @@ interface PurchaseModalProps {
 
 const STEPS = ['Order', 'Line Items', 'Costs & Review'];
 
-const CATEGORIES: ItemCategory[] = [
-  'Airway', 'Trauma', 'Vitals', 'Meds', 'PPE', 'Splinting', 'Hygiene', 'Other',
-];
-
 const UNIT_OPTIONS = [
   { value: 'box', label: 'Box' },
   { value: 'bag', label: 'Bag' },
@@ -53,10 +50,7 @@ interface LineFormState {
 }
 
 function todayStr(): string {
-  const d = new Date();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${mm}-${dd}`;
+  return toDateInputValue(new Date());
 }
 
 function makeBlankLine(kind: 'inventory' | 'asset'): LineFormState {
@@ -97,6 +91,8 @@ export default function PurchaseModal({
   items,
   onLogged,
 }: PurchaseModalProps) {
+  // Live, admin-editable categories (never a hardcoded list).
+  const { itemCategories: CATEGORIES } = useOrgConfig();
   const [currentStep, setCurrentStep] = useState(0);
   const [vendor, setVendor] = useState('');
   const [vendors, setVendors] = useState<Vendor[]>([]);
@@ -227,7 +223,7 @@ export default function PurchaseModal({
 
       const input: PurchaseInput = {
         vendor: vendor.trim(),
-        orderDate: new Date(orderDate),
+        orderDate: parseDateInput(orderDate) ?? new Date(),
         poNumber: poNumber.trim() || undefined,
         invoiceRef: invoiceRef.trim() || undefined,
         subtotal: subtotal ? Number(subtotal) : undefined,

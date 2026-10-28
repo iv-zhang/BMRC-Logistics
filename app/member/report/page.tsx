@@ -25,6 +25,8 @@ import {
 import { db, auth } from '@/firebase';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { useUserRole } from '@/app/hooks/useUserRole';
+import LoadFailureNotice, { describeLoadError } from '@/app/components/load-failure-notice';
+import { parseDateInput } from '@/app/lib/dates';
 import { ArrowLeft } from 'lucide-react';
 
 interface InventoryItem {
@@ -56,7 +58,7 @@ interface DocumentData {
 
 export default function MemberReportPage() {
   const router = useRouter();
-  const { userData } = useUserRole();
+  const { userData, effectiveUid } = useUserRole();
   const [user, setUser] = useState<FirebaseUser | null>(null);
 
   // Form state
@@ -78,6 +80,7 @@ export default function MemberReportPage() {
   // Data
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
 
@@ -114,6 +117,11 @@ export default function MemberReportPage() {
         };
       });
       setInventory(items);
+      setLoadError(null);
+      setLoading(false);
+    }, (err) => {
+      console.error('Failed to load inventory for report form', err);
+      setLoadError(err ?? true);
       setLoading(false);
     });
     return () => unsubscribe();
@@ -145,7 +153,7 @@ export default function MemberReportPage() {
         frontRoom: frontRoom || null,
         frontShelf: frontShelf || null,
         frontLevel: frontLevel ? Number(frontLevel) : null,
-        userId: user.uid,
+        userId: effectiveUid ?? user.uid,
         userName: userData.fullName,
         createdAt: serverTimestamp(),
         source: 'member_report_page',
@@ -158,7 +166,7 @@ export default function MemberReportPage() {
         reportData.quantityLeft = Number(quantity);
       }
       if ((reportType === 'expiration' || reportType === 'damaged') && expirationDate) {
-        reportData.reportedExpiration = new Date(expirationDate);
+        reportData.reportedExpiration = parseDateInput(expirationDate);
       }
       if (reportType === 'oxygen' && oxygenLevel) {
         reportData.oxygenPsiLevel = Number(oxygenLevel);
@@ -197,7 +205,7 @@ export default function MemberReportPage() {
       // Write to the shared reports collection so admins can see member reports
       reportData.items = itemsArr;
       reportData.reporter = userData.fullName || user.displayName || null;
-      reportData.reporterId = user.uid;
+      reportData.reporterId = effectiveUid ?? user.uid;
       reportData.createdAt = serverTimestamp();
       reportData.resolved = false;
       await addDoc(collection(db, 'restock_reports'), reportData);
@@ -252,6 +260,9 @@ export default function MemberReportPage() {
 
       {/* Form */}
       <div className="max-w-2xl mx-auto p-4 space-y-6">
+        {loadError != null && (
+          <LoadFailureNotice title="Couldn't load the item list" message={describeLoadError(loadError)} compact />
+        )}
         <Card>
           <CardHeader>
             <h2 className="text-lg font-semibold">What do you want to report?</h2>
