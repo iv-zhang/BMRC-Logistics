@@ -18,7 +18,9 @@ import {
 import { auth, db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { logStatpackCheckOff } from '@/app/lib/inventory';
-import { THRESHOLDS } from '@/app/config/org-config';
+import { getThresholds } from '@/app/lib/org-config-store';
+import { parseMonthInput } from '@/app/lib/dates';
+import { canUserAudit } from '@/app/lib/audit-helpers';
 import { swapBag, hydrateBag, resolveBagAssignments } from '@/app/lib/exchange-bags';
 import StatpackRestockChips from '@/app/components/statpack-restock-chips';
 import CheckinUsedPicker, { type CheckinUsedPick } from '@/app/components/statpacks/checkin-used-picker';
@@ -73,7 +75,7 @@ interface ItemIssue {
 }
 
 function deriveRules(item: StatpackItem): ItemRules {
-  const d = item.itemDetails as any;
+  const d = item.itemDetails;
   const isOxygen = d?.isOxygen === true;
   const isAED = d?.assetCategory === 'AED' || /\baed\b/i.test(d?.name || '');
   const needExp =
@@ -81,32 +83,25 @@ function deriveRules(item: StatpackItem): ItemRules {
     item.verificationRules?.requireExpirationConfirmation === true;
   const needPsi = isOxygen || (item.verificationRules?.requireO2PsiMin ?? 0) > 0;
   const needAED = isAED;
-  const minPsi = item.verificationRules?.requireO2PsiMin ?? THRESHOLDS.o2PsiMin;
+  const minPsi = item.verificationRules?.requireO2PsiMin ?? getThresholds().o2PsiMin;
   const expLabel = needAED ? 'Pad / battery expiration' : 'Confirm expiration';
   return { needExp, needPsi, needAED, minPsi, expLabel, hasRules: needExp || needPsi || needAED };
 }
 
-// last calendar-day (inclusive) of a YYYY-MM month string, or null if unparseable
-function parseMonthEnd(month?: string): Date | null {
-  if (!month) return null;
-  const m = /^(\d{4})-(\d{2})$/.exec(month);
-  if (!m) return null;
-  const year = Number(m[1]);
-  const mon = Number(m[2]);
-  if (mon < 1 || mon > 12) return null;
-  return new Date(year, mon, 0, 23, 59, 59, 999); // day 0 of next month = last day of this month
-}
+// An expiration MONTH means the 1st of that month (decided 2026-10-27, decisions.md
+// D-32): "Jun 2027" expires 2027-06-01 00:00 local until we capture an exact day.
+const parseExpMonth = (month?: string): Date | null => parseMonthInput(month, 'start');
 
 function isMonthExpired(month: string | undefined, today: Date): boolean {
-  const end = parseMonthEnd(month);
-  if (!end) return false;
-  return end.getTime() < today.getTime();
+  const start = parseExpMonth(month);
+  if (!start) return false;
+  return start.getTime() <= today.getTime();
 }
 
 // The date we consider authoritative for expiry: freshly entered month wins, else stored date.
 function effectiveExpDate(item: StatpackItem, rules: ItemRules, checks: ItemChecks): Date | null {
   const entered = rules.needAED ? checks.padExp : rules.needExp ? checks.exp : undefined;
-  if (entered) return parseMonthEnd(entered);
+  if (entered) return parseExpMonth(entered);
   return item.expirationDate ? new Date(item.expirationDate) : null;
 }
 
@@ -249,9 +244,9 @@ function ItemRow({
   const effExp = effectiveExpDate(item, rules, checks);
   const expDays = effExp ? daysUntil(effExp, today) : null;
   const isExpired = expDays !== null && expDays < 0;
-  const isSoon = expDays !== null && expDays >= 0 && expDays <= THRESHOLDS.expirationWarningDays;
+  const isSoon = expDays !== null && expDays >= 0 && expDays <= getThresholds().expirationWarningDays;
 
-  const d = item.itemDetails as any;
+  const d = item.itemDetails as (InventoryItem & { maxPsi?: number; isMed?: boolean }) | undefined;
   const isOxygen = d?.isOxygen === true;
   const serial = item.serialNumber || d?.assetSerial;
   const baseName = d?.name || `Item ${item.itemId.slice(-6)}`;
@@ -533,7 +528,7 @@ function ItemRow({
               {resolved
                 ? resolution!.kind === 'reported'
                   ? `Reported${resolution!.notes ? ` — ${resolution!.notes}` : ''}`
-                  : `Acknowledged — ${(resolution as any).reason}`
+                  : `Acknowledged — ${(resolution as Extract<Resolution, { kind: 'acknowledged' }>).reason}`
                 : issue.blocking
                   ? `${issueLabel} — resolve to continue`
                   : `${issueLabel} — flagged for restock`}
@@ -934,7 +929,8 @@ export default function StatpackCheckOffPage() {
   const [mode, setMode] = useState<Mode>('checkout');
   const [eventId, setEventId] = useState<string | null>(null);
   const [eventName, setEventName] = useState<string | null>(null);
-  const { role } = useUserRole();
+  const { role, userData, effectiveUid, loading: roleLoading } = useUserRole();
+  const actorName = userData?.fullName || null;
   const isAdmin = canManageLogistics(role);
 
   const [user, setUser] = useState<FirebaseUser | null>(null);
@@ -947,6 +943,7 @@ export default function StatpackCheckOffPage() {
   const packLoadSeq = useRef(0);
   const initializedPackId = useRef<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const submitLock = useRef(false);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1014,7 +1011,7 @@ export default function StatpackCheckOffPage() {
 
   useEffect(() => {
     return onAuthStateChanged(auth, u => {
-      if (!u) { router.push('/login'); return; }
+      if (!u) { router.replace(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`); return; }
       setUser(u);
     });
   }, [router]);
@@ -1031,7 +1028,7 @@ export default function StatpackCheckOffPage() {
       const data = snap.data();
 
       const rawContents: StatpackItem[] = Array.isArray(data.contents)
-        ? data.contents.map((it: any) => ({
+        ? data.contents.map((it: StatpackItem & { expirationDate?: unknown }) => ({
             ...it,
             expirationDate: it.expirationDate instanceof Timestamp
               ? it.expirationDate.toDate()
@@ -1247,7 +1244,7 @@ export default function StatpackCheckOffPage() {
       const exp = effectiveExpDate(it, rules, itemChecks[statpackEntryKey(it)] ?? {});
       if (!exp) return false;
       const dd = daysUntil(exp, today);
-      return dd >= 0 && dd <= THRESHOLDS.expirationWarningDays;
+      return dd >= 0 && dd <= getThresholds().expirationWarningDays;
     }).length,
     [allItems, itemChecks, today]
   );
@@ -1269,7 +1266,7 @@ export default function StatpackCheckOffPage() {
     allItems.forEach((it, idx) => {
       const rules = deriveRules(it);
       const chk = itemChecks[statpackEntryKey(it)] ?? {};
-      const display = (it.itemDetails as any)?.name || `Item ${it.itemId.slice(-6)}`;
+      const display = it.itemDetails?.name || `Item ${it.itemId.slice(-6)}`;
       const pName = pocketNameOf(it.pocket);
       const base = {
         itemId: statpackEntryKey(it),
@@ -1494,8 +1491,8 @@ export default function StatpackCheckOffPage() {
           statpackId: pack.id,
           statpackName: pack.name,
           action: mode,
-          userId: user.uid,
-          userName: user.displayName || user.email || 'Unknown',
+          userId: effectiveUid ?? user.uid,
+          userName: actorName || user.displayName || user.email || 'Unknown',
           checkEntries: override.checkEntries,
           quickCheckin: override.quickCheckin,
         },
@@ -1518,7 +1515,7 @@ export default function StatpackCheckOffPage() {
       const found = countOf(it);
       const res = resolution[statpackEntryKey(it)];
       const iss = computeIssue(it, rules, found, chk, today);
-      const baseName = (it.itemDetails as any)?.name || 'Unknown';
+      const baseName = it.itemDetails?.name || 'Unknown';
       const variant = it.variantName || it.itemDetails?.variantLabel;
       const displayName = variant && !baseName.includes(variant) ? `${baseName} · ${variant}` : baseName;
       const name = `${displayName} — ${POCKETS.find(pk => pk.id === it.pocket)?.name || 'Unassigned pocket'}`;
@@ -1539,7 +1536,7 @@ export default function StatpackCheckOffPage() {
       if (res?.kind === 'acknowledged') summary.acknowledged.push(name);
 
       const enteredMonth = rules.needAED ? chk.padExp : rules.needExp ? chk.exp : undefined;
-      const newExpirationDate = enteredMonth ? parseMonthEnd(enteredMonth) ?? undefined : undefined;
+      const newExpirationDate = enteredMonth ? parseExpMonth(enteredMonth) ?? undefined : undefined;
 
       return {
         itemId: it.itemId,
@@ -1593,8 +1590,8 @@ export default function StatpackCheckOffPage() {
         statpackId: pack.id,
         statpackName: pack.name,
         action: mode,
-        userId: user.uid,
-        userName: user.displayName || user.email || 'Unknown',
+        userId: effectiveUid ?? user.uid,
+        userName: actorName || user.displayName || user.email || 'Unknown',
         checkEntries,
         sealChecks: Object.keys(sealChecks).length > 0 ? sealChecks : undefined,
         oxygenReadings: Object.keys(oxygenReadings).length > 0 ? oxygenReadings : undefined,
@@ -1605,7 +1602,7 @@ export default function StatpackCheckOffPage() {
       },
       summary,
     };
-  }, [pack, user, allItems, itemChecks, countOf, resolution, sealState, sharps, sharpsAck, isAdmin, mode, today, bagChecks, eventId, eventName]);
+  }, [pack, user, effectiveUid, actorName, allItems, itemChecks, countOf, resolution, sealState, sharps, sharpsAck, isAdmin, mode, today, bagChecks, eventId, eventName]);
 
   const doSubmit = useCallback(async (override?: FastPathOverride) => {
     // A physical return must remain possible; stored safety state is rechecked by the writer.
@@ -1616,10 +1613,12 @@ export default function StatpackCheckOffPage() {
     }
     const built = buildPayload(override);
     if (!built) return;
+    if (submitLock.current) return;
+    submitLock.current = true;
     setShowReview(false);
     setSubmitting(true);
     try {
-      await logStatpackCheckOff(built.payload as any);
+      await logStatpackCheckOff(built.payload as Parameters<typeof logStatpackCheckOff>[0]);
 
       // Drive exchange bag swaps from `bagChecks` (resolution === 'swapped'),
       // not a separate toggle. Kept outside the main transaction — it writes
@@ -1630,7 +1629,7 @@ export default function StatpackCheckOffPage() {
         const bag = linkedBags.find(b => b.id === bagId);
         if (!bag) continue;
         try {
-          await swapBag(bag, { id: user?.uid, name: user?.displayName || user?.email || 'Unknown' });
+          await swapBag(bag, { id: effectiveUid ?? user?.uid, name: actorName || user?.displayName || user?.email || 'Unknown' });
         } catch (e) {
           console.error('Failed to record exchange bag swap', bag.name, e);
           swapFailures.push(bag.name);
@@ -1651,10 +1650,11 @@ export default function StatpackCheckOffPage() {
       setTimeout(() => router.push('/dashboard'), 1500);
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Submission failed', false);
-    } finally {
+      // Only unlock on failure; after success the UI stays locked until navigation.
+      submitLock.current = false;
       setSubmitting(false);
     }
-  }, [checkoutUnavailable, buildPayload, mode, pack, showToast, router, linkedBags, bagChecks, user, bagLoadError, bagLoading]);
+  }, [checkoutUnavailable, buildPayload, mode, pack, showToast, router, linkedBags, bagChecks, user, effectiveUid, actorName, bagLoadError, bagLoading]);
 
   const handleComplete = useCallback(() => {
     if (!pack || !user) return;
@@ -1721,11 +1721,23 @@ export default function StatpackCheckOffPage() {
     setShowReview(true);
   }, []);
 
-  if (loading || !user) {
+  if (loading || roleLoading || !user) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center">
         <Spinner size="lg" color="primary" />
       </div>
+    );
+  }
+
+  if (mode === 'audit' && !(canManageLogistics(role) || canUserAudit(userData))) {
+    return (
+      <main className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center p-5">
+        <section role="alert" className="w-full max-w-md rounded-2xl border border-warning bg-content1 p-5 shadow-sm">
+          <h1 className="text-lg font-semibold">Audit not permitted</h1>
+          <p className="mt-2 text-sm text-foreground-500">Your account isn&apos;t allowed to run statpack audits. Ask an admin if you need access.</p>
+          <Button className="mt-3 w-full" variant="bordered" onPress={() => router.push('/dashboard')}>Back to dashboard</Button>
+        </section>
+      </main>
     );
   }
 
@@ -1780,35 +1792,35 @@ export default function StatpackCheckOffPage() {
 
         <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-4">
           <ReviewSection title="Items used" empty="No items used">
-            {reviewSummary.used.map(u => (
-              <ReviewRow key={u.name} label={u.name} value={`−${u.qty}`} tone="warning" />
+            {reviewSummary.used.map((u, i) => (
+              <ReviewRow key={`${i}-${u.name}`} label={u.name} value={`−${u.qty}`} tone="warning" />
             ))}
           </ReviewSection>
 
           <ReviewSection title="Restocked to par" empty="Nothing restocked">
-            {reviewSummary.restocked.map(n => (
-              <ReviewRow key={n} label={n} value="par" tone="success" />
+            {reviewSummary.restocked.map((n, i) => (
+              <ReviewRow key={`${i}-${n}`} label={n} value="par" tone="success" />
             ))}
           </ReviewSection>
 
           <ReviewSection title="Reported to admin" empty="No issues reported">
-            {reviewSummary.reported.map(n => (
-              <ReviewRow key={n} label={n} value="reported" tone="danger" />
+            {reviewSummary.reported.map((n, i) => (
+              <ReviewRow key={`${i}-${n}`} label={n} value="reported" tone="danger" />
             ))}
           </ReviewSection>
 
           {reviewSummary.acknowledged.length > 0 && (
             <ReviewSection title="Acknowledged" empty="">
-              {reviewSummary.acknowledged.map(n => (
-                <ReviewRow key={n} label={n} value="ack" tone="warning" />
+              {reviewSummary.acknowledged.map((n, i) => (
+                <ReviewRow key={`${i}-${n}`} label={n} value="ack" tone="warning" />
               ))}
             </ReviewSection>
           )}
 
           {reviewSummary.psi.length > 0 && (
             <ReviewSection title="O₂ pressure" empty="">
-              {reviewSummary.psi.map(p => (
-                <ReviewRow key={p.name} label={p.name} value={`${p.psi} PSI`} tone="foreground" mono />
+              {reviewSummary.psi.map((p, i) => (
+                <ReviewRow key={`${i}-${p.name}`} label={p.name} value={`${p.psi} PSI`} tone="foreground" mono />
               ))}
             </ReviewSection>
           )}
@@ -2132,7 +2144,7 @@ export default function StatpackCheckOffPage() {
                           onRestock={() => {
                             setItemCounts(prev => ({ ...prev, [statpackEntryKey(it)]: it.requiredQuantity }));
                             setResolution(prev => ({ ...prev, [statpackEntryKey(it)]: { kind: 'restocked' } }));
-                            showToast(`Set to par: ${(it.itemDetails as any)?.name ?? 'item'}`, true);
+                            showToast(`Set to par: ${it.itemDetails?.name ?? 'item'}`, true);
                           }}
                           onReport={(issueType, quantity, notes) => {
                             setResolution(prev => ({ ...prev, [statpackEntryKey(it)]: { kind: 'reported', issueType, quantity, notes } }));

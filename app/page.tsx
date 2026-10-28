@@ -14,6 +14,7 @@ export default function Home() {
   const { theme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- standard mount flag for theme hydration
   useEffect(() => setMounted(true), []);
 
   useEffect(() => {

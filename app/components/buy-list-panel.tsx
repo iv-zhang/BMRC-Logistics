@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useMemo } from "react";
+import { useOrgConfig } from "@/app/hooks/useOrgConfig";
 import {
   Card,
   CardBody,
@@ -31,7 +32,7 @@ import {
   Edit3,
   MoreVertical,
 } from "lucide-react";
-import { onAuthStateChanged, type User as FirebaseUser } from "firebase/auth";
+import { useUserRole } from "@/app/hooks/useUserRole";
 import {
   collection,
   onSnapshot,
@@ -42,7 +43,7 @@ import {
   doc,
   serverTimestamp,
 } from "firebase/firestore";
-import { auth, db } from "@/firebase";
+import { db } from "@/firebase";
 import { addToBuyList } from "@/app/lib/buy-list";
 import BuyListIntakeModal from "@/app/components/buy-list-intake-modal";
 import type { BuyListItem } from "@/app/types";
@@ -114,7 +115,9 @@ export default function BuyListPanel({
   addOpen,
   onAddOpenChange,
 }: BuyListPanelProps) {
-  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const { itemCategories } = useOrgConfig();
+  const { effectiveUid, fullName, user: authUser } = useUserRole();
+  const actorName = fullName || authUser?.displayName || authUser?.email || "Unknown";
   const [items, setItems] = useState<BuyListItem[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -145,11 +148,6 @@ export default function BuyListPanel({
   const [intakeSeq, setIntakeSeq] = useState<number | null>(null);
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => setUser(u));
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
     setLoading(true);
     const q = query(collection(db, "buyList"), orderBy("addedAt", "desc"));
     const unsub = onSnapshot(
@@ -171,8 +169,8 @@ export default function BuyListPanel({
     let result = [...items];
 
     // Mine filter (driven by the shared All/Mine toggle when embedded)
-    if (viewMode === "mine" && user) {
-      result = result.filter((i) => i.addedBy === user.uid);
+    if (viewMode === "mine" && effectiveUid) {
+      result = result.filter((i) => i.addedBy === effectiveUid);
     }
 
     // Status filter
@@ -204,7 +202,7 @@ export default function BuyListPanel({
     // addedAt is the default Firestore order (desc), already applied
 
     return result;
-  }, [items, viewMode, user, statusFilter, priorityFilter, searchQuery, sortField]);
+  }, [items, viewMode, effectiveUid, statusFilter, priorityFilter, searchQuery, sortField]);
 
   const pendingCount = items.filter((i) => i.status === "pending").length;
   const orderedCount = items.filter((i) => i.status === "ordered").length;
@@ -261,7 +259,7 @@ export default function BuyListPanel({
             priority: formPriority,
             notes: formNotes || null,
           },
-          { uid: user?.uid || "unknown", name: user?.displayName || user?.email || "Unknown" },
+          { uid: effectiveUid || "unknown", name: actorName },
         );
       }
       closeAddModal();
@@ -559,7 +557,7 @@ export default function BuyListPanel({
         }}
         entry={intakeEntry}
         pendingSeq={intakeSeq}
-        actor={{ uid: user?.uid || "unknown", name: user?.displayName || user?.email || "Unknown" }}
+        actor={{ uid: effectiveUid || "unknown", name: actorName }}
       />
 
       {/* Add/Edit Modal */}
@@ -606,14 +604,9 @@ export default function BuyListPanel({
                 selectedKeys={formCategory ? [formCategory] : []}
                 onChange={(e) => setFormCategory(e.target.value)}
               >
-                <SelectItem key="Airway">Airway</SelectItem>
-                <SelectItem key="Trauma">Trauma</SelectItem>
-                <SelectItem key="Vitals">Vitals</SelectItem>
-                <SelectItem key="Meds">Meds</SelectItem>
-                <SelectItem key="PPE">PPE</SelectItem>
-                <SelectItem key="Splinting">Splinting</SelectItem>
-                <SelectItem key="Hygiene">Hygiene</SelectItem>
-                <SelectItem key="Other">Other</SelectItem>
+                {itemCategories.map((c) => (
+                  <SelectItem key={c}>{c}</SelectItem>
+                ))}
               </Select>
               <Select
                 label="Priority"

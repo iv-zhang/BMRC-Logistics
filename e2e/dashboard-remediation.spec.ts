@@ -174,7 +174,8 @@ test('desktop admin dashboard reports canonical available reserve and only stock
   await expect(quarantineRow).toContainText('0');
   const shelfRow = page.getByText(`[TEST] Shelf only ${testRunId}`).locator('xpath=../..');
   await expect(shelfRow).toContainText('0');
-  await expect(shelfRow).not.toContainText('99');
+  // The row text embeds the numeric run id, so only match 99 as a standalone number.
+  await expect(shelfRow).not.toContainText(/(^|\D)99(\D|$)/);
 
   await expect(page.getByText(`[TEST] Reserve expiry ${testRunId}`)).toBeVisible();
   await expect(page.getByText(`[TEST] Tombstone expiry ${testRunId}`).locator('xpath=../..')).toContainText('No available reserve');

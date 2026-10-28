@@ -8,18 +8,29 @@ import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, collection, getDocs, query, where } from 'firebase/firestore';
 import { useTheme } from 'next-themes';
 import { auth, db } from '@/firebase';
-import { ROLES, getSemesterStart } from '@/app/config/org-config';
+import { ROLES } from '@/app/config/org-config';
 import { useUserRole } from '@/app/hooks/useUserRole';
+import { useOrgConfig } from '@/app/hooks/useOrgConfig';
 import { usePanelMode, type PanelMode } from '@/app/hooks/usePanelMode';
 import { getMemberCertStatuses, CERT_LABELS } from '@/app/lib/certifications';
 import { TEST_IDENTITIES, seedTestUsers, clearTestIdentityHistory } from '@/app/lib/test-identity';
 import { getMemberShiftStats } from '@/app/lib/events';
+import { formatMinutes } from '@/app/components/events/event-utils';
 import IssueReportForm from '@/app/components/IssueReportForm';
 import type { User, ShiftRequest } from '@/app/types';
 
+/** Local-midnight Date for the configured semester start; epoch when unset/invalid. */
+function getSemesterStartFor(iso: string | undefined): Date {
+  const d = iso ? new Date(`${iso}T00:00:00`) : null;
+  return d && !Number.isNaN(d.getTime()) ? d : new Date(0);
+}
+
 export default function ProfilePage() {
   const router = useRouter();
-  const { role } = useUserRole();
+  const { userData: effectiveUserData, effectiveUid } = useUserRole();
+  const { semesterStartDate } = useOrgConfig();
+  // `user` is the REAL account (drives the test-identity switcher). What the page
+  // DISPLAYS comes from the effective identity (D-18) — see `display` below.
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
@@ -55,6 +66,7 @@ export default function ProfilePage() {
             fullName: userData.fullName,
             email: userData.email,
             role: userData.role,
+            certifications: userData.certifications || undefined,
             createdAt: userData.createdAt?.toDate() || new Date(),
             updatedAt: userData.updatedAt?.toDate() || new Date(),
           });
@@ -71,12 +83,12 @@ export default function ProfilePage() {
 
   // Volunteer Record: this member's own shift_requests, feeding getMemberShiftStats.
   useEffect(() => {
-    if (!user?.id) return;
+    if (!effectiveUid) return;
     let cancelled = false;
     setShiftStatsLoading(true);
     (async () => {
       try {
-        const snap = await getDocs(query(collection(db, 'shift_requests'), where('userId', '==', user.id)));
+        const snap = await getDocs(query(collection(db, 'shift_requests'), where('userId', '==', effectiveUid)));
         if (cancelled) return;
         setShiftRequests(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ShiftRequest)));
       } catch (error) {
@@ -87,7 +99,7 @@ export default function ProfilePage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [user?.id]);
+  }, [effectiveUid]);
 
   // Test identity / legacy role override state sync
   useEffect(() => {
@@ -110,7 +122,7 @@ export default function ProfilePage() {
     };
   }, []);
 
-  const semesterStart = React.useMemo(() => getSemesterStart(), []);
+  const semesterStart = React.useMemo(() => getSemesterStartFor(semesterStartDate), [semesterStartDate]);
   const shiftStats = React.useMemo(
     () => (shiftRequests ? getMemberShiftStats(shiftRequests, semesterStart) : null),
     [shiftRequests, semesterStart],
@@ -166,6 +178,8 @@ export default function ProfilePage() {
   // and the Test Account History card (a test identity can't hide it from
   // itself by "becoming" a lower role).
   const isRealAdmin = canManageLogistics(user.role);
+  // Displayed record = effective identity (test identity when active), falling back to the real user.
+  const display: User = effectiveUserData ?? user;
 
   const handleRoleSelect = async (value: string) => {
     try {
@@ -210,8 +224,8 @@ export default function ProfilePage() {
   // by the override) OR whenever an override is active — otherwise switching
   // to a member test identity hides the very control needed to switch back.
   const canManageTestRole = isRealAdmin || !!testIdentityActive || !!legacyRoleOverrideActive;
-  const roleDef = ROLES.find((r) => r.id === user.role);
-  const roleLabel = roleDef?.label ?? (user.role.charAt(0).toUpperCase() + user.role.slice(1));
+  const roleDef = ROLES.find((r) => r.id === display.role);
+  const roleLabel = roleDef?.label ?? (display.role.charAt(0).toUpperCase() + display.role.slice(1));
   const activeIdentityDef = TEST_IDENTITIES.find((i) => i.id === testIdentityActive);
 
   return (
@@ -254,16 +268,16 @@ export default function ProfilePage() {
             {/* Identity row */}
             <div className="flex items-center gap-4">
               <div className="w-14 h-14 rounded-[14px] bg-secondary/15 text-secondary flex items-center justify-center text-xl font-semibold flex-none">
-                {user.fullName.charAt(0).toUpperCase()}
+                {display.fullName.charAt(0).toUpperCase()}
               </div>
               <div className="min-w-0">
-                <div className="font-semibold text-lg text-foreground leading-tight truncate">{user.fullName}</div>
+                <div className="font-semibold text-lg text-foreground leading-tight truncate">{display.fullName}</div>
                 <div className="flex items-center gap-1 text-xs text-foreground-500 mt-0.5">
-                  <Mail size={11} className="flex-none" /> {user.email}
+                  <Mail size={11} className="flex-none" /> {display.email}
                 </div>
               </div>
               <div className="ml-auto flex-none">
-                <Chip color={getRoleColor(user.role)} variant="flat" size="sm">
+                <Chip color={getRoleColor(display.role)} variant="flat" size="sm">
                   {roleLabel}
                 </Chip>
               </div>
@@ -281,7 +295,7 @@ export default function ProfilePage() {
               <div className="flex-1 bg-content2 rounded-large p-4">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-1.5">Member Since</div>
                 <div className="text-sm font-semibold text-foreground tabular-nums">
-                  {user.createdAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                  {display.createdAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                 </div>
               </div>
             </div>
@@ -305,7 +319,7 @@ export default function ProfilePage() {
               <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground-400 mb-3">Certifications</div>
               <div className="flex flex-col gap-3">
                 {(() => {
-                  const certStatuses = getMemberCertStatuses(user);
+                  const certStatuses = getMemberCertStatuses(display);
                   const emtColor = certStatuses.emt === 'valid' ? 'success' : certStatuses.emt === 'expired' ? 'danger' : 'default';
                   const cprColor = certStatuses.cpr === 'valid' ? 'success' : certStatuses.cpr === 'expired' ? 'danger' : 'default';
                   const hasExpiredOrMissing = certStatuses.emt !== 'valid' || certStatuses.cpr !== 'valid';
@@ -315,10 +329,10 @@ export default function ProfilePage() {
                       <div className="flex flex-wrap gap-2">
                         <Chip size="sm" variant="flat" color={emtColor}>
                           <span className="font-medium">{CERT_LABELS.emt}</span>
-                          {certStatuses.emt === 'valid' && user.certifications?.emt?.expiresOn && (
+                          {certStatuses.emt === 'valid' && display.certifications?.emt?.expiresOn && (
                             <span className="text-xs ml-1">
                               ({(() => {
-                                const d = user.certifications.emt?.expiresOn;
+                                const d = display.certifications.emt?.expiresOn;
                                 const date = d instanceof Date ? d : (typeof d === 'object' && d !== null && 'toDate' in d ? (d as unknown as { toDate(): Date }).toDate() : new Date(String(d)));
                                 return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
                               })()})
@@ -327,10 +341,10 @@ export default function ProfilePage() {
                         </Chip>
                         <Chip size="sm" variant="flat" color={cprColor}>
                           <span className="font-medium">{CERT_LABELS.cpr}</span>
-                          {certStatuses.cpr === 'valid' && user.certifications?.cpr?.expiresOn && (
+                          {certStatuses.cpr === 'valid' && display.certifications?.cpr?.expiresOn && (
                             <span className="text-xs ml-1">
                               ({(() => {
-                                const d = user.certifications.cpr?.expiresOn;
+                                const d = display.certifications.cpr?.expiresOn;
                                 const date = d instanceof Date ? d : (typeof d === 'object' && d !== null && 'toDate' in d ? (d as unknown as { toDate(): Date }).toDate() : new Date(String(d)));
                                 return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
                               })()})
@@ -390,7 +404,7 @@ export default function ProfilePage() {
                       <span className="w-2 h-2 rounded-sm bg-warning flex-none" />
                       <span className="font-mono font-semibold tabular-nums text-warning">{shiftStats.lateCount}</span>
                       <span className="text-xs text-warning/80 font-medium">
-                        late{shiftStats.totalMinutesLate > 0 ? ` (${shiftStats.totalMinutesLate}m total)` : ''}
+                        late{shiftStats.totalMinutesLate > 0 ? ` (${formatMinutes(shiftStats.totalMinutesLate)} total)` : ''}
                       </span>
                     </div>
                     <div className="flex items-center gap-2 bg-danger-50 dark:bg-danger-900/20 border border-danger/30 rounded-large px-3 py-1.5">

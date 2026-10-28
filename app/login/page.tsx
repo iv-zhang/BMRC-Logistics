@@ -1,13 +1,28 @@
 'use client';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button, Input } from '@heroui/react';
 import { EyeSlashFilledIcon, EyeFilledIcon } from '@heroui/shared-icons';
-import { signInWithEmailAndPassword } from 'firebase/auth';
+import { signInWithEmailAndPassword, onAuthStateChanged } from 'firebase/auth';
 import { FirebaseError } from 'firebase/app';
 import { auth } from '@/firebase';
 import AuthShell from '@/app/components/auth-shell';
+
+/** Resolve `?next=` to a safe in-app path; anything else falls back to /dashboard. */
+function getSafeNext(): string {
+  if (typeof window === 'undefined') return '/dashboard';
+  const raw = new URLSearchParams(window.location.search).get('next');
+  if (!raw) return '/dashboard';
+  try {
+    if (raw.startsWith('/') && !raw.startsWith('//') && !raw.startsWith('/\\')) return raw;
+    const u = new URL(raw);
+    if (u.origin === window.location.origin) return `${u.pathname}${u.search}${u.hash}`;
+  } catch {
+    // fall through
+  }
+  return '/dashboard';
+}
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -17,6 +32,14 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const router = useRouter();
 
+  // Already signed in: skip the form and go where `next` points.
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => {
+      if (u) router.replace(getSafeNext());
+    });
+    return () => unsub();
+  }, [router]);
+
   const toggleVisibility = () => setIsVisible(!isVisible);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -25,7 +48,7 @@ export default function LoginPage() {
     setLoading(true);
     try {
       await signInWithEmailAndPassword(auth, email.trim(), password);
-      router.push('/dashboard');
+      router.push(getSafeNext());
     } catch (err: unknown) {
       console.error('Login error:', err);
       if (err instanceof FirebaseError) {

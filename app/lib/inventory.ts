@@ -1,5 +1,5 @@
 import { canManageLogistics } from '@/app/lib/roles';
-import { collection, doc, getDoc, getDocs, writeBatch, serverTimestamp, addDoc, updateDoc, runTransaction, query, where, orderBy, limit, documentId } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, writeBatch, serverTimestamp, addDoc, updateDoc, runTransaction, query, where, orderBy, limit, documentId, type DocumentData } from 'firebase/firestore';
 import { db } from '@/firebase';
 import type { InventoryItem, InventoryBatch, Statpack, StatpackItem, StatpackPocket, Container, BoxLog, StatpackLog, PurchaseInfo, ValidationWarning, AssetInstance, AssetCheckResult, StatpackAuditResult, AssetVerificationRules } from '@/app/types';
 import { recordAuditEvent, removeUndefined, deepRemoveUndefined } from '@/app/lib/audit';
@@ -86,7 +86,7 @@ export function computeStatpackAssetValue(statpack: Statpack): number {
 
 export async function createInventoryItem(partial: Partial<InventoryItem>) {
   const now = serverTimestamp();
-  const payload: any = {
+  const payload: Record<string, unknown> = {
     ...partial,
     createdAt: now,
     updatedAt: now,
@@ -99,7 +99,7 @@ export async function fetchStatpackById(id: string): Promise<Statpack | null> {
     const ref = doc(db, 'statpacks', id);
     const snap = await getDoc(ref);
     if (!snap.exists()) return null;
-    const data = snap.data() as any;
+    const data = snap.data() as DocumentData;
     return { id: snap.id, ...data } as Statpack;
   } catch (e) {
     console.warn('fetchStatpackById failed', e);
@@ -122,12 +122,12 @@ export async function batchAddInventoryFromStatpack(params: {
   const batch = writeBatch(db);
 
   for (const it of selected) {
-    const name = it.itemDetails?.name || (it as any).itemName || 'New Item';
+    const name = it.itemDetails?.name || (it as unknown as { itemName?: string }).itemName || 'New Item';
     const category = it.itemDetails?.category || 'Other';
     const unit = it.itemDetails?.unit || 'count';
 
     const docRef = doc(collection(db, 'inventory'));
-    const payload: any = {
+    const payload: Record<string, unknown> = {
       name,
       category,
       unit: 'box',
@@ -184,7 +184,7 @@ export async function sealContainerAsBox(params: {
   const { containerId, sealNumber, sealedBy, sealedByName, boxContents, purchase } = params;
   const containerRef = doc(db, 'containers', containerId);
   
-  const updatePayload: any = {
+  const updatePayload: Record<string, unknown> = {
     isBox: true,
     isSealed: true,
     sealNumber,
@@ -457,7 +457,7 @@ export async function logStatpackCheckOff(params: {
 
   // Clean and attach check entries (remove undefined fields)
   logData.checkEntries = (checkEntries || []).map(ce => {
-    const entry: any = {
+    const entry: Record<string, unknown> = {
       itemId: ce.itemId,
       itemName: ce.itemName,
       batchId: ce.batchId,
@@ -486,12 +486,12 @@ export async function logStatpackCheckOff(params: {
       issue: ce.issue,
     };
     Object.keys(entry).forEach(k => { if (entry[k] === undefined) delete entry[k]; });
-    return entry as any;
+    return entry as unknown as NonNullable<StatpackLog["checkEntries"]>[number];
   });
 
   // Attach pack-level sharps container check to the log
   if (sharpsCheck && sharpsCheck.status) {
-    (logData as any).sharpsCheck = removeUndefined({
+    (logData as unknown as Record<string, unknown>).sharpsCheck = removeUndefined({
       status: sharpsCheck.status,
       notes: sharpsCheck.notes,
     });
@@ -499,7 +499,7 @@ export async function logStatpackCheckOff(params: {
 
   // Attach notes only if provided
   if (notes !== undefined && notes !== null) {
-    (logData as any).notes = notes;
+    (logData as unknown as Record<string, unknown>).notes = notes;
   }
 
   // Attach the event this checkout was for, if the caller supplied one.
@@ -510,13 +510,14 @@ export async function logStatpackCheckOff(params: {
   if (eventName) logData.eventName = eventName;
 
   // Attach issues only if there are values (sanitize nested objects)
-  const issues: any = {};
+  const issues: Record<string, unknown> = {};
   if (sealChecks && Object.keys(sealChecks).length > 0) {
-    const sanitizedSeal: Record<string, any> = {};
+    const sanitizedSeal: Record<string, unknown> = {};
     Object.entries(sealChecks).forEach(([cid, val]) => {
       if (!val) return;
-      const obj: any = { sealed: Boolean((val as any).sealed) };
-      if ((val as any).sealNumber !== undefined && (val as any).sealNumber !== null) obj.sealNumber = (val as any).sealNumber;
+      const sealVal = val as { sealed?: unknown; sealNumber?: unknown };
+      const obj: Record<string, unknown> = { sealed: Boolean(sealVal.sealed) };
+      if (sealVal.sealNumber !== undefined && sealVal.sealNumber !== null) obj.sealNumber = sealVal.sealNumber;
       sanitizedSeal[cid] = obj;
     });
     if (Object.keys(sanitizedSeal).length > 0) issues.sealChecks = sanitizedSeal;
@@ -540,7 +541,7 @@ export async function logStatpackCheckOff(params: {
     if (Object.keys(sanitizedBags).length > 0) issues.bagChecks = sanitizedBags;
   }
   if (Object.keys(issues).length > 0) {
-    (logData as any).issues = issues;
+    (logData as unknown as Record<string, unknown>).issues = issues;
   }
 
   if (validationWarnings.length > 0) {
@@ -560,7 +561,7 @@ export async function logStatpackCheckOff(params: {
   const reportedCount = (checkEntries || []).filter(e => e.issue && e.issue.type).length;
   logData.summary = { totalItems, verifiedCount, mismatchCount, expiredCount, restockedCount, reportedCount };
 
-  const sanitizedLog = deepRemoveUndefined(logData as any);
+  const sanitizedLog = deepRemoveUndefined(logData);
   // Use both serverTimestamp (canonical) and a client-side Date for immediate reads.
   // serverTimestamp() is resolved server-side, but the client Date ensures the log
   // reflects the actual time of the action (retroactive-safe).
@@ -592,7 +593,7 @@ export async function logStatpackCheckOff(params: {
     await runTransaction(db, async (tx) => {
       const sp = await tx.get(statpackRef);
       if (!sp.exists()) throw new Error('Statpack not found');
-      const spData = sp.data() as any;
+      const spData = sp.data() as DocumentData;
 
       const isAdmin = canManageLogistics(userRole);
 
@@ -611,7 +612,7 @@ export async function logStatpackCheckOff(params: {
       }
 
       // Build statpack update payload
-      const statpackUpdate: Record<string, any> = {
+      const statpackUpdate: Record<string, unknown> = {
         lastCheckedBy: userName,
         lastCheckedAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -624,8 +625,8 @@ export async function logStatpackCheckOff(params: {
       // ── Persist pack contents (currentQuantity is source of truth) ──────────
       // Clone existing contents (keep raw Firestore Timestamps intact — do NOT
       // deep-clean, that would corrupt Timestamp objects into plain maps).
-      const contents: any[] = Array.isArray(spData?.contents)
-        ? spData.contents.map((c: any) => ({ ...c }))
+      const contents: StatpackItem[] = Array.isArray(spData?.contents)
+        ? spData.contents.map((c: StatpackItem) => ({ ...c }))
         : [];
       const usedIdx = new Set<number>();
       // Compartment names may repeat between pockets; honor all supplied identity.
@@ -799,7 +800,7 @@ export async function logStatpackCheckOff(params: {
       }
 
       // Use transaction to write the new log and update the statpack document.
-      const txLog = { ...sanitizedLog } as any;
+      const txLog = { ...sanitizedLog };
       // Ensure serverTimestamp sentinel fields remain present for server resolution
       txLog.timestamp = serverTimestamp();
       txLog.clientTimestamp = now;
@@ -816,7 +817,7 @@ export async function logStatpackCheckOff(params: {
       tx.set(newLogRef, txLog);
       tx.update(statpackRef, statpackUpdate);
     });
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.warn('logStatpackCheckOff: Transaction failed', e);
     throw e;
   }
@@ -1645,13 +1646,13 @@ export function determineIsAsset(item: Partial<InventoryItem> | { category?: str
   const it = item as Partial<InventoryItem>;
 
   // Check category-based rules from org-config
-  const category = (item as any).category;
+  const category = (item as { category?: string }).category;
   if (category && getAssetCategoriesRuntime().some(c => c.id.toLowerCase() === category.toLowerCase())) {
     return true;
   }
 
   // Check value threshold from org-config
-  const value = (item as any).assetValue ?? 0;
+  const value = (item as { assetValue?: number }).assetValue ?? 0;
   if (value >= getThresholds().assetValueThreshold) return true;
 
   // MODEL-2: durable gear (cot, backboard) often has no assetValue but shows
@@ -1697,8 +1698,8 @@ export async function createOpenBatch(
   const item = snap.data() as InventoryItem;
   const batches = item.batches || [];
   
-  let targetBatch = opts?.batchId ? batches.find(b => b.id === opts.batchId) : null;
-  let batchId = opts?.batchId || `open-${crypto.randomUUID()}`;
+  const targetBatch = opts?.batchId ? batches.find(b => b.id === opts.batchId) : null;
+  const batchId = opts?.batchId || `open-${crypto.randomUUID()}`;
   
   if (targetBatch) {
     // Update existing batch
@@ -1711,7 +1712,7 @@ export async function createOpenBatch(
     });
   } else {
     // Create new open batch
-    const newBatch: any = {
+    const newBatch: Record<string, unknown> = {
       id: batchId,
       stock: quantity,
       lotNumber: opts?.lotNumber || 'OPEN',
@@ -1786,7 +1787,7 @@ export async function consumeBox(
   const batches = item.batches || [];
   
   // Find or create target batch
-  let targetBatch = opts?.targetBatchId ? batches.find(b => b.id === opts.targetBatchId) : null;
+  const targetBatch = opts?.targetBatchId ? batches.find(b => b.id === opts.targetBatchId) : null;
   const batchId = opts?.targetBatchId || `open-${crypto.randomUUID()}`;
   
   let updatedBatches;
@@ -1797,7 +1798,7 @@ export async function consumeBox(
     );
   } else {
     // Create new open batch
-    const newBatch: any = {
+    const newBatch: Record<string, unknown> = {
       id: batchId,
       stock: unitsToAdd,
       lotNumber: 'OPEN',
@@ -1957,7 +1958,7 @@ export async function checkoutAsset(params: {
       throw new Error('This asset requires a serial/instance selection.');
     }
 
-    let updatedAssets = hasInstances ? [...(item.assets || [])] : undefined;
+    const updatedAssets = hasInstances ? [...(item.assets || [])] : undefined;
     let resolvedInstance: AssetInstance | undefined;
 
     if (normalizedSerial && hasInstances) {
@@ -1994,7 +1995,7 @@ export async function checkoutAsset(params: {
       ? (allCheckedOut ? 'Checked Out' : anyCheckedOut ? 'In Use' : 'Ready')
       : 'Checked Out';
 
-    const checkoutPayload: any = {
+    const checkoutPayload: Record<string, unknown> = {
       assetStatus: nextStatus,
       checkedOutAt: serverTimestamp(),
       checkedOutBy: user.id,
@@ -2021,7 +2022,7 @@ export async function checkoutAsset(params: {
     };
   });
 
-  const checkoutLog: any = {
+  const checkoutLog: Record<string, unknown> = {
     itemId: assetId,
     itemName,
     action: 'asset_checkout',
@@ -2082,7 +2083,7 @@ export async function checkinAsset(params: {
       throw new Error('This asset requires a serial/instance selection.');
     }
 
-    let updatedAssets = hasInstances ? [...(item.assets || [])] : undefined;
+    const updatedAssets = hasInstances ? [...(item.assets || [])] : undefined;
     let resolvedInstance: AssetInstance | undefined;
 
     if (normalizedSerial && hasInstances) {
@@ -2118,7 +2119,7 @@ export async function checkinAsset(params: {
       ? (allCheckedOut ? 'Checked Out' : anyCheckedOut ? 'In Use' : 'Ready')
       : 'Ready';
 
-    const checkinPayload: any = {
+    const checkinPayload: Record<string, unknown> = {
       assetStatus: nextStatus,
       lastCheckedInAt: serverTimestamp(),
       lastCheckedInBy: user.id,
@@ -2142,7 +2143,7 @@ export async function checkinAsset(params: {
     };
   });
 
-  const checkinLog: any = {
+  const checkinLog: Record<string, unknown> = {
     itemId: assetId,
     itemName,
     action: 'asset_checkin',
@@ -2221,7 +2222,7 @@ export async function performAssetManualCheck(params: {
     actionRequired,
   };
 
-  const updatePayload: any = {
+  const updatePayload: Record<string, unknown> = {
     updatedAt: serverTimestamp(),
   };
   if (measuredBatteryPct !== undefined) {
@@ -2331,7 +2332,7 @@ export async function performStatpackManualAudit(params: {
       requiredQuantity: c.requiredQuantity,
       countedQuantity: c.foundQuantity,
       ok: c.foundQuantity >= c.requiredQuantity && c.conditionOk && c.expirationOk,
-    })) as any[],
+    })),
   });
 
   const issueFound = checks.some(
@@ -2607,7 +2608,7 @@ export async function assignBarcode(params: {
     }
 
     // Step 3: Create inventory log
-    const logEntry: any = {
+    const logEntry: Record<string, unknown> = {
       itemId,
       itemName: outcome.itemName,
       action: outcome.action === 'reassign' ? 'barcode_reassign' : 'barcode_assign',
@@ -2623,7 +2624,7 @@ export async function assignBarcode(params: {
         ? `Reassigned barcode from ${outcome.previousBarcode} to ${normalizedBarcode}`
         : `Assigned barcode ${normalizedBarcode}`,
     };
-    await addDoc(collection(db, 'inventory_logs'), deepRemoveUndefined(logEntry) as any);
+    await addDoc(collection(db, 'inventory_logs'), deepRemoveUndefined(logEntry));
 
     // Step 4: Create audit event
     await recordAuditEvent({
@@ -2650,11 +2651,11 @@ export async function assignBarcode(params: {
       action: outcome.action,
       isDuplicate: outcome.isDuplicate,
     };
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('assignBarcode failed:', error);
     return {
       success: false,
-      message: error.message || 'Failed to assign barcode',
+      message: (error as { message?: string }).message || 'Failed to assign barcode',
     };
   }
 }
@@ -2717,7 +2718,7 @@ export async function verifyAssetAgainstRules(params: {
   // No rules = no verification needed (permissive default)
   if (!rules || Object.keys(rules).length === 0) return warnings;
 
-  const severity = (rules as any).advisoryOnly ? 'warning' : 'critical';
+  const severity = (rules as { advisoryOnly?: boolean }).advisoryOnly ? 'warning' : 'critical';
   
   // Check 1: Serial number requirement
   if (rules.requireSerial) {

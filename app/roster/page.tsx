@@ -34,8 +34,10 @@ import { db } from '@/firebase'; // Assuming your firebase config export
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { getMemberCertStatuses } from '@/app/lib/certifications';
 import CertEditorModal from '@/app/components/cert-editor-modal';
-import { getMemberShiftStats, type MemberShiftStats } from '@/app/lib/events';
+import { getMemberShiftStats, isEventManagerRole, type MemberShiftStats } from '@/app/lib/events';
 import { getSemesterStart } from '@/app/config/org-config';
+import { useOrgConfig } from '@/app/hooks/useOrgConfig';
+import { formatMinutes } from '@/app/components/events/event-utils';
 import { getMemberActivity, type MemberActivityEntry } from '@/app/lib/member-activity';
 import type { User, ShiftRequest } from '@/app/types'; // Adjust path based on your folder structure
 
@@ -89,7 +91,7 @@ function attendanceLabelAndColor(attendance: ShiftRequest['attendance']): { labe
   if (attendance?.exception === 'excused') return { label: 'Excused', color: 'default' };
   if (attendance?.checkedInAt) {
     const late = attendance.minutesLate ?? 0;
-    return late > 0 ? { label: `Late ${late}m`, color: 'warning' } : { label: 'Checked in', color: 'success' };
+    return late > 0 ? { label: `Late ${formatMinutes(late)}`, color: 'warning' } : { label: 'Checked in', color: 'success' };
   }
   return { label: 'Unrecorded', color: 'default' };
 }
@@ -106,10 +108,12 @@ export default function RosterPage() {
   const [requestsByUser, setRequestsByUser] = useState<Map<string, ShiftRequest[]>>(new Map());
   const [detailModalOpen, setDetailModalOpen] = useState(false);
   const [detailModalUserId, setDetailModalUserId] = useState<string | null>(null);
-  const semesterStart = React.useMemo(() => getSemesterStart(), []);
+  const orgConfig = useOrgConfig();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- getSemesterStart reads the live config; recompute when it changes
+  const semesterStart = React.useMemo(() => getSemesterStart(), [orgConfig]);
 
   // Access control: only admin, quartermaster, and medops can view
-  const isEventManager = role === 'admin' || role === 'quartermaster' || role === 'medops';
+  const isEventManager = isEventManagerRole(role);
   const canEditAllRoles = canManageLogistics(role);
   const isMedOps = role === 'medops';
 
@@ -518,7 +522,7 @@ function ShiftStatsSection({ requests, semesterStart }: { requests: ShiftRequest
             <span className="w-2 h-2 rounded-sm bg-warning flex-none" />
             <span className="font-mono font-semibold tabular-nums text-warning">{stats.lateCount}</span>
             <span className="text-xs text-warning/80 font-medium">
-              late{stats.totalMinutesLate > 0 ? ` (${stats.totalMinutesLate}m total)` : ''}
+              late{stats.totalMinutesLate > 0 ? ` (${formatMinutes(stats.totalMinutesLate)} total)` : ''}
             </span>
           </div>
           <div className="flex items-center gap-2 bg-danger-50 dark:bg-danger-900/20 border border-danger/30 rounded-large px-3 py-1.5">

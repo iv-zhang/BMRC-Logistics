@@ -48,14 +48,15 @@ import {
 import { recordAuditEvent, removeUndefined } from '@/app/lib/audit';
 import { deleteDoc } from 'firebase/firestore';
 import { getDoc } from 'firebase/firestore';
-import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
-import { auth, db } from '@/firebase';
-import type { Statpack, InventoryItem, User } from '@/app/types';
+import { db } from '@/firebase';
+import type { Statpack, InventoryItem } from '@/app/types';
+import { useUserRole } from '@/app/hooks/useUserRole';
+import { canManageLogistics, canViewLogisticsArea } from '@/app/lib/roles';
 import StatpackHistory from '@/app/components/statpack-history';
 import StatpackLogHistory from '@/app/components/statpack-log-history';
 import StatpackEditorModal from '@/app/components/statpack-editor-modal';
 import { updateAssetAssignment } from '@/app/lib/inventory';
-import { saveStatpackContents } from '@/app/lib/statpacks';
+import { saveStatpackContents, updateStatpackDetails } from '@/app/lib/statpacks';
 import {
   Package,
   Wrench,
@@ -112,8 +113,10 @@ interface AssetRecord {
 
 export default function AssetsPage() {
   const router = useRouter();
-  const [user, setUser] = useState<FirebaseUser | null>(null);
-  const [userRole, setUserRole] = useState<User['role'] | null>(null);
+  const { user, role: userRole, effectiveUid, fullName, loading: authLoading } = useUserRole();
+  const canView = canViewLogisticsArea(userRole, 'assets');
+  const canManage = canManageLogistics(userRole);
+  const actorName = fullName || user?.displayName || user?.email || 'Unknown';
   const [loading, setLoading] = useState(true);
   const [assets, setAssets] = useState<AssetRecord[]>([]);
 
@@ -192,10 +195,11 @@ export default function AssetsPage() {
   // previously this was a raw updateDoc with none of that.
   const saveStatpackDraft = async (draft: Statpack) => {
     try {
-      await saveStatpackContents(draft, {
-        uid: user?.uid,
-        name: user?.displayName || user?.email || 'Unknown',
-      });
+      await saveStatpackContents(
+        draft,
+        { uid: effectiveUid ?? undefined, name: actorName },
+        editingPack?.status,
+      );
       statpackDisclosure.onClose();
       setEditingPack(null);
     } catch (err) {
@@ -244,35 +248,10 @@ export default function AssetsPage() {
   const maintenanceDisclosure = useDisclosure();
   const detailsDisclosure = useDisclosure();
 
-  // Auth
+  // Logged out once auth resolves -> login
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      if (!currentUser) {
-        router.push('/login');
-        return;
-      }
-      setUser(currentUser);
-    });
-    return () => unsubscribe();
-  }, [router]);
-
-  // Fetch user role
-  useEffect(() => {
-    if (!user) return;
-    const userRef = doc(db, 'users', user.uid);
-    const unsubscribe = onSnapshot(
-      userRef,
-      (snapshot) => {
-        const data = snapshot.data() as User | undefined;
-        setUserRole(data?.role ?? 'member');
-      },
-      (error) => {
-        console.error('Error fetching user role:', error);
-        setUserRole('member');
-      }
-    );
-    return () => unsubscribe();
-  }, [user]);
+    if (!authLoading && !user) router.push('/login');
+  }, [authLoading, user, router]);
 
   // Clear row selection when details modal closes
   useEffect(() => {
@@ -281,7 +260,7 @@ export default function AssetsPage() {
 
   // Fetch statpacks and high-value inventory items
   useEffect(() => {
-    if (!user) return;
+    if (authLoading || !user || !canView) return;
     setLoading(true);
 
     let statpacksReady = false;
@@ -361,13 +340,13 @@ export default function AssetsPage() {
       statpacksUnsubscribe();
       inventoryUnsubscribe();
     };
-  }, [user]);
+  }, [authLoading, user, canView]);
 
   const handleStartMaintenance = (asset: AssetRecord) => {
     setSelectedAsset(asset);
     setMaintenanceReason('');
     setMaintenanceNotes('');
-    setMaintenanceTechnician(user?.displayName || '');
+    setMaintenanceTechnician(actorName === 'Unknown' ? '' : actorName);
     setMaintenanceServiceType('routine');
     maintenanceDisclosure.onOpen();
   };
@@ -384,7 +363,7 @@ export default function AssetsPage() {
         timestamp: new Date(),
         serviceType: maintenanceServiceType,
         reason: maintenanceReason,
-        technician: maintenanceTechnician || user?.displayName || 'Unknown',
+        technician: maintenanceTechnician || actorName,
         notes: maintenanceNotes,
         status: 'in-progress' as const,
       };
@@ -392,11 +371,16 @@ export default function AssetsPage() {
       if (selectedAsset.type === 'statpack') {
         const statpackData = selectedAsset.data as Statpack;
         const existing = statpackData.maintenance_logs || [];
-        await updateDoc(doc(db, 'statpacks', selectedAsset.id), {
-          maintenance_logs: [...existing, logEntry],
-          status: 'Pending Initial Check', // Mark as under maintenance
-          updatedAt: serverTimestamp(),
-        });
+        await updateStatpackDetails(
+          selectedAsset.id,
+          {
+            maintenance_logs: [...existing, logEntry],
+            status: 'Pending Initial Check', // Mark as under maintenance
+          },
+          { uid: effectiveUid ?? undefined, name: actorName },
+          { status: statpackData.status, name: statpackData.name },
+          'Maintenance started',
+        );
       } else {
         const inventoryData = selectedAsset.data as InventoryItem;
         const existing = inventoryData.maintenance_logs || [];
@@ -424,11 +408,13 @@ export default function AssetsPage() {
         const updated = (statpackData.maintenance_logs || []).map((log) =>
           log.id === logId ? { ...log, status: 'completed' as const, completedAt: new Date() } : log
         );
-        await updateDoc(doc(db, 'statpacks', asset.id), {
-          maintenance_logs: updated,
-          status: 'Ready',
-          updatedAt: serverTimestamp(),
-        });
+        await updateStatpackDetails(
+          asset.id,
+          { maintenance_logs: updated, status: 'Ready' },
+          { uid: effectiveUid ?? undefined, name: actorName },
+          { status: statpackData.status, name: statpackData.name },
+          'Maintenance completed',
+        );
       } else {
         const inventoryData = asset.data as InventoryItem;
         const updated = (inventoryData.maintenance_logs || []).map((log) =>
@@ -568,7 +554,12 @@ export default function AssetsPage() {
           updatedAt: serverTimestamp(),
         };
         if (payload.assetValue === undefined) delete payload.assetValue;
-        await updateDoc(doc(db, 'statpacks', selectedAsset.id), payload);
+        await updateStatpackDetails(
+          selectedAsset.id,
+          payload,
+          { uid: effectiveUid ?? undefined, name: actorName },
+          { status: selectedAsset.status, name: selectedAsset.name },
+        );
       } else {
         const payload: any = {
           name: nameValue,
@@ -666,11 +657,11 @@ export default function AssetsPage() {
   // page's existing auth state (user + userRole), no separate hook needed.
   const actor = useMemo(
     () => ({
-      uid: user?.uid || '',
-      name: user?.displayName || user?.email || undefined,
+      uid: effectiveUid || '',
+      name: actorName,
       email: user?.email || undefined,
     }),
-    [user]
+    [user, effectiveUid, actorName]
   );
 
   // Category filter state
@@ -744,10 +735,10 @@ export default function AssetsPage() {
     [assets]
   );
 
-  if (loading) return <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center"><Spinner size="lg" color="primary" /></div>;
+  if (authLoading || !user || (canView && loading)) return <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center"><Spinner size="lg" color="primary" /></div>;
 
-  // Restrict access: general members should not access the Asset Management UI
-  if (!loading && userRole === 'member') {
+  // Asset management is admin/QM/treasurer only (D-13: medops/FTO/members/helpers never see it)
+  if (!canView) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 p-6">
         <div className="max-w-3xl mx-auto">
@@ -777,8 +768,8 @@ export default function AssetsPage() {
             </h1>
             <p className="text-xs md:text-sm text-foreground-500">Manage statpacks, O2 tanks, AEDs, bikes, radios, and other valuable equipment</p>
           </div>
-          <div className="flex gap-2">
-            {userRole === 'admin' && selectedForPrint.size > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {canManage && selectedForPrint.size > 0 && (
               <Button
                 color="success"
                 variant="flat"
@@ -791,6 +782,14 @@ export default function AssetsPage() {
                 Print ({selectedForPrint.size})
               </Button>
             )}
+            {/* /statpacks (pack cards, Activity, Check in/out) had no inbound link. */}
+            <Button
+              variant="flat"
+              startContent={<Package size={16} />}
+              onPress={() => router.push('/statpacks')}
+            >
+              Statpacks
+            </Button>
             <Button
               color="primary"
               variant="flat"
@@ -799,7 +798,7 @@ export default function AssetsPage() {
             >
               Scan to Checkout
             </Button>
-            {userRole === 'admin' && (
+            {canManage && (
               <Button
                 variant="flat"
                 color="primary"
@@ -809,7 +808,7 @@ export default function AssetsPage() {
                 Log Purchase
               </Button>
             )}
-            {userRole === 'admin' && (
+            {canManage && (
               <Button onPress={() => { setEditingAsset(null); assetModalDisclosure.onOpen(); }}>Add Asset</Button>
             )}
           </div>
@@ -876,7 +875,7 @@ export default function AssetsPage() {
                             assetModalDisclosure.onOpen();
                           }}
                         >
-                          {userRole === 'admin' && (
+                          {canManage && (
                             <Checkbox
                               size="sm"
                               isSelected={selectedForPrint.has(asset.id)}
@@ -988,14 +987,14 @@ export default function AssetsPage() {
                                   >
                                     Activity Log
                                   </DropdownItem>
-                                ) : userRole === 'admin' ? (
+                                ) : canManage ? (
                                   <DropdownItem key="edit" startContent={<Pencil size={14} />} onPress={() => { setEditingAsset({ ...(asset.data as any), id: asset.id }); assetModalDisclosure.onOpen(); }}>
                                     Edit Asset
                                   </DropdownItem>
                                 ) : (
                                   <DropdownItem key="noop" className="hidden">.</DropdownItem>
                                 )}
-                                {userRole === 'admin' ? (
+                                {canManage ? (
                                   activeMaintenance ? (
                                     <DropdownItem key="maint" startContent={<CheckCircle size={14} />} color="success" onPress={() => handleCompleteMaintenance(asset, activeMaintenance.id)}>
                                       Complete Maintenance
@@ -1008,14 +1007,14 @@ export default function AssetsPage() {
                                 ) : (
                                   <DropdownItem key="noop2" className="hidden">.</DropdownItem>
                                 )}
-                                {asset.type === 'inventory' && (userRole === 'admin' || userRole === 'quartermaster' || userRole === 'inventory_helper') ? (
+                                {asset.type === 'inventory' && (canManage) ? (
                                   <DropdownItem key="barcode" startContent={<ScanBarcode size={14} />} onPress={() => handleAssignBarcode(asset)}>
                                     Assign Barcode Tag
                                   </DropdownItem>
                                 ) : (
                                   <DropdownItem key="noop3" className="hidden">.</DropdownItem>
                                 )}
-                                {userRole === 'admin' ? (
+                                {canManage ? (
                                   <DropdownItem key="audit" startContent={<ShieldCheck size={14} />} onPress={() => {
                                     if (asset.type === 'statpack') { if (asset.id) router.push(`/statpacks/check-off?id=${asset.id}&mode=audit`); return; }
                                     setAuditTarget(asset); setAuditType('asset'); auditModalDisclosure.onOpen();
@@ -1025,7 +1024,7 @@ export default function AssetsPage() {
                                 ) : (
                                   <DropdownItem key="noop4" className="hidden">.</DropdownItem>
                                 )}
-                                {userRole === 'admin' ? (
+                                {canManage ? (
                                   <DropdownItem key="delete" startContent={<Trash size={14} />} onPress={() => setDeletingAsset(asset)}>
                                     Delete
                                   </DropdownItem>
@@ -1118,8 +1117,8 @@ export default function AssetsPage() {
                       source: 'statpacks',
                       sourceId: deletingAsset.id,
                       actor: {
-                        userId: user?.uid ?? null,
-                        userName: user?.displayName ?? null,
+                        userId: effectiveUid ?? null,
+                        userName: actorName,
                       },
                       targets: [{ collection: 'statpacks', docId: deletingAsset.id }],
                       details: { name: deletingAsset.name },
@@ -1131,8 +1130,8 @@ export default function AssetsPage() {
                       source: 'inventory',
                       sourceId: deletingAsset.id,
                       actor: {
-                        userId: user?.uid ?? null,
-                        userName: user?.displayName ?? null,
+                        userId: effectiveUid ?? null,
+                        userName: actorName,
                       },
                       targets: [{ collection: 'inventory', docId: deletingAsset.id }],
                       details: { name: deletingAsset.name },
@@ -1388,7 +1387,7 @@ export default function AssetsPage() {
           </ModalBody>
           <ModalFooter>
             <div className="flex items-center gap-2">
-              {userRole === 'admin' && selectedAsset && (
+              {canManage && selectedAsset && (
                 <Button variant="light" onPress={() => handleStartMaintenance(selectedAsset)}>
                   Record Maintenance
                 </Button>
@@ -1421,7 +1420,7 @@ export default function AssetsPage() {
         onClose={() => { statpackDisclosure.onClose(); setEditingPack(null); }}
         onSave={saveStatpackDraft}
         onDelete={deleteStatpackFromEditor}
-        canDelete={userRole === 'admin'}
+        canDelete={canManage}
       />
 
       {/* Asset Add/Edit Modal */}
@@ -1443,8 +1442,8 @@ export default function AssetsPage() {
                 itemId: ref.id,
                 newAssignedToId: assignedToId,
                 user: {
-                  id: user?.uid ?? 'system',
-                  fullName: user?.displayName || user?.email || 'System',
+                  id: effectiveUid ?? 'system',
+                  fullName: actorName === 'Unknown' ? 'System' : actorName,
                 },
                 note: 'Assigned on asset creation',
               });
@@ -1470,8 +1469,8 @@ export default function AssetsPage() {
                 itemId: id,
                 newAssignedToId: assignedToId ?? null,
                 user: {
-                  id: user?.uid ?? 'system',
-                  fullName: user?.displayName || user?.email || 'System',
+                  id: effectiveUid ?? 'system',
+                  fullName: actorName === 'Unknown' ? 'System' : actorName,
                 },
                 note: 'Updated via asset editor',
               });
@@ -1489,8 +1488,8 @@ export default function AssetsPage() {
         auditType={auditType}
         targetAsset={auditType === 'asset' && auditTarget ? (auditTarget.data as InventoryItem) : undefined}
         targetStatpack={auditType === 'statpack' && auditTarget ? (auditTarget.data as Statpack) : undefined}
-        userId={user?.uid || ''}
-        userName={user?.displayName || user?.email || 'Unknown'}
+        userId={effectiveUid || ''}
+        userName={actorName}
         onAuditComplete={() => {
           setAuditTarget(null);
         }}
@@ -1519,8 +1518,8 @@ export default function AssetsPage() {
           onOpenChange={checkoutModalDisclosure.onOpenChange}
           asset={selectedCheckoutAsset}
           mode={checkoutMode}
-          userId={user?.uid || ''}
-          userName={user?.displayName || user?.email || 'Unknown'}
+          userId={effectiveUid || ''}
+          userName={actorName}
           onComplete={handleCheckoutComplete}
         />
       )}
@@ -1530,7 +1529,7 @@ export default function AssetsPage() {
         isOpen={assignBarcodeOpen}
         onClose={() => { setAssignBarcodeOpen(false); setAssignBarcodeItem(null); }}
         item={assignBarcodeItem}
-        user={user ? { id: user.uid, fullName: user.displayName || user.email || 'Unknown' } : null}
+        user={user ? { id: effectiveUid || user.uid, fullName: actorName } : null}
       />
 
       {/* Log Purchase (order-time record; stock enters only on Receive) */}

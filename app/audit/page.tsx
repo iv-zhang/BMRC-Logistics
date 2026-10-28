@@ -1,7 +1,7 @@
 'use client';
 
 import { canManageLogistics } from '@/app/lib/roles';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Button,
@@ -49,6 +49,7 @@ import {
 import { db } from '@/firebase';
 import type { Container, InventoryItem, Statpack, StatpackItem, StorageLocationRef } from '@/app/types';
 import { useUserRole } from '@/app/hooks/useUserRole';
+import { updateStatpackDetails } from '@/app/lib/statpacks';
 import StatpackRestockChips from '@/app/components/statpack-restock-chips';
 import StatpackReadyOverride from '@/app/components/statpack-ready-override';
 import {
@@ -64,8 +65,9 @@ import {
   isStatpackAuditCurrent,
   statpackAuditDueInDays,
 } from '@/app/lib/item-status';
-import { getInventoryAreaOptions, THRESHOLDS } from '@/app/config/org-config';
+import { getInventoryAreaOptions } from '@/app/config/org-config';
 import { useOrgConfig } from '@/app/hooks/useOrgConfig';
+import LoadFailureNotice, { describeLoadError } from '@/app/components/load-failure-notice';
 import {
   DisposableAuditCard,
   AssetAuditCard,
@@ -144,6 +146,10 @@ export default function AuditPage() {
 
   // Result toast
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const snapshotSeq = useRef(0);
+  const orgConfig = useOrgConfig();
+  const [loadError, setLoadError] = useState<unknown>(null);
 
   // Barcode scanner
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -192,6 +198,11 @@ export default function AuditPage() {
         ...(d.data() as Omit<InventoryItem, 'id'>),
       })) as InventoryItem[];
       setInventory(items);
+      setLoadError(null);
+      setLoading(false);
+    }, (err) => {
+      auditLog.error('Inventory listener failed', err);
+      setLoadError(err);
       setLoading(false);
     });
     return () => unsub();
@@ -201,6 +212,8 @@ export default function AuditPage() {
     if (!user) return;
     return onSnapshot(collection(db, 'containers'), snap => {
       setContainers(snap.docs.map(d => ({ ...d.data(), id: d.id }) as Container).sort((a, b) => a.name.localeCompare(b.name)));
+    }, (err) => {
+      auditLog.error('Containers listener failed', err);
     });
   }, [user]);
 
@@ -224,6 +237,8 @@ export default function AuditPage() {
       setStatpacks(
         snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Statpack, 'id'>) })) as Statpack[]
       );
+    }, (err) => {
+      auditLog.error('Statpacks listener failed', err);
     });
     return () => unsub();
   }, [user]);
@@ -236,10 +251,12 @@ export default function AuditPage() {
   }, [inventory, selectedZone, selectedContainer]);
 
   const refreshSnapshot = useCallback(async () => {
+    const seq = ++snapshotSeq.current;
     setRefreshing(true);
     try {
       const zone = selectedContainer || selectedZone === 'all' ? undefined : selectedZone;
       const snap = await generateAuditSnapshot(zone);
+      if (seq !== snapshotSeq.current) return; // a newer refresh superseded this one
       setSnapshot(snap);
       setRestockDecisions(analyzeRestockNeeds(snap.disposables));
       auditLog.info('Snapshot refreshed', {
@@ -250,7 +267,7 @@ export default function AuditPage() {
     } catch (e) {
       auditLog.error('Failed to generate snapshot', e);
     }
-    setRefreshing(false);
+    if (seq === snapshotSeq.current) setRefreshing(false);
   }, [selectedZone, selectedContainer]);
 
   // ─── Filtered items — search covers name, category, and location ──────────
@@ -347,7 +364,8 @@ export default function AuditPage() {
 
   const showToast = useCallback((msg: string, ok: boolean) => {
     setToast({ msg, ok });
-    setTimeout(() => setToast(null), 2500);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 2500);
   }, []);
 
   const handleDrawerResult = useCallback(
@@ -411,27 +429,18 @@ export default function AuditPage() {
       const original = statpacks.find((p) => p.id === draft.id);
       const { id: _id, ...docFields } = draft;
       void _id;
-      await updateDoc(doc(db, 'statpacks', String(draft.id)), {
-        ...docFields,
-        updatedAt: serverTimestamp(),
-        contentsUpdatedAt: serverTimestamp(),
-      });
-      await addDoc(collection(db, 'statpack_logs'), {
-        statpackId: String(draft.id),
-        statpackName: draft.name,
-        action: 'content_edit',
-        userId: effectiveUid || user.uid,
-        userName: userData?.fullName || user.displayName || user.email || 'Unknown',
-        timestamp: serverTimestamp(),
-        clientTimestamp: new Date(),
-        notes: contentEditSummary(original?.contents ?? [], draft.contents),
-        summary: {
-          totalItems: draft.contents.length,
-          verifiedCount: 0,
-          mismatchCount: 0,
-          expiredCount: 0,
+      // One atomic write: pack update + statpack_logs row (status_change when
+      // the status moved, else content_edit).
+      await updateStatpackDetails(
+        String(draft.id),
+        { ...docFields, contentsUpdatedAt: serverTimestamp() },
+        {
+          uid: effectiveUid || user.uid,
+          name: userData?.fullName || user.displayName || user.email || 'Unknown',
         },
-      });
+        { status: original?.status, name: original?.name ?? draft.name },
+        contentEditSummary(original?.contents ?? [], draft.contents),
+      );
       setEditingPack(null);
       showToast(`${draft.name} contents saved`, true);
     } catch (e) {
@@ -455,6 +464,20 @@ export default function AuditPage() {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center">
         <Spinner size="lg" color="primary" />
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center p-4">
+        <div className="max-w-md w-full">
+          <LoadFailureNotice
+            title="Couldn't load the audit workbench"
+            message={describeLoadError(loadError)}
+            onRetry={() => window.location.reload()}
+          />
+        </div>
       </div>
     );
   }
@@ -563,14 +586,16 @@ export default function AuditPage() {
           </div>
 
           <div className="flex items-center gap-3 flex-wrap min-w-0">
-            <Button
-              size="sm"
-              variant="flat"
-              startContent={<ScrollText size={14} />}
-              onPress={() => router.push('/audit/events')}
-            >
-              Ledger
-            </Button>
+            {isAdmin && (
+              <Button
+                size="sm"
+                variant="flat"
+                startContent={<ScrollText size={14} />}
+                onPress={() => router.push('/audit/events')}
+              >
+                Ledger
+              </Button>
+            )}
             <Button
               size="sm"
               variant="flat"
@@ -626,7 +651,7 @@ export default function AuditPage() {
             <div>
               <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
                 <span className="text-[11px] font-semibold uppercase tracking-widest text-foreground-400">
-                  Statpack cycle — every {THRESHOLDS.statpackAuditIntervalDays} days
+                  Statpack cycle — every {orgConfig.thresholds.statpackAuditIntervalDays} days
                 </span>
                 <span className="text-xs text-foreground-500">
                   <span className="font-mono font-semibold tabular-nums text-foreground">{packsAudited}</span>

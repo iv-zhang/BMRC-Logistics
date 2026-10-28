@@ -46,7 +46,6 @@ export function useStorageLocations(): UseStorageLocationsReturn {
   const [zones, setZones] = useState<StorageZone[]>([]);
   const [shelves, setShelves] = useState<Shelf[]>([]);
   const [containers, setContainers] = useState<Container[]>([]);
-  const [loading, setLoading] = useState(true);
 
   // Track individual collection readiness
   const [zonesReady, setZonesReady] = useState(false);
@@ -107,11 +106,7 @@ export function useStorageLocations(): UseStorageLocationsReturn {
   }, []);
 
   // Loading is resolved once all three collections have reported at least once
-  useEffect(() => {
-    if (zonesReady && shelvesReady && containersReady) {
-      setLoading(false);
-    }
-  }, [zonesReady, shelvesReady, containersReady]);
+  const loading = !(zonesReady && shelvesReady && containersReady);
 
   // --- Memoized lookup maps ---
   const shelfByZone = useMemo(() => {

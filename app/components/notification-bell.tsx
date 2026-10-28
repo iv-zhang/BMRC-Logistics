@@ -7,31 +7,32 @@ import {
   PopoverTrigger,
   PopoverContent,
   Button,
-  Card,
-  CardBody,
 } from '@heroui/react';
-import { Bell, X } from 'lucide-react';
+import { Bell } from 'lucide-react';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { subscribeUserNotifications, markNotificationRead, markAllRead } from '@/app/lib/notifications';
 import type { AppNotification } from '@/app/types';
 
-export default function NotificationBell() {
+type BellPlacement = 'bottom-end' | 'right-end' | 'top-end';
+
+export default function NotificationBell({ placement = 'bottom-end' }: { placement?: BellPlacement } = {}) {
   const router = useRouter();
-  const { user } = useUserRole();
+  const { user, effectiveUid } = useUserRole();
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (!user?.uid) return;
+    if (!user?.uid || !effectiveUid) return;
 
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- loading flag for a new subscription
     setLoading(true);
-    const unsubscribe = subscribeUserNotifications(user.uid, (items) => {
+    const unsubscribe = subscribeUserNotifications(effectiveUid, (items) => {
       setNotifications(items);
       setLoading(false);
     });
 
     return () => unsubscribe();
-  }, [user?.uid]);
+  }, [user?.uid, effectiveUid]);
 
   if (!user?.uid) return null;
 
@@ -60,14 +61,15 @@ export default function NotificationBell() {
     }
   };
 
-  const formatTime = (timestamp: any): string => {
+  const formatTime = (timestamp: unknown): string => {
     let date: Date | undefined;
+    const ts = timestamp as { toDate?: () => Date; seconds?: number } | null | undefined;
     if (timestamp instanceof Date) {
       date = timestamp;
-    } else if (timestamp && typeof timestamp.toDate === 'function') {
-      date = timestamp.toDate();
-    } else if (timestamp instanceof Object && 'seconds' in timestamp) {
-      date = new Date(timestamp.seconds * 1000);
+    } else if (ts && typeof ts.toDate === 'function') {
+      date = ts.toDate();
+    } else if (ts && typeof ts === 'object' && typeof ts.seconds === 'number') {
+      date = new Date(ts.seconds * 1000);
     }
 
     if (!date) return 'Just now';
@@ -86,7 +88,7 @@ export default function NotificationBell() {
   };
 
   return (
-    <Popover placement="bottom-end" offset={10}>
+    <Popover placement={placement} offset={10}>
       <PopoverTrigger asChild>
         <Button
           isIconOnly
@@ -102,7 +104,7 @@ export default function NotificationBell() {
         </Button>
       </PopoverTrigger>
 
-      <PopoverContent className="w-[360px] bg-content1 border border-divider rounded-large p-0">
+      <PopoverContent className="w-[360px] max-w-[calc(100vw-24px)] bg-content1 border border-divider rounded-large p-0">
         {/* Header */}
         <div className="px-4 py-3 border-b border-divider flex items-center justify-between">
           <span className="text-sm font-semibold text-foreground">Notifications</span>

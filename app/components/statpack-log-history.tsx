@@ -26,6 +26,7 @@ import {
   type StatpackLogDisplayItem,
 } from '@/app/lib/logs';
 import LogDetailModal from '@/app/components/log-detail-modal';
+import { getThresholds } from '@/app/lib/org-config-store';
 
 interface StatpackLogHistoryProps {
   isOpen: boolean;
@@ -112,8 +113,9 @@ export default function StatpackLogHistory({ isOpen, onOpenChange, statpackId, s
                     const checkinOk = item.checkin?.checkEntries?.filter(e => e.ok).length || 0;
                     
                     // Check for low O₂ readings in checkout
+                    const o2Min = getThresholds().o2PsiMin;
                     const lowO2 = item.checkout?.checkEntries?.some(e =>
-                      e.assetCheckResult?.oxygenPsi !== undefined && e.assetCheckResult.oxygenPsi < 1800
+                      e.assetCheckResult?.oxygenPsi !== undefined && e.assetCheckResult.oxygenPsi < o2Min
                     );
 
                     const eventName = item.checkout?.eventName || item.checkin?.eventName;
@@ -130,9 +132,14 @@ export default function StatpackLogHistory({ isOpen, onOpenChange, statpackId, s
                             <div className="flex items-center gap-2 flex-wrap">
                               <Chip size="sm" variant="solid" color="warning" className="capitalize">Checkout</Chip>
                               <span className="text-xs text-default-500">→</span>
-                              <Chip size="sm" variant="solid" color="success" className="capitalize">
-                                {isQuick ? 'Quick Check-in' : 'Check-in'}
-                              </Chip>
+                              {item.checkin ? (
+                                <Chip size="sm" variant="solid" color="success" className="capitalize">
+                                  {isQuick ? 'Quick Check-in' : 'Check-in'}
+                                </Chip>
+                              ) : (
+                                // Open checkout: the pack is still out (this is why it reads "In Use").
+                                <Chip size="sm" variant="flat" color="primary">Not checked in yet</Chip>
+                              )}
                               {duration !== null && (
                                 <Chip size="sm" variant="flat" className="text-xs">{formatDuration(duration)}</Chip>
                               )}
@@ -196,8 +203,12 @@ export default function StatpackLogHistory({ isOpen, onOpenChange, statpackId, s
                             >
                               {log.action?.replace(/_/g, ' ') || 'Unknown'}
                             </Chip>
+                            {log.statusChange && (
+                              <Chip size="sm" color="warning" variant="flat">{log.statusChange.from} → {log.statusChange.to}</Chip>
+                            )}
                             {isQuick && <Chip size="sm" color="warning" variant="flat">Quick</Chip>}
-                            {!log.pairId && (
+                            {/* Only checkouts/check-ins are meant to pair; audits, maintenance and edits never do. */}
+                            {!log.pairId && (log.action === 'checkout' || log.action === 'checkin') && (
                               <Chip size="sm" color="danger" variant="flat">Unpaired</Chip>
                             )}
                             {log.eventName && (

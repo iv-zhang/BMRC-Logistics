@@ -18,6 +18,9 @@ import {
   deleteAedComponent,
   type AedComponent,
 } from '@/app/lib/asset-components';
+import { parseDateInput, toDateInputValue } from '@/app/lib/dates';
+
+type SelectChildren = Extract<React.ComponentProps<typeof Select>['children'], React.ReactElement>;
 
 type ExpirationPrecision = 'day' | 'month';
 
@@ -111,15 +114,16 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
     if (isOpen) {
       // Normalize Firestore Timestamp fields to JS Date for form controls
       if (initial) {
-        const norm: any = { ...initial };
-        if ((initial as any).expirationDate && typeof (initial as any).expirationDate.toDate === 'function') {
-          norm.expirationDate = (initial as any).expirationDate.toDate();
+        const norm: Partial<InventoryItem> = { ...initial };
+        const tsFields = initial as unknown as Record<string, { toDate?: () => Date } | undefined>;
+        if (tsFields.expirationDate && typeof tsFields.expirationDate.toDate === 'function') {
+          norm.expirationDate = tsFields.expirationDate.toDate();
         }
-        if ((initial as any).batteryExpiration && typeof (initial as any).batteryExpiration.toDate === 'function') {
-          norm.batteryExpiration = (initial as any).batteryExpiration.toDate();
+        if (tsFields.batteryExpiration && typeof tsFields.batteryExpiration.toDate === 'function') {
+          norm.batteryExpiration = tsFields.batteryExpiration.toDate();
         }
-        if ((initial as any).padExpiration && typeof (initial as any).padExpiration.toDate === 'function') {
-          norm.padExpiration = (initial as any).padExpiration.toDate();
+        if (tsFields.padExpiration && typeof tsFields.padExpiration.toDate === 'function') {
+          norm.padExpiration = tsFields.padExpiration.toDate();
         }
         if (norm.assetCategory === 'Oxygen Tank') {
           norm.isOxygen = true;
@@ -169,12 +173,12 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
         const spSnap = await getDocs(collection(db, 'statpacks'));
         const spList: Array<{ id: string; name: string }> = [];
         spSnap.forEach(s => {
-          const d = s.data() as any;
+          const d = s.data() as Record<string, unknown>;
           if (d?.currentLocation) locSet.add(String(d.currentLocation));
-          spList.push({ id: s.id, name: d?.name || s.id });
+          spList.push({ id: s.id, name: (d?.name as string) || s.id });
         });
         const invSnap = await getDocs(collection(db, 'inventory'));
-        invSnap.forEach(s => { const d = s.data() as any; if (d?.currentLocation) locSet.add(String(d.currentLocation)); });
+        invSnap.forEach(s => { const d = s.data() as Record<string, unknown>; if (d?.currentLocation) locSet.add(String(d.currentLocation)); });
         const arr = Array.from(locSet).filter(Boolean);
         if (mounted) {
           setKnownLocations(arr);
@@ -187,11 +191,11 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
     return () => { mounted = false; };
   }, [isOpen]);
 
-  const tagValue = String((form.assetSerial ?? (form as any).assetTag ?? form.name) || '');
+  const tagValue = String((form.assetSerial ?? (form as Partial<InventoryItem> & { assetTag?: string }).assetTag ?? form.name) || '');
 
   const handleCategoryChange = (category: string) => {
     setForm((prev) => {
-      const next: Partial<InventoryItem> = { ...prev, assetCategory: category as any };
+      const next: Partial<InventoryItem> = { ...prev, assetCategory: category };
       if (category === 'Oxygen Tank') {
         next.isOxygen = true;
       } else {
@@ -220,9 +224,9 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
   };
 
   const generateTag = () => {
-    const id = (typeof crypto !== 'undefined' && (crypto as any).randomUUID) ? (crypto as any).randomUUID() : `asset_${Date.now()}`;
+    const id = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `asset_${Date.now()}`;
     // Auto-populate serial/tag as well as barcode and QR so newly-generated tags are scannable
-    setForm((prev) => ({ ...(prev as any), assetSerial: id, assetTag: id, barcode: id, qr: id } as any));
+    setForm((prev) => ({ ...prev, assetSerial: id, assetTag: id, barcode: id, qr: id } as Partial<InventoryItem>));
   };
 
   // Generate previews when tag changes
@@ -352,7 +356,7 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
       payload.expirationPrecision = expirationInput.trim() ? expirationPrecision : undefined;
       payload.expirationDate = parsedExpiration;
       if (!payload.barcode && !payload.qr) {
-        const gen = (typeof crypto !== 'undefined' && (crypto as any).randomUUID) ? (crypto as any).randomUUID() : `asset_${Date.now()}`;
+        const gen = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `asset_${Date.now()}`;
         payload = { ...payload, assetSerial: gen, assetTag: gen, barcode: gen, qr: gen } as Partial<InventoryItem>;
       }
 
@@ -391,14 +395,10 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
       }
 
       if (targetId) {
-        console.log('AssetModal: updating', targetId, payload);
         await onUpdate(targetId, { ...payload, updatedAt: new Date() } as Partial<InventoryItem>);
-        console.log('AssetModal: update complete');
         if (typeof onOpenChange === 'function') onOpenChange(false);
       } else {
-        console.log('AssetModal: adding', payload);
         const newId = await onAdd({ ...payload, isAsset: true } as Partial<InventoryItem>);
-        console.log('AssetModal: add complete');
         if (payload.assetCategory === 'AED' && typeof newId === 'string' && newId) {
           // Keep the modal open so battery/pads components can be added
           // immediately against the freshly-created AED's real doc id.
@@ -409,8 +409,7 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
       }
     } catch (e) {
       console.error('AssetModal: save error', e);
-      // eslint-disable-next-line no-alert
-      alert((e as any)?.message ? `Failed to save asset: ${(e as any).message}` : 'Failed to save asset');
+      alert((e as { message?: string })?.message ? `Failed to save asset: ${(e as { message?: string }).message}` : 'Failed to save asset');
     } finally {
       setSaving(false);
     }
@@ -420,14 +419,14 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
     setScannedBarcode(code);
     setShowScanner(false);
     // Populate the assignedBarcode field in the form preview
-    setForm({ ...form, assignedBarcode: code } as any);
+    setForm({ ...form, assignedBarcode: code });
   };
 
   const handleTopScanDetected = async (code: string) => {
     setScannedTopCode(code);
     setShowTopScanner(false);
     // Simple behavior: populate the barcode field so user doesn't need to type an asset tag
-    setForm((prev) => ({ ...prev, barcode: code } as any));
+    setForm((prev) => ({ ...prev, barcode: code }));
   };
 
   const handleAssignBarcode = async (allowDuplicate = false) => {
@@ -473,13 +472,13 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
         }
       } else {
         // Success - update form to reflect new assigned barcode
-        setForm({ ...form, assignedBarcode: scannedBarcode } as any);
+        setForm({ ...form, assignedBarcode: scannedBarcode });
         alert(result.message);
         setScannedBarcode('');
         setDuplicateWarning(null);
       }
-    } catch (error: any) {
-      setValidationError(error.message || 'Failed to assign barcode');
+    } catch (error: unknown) {
+      setValidationError((error instanceof Error ? error.message : undefined) || 'Failed to assign barcode');
     } finally {
       setAssigningBarcode(false);
     }
@@ -531,7 +530,7 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
           <Section title="Identity">
             <Input label="Name" value={String(form.name ?? '')} onValueChange={(v) => setForm({ ...form, name: v })} />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <Select label="Category" selectedKeys={[String((form.assetCategory as any) ?? 'Generic')]} onChange={(e) => handleCategoryChange(e.target.value)}>
+              <Select label="Category" selectedKeys={[String(form.assetCategory ?? 'Generic')]} onChange={(e) => handleCategoryChange(e.target.value)}>
                 <SelectItem key="Generic">Generic</SelectItem>
                 {(() => {
                   const seen = new Set<string>();
@@ -560,7 +559,7 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
                 description="Single-assignment: an asset can belong to only one statpack"
               >
                 <SelectItem key="">Unassigned</SelectItem>
-                {(statpacks.map(s => <SelectItem key={s.id}>{s.name}</SelectItem>) as any)}
+                {statpacks.map(s => <SelectItem key={s.id}>{s.name}</SelectItem>) as unknown as SelectChildren}
               </Select>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -580,7 +579,7 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
                 onValueChange={(v) => setForm({ ...form, assetValue: v ? Number(v) : undefined })}
                 description="Set at purchase; editable anytime."
               />
-              <Select label="Status" selectedKeys={[String(form.assetStatus ?? 'Ready')]} onChange={(e) => setForm({ ...form, assetStatus: e.target.value as any })}>
+              <Select label="Status" selectedKeys={[String(form.assetStatus ?? 'Ready')]} onChange={(e) => setForm({ ...form, assetStatus: e.target.value as InventoryItem['assetStatus'] })}>
                 <SelectItem key="Ready">Ready</SelectItem>
                 <SelectItem key="In Use">In Use</SelectItem>
                 <SelectItem key="Checked Out">Checked Out</SelectItem>
@@ -590,7 +589,7 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
               <div>
                 <Select label="Current Location" selectedKeys={[String(form.currentLocation ?? (knownLocations[0] ?? ''))]} onChange={(e) => { setForm({ ...form, currentLocation: e.target.value }); setUseCustomLocation(e.target.value === 'Other'); }}>
-                  {(knownLocations.map(l => <SelectItem key={l}>{l}</SelectItem>) as any)}
+                  {knownLocations.map(l => <SelectItem key={l}>{l}</SelectItem>) as unknown as SelectChildren}
                   <SelectItem key="Other">Other</SelectItem>
                 </Select>
               </div>
@@ -673,9 +672,9 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
                 </div>
               )}
 
-              {(form as any).assignedBarcode && (
+              {form.assignedBarcode && (
                 <Chip color="success" variant="flat" className="mb-2">
-                  Current: {(form as any).assignedBarcode}
+                  Current: {form.assignedBarcode}
                 </Chip>
               )}
 
@@ -706,7 +705,7 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
                       <Button
                         size="sm"
                         variant="light"
-                        onPress={() => { setScannedBarcode(''); setForm({ ...form, assignedBarcode: undefined } as any); }}
+                        onPress={() => { setScannedBarcode(''); setForm({ ...form, assignedBarcode: undefined }); }}
                       >
                         Clear
                       </Button>
@@ -745,11 +744,11 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
                 </div>
               )}
 
-              {(form as any).barcodeHistory && (form as any).barcodeHistory.length > 0 && (
+              {form.barcodeHistory && form.barcodeHistory.length > 0 && (
                 <div className="mt-2">
                   <p className="text-xs text-gray-600 mb-1">Assignment History:</p>
                   <div className="space-y-1">
-                    {(form as any).barcodeHistory.slice(-3).reverse().map((entry: any, idx: number) => (
+                    {form.barcodeHistory.slice(-3).reverse().map((entry, idx: number) => (
                       <div key={idx} className="text-xs bg-gray-50 p-1 rounded">
                         <span className="font-mono">{entry.value}</span>
                         {' '}
@@ -772,21 +771,21 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
           <Section title="Verification">
             <div className="flex items-center justify-between">
               <div className="text-sm">Require Serial on Checkout</div>
-              <Switch size="sm" isSelected={!!form.verificationPolicy?.requireSerial} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), requireSerial: v } as any })} />
+              <Switch size="sm" isSelected={!!form.verificationPolicy?.requireSerial} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), requireSerial: v } as InventoryItem['verificationPolicy'] })} />
             </div>
             <div className="flex items-center justify-between">
               <div className="text-sm">Require Expiration Confirmation</div>
-              <Switch size="sm" isSelected={!!form.verificationPolicy?.requireExpirationConfirmation} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), requireExpirationConfirmation: v } as any })} />
+              <Switch size="sm" isSelected={!!form.verificationPolicy?.requireExpirationConfirmation} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), requireExpirationConfirmation: v } as InventoryItem['verificationPolicy'] })} />
             </div>
             {form.assetCategory === 'Oxygen Tank' && (
               <div className="flex items-center gap-2">
                 <div className="text-sm flex-1">Minimum O₂ PSI (optional)</div>
-                <Input size="sm" type="number" className="w-32" value={String(form.verificationPolicy?.requireO2PsiMin ?? '')} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), requireO2PsiMin: v ? Number(v) : undefined } as any })} placeholder="e.g., 1800" />
+                <Input size="sm" type="number" className="w-32" value={String(form.verificationPolicy?.requireO2PsiMin ?? '')} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), requireO2PsiMin: v ? Number(v) : undefined } as InventoryItem['verificationPolicy'] })} placeholder="e.g., 1800" />
               </div>
             )}
             <div className="flex items-center justify-between">
               <div className="text-sm">Advisory Only (non-blocking)</div>
-              <Switch size="sm" isSelected={!!form.verificationPolicy?.advisoryOnly} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), advisoryOnly: v } as any })} />
+              <Switch size="sm" isSelected={!!form.verificationPolicy?.advisoryOnly} onValueChange={(v) => setForm({ ...form, verificationPolicy: { ...(form.verificationPolicy || {}), advisoryOnly: v } as InventoryItem['verificationPolicy'] })} />
             </div>
           </Section>
 
@@ -797,14 +796,14 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
                 <Input
                   label="Oxygen PSI (current)"
                   type="number"
-                  value={String((form.oxygenPsi ?? '') as any)}
+                  value={String(form.oxygenPsi ?? '')}
                   onValueChange={(v) => setForm({ ...form, oxygenPsi: v ? Number(v) : undefined })}
                   description="Measured PSI at last check"
                 />
                 <Input
                   label="Max Oxygen PSI"
                   type="number"
-                  value={String((form.maxOxygenPsi ?? '') as any)}
+                  value={String(form.maxOxygenPsi ?? '')}
                   onValueChange={(v) => setForm({ ...form, maxOxygenPsi: v ? Number(v) : undefined })}
                 />
               </div>
@@ -868,7 +867,7 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
 
           {/* ── Notes & History ──────────────────────────────────── */}
           <Section title="Notes & History">
-            <Textarea label="Notes" value={String((form as any).notes ?? '')} onValueChange={(v) => setForm({ ...form, notes: v } as any)} />
+            <Textarea label="Notes" value={String((form as Partial<InventoryItem> & { notes?: string }).notes ?? '')} onValueChange={(v) => setForm({ ...form, notes: v } as Partial<InventoryItem>)} />
 
             {initial && initial.id && (
               <div>
@@ -881,9 +880,9 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
                     className="mb-2"
                   >
                     <SelectItem key="">All instances</SelectItem>
-                    {(initial.assets.map(a => (
+                    {initial.assets.map(a => (
                       <SelectItem key={a.serial}>{a.assetTag || a.id || a.serial}</SelectItem>
-                    )) as any)}
+                    )) as unknown as SelectChildren}
                   </Select>
                 )}
                 <AssetHistory assetId={initial.id} maxRows={5} serialNumber={historySerial || undefined} />
@@ -963,7 +962,7 @@ function AedComponentCard({
     }
   };
 
-  const expInput = draft.expirationDate ? new Date(draft.expirationDate).toISOString().slice(0, 10) : '';
+  const expInput = draft.expirationDate ? toDateInputValue(new Date(draft.expirationDate)) : '';
 
   return (
     <div className="border border-divider rounded-medium bg-content2 p-3 flex flex-col gap-2.5">
@@ -976,7 +975,7 @@ function AedComponentCard({
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
         <Input size="sm" label="Model / Part #" value={String(draft.assetModel ?? '')} onValueChange={(v) => setDraft((d) => ({ ...d, assetModel: v }))} />
         <Input size="sm" label="Lot #" value={String(draft.lotNumber ?? '')} onValueChange={(v) => setDraft((d) => ({ ...d, lotNumber: v }))} />
-        <Input size="sm" label="Expiration" type="date" value={expInput} onValueChange={(v) => setDraft((d) => ({ ...d, expirationDate: v ? new Date(v) : undefined }))} />
+        <Input size="sm" label="Expiration" type="date" value={expInput} onValueChange={(v) => setDraft((d) => ({ ...d, expirationDate: v ? (parseDateInput(v) ?? undefined) : undefined }))} />
         <Input size="sm" label="Serial (optional)" value={String(draft.assetSerial ?? '')} onValueChange={(v) => setDraft((d) => ({ ...d, assetSerial: v }))} />
       </div>
       {kind === 'battery' ? (

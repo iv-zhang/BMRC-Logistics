@@ -24,15 +24,18 @@ import BarcodeScanner from '@/app/components/barcode-scanner';
 import { findAssetByCode } from '@/app/lib/inventory';
 import CheckoutModal from '@/app/components/checkout-modal';
 import { useUserRole } from '@/app/hooks/useUserRole';
+import LoadFailureNotice, { describeLoadError } from '@/app/components/load-failure-notice';
 
 export default function CheckinPage() {
   const router = useRouter();
-  const { role } = useUserRole();
+  const { role, effectiveUid } = useUserRole();
   const isAdmin = canManageLogistics(role);
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [statpacks, setStatpacks] = useState<Statpack[]>([]);
   const [filteredPacks, setFilteredPacks] = useState<Statpack[]>([]);
   const [loading, setLoading] = useState(true);
+  const [authResolved, setAuthResolved] = useState(false);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -49,19 +52,27 @@ export default function CheckinPage() {
   const [selectedAssetSerial, setSelectedAssetSerial] = useState<string | null>(null);
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => setUser(u));
+    const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setAuthResolved(true); });
     return () => unsub();
   }, []);
 
   useEffect(() => {
+    if (authResolved && !user) {
+      router.replace(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+    }
+  }, [authResolved, user, router]);
+
+  useEffect(() => {
     if (!user) return;
     setLoading(true);
+    setLoadError(null);
     const q = query(
       collection(db, 'statpacks'),
       where('status', '==', 'In Use'),
       orderBy('name'),
     );
     const unsub = onSnapshot(q, (snap) => {
+      setLoadError(null);
       try {
         const packs: Statpack[] = snap.docs.map((d) => {
           const data = d.data();
@@ -86,15 +97,15 @@ export default function CheckinPage() {
       } finally {
         setLoading(false);
       }
-    }, (err) => { console.error(err); setLoading(false); });
+    }, (err) => { console.error(err); setLoadError(err ?? true); setLoading(false); });
     return () => unsub();
   }, [user]);
 
   useEffect(() => {
     if (!searchQuery.trim()) {
       const sorted = [...statpacks].sort((a, b) => {
-        const aIsUsers = a.assignedToUserId === user?.uid ? 0 : 1;
-        const bIsUsers = b.assignedToUserId === user?.uid ? 0 : 1;
+        const aIsUsers = a.assignedToUserId === effectiveUid ? 0 : 1;
+        const bIsUsers = b.assignedToUserId === effectiveUid ? 0 : 1;
         return aIsUsers - bIsUsers;
       });
       setFilteredPacks(sorted);
@@ -107,7 +118,7 @@ export default function CheckinPage() {
       p.id?.toLowerCase().includes(q) ||
       p.assignedToUserName?.toLowerCase().includes(q)
     ));
-  }, [searchQuery, statpacks, user]);
+  }, [searchQuery, statpacks, effectiveUid]);
 
   // Asset items (checked-out only for check-in)
   useEffect(() => {
@@ -128,7 +139,7 @@ export default function CheckinPage() {
       setAssetItems(checkedOut);
       setFilteredAssetItems(checkedOut);
       setAssetLoading(false);
-    });
+    }, (err) => { console.error(err); setAssetLoading(false); });
     return () => unsub();
   }, [user]);
 
@@ -146,13 +157,13 @@ export default function CheckinPage() {
 
   // Navigate to checkoff page on pack selection
   const handleSelectPack = useCallback((pack: Statpack) => {
-    if (!isAdmin && pack.assignedToUserId && pack.assignedToUserId !== user?.uid) {
+    if (!isAdmin && pack.assignedToUserId && pack.assignedToUserId !== effectiveUid) {
       const assignee = pack.assignedToUserName || 'another member';
       alert(`This pack is assigned to ${assignee}. Only they or an admin can check it in.`);
       return;
     }
     router.push(`/statpacks/check-off?id=${pack.id}&mode=checkin`);
-  }, [router, user, isAdmin]);
+  }, [router, effectiveUid, isAdmin]);
 
   const handleScanDetected = (value: string) => {
     setScannerOpen(false);
@@ -223,6 +234,9 @@ export default function CheckinPage() {
           >
             <Tab key="statpacks" title={<div className="flex items-center gap-2"><Package size={16} />Statpacks</div>}>
               <div className="space-y-6 mt-4">
+                {loadError != null && (
+                  <LoadFailureNotice title="Couldn't load statpacks" message={describeLoadError(loadError)} />
+                )}
                 <Card>
                   <CardBody className="gap-4">
                     <div className="flex flex-col md:flex-row gap-3">
@@ -266,7 +280,7 @@ export default function CheckinPage() {
                     </Card>
                   ) : (
                     filteredPacks.map((pack) => {
-                      const isYours = !pack.assignedToUserId || pack.assignedToUserId === user?.uid;
+                      const isYours = !pack.assignedToUserId || pack.assignedToUserId === effectiveUid;
                       return (
                         <Card
                           key={pack.id}

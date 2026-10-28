@@ -28,6 +28,8 @@ import {
   toJsDate,
   eventCallDateTime,
   eventEndDateTime,
+  resolveShiftTime,
+  formatMinutes,
   computeMinutesLate,
   computeMinutesEarly,
   getAttendanceAccess,
@@ -50,18 +52,6 @@ function pad2(n: number): string {
 /** "HH:mm" for a time <input type="time"> from a Date. */
 function toHHmm(d: Date): string {
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-}
-
-/** Combine an event's day with an arbitrary "HH:mm" string into a Date (not the event's call time). */
-function combineDayAndTime(day: Date, hhmm: string): Date | null {
-  const match = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
-  if (!match) return null;
-  const hours = Number(match[1]);
-  const minutes = Number(match[2]);
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
-  const d = new Date(day);
-  d.setHours(hours, minutes, 0, 0);
-  return d;
 }
 
 /** The status chips for one row's attendance state — same rendering in every mode. */
@@ -91,7 +81,7 @@ function AttendanceChips({ attendance }: { attendance?: AttendanceRecord }) {
       </Chip>
       {lateMinutes > 0 && (
         <Chip size="sm" variant="flat" color="warning">
-          Late by {lateMinutes}m
+          Late by {formatMinutes(lateMinutes)}
         </Chip>
       )}
       {departureDate && (
@@ -101,7 +91,7 @@ function AttendanceChips({ attendance }: { attendance?: AttendanceRecord }) {
       )}
       {attendance.leftEarly && (
         <Chip size="sm" variant="flat" color="warning">
-          {attendance.minutesEarly ? `Left early by ${attendance.minutesEarly}m` : 'Left early'}
+          {attendance.minutesEarly ? `Left early by ${formatMinutes(attendance.minutesEarly)}` : 'Left early'}
         </Chip>
       )}
       {hours != null && (
@@ -242,7 +232,7 @@ export default function EventDetailDrawer({
     setAttendanceSavingId(req.id);
     try {
       const { minutesLate } = await checkInMember(event, req, actor);
-      onToast(true, `${req.userName} checked in${minutesLate > 0 ? ` — late by ${minutesLate}m` : ''}`);
+      onToast(true, `${req.userName} checked in${minutesLate > 0 ? ` — late by ${formatMinutes(minutesLate)}` : ''}`);
     } catch (e) {
       onToast(false, e instanceof Error ? e.message : 'Failed to check in');
     } finally {
@@ -255,7 +245,7 @@ export default function EventDetailDrawer({
     setAttendanceSavingId(req.id);
     try {
       const { leftEarly, minutesEarly } = await checkOutMember(event, req, actor);
-      onToast(true, `${req.userName} checked out${leftEarly ? ` — left ${minutesEarly}m early` : ''}`);
+      onToast(true, `${req.userName} checked out${leftEarly ? ` — left ${formatMinutes(minutesEarly)} early` : ''}`);
     } catch (e) {
       onToast(false, e instanceof Error ? e.message : 'Failed to check out');
     } finally {
@@ -266,12 +256,12 @@ export default function EventDetailDrawer({
   /** Manager-only retro-edit: save both time inputs at once, recomputing the derived snapshots. */
   const handleSaveRetro = async (req: ShiftRequest) => {
     if (!req.id || !eventDay) return;
-    const arrival = combineDayAndTime(eventDay, getArrivalDraft(req));
+    const arrival = resolveShiftTime(event, getArrivalDraft(req), 'arrival');
     if (!arrival) {
       onToast(false, 'Enter a valid arrival time');
       return;
     }
-    const departure = combineDayAndTime(eventDay, getDepartureDraft(req));
+    const departure = resolveShiftTime(event, getDepartureDraft(req), 'departure');
     setAttendanceSavingId(req.id);
     try {
       const minutesLate = computeMinutesLate(arrival, callDateTime);

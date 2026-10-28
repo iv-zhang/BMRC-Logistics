@@ -29,7 +29,7 @@ import {
   AccordionItem,
 } from '@heroui/react';
 import { GripVertical, X, Link2, ShieldCheck, AlertTriangle, Plus, Info, AlertCircle } from 'lucide-react';
-import type { StatpackItem, StatpackWarning } from '@/app/types';
+import type { StatpackItem, StatpackWarning, StatpackPocket, InventoryItem } from '@/app/types';
 
 interface SortableStatpackItemProps {
   item: StatpackItem;
@@ -60,7 +60,7 @@ function SortableStatpackItem({ item, index, onUpdate, onRemove, onAttachAsset, 
   const rules = item.verificationRules || {};
   const hasRules = rules.requireSerial || rules.requireExpirationConfirmation || (rules.requireO2PsiMin !== undefined && rules.requireO2PsiMin > 0);
 
-  const updateRule = (key: keyof typeof rules, value: any) => {
+  const updateRule = (key: keyof typeof rules, value: boolean | number | undefined) => {
     onUpdate(index, {
       verificationRules: {
         ...rules,
@@ -81,7 +81,7 @@ function SortableStatpackItem({ item, index, onUpdate, onRemove, onAttachAsset, 
             value={item.itemDetails?.name ?? ''}
             onValueChange={(v) =>
               onUpdate(index, {
-                itemDetails: { ...(item.itemDetails || {} as any), name: v },
+                itemDetails: { ...(item.itemDetails || {} as InventoryItem), name: v },
               })
             }
           />
@@ -198,7 +198,7 @@ function SortableStatpackItem({ item, index, onUpdate, onRemove, onAttachAsset, 
                           selectedKeys={[warning.severity]}
                           onChange={(e) => {
                             const warnings = [...(item.customWarnings || [])];
-                            warnings[wIdx] = { ...warnings[wIdx], severity: e.target.value as any };
+                            warnings[wIdx] = { ...warnings[wIdx], severity: e.target.value as StatpackWarning['severity'] };
                             onUpdate(index, { customWarnings: warnings });
                           }}
                         >
@@ -279,7 +279,7 @@ function SortableStatpackItem({ item, index, onUpdate, onRemove, onAttachAsset, 
         <Select
           className="min-w-[120px]"
           selectedKeys={[String(item.pocket || 'main')]}
-          onChange={(e) => onUpdate(index, { pocket: e.target.value as any })}
+          onChange={(e) => onUpdate(index, { pocket: e.target.value as StatpackPocket })}
         >
           <SelectItem key="main">Main</SelectItem>
           <SelectItem key="front_aux">Front</SelectItem>

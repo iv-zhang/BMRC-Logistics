@@ -165,7 +165,8 @@ export async function addComment(
  * Subscribe to open issue reports ordered by creation date (newest first).
  */
 export function subscribeToOpenReports(
-  callback: (reports: Array<IssueReport & { id: string }>) => void
+  callback: (reports: Array<IssueReport & { id: string }>) => void,
+  onError?: (err: unknown) => void
 ) {
   const q = query(
     collection(db, 'issue_reports'),
@@ -174,13 +175,20 @@ export function subscribeToOpenReports(
     limit(100)
   );
 
-  return onSnapshot(q, (snapshot) => {
-    const reports = snapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-    })) as Array<IssueReport & { id: string }>;
-    callback(reports);
-  });
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const reports = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      })) as Array<IssueReport & { id: string }>;
+      callback(reports);
+    },
+    (err) => {
+      console.error('subscribeToOpenReports error', err);
+      onError?.(err);
+    }
+  );
 }
 
 /**
@@ -191,7 +199,8 @@ export function subscribeToAllReports(
   options?: {
     status?: 'open' | 'triaged' | 'in_progress' | 'resolved' | 'closed' | 'all';
     assignedTo?: string;
-  }
+  },
+  onError?: (err: unknown) => void
 ) {
   let q;
 
@@ -210,20 +219,27 @@ export function subscribeToAllReports(
     );
   }
 
-  return onSnapshot(q, (snapshot) => {
-    let reports = snapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-    })) as Array<IssueReport & { id: string }>;
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      let reports = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      })) as Array<IssueReport & { id: string }>;
 
-    if (options?.assignedTo) {
-      reports = reports.filter(
-        (r) => r.assignedTo?.userId === options.assignedTo
-      );
+      if (options?.assignedTo) {
+        reports = reports.filter(
+          (r) => r.assignedTo?.userId === options.assignedTo
+        );
+      }
+
+      callback(reports);
+    },
+    (err) => {
+      console.error('subscribeToAllReports error', err);
+      onError?.(err);
     }
-
-    callback(reports);
-  });
+  );
 }
 
 export default {

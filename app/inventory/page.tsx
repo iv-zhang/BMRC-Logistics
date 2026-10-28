@@ -1,6 +1,8 @@
 'use client';
 
-import { canManageLogistics } from '@/app/lib/roles';
+import { canManageLogistics, canViewLogisticsArea } from '@/app/lib/roles';
+import { toDateInputValue } from '@/app/lib/dates';
+import { useUserRole } from '@/app/hooks/useUserRole';
 import { useEffect, useState, useMemo, Fragment } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -14,13 +16,12 @@ import {
   PackageOpen, LayoutList, Table2, ArrowRight, SlidersHorizontal, Truck, Receipt,
   Check, Trash2, Copy, AlertTriangle, ScanBarcode,
 } from 'lucide-react';
-import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import {
   collection, addDoc, updateDoc, doc, onSnapshot, query, orderBy,
   serverTimestamp, Timestamp, getDoc, where, limit,
 } from 'firebase/firestore';
-import { auth, db } from '@/firebase';
-import { recordAuditEvent } from '../lib/audit';
+import { db } from '@/firebase';
+import { recordAuditEvent, deepRemoveUndefined } from '../lib/audit';
 import InventoryModal from '@/app/components/additemmodal';
 import ConsumeBoxModal from '@/app/components/consume-box-modal';
 import MedicationCabinetModal from '@/app/components/medication-cabinet-modal';
@@ -29,7 +30,7 @@ import ReceiveDrawer from '@/app/components/receive-drawer';
 import AssignBarcodeModal from '@/app/components/assign-barcode-modal';
 import { getOldestValidBatch, isBatchExpired } from '@/app/utils/batchHelpers';
 import { preparePayload, safeParseDate } from '@/app/utils/inventoryNormalization';
-import { ITEM_CATEGORIES, getInventoryAreaOptions } from '@/app/config/org-config';
+import { getInventoryAreaOptions } from '@/app/config/org-config';
 import { useOrgConfig } from '@/app/hooks/useOrgConfig';
 import { CAT_CFG } from '@/app/components/category-badge';
 import PanelShell from '@/app/components/panel-shell';
@@ -44,12 +45,10 @@ import {
   type MergePreview,
 } from '@/app/lib/inventory-merge';
 import type {
-  InventoryItem, InventoryBatch, ItemCategory, User, BatchStatus, MedicationInfo,
+  InventoryItem, InventoryBatch, ItemCategory, BatchStatus, MedicationInfo,
 } from '@/app/types';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-
-const CATEGORIES = ITEM_CATEGORIES as readonly ItemCategory[];
 
 const BATCH_STATUS_COLORS: Record<string, 'default' | 'success' | 'warning' | 'danger' | 'primary'> = {
   sealed: 'primary', open: 'success', depleted: 'default', expired: 'danger', quarantined: 'warning',
@@ -70,18 +69,23 @@ function getCardTint(s: ItemStatus): string {
 export default function InventoryPage() {
   const router = useRouter();
   // Location filter options (from org-config — live, admin-overridable).
-  const { locations } = useOrgConfig();
+  const { locations, itemCategories } = useOrgConfig();
+  // Live (admin-editable) categories — never the frozen ITEM_CATEGORIES constant.
+  const CATEGORIES = itemCategories as readonly ItemCategory[];
   const LOCATION_OPTIONS = useMemo(
     // `getInventoryAreaOptions` reads the runtime store keyed by `locations`;
     // recompute when the live locations change.
     () => { void locations; return getInventoryAreaOptions(); },
     [locations],
   );
-  const [user, setUser] = useState<FirebaseUser | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { user, role, effectiveUid, fullName, loading: authLoading } = useUserRole();
+  const canView = canViewLogisticsArea(role, 'inventory');
+  // Every write control requires canManageLogistics; medops/treasurer read only.
+  const canWrite = canManageLogistics(role);
+  const isAdmin = canWrite;
+  const actorName = fullName || user?.displayName || user?.email || 'Unknown';
   const [opLoading, setOpLoading] = useState(false);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
-  const [isAdmin, setIsAdmin] = useState(false);
 
   // Filters
   const [searchTerm, setSearchTerm] = useState('');
@@ -165,14 +169,16 @@ export default function InventoryPage() {
                         <div className="text-xs text-primary/80 truncate">{incomingQty(item)} units incoming</div>
                       </div>
                     </div>
-                    <Button
-                      size="sm"
-                      color="primary"
-                      className="flex-none"
-                      onPress={() => { setDetailItem(null); setReceiveItem(item); }}
-                    >
-                      Receive
-                    </Button>
+                    {canWrite && (
+                      <Button
+                        size="sm"
+                        color="primary"
+                        className="flex-none"
+                        onPress={() => { setDetailItem(null); setReceiveItem(item); }}
+                      >
+                        Receive
+                      </Button>
+                    )}
                   </div>
                 )}
 
@@ -255,7 +261,7 @@ export default function InventoryPage() {
                               <span className={`text-xs font-semibold ${expTextColor(bt.expirationDate)}`}>
                                 Expires {formatExp(bt.expirationDate)}
                               </span>
-                              {hasSealedBag && (
+                              {hasSealedBag && canWrite && (
                                 <Button
                                   size="sm"
                                   variant="bordered"
@@ -335,18 +341,20 @@ export default function InventoryPage() {
                 </div>
 
                 {/* Assign barcode / print label — any inventory item */}
-                <Button
-                  variant="flat"
-                  color="primary"
-                  fullWidth
-                  startContent={<ScanBarcode size={15} />}
-                  onPress={() => { setDetailItem(null); setAssignBarcodeItem(item); setAssignBarcodeOpen(true); }}
-                >
-                  Assign barcode / print label
-                </Button>
+                {canWrite && (
+                  <Button
+                    variant="flat"
+                    color="primary"
+                    fullWidth
+                    startContent={<ScanBarcode size={15} />}
+                    onPress={() => { setDetailItem(null); setAssignBarcodeItem(item); setAssignBarcodeOpen(true); }}
+                  >
+                    Assign barcode / print label
+                  </Button>
+                )}
 
                 {/* Med cabinet link */}
-                {item.isMedication && (
+                {item.isMedication && canWrite && (
                   <Button
                     variant="flat"
                     color="danger"
@@ -359,7 +367,7 @@ export default function InventoryPage() {
               </div>
 
               {/* Drawer footer */}
-              <div className="px-6 py-4 border-t border-divider flex gap-3">
+              {canWrite && <div className="px-6 py-4 border-t border-divider flex gap-3">
                 <Button
                   variant="bordered"
                   className="flex-1"
@@ -376,7 +384,7 @@ export default function InventoryPage() {
                 >
                   Restock forward
                 </Button>
-              </div>
+              </div>}
       </>
     );
   };
@@ -422,29 +430,12 @@ export default function InventoryPage() {
 
   // ── Auth ───────────────────────────────────────────────────────────────────
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
-      if (u) { setUser(u); setLoading(false); }
-      else { router.push('/login'); }
-    });
-    return unsub;
-  }, [router]);
-
-  useEffect(() => {
-    if (!user) return;
-    (async () => {
-      try {
-        const snap = await getDoc(doc(db, 'users', user.uid));
-        if (snap.exists()) {
-          const data = snap.data() as User;
-          setIsAdmin(canManageLogistics(data.role));
-        }
-      } catch (e) { console.error('Role fetch error', e); }
-    })();
-  }, [user]);
+    if (!authLoading && !user) router.push('/login');
+  }, [authLoading, user, router]);
 
   // ── Inventory listener ─────────────────────────────────────────────────────
   useEffect(() => {
-    if (!user) return;
+    if (authLoading || !user || !canView) return;
     const q = query(collection(db, 'inventory'), orderBy('name'));
     return onSnapshot(q, (snap) => {
       // Archived (merged-away) losers stay in Firestore for audit history but
@@ -497,8 +488,10 @@ export default function InventoryPage() {
           batches: [],
         };
         if (Array.isArray(raw.batches) && raw.batches.length > 0) {
-          item.batches = raw.batches.map((b: Record<string, unknown>) => ({
-            id: (b.id as string) || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          item.batches = raw.batches.map((b: Record<string, unknown>, index: number) => ({
+            // Deterministic fallback so row keys don't churn on every snapshot
+            // (and a random id never gets persisted by a later write).
+            id: (b.id as string) || `${d.id}-legacy-${index}`,
             lotNumber: (b.lotNumber as string) || '',
             expirationDate: safeParseDate(
               b.expirationDate instanceof Timestamp
@@ -531,7 +524,7 @@ export default function InventoryPage() {
       });
       setInventory(items.filter(i => !i.isAsset));
     });
-  }, [user]);
+  }, [authLoading, user, canView]);
 
   // ── Drawer history listener ────────────────────────────────────────────────
   useEffect(() => {
@@ -562,34 +555,26 @@ export default function InventoryPage() {
   }, [detailItem]);
 
   // ── CRUD ───────────────────────────────────────────────────────────────────
-  async function handleAddItem(data: Partial<InventoryItem>) {
-    if (!user) return;
-    setOpLoading(true);
-    try {
-      const payload = preparePayload({ ...data, createdAt: serverTimestamp(), createdBy: user.uid });
-      await addDoc(collection(db, 'inventory'), payload);
-      await recordAuditEvent({
-        eventType: 'item_added',
-        actor: { userId: user.uid, userName: user.displayName || user.email || '' },
-        details: { itemName: data.name, category: data.category },
-      });
-    } catch (e) { console.error(e); alert('Failed to add item'); }
-    finally { setOpLoading(false); }
+  // The modal (additemmodal.tsx) already commits the new inventory doc itself
+  // before calling this; creating it again here duplicated every new item.
+  async function handleAddItem(_data: Partial<InventoryItem>) {
+    void _data;
+    // Nothing to write: the onSnapshot listener refreshes the list.
   }
 
   async function handleUpdateItem(id: string, data: Partial<InventoryItem>) {
-    if (!user || !id) return;
+    if (!user || !effectiveUid || !canWrite || !id) return;
     setOpLoading(true);
     try {
-      const payload = preparePayload({ ...data, updatedAt: serverTimestamp(), updatedBy: user.uid });
-      const actorForLog = { uid: user.uid, name: user.displayName || user.email || 'Unknown' };
+      const payload = preparePayload({ ...data, updatedAt: serverTimestamp(), updatedBy: effectiveUid });
+      const actorForLog = { uid: effectiveUid, name: actorName };
       // Routes the write through the shared helper so edits also land an
       // `inventory_logs` row (previously only the auditEvents entry below).
       await updateInventoryItemWithLog({ itemId: id, itemName: data.name, data: payload, actor: actorForLog });
       await recordAuditEvent({
         eventType: 'item_updated',
         sourceId: id,
-        actor: { userId: user.uid, userName: user.displayName || user.email || '' },
+        actor: { userId: effectiveUid ?? '', userName: actorName },
         details: { itemName: data.name },
       });
     } catch (e) { console.error(e); alert('Failed to update item'); }
@@ -597,7 +582,7 @@ export default function InventoryPage() {
   }
 
   async function handleOpenBag(item: InventoryItem, batchId?: string) {
-    if (!user) return;
+    if (!user || !canWrite) return;
     const batches = item.batches || [];
     const targetBatch = batchId
       ? batches.find(b => b.id === batchId)
@@ -618,19 +603,20 @@ export default function InventoryPage() {
         return {
           ...b, bagCount: newBagCount, looseItems: newLoose,
           status: (newBagCount === 0 && newLoose === 0 ? 'depleted' : 'open') as BatchStatus,
-          openedAt: new Date(), openedBy: user.displayName || user.email || user.uid,
+          openedAt: new Date(), openedBy: actorName,
         };
       });
       const totalBags = updatedBatches.reduce((s, b) => s + (b.bagCount ?? 0), 0);
       const totalLoose = updatedBatches.reduce((s, b) => s + (b.looseItems ?? 0), 0);
       const totalStock = updatedBatches.reduce((s, b) => s + (b.bagCount ?? 0) * (b.itemsPerBag ?? 0) + (b.looseItems ?? 0), 0);
-      await updateDoc(doc(db, 'inventory', item.id), {
+      // Batches carry explicit `undefined` fields; Firestore rejects those.
+      await updateDoc(doc(db, 'inventory', item.id), deepRemoveUndefined({
         batches: updatedBatches, unopenedBoxes: totalBags,
         looseUnits: totalLoose, totalStockQuantity: totalStock, updatedAt: serverTimestamp(),
-      });
+      }));
       await recordAuditEvent({
         eventType: 'bag_opened', sourceId: item.id,
-        actor: { userId: user.uid, userName: user.displayName || user.email || '' },
+        actor: { userId: effectiveUid ?? '', userName: actorName },
         details: { itemName: item.name, batchId: targetBatch.id, lotNumber: targetBatch.lotNumber, itemsReleased: perBag },
       });
     } catch (e) { console.error(e); alert('Failed to open bag'); }
@@ -638,7 +624,7 @@ export default function InventoryPage() {
   }
 
   async function handleQuickAdjust(itemId: string, delta: number) {
-    if (!user) return;
+    if (!user || !canWrite) return;
     setOpLoading(true);
     try {
       const itemDoc = await getDoc(doc(db, 'inventory', itemId));
@@ -652,7 +638,7 @@ export default function InventoryPage() {
       const item = inventory.find(i => i.id === itemId);
       await recordAuditEvent({
         eventType: 'stock_adjusted', sourceId: itemId,
-        actor: { userId: user.uid, userName: user.displayName || user.email || '' },
+        actor: { userId: effectiveUid ?? '', userName: actorName },
         details: { itemName: item?.name, delta, newStock: newUnopened },
       });
     } catch (e) { console.error(e); }
@@ -660,7 +646,7 @@ export default function InventoryPage() {
   }
 
   async function handleRestockForward(item: InventoryItem) {
-    if (!user) return;
+    if (!user || !canWrite) return;
     const oldest = getOldestValidBatch(item.batches || [], item);
     const info = oldest
       ? `Lot: ${oldest.lotNumber || 'N/A'}, Exp: ${oldest.expirationDate?.toLocaleDateString() || 'N/A'}`
@@ -673,12 +659,12 @@ export default function InventoryPage() {
         batchId: oldest?.id || null, lotNumber: oldest?.lotNumber || null,
         quantity: oldest?.stock || item.unopenedBoxes || 0,
         from: displayLocation(item), to: 'Front Restock Bin',
-        userId: user.uid, userName: user.displayName || user.email || '',
+        userId: effectiveUid ?? '', userName: actorName,
         timestamp: serverTimestamp(),
       });
       await recordAuditEvent({
         eventType: 'restock_forward', sourceId: item.id,
-        actor: { userId: user.uid, userName: user.displayName || user.email || '' },
+        actor: { userId: effectiveUid ?? '', userName: actorName },
         details: { itemName: item.name, batchId: oldest?.id, from: displayLocation(item) },
       });
       alert(`Restock report created for "${item.name}".`);
@@ -696,12 +682,12 @@ export default function InventoryPage() {
     });
     const csv = [headers.join(','), ...rows].join('\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-    const a = Object.assign(document.createElement('a'), { href: url, download: `inventory-${new Date().toISOString().slice(0, 10)}.csv` });
+    const a = Object.assign(document.createElement('a'), { href: url, download: `inventory-${toDateInputValue(new Date())}.csv` });
     a.click(); URL.revokeObjectURL(url);
   }
 
   // ── Merge / delete (duplicate cleanup) ──────────────────────────────────────
-  const actorForMerge = user ? { uid: user.uid, name: user.displayName || user.email || 'Unknown', email: user.email } : null;
+  const actorForMerge = user && effectiveUid && canWrite ? { uid: effectiveUid, name: actorName, email: user.email } : null;
 
   function toggleSelect(id: string) {
     setSelectedIds(prev => {
@@ -869,15 +855,23 @@ export default function InventoryPage() {
   }
 
   // ── Loading guard ──────────────────────────────────────────────────────────
-  if (loading) return (
+  if (authLoading || !user) return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center">
       <Spinner size="lg" color="primary" />
     </div>
   );
-  if (!user) return null;
+  if (!canView) return (
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center p-4">
+      <div className="bg-content1 border border-divider rounded-large max-w-md w-full text-center py-10 px-6">
+        <h2 className="text-base font-semibold text-foreground mb-2">Access Denied</h2>
+        <p className="text-sm text-foreground-500 mb-4">You do not have permission to view Inventory.</p>
+        <Button color="primary" onPress={() => router.push('/dashboard')}>Back to dashboard</Button>
+      </div>
+    </div>
+  );
 
   // ── Actor for Log Purchase / Receive writes ─────────────────────────────────
-  const actor = { uid: user.uid, name: user.displayName || user.email || undefined, email: user.email };
+  const actor = { uid: effectiveUid ?? user.uid, name: actorName, email: user.email };
 
   // ── Status pill config ─────────────────────────────────────────────────────
   const statusPills = [
@@ -892,7 +886,7 @@ export default function InventoryPage() {
 
   // ── Shared toolbar cluster (view toggle + Export + Log Purchase) ───────────
   const toolbarControls = (
-    <div className="flex items-center gap-2 flex-none">
+    <div className="flex flex-wrap items-center gap-2 md:flex-none">
       <div className="flex bg-content1 border border-divider rounded-large p-1 gap-1">
         {([
           { mode: 'list' as const, icon: <LayoutList size={14} />, label: 'List' },
@@ -939,7 +933,7 @@ export default function InventoryPage() {
         </div>
 
         {/* ── Possible duplicates banner ────────────────────────────────── */}
-        {duplicateGroups.length > 0 && !dupBannerDismissed && (
+        {canWrite && duplicateGroups.length > 0 && !dupBannerDismissed && (
           <div className="flex-none flex items-center gap-3 bg-warning-50 dark:bg-warning-900/20 border border-warning/30 rounded-large px-4 py-2.5 mb-4 flex-wrap">
             <AlertTriangle size={16} className="text-warning flex-none" />
             <span className="text-sm font-semibold text-warning">
@@ -1167,7 +1161,7 @@ export default function InventoryPage() {
                   return (
                     <Fragment key={item.id}>
                     <div className="flex items-center gap-2">
-                      <button
+                      {canWrite && <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); toggleSelect(item.id); }}
                         aria-label={isSelected ? 'Deselect item' : 'Select item'}
@@ -1176,7 +1170,7 @@ export default function InventoryPage() {
                         }`}
                       >
                         {isSelected && <Check size={13} strokeWidth={3.5} className="text-white" />}
-                      </button>
+                      </button>}
                       <div
                       onClick={() => setDetailItem(prev => prev?.id === item.id ? null : item)}
                       className={`flex-1 min-w-0 flex flex-wrap sm:flex-nowrap gap-3 sm:gap-4 items-center border rounded-[14px] px-4 py-4 cursor-pointer transition-all duration-150 hover:-translate-y-px hover:shadow-[0_6px_22px_rgba(16,24,40,0.09)] dark:hover:shadow-[0_6px_22px_rgba(0,0,0,0.35)] ${cardTint}`}
@@ -1215,12 +1209,12 @@ export default function InventoryPage() {
                               <Chip size="sm" variant="flat" color="primary" startContent={<Truck size={12} />}>
                                 On the way · {incomingQty(item)} units
                               </Chip>
-                              <button
+                              {canWrite && <button
                                 onClick={e => { e.stopPropagation(); setReceiveItem(item); }}
                                 className="text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-primary-50 hover:bg-primary-100 dark:bg-primary-900/20 dark:hover:bg-primary-800/30 text-primary transition-colors duration-150"
                               >
                                 Receive
-                              </button>
+                              </button>}
                             </>
                           )}
                         </div>
@@ -1246,13 +1240,13 @@ export default function InventoryPage() {
                       ) : (
                         <div className="w-full sm:w-44 flex-none flex flex-col items-end gap-1.5">
                           <div className="flex items-center gap-3">
-                            <button
+                            {canWrite && <button
                               onClick={e => { e.stopPropagation(); handleQuickAdjust(item.id, -1); }}
                               className="w-8 h-8 rounded-medium bg-content2 hover:bg-content3 text-foreground-500 flex items-center justify-center transition-colors duration-150"
                               aria-label="Decrease stock"
                             >
                               <Minus size={14} />
-                            </button>
+                            </button>}
                             <div className="text-center min-w-[54px]">
                               <div className={`font-mono text-3xl font-semibold tabular-nums leading-none ${qtyColor}`}>
                                 {bag.hasBagTracking ? bag.totalItems : item.unopenedBoxes}
@@ -1261,13 +1255,13 @@ export default function InventoryPage() {
                                 {bag.hasBagTracking ? 'Items' : 'Boxes'}
                               </div>
                             </div>
-                            <button
+                            {canWrite && <button
                               onClick={e => { e.stopPropagation(); handleQuickAdjust(item.id, 1); }}
                               className="w-8 h-8 rounded-medium bg-primary-50 hover:bg-primary-100 text-primary flex items-center justify-center transition-colors duration-150 dark:bg-primary-900/20 dark:hover:bg-primary-800/30"
                               aria-label="Increase stock"
                             >
                               <Plus size={14} />
-                            </button>
+                            </button>}
                           </div>
                           <div className="w-full h-[5px] rounded-full bg-content3 overflow-hidden">
                             <div className={`h-full rounded-full transition-all duration-300 ${barColor}`} style={{ width: `${barPct}%` }} />
@@ -1403,7 +1397,7 @@ export default function InventoryPage() {
                       >
                         {/* Select */}
                         <div className="self-center" onClick={e => e.stopPropagation()}>
-                          <button
+                          {canWrite && <button
                             type="button"
                             onClick={() => toggleSelect(item.id)}
                             aria-label={isSelected ? 'Deselect item' : 'Select item'}
@@ -1412,7 +1406,7 @@ export default function InventoryPage() {
                             }`}
                           >
                             {isSelected && <Check size={11} strokeWidth={3.5} className="text-white" />}
-                          </button>
+                          </button>}
                         </div>
                         {/* Item */}
                         <div className="flex items-center gap-3 min-w-0">
@@ -1463,18 +1457,18 @@ export default function InventoryPage() {
                               <Chip size="sm" variant="flat" color="primary" startContent={<Truck size={11} />}>
                                 On the way
                               </Chip>
-                              <button
+                              {canWrite && <button
                                 onClick={e => { e.stopPropagation(); setReceiveItem(item); }}
                                 className="text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-primary-50 hover:bg-primary-100 dark:bg-primary-900/20 dark:hover:bg-primary-800/30 text-primary transition-colors duration-150"
                               >
                                 Receive
-                              </button>
+                              </button>}
                             </>
                           )}
                         </div>
                         {/* Actions */}
                         <div className="flex items-center justify-end gap-1.5 self-center" onClick={e => e.stopPropagation()}>
-                          {!item.isOxygen && (
+                          {!item.isOxygen && canWrite && (
                             <>
                               <button
                                 onClick={() => handleQuickAdjust(item.id, -1)}
@@ -1584,8 +1578,8 @@ export default function InventoryPage() {
           isOpen={medCabinetOpen}
           onOpenChange={(open) => { setMedCabinetOpen(open); if (!open) setMedCabinetItem(null); }}
           medication={medCabinetItem}
-          userId={user?.uid || ''}
-          userName={user?.displayName || user?.email || ''}
+          userId={effectiveUid || ''}
+          userName={actorName}
         />
       )}
 
@@ -1607,7 +1601,7 @@ export default function InventoryPage() {
         isOpen={assignBarcodeOpen}
         onClose={() => { setAssignBarcodeOpen(false); setAssignBarcodeItem(null); }}
         item={assignBarcodeItem}
-        user={user ? { id: user.uid, fullName: user.displayName || user.email || 'Unknown' } : null}
+        user={user ? { id: effectiveUid ?? user.uid, fullName: actorName } : null}
       />
 
       {/* ── Duplicate review modal ────────────────────────────────────────── */}

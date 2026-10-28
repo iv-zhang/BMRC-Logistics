@@ -201,7 +201,9 @@ const renderLogBlock = (log?: StatpackLogWithId, label?: string) => {
 };
 
 export default function LogDetailModal({ isOpen, onOpenChange, item }: LogDetailModalProps) {
-  const title = item?.kind === 'pair' ? 'Checkout + Check-in Details' : 'Log Details';
+  const title = item?.kind === 'pair'
+    ? (item.checkin ? 'Checkout + Check-in Details' : 'Checkout Details — not checked in yet')
+    : 'Log Details';
 
   // Compute duration and quick-checkin for pairs
   const pairDuration = item?.kind === 'pair' ? calculateEventDuration(item.checkout, item.checkin) : null;
@@ -237,7 +239,9 @@ export default function LogDetailModal({ isOpen, onOpenChange, item }: LogDetail
             <>
               {renderLogBlock(item.checkout, 'Checkout')}
               <Divider />
-              {renderLogBlock(item.checkin, isQuickCheckin ? '⚡ Quick Check-in' : 'Check-in')}
+              {item.checkin
+                ? renderLogBlock(item.checkin, isQuickCheckin ? '⚡ Quick Check-in' : 'Check-in')
+                : <p className="text-sm text-default-500">Not checked in yet — this pack is still out.</p>}
             </>
           )}
           {item?.kind === 'single' && renderLogBlock(item.log)}

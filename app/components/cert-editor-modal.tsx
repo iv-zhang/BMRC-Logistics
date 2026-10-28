@@ -13,6 +13,7 @@ import {
 } from '@heroui/react';
 import { updateMemberCertification, CERT_LABELS } from '@/app/lib/certifications';
 import type { User } from '@/app/types';
+import { parseDateInput, toDateInputValue } from '@/app/lib/dates';
 
 interface CertEditorModalProps {
   isOpen: boolean;
@@ -46,14 +47,14 @@ export default function CertEditorModal({
 
       if (emtExp) {
         const d = emtExp instanceof Date ? emtExp : (typeof emtExp === 'object' && emtExp !== null && 'toDate' in emtExp ? (emtExp as unknown as { toDate(): Date }).toDate() : new Date(String(emtExp)));
-        setEmtDate(d.toISOString().split('T')[0]);
+        setEmtDate(toDateInputValue(d));
       } else {
         setEmtDate('');
       }
 
       if (cprExp) {
         const d = cprExp instanceof Date ? cprExp : (typeof cprExp === 'object' && cprExp !== null && 'toDate' in cprExp ? (cprExp as unknown as { toDate(): Date }).toDate() : new Date(String(cprExp)));
-        setCprDate(d.toISOString().split('T')[0]);
+        setCprDate(toDateInputValue(d));
       } else {
         setCprDate('');
       }
@@ -72,7 +73,7 @@ export default function CertEditorModal({
       // Update EMT
       if (emtDate || member.certifications?.emt) {
         await updateMemberCertification(member.id, 'emt', {
-          expiresOn: emtDate ? new Date(emtDate) : null,
+          expiresOn: emtDate ? parseDateInput(emtDate, true) : null,
           number: emtNumber || undefined,
         }, {
           uid: actorUid,
@@ -83,7 +84,7 @@ export default function CertEditorModal({
       // Update CPR
       if (cprDate || member.certifications?.cpr) {
         await updateMemberCertification(member.id, 'cpr', {
-          expiresOn: cprDate ? new Date(cprDate) : null,
+          expiresOn: cprDate ? parseDateInput(cprDate, true) : null,
           number: cprNumber || undefined,
         }, {
           uid: actorUid,

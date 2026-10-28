@@ -43,7 +43,7 @@ export default function IssueReportForm({
   onSuccess,
   lockType,
 }: IssueReportFormProps) {
-  const { user } = useUserRole();
+  const { user, userData, effectiveUid } = useUserRole();
   const [isAnonymous, setIsAnonymous] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -72,12 +72,12 @@ export default function IssueReportForm({
     setSubmitting(true);
 
     try {
-      const reporterId = isAnonymous ? null : user?.uid || null;
+      const reporterId = isAnonymous ? null : effectiveUid || null;
 
       await createReport({
         reporter: {
           userId: reporterId,
-          userName: !isAnonymous ? user?.displayName : undefined,
+          userName: !isAnonymous ? (userData?.fullName || user?.displayName) : undefined,
           userEmail: !isAnonymous ? user?.email : undefined,
           isAnonymous,
         },
@@ -106,8 +106,8 @@ export default function IssueReportForm({
       setIsAnonymous(false);
       onOpenChange(false);
       onSuccess?.();
-    } catch (err: any) {
-      setError(err?.message || 'Failed to submit report');
+    } catch (err: unknown) {
+      setError((err instanceof Error && err.message) || 'Failed to submit report');
       console.error('Error submitting report:', err);
     } finally {
       setSubmitting(false);
@@ -247,7 +247,7 @@ export default function IssueReportForm({
                 <div className="flex flex-col">
                   <span className="font-medium text-sm">Report Anonymously</span>
                   <span className="text-xs text-gray-500">
-                    Don't attach your name
+                    Don&apos;t attach your name
                   </span>
                 </div>
                 <Switch

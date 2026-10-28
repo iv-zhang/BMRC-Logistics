@@ -33,14 +33,16 @@ import NotifyModal from '@/app/components/events/notify-modal';
 
 type ViewMode = 'calendar' | 'list' | 'requests';
 
+const EMPTY_REQUESTS: ShiftRequest[] = [];
+
 export default function EventsPage() {
   const router = useRouter();
   const { user, userData, role, fullName, effectiveUid, loading: authLoading } = useUserRole();
   const canManage = isEventManagerRole(role);
 
   const [events, setEvents] = useState<Event[]>([]);
-  const [myRequests, setMyRequests] = useState<ShiftRequest[]>([]);
-  const [pendingRequests, setPendingRequests] = useState<ShiftRequest[]>([]);
+  const [myRequestsRaw, setMyRequests] = useState<ShiftRequest[]>([]);
+  const [pendingRequestsRaw, setPendingRequests] = useState<ShiftRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [eventsError, setEventsError] = useState<unknown>(null);
   const [eventsCached, setEventsCached] = useState(false);
@@ -95,20 +97,17 @@ export default function EventsPage() {
   // Once events have loaded, open the drawer for the deep-linked event (if any).
   // Guarded by deepLinkHandled so it only auto-opens once — the user can close
   // the drawer afterward without it snapping back open on the next events tick.
-  useEffect(() => {
-    if (deepLinkHandled || !deepLinkEventId || loading) return;
+  // Done during render (guarded by deepLinkHandled) rather than in an effect.
+  if (!deepLinkHandled && deepLinkEventId && !loading) {
     const ev = events.find((e) => e.id === deepLinkEventId);
     if (ev) {
       setSelectedEvent(ev);
       setDeepLinkHandled(true);
     }
-  }, [deepLinkEventId, deepLinkHandled, events, loading]);
+  }
 
   useEffect(() => {
-    if (!effectiveUid) {
-      setMyRequests([]);
-      return;
-    }
+    if (!effectiveUid) return;
     const unsub = subscribeMyRequests(
       effectiveUid,
       (r) => {
@@ -121,10 +120,7 @@ export default function EventsPage() {
   }, [effectiveUid, myRetry]);
 
   useEffect(() => {
-    if (!canManage) {
-      setPendingRequests([]);
-      return;
-    }
+    if (!canManage) return;
     const unsub = subscribePendingRequests(
       (r) => {
         setPendingRequests(r);
@@ -134,6 +130,10 @@ export default function EventsPage() {
     );
     return () => unsub();
   }, [canManage, pendingRetry]);
+
+  // Lists are cleared by derivation (not an in-effect reset) when the scope is lost.
+  const myRequests = effectiveUid ? myRequestsRaw : EMPTY_REQUESTS;
+  const pendingRequests = canManage ? pendingRequestsRaw : EMPTY_REQUESTS;
 
   useEffect(() => {
     if (!toast) return;

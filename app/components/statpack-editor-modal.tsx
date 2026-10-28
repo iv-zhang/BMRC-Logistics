@@ -28,6 +28,9 @@ import type {
 import { getCatCfg } from '@/app/components/category-badge';
 import { subscribeExchangeBags, resolveBagAssignments } from '@/app/lib/exchange-bags';
 import { batchHasStock } from '@/app/lib/item-status';
+import { useOrgConfig } from '@/app/hooks/useOrgConfig';
+import { describeLoadError } from '@/app/components/load-failure-notice';
+import { parseMonthInput, toMonthInputValue } from '@/app/lib/dates';
 
 type Pocket = StatpackPocket;
 type Filter = 'all' | 'assets' | 'contents';
@@ -58,7 +61,6 @@ function statusMeta(s: string): { dot: string; text: string; soft: string } {
   }
 }
 
-const LOCATION_PRESETS = ['Vehicle 1', 'Vehicle 2', 'HQ · Back Room', 'HQ · Front', 'CPR Closet', 'Event Trailer'];
 
 // ── item-level derived helpers ─────────────────────────────────────
 const isAsset = (it: StatpackItem) => !!(it.serialNumber || it.assetInstanceId);
@@ -74,17 +76,17 @@ const itemValue = (it: StatpackItem) => it.itemValue ?? it.itemDetails?.assetVal
 function expToMonth(d: unknown): string {
   if (!d) return '';
   const dt = d instanceof Date ? d : new Date(d as string);
-  if (isNaN(dt.getTime())) return '';
-  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
+  return toMonthInputValue(dt);
 }
 function expState(d: unknown): 'expired' | 'soon' | 'ok' | null {
   const m = expToMonth(d);
   if (!m) return null;
   const [y, mo] = m.split('-').map(Number);
-  const end = new Date(y, mo, 0, 23, 59, 59);
+  // Expiration month = the 1st of that month (decisions.md D-32).
+  const start = new Date(y, mo - 1, 1);
   const now = new Date();
-  if (end.getTime() < now.getTime()) return 'expired';
-  return (end.getTime() - now.getTime()) / 86400000 <= 62 ? 'soon' : 'ok';
+  if (start.getTime() <= now.getTime()) return 'expired';
+  return (start.getTime() - now.getTime()) / 86400000 <= 62 ? 'soon' : 'ok';
 }
 function expLabel(d: unknown): string {
   const m = expToMonth(d);
@@ -163,6 +165,18 @@ export default function StatpackEditorModal({
   const [saving, setSaving] = useState(false);
   const [rightTab, setRightTab] = useState<RightTab>('contents');
   const [addItemError, setAddItemError] = useState('');
+  const { locations: orgLocations, vehicles: orgVehicles } = useOrgConfig();
+  const locationPresets = useMemo(() => {
+    const out: string[] = [];
+    for (const loc of orgLocations) {
+      if (loc.id === 'other') continue;
+      if (loc.rooms.length > 0) loc.rooms.forEach(rm => out.push(`${loc.name} · ${rm.name}`));
+      else out.push(loc.name);
+    }
+    orgVehicles.forEach(v => out.push(v.name));
+    return Array.from(new Set(out));
+  }, [orgLocations, orgVehicles]);
+  const [inventoryLoadError, setInventoryLoadError] = useState<unknown>(null);
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
   const [exchangeBags, setExchangeBags] = useState<ExchangeBag[]>([]);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -192,6 +206,10 @@ export default function StatpackEditorModal({
     if (!isOpen) return;
     const unsub = onSnapshot(collection(db, 'inventory'), (snap) => {
       setInventoryItems(snap.docs.map((d) => hydrateInventoryLite({ id: d.id, ...d.data() } as Record<string, unknown>)));
+      setInventoryLoadError(null);
+    }, (err) => {
+      console.error('Failed to load inventory for statpack editor', err);
+      setInventoryLoadError(err ?? true);
     });
     return () => unsub();
   }, [isOpen]);
@@ -456,7 +474,7 @@ export default function StatpackEditorModal({
                     >Save</button>
                   </div>
                   <div className="flex flex-wrap gap-1.5">
-                    {LOCATION_PRESETS.map(p => (
+                    {locationPresets.map(p => (
                       <button key={p} onClick={() => { patchPack(pk => { pk.currentLocation = p; }); setPopover(null); }}
                         className="text-[11px] font-semibold text-foreground-600 bg-content2 hover:bg-content3 rounded-md px-2 py-2.5 md:py-1 transition-colors">
                         {p}
@@ -581,6 +599,7 @@ export default function StatpackEditorModal({
                             {(it) => <AutocompleteItem key={it.id} textValue={it.name}>{it.name}</AutocompleteItem>}
                           </Autocomplete>
                           {addItemError && <p className="text-[11px] text-danger mt-1.5">{addItemError}</p>}
+                          {inventoryLoadError != null && <p className="text-[11px] text-danger mt-1.5">Inventory couldn&apos;t load. {describeLoadError(inventoryLoadError)}</p>}
                           <div className="h-px bg-divider my-3" />
                           <button
                             onClick={addPlaceholderItem}
@@ -859,8 +878,7 @@ function ItemRow({
                   onChange={(e) => patch(x => {
                     const v = e.target.value;
                     if (!v) { delete (x as Partial<StatpackItem>).expirationDate; return; }
-                    const [y, mo] = v.split('-').map(Number);
-                    x.expirationDate = new Date(y, mo - 1, 1) as unknown as Date;
+                    x.expirationDate = (parseMonthInput(v, 'start') ?? undefined) as unknown as Date;
                   })}
                   className="font-mono h-11 md:h-9 rounded-medium border border-divider bg-content1 text-[12.5px] font-semibold text-foreground px-2.5 outline-none focus:border-primary" />
               </div>

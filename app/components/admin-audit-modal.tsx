@@ -24,6 +24,7 @@ import {
 import { AlertCircle, CheckCircle2, Clock, ClipboardCheck, Package, Info, Search } from 'lucide-react';
 import type { InventoryItem, Statpack, StatpackPocket, AssetCheckResult, StatpackAuditResult } from '@/app/types';
 import { performAssetManualCheck, performStatpackManualAudit } from '@/app/lib/inventory';
+import { parseDateInput } from '@/app/lib/dates';
 
 interface AdminAuditModalProps {
   isOpen: boolean;
@@ -145,7 +146,7 @@ export default function AdminAuditModal({
     setSubmitting(true);
     setError(null);
     try {
-      const dueNext = dueDateStr ? new Date(dueDateStr) : undefined;
+      const dueNext = dueDateStr ? (parseDateInput(dueDateStr) ?? undefined) : undefined;
       const auditResult = await performAssetManualCheck({
         itemId: targetAsset.id,
         measuredBatteryPct: targetAsset.assetCategory === 'AED' ? batteryPct : undefined,

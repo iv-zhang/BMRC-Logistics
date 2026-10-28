@@ -9,7 +9,7 @@
  * Desktop and mobile run *different step lists* (see `tutorial-tours.ts`) and
  * different callout chrome: on a phone the callout is a full-width sheet pinned
  * to the top or bottom edge, since there is no room beside a highlighted target.
- * The variant is chosen from the same breakpoint the nav uses (`sm`): below it
+ * The variant is chosen from the same breakpoint the nav uses (`md`): below it
  * the icon rail is gone and the bottom bar takes over.
  *
  * Triggers exactly once — on first use of a fresh account (`tutorialCompleted`
@@ -18,6 +18,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { Button } from '@heroui/react';
@@ -27,11 +28,23 @@ import { getTourSteps, type TourStep, type TourVariant } from '@/app/lib/tutoria
 
 const CALLOUT_W = 320;
 const MARGIN = 12;
-/** Matches the `sm` breakpoint: below it the rail is hidden and the bottom bar shows. */
-const MOBILE_QUERY = '(max-width: 639px)';
+/** Matches the `md` breakpoint: below it the rail is hidden and the bottom bar shows. */
+const MOBILE_QUERY = '(max-width: 767px)';
 
 /** Local completion fast-path key (see the first-run trigger below). */
 const localDoneKey = (uid: string) => `bmrc_tutorial_done_v1_${uid}`;
+
+/** First rendered (non-zero-size, visible) element for a tour key — the hidden rail/bottom-nav twin is skipped. */
+function findVisibleTarget(key: string): Element | null {
+  const els = document.querySelectorAll(`[data-tour="${key}"]`);
+  for (const el of Array.from(els)) {
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) continue;
+    if (getComputedStyle(el).visibility === 'hidden') continue;
+    return el;
+  }
+  return null;
+}
 
 function localTutorialDone(uid: string): boolean {
   try {
@@ -43,6 +56,10 @@ function localTutorialDone(uid: string): boolean {
 
 export default function OnboardingTour() {
   const { user, userData, role, isRoleOverridden, effectiveUid } = useUserRole();
+  const router = useRouter();
+  const pathname = usePathname();
+  const pathnameRef = useRef(pathname);
+  pathnameRef.current = pathname;
   const [active, setActive] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const [rect, setRect] = useState<DOMRect | null>(null);
@@ -94,13 +111,16 @@ export default function OnboardingTour() {
   // ── Replay trigger ────────────────────────────────────────────────────────
   useEffect(() => {
     const onReplay = () => {
+      // Member tour targets (checkout/checkin cards) only exist on /dashboard.
+      const p = pathnameRef.current ?? '';
+      if (p !== '/dashboard' && !p.startsWith('/dashboard/')) router.push('/dashboard');
       directionRef.current = 1;
       setStepIndex(0);
       setActive(true);
     };
     window.addEventListener('bmrc-replay-tutorial', onReplay);
     return () => window.removeEventListener('bmrc-replay-tutorial', onReplay);
-  }, []);
+  }, [router]);
 
   const finish = useCallback(async () => {
     setActive(false);
@@ -124,14 +144,12 @@ export default function OnboardingTour() {
 
   const advance = useCallback(() => {
     directionRef.current = 1;
-    setStepIndex((i) => {
-      if (i >= steps.length - 1) {
-        void finish();
-        return i;
-      }
-      return i + 1;
-    });
-  }, [steps.length, finish]);
+    if (stepIndex >= steps.length - 1) {
+      void finish();
+      return;
+    }
+    setStepIndex(stepIndex + 1);
+  }, [stepIndex, steps.length, finish]);
 
   const back = useCallback(() => {
     directionRef.current = -1;
@@ -150,10 +168,9 @@ export default function OnboardingTour() {
     setRect(null);
     setMissingIndex(null);
 
-    const selector = `[data-tour="${step.target}"]`;
     let found = false;
     const read = () => {
-      const el = document.querySelector(selector);
+      const el = findVisibleTarget(step.target as string);
       if (!el) return;
       if (!found && scrolledForRef.current !== stepIndex) {
         scrolledForRef.current = stepIndex;
@@ -196,7 +213,7 @@ export default function OnboardingTour() {
   // ── Advance on real click of the highlighted element ──────────────────────
   useEffect(() => {
     if (!active || !step || step.advance !== 'click-target' || !step.target) return;
-    const el = document.querySelector(`[data-tour="${step.target}"]`);
+    const el = findVisibleTarget(step.target);
     if (!el || clickBoundRef.current === el) return;
     clickBoundRef.current = el;
     const onClick = () => {

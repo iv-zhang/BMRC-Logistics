@@ -44,7 +44,7 @@ export function deepRemoveUndefined<T>(obj: T): T {
   if (obj === null || obj === undefined) return obj;
   if (Array.isArray(obj)) {
     // Clean array elements and remove undefined entries
-    const arr = (obj as unknown as any[])
+    const arr = (obj as unknown as unknown[])
       .map((v) => deepRemoveUndefined(v))
       .filter((v) => v !== undefined);
     return arr as unknown as T;
@@ -58,9 +58,9 @@ export function deepRemoveUndefined<T>(obj: T): T {
     if (obj instanceof Timestamp) return obj;
     // Preserve Firestore FieldValue sentinels (serverTimestamp, increment, etc.)
     // They have an internal _methodName property – never destructure them.
-    if ('_methodName' in (obj as any)) return obj;
-    const out: any = {};
-    for (const [k, v] of Object.entries(obj as any)) {
+    if ('_methodName' in (obj as Record<string, unknown>)) return obj;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
       if (v === undefined) continue;
       if (v === null) {
         out[k] = null;

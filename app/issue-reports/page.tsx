@@ -1,13 +1,14 @@
 'use client';
 
 import { canManageLogistics } from '@/app/lib/roles';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Button, Chip, Checkbox, Spinner } from '@heroui/react';
 import { Search, AlertCircle, Clock, User, X } from 'lucide-react';
 import { collection, onSnapshot, orderBy, query, Timestamp, updateDoc, doc, deleteDoc, serverTimestamp } from 'firebase/firestore';
-import { auth, db } from '@/firebase';
+import { db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { subscribeToAllReports } from '@/app/lib/reports';
+import LoadFailureNotice, { describeLoadError } from '@/app/components/load-failure-notice';
 import IssueTriageModal from '@/app/components/IssueTriageModal';
 import type { IssueReport } from '@/app/types';
 
@@ -65,16 +66,16 @@ const PRIORITY_OPTIONS = [
 ];
 
 export default function IssueReportsPage() {
-  const { user, role, loading: roleLoading } = useUserRole();
+  const { user, userData, effectiveUid, role, loading: roleLoading } = useUserRole();
   const [reports, setReports] = useState<Array<IssueReport & { id: string }>>([]);
-  const [filteredReports, setFilteredReports] = useState<
-    Array<IssueReport & { id: string }>
-  >([]);
-  const [loading, setLoading] = useState(true);
+  // Which status filter the current `reports` snapshot (or error) belongs to;
+  // loading is derived from it so no setState-in-effect is needed.
+  const [loadedStatus, setLoadedStatus] = useState<string | null>(null);
+  const [reportsError, setReportsError] = useState<unknown>(null);
+  const [reportsRetry, setReportsRetry] = useState(0);
 
   const [restockReports, setRestockReports] = useState<RestockReport[]>([]);
-  const [filteredRestockReports, setFilteredRestockReports] = useState<RestockReport[]>([]);
-  const [restockLoading, setRestockLoading] = useState(true);
+  const [restockLoaded, setRestockLoaded] = useState(false);
   const [restockUnresolvedOnly, setRestockUnresolvedOnly] = useState(true);
 
   const [selectedReport, setSelectedReport] = useState<
@@ -90,24 +91,32 @@ export default function IssueReportsPage() {
 
   const isAdmin = canManageLogistics(role);
 
-  // Subscribe to reports
+  // Subscribe to reports (only once the admin gate has passed)
   useEffect(() => {
-    setLoading(true);
+    if (roleLoading || !isAdmin) return;
+    const status = filters.status;
     const unsubscribe = subscribeToAllReports(
       (data) => {
         setReports(data);
-        setLoading(false);
+        setReportsError(null);
+        setLoadedStatus(status);
       },
       {
-        status: filters.status === 'all' ? 'all' : (filters.status as IssueReport['status']),
+        status: status === 'all' ? 'all' : (status as IssueReport['status']),
+      },
+      (err) => {
+        setReportsError(err ?? true);
+        setLoadedStatus(status);
       }
     );
 
     return () => unsubscribe();
-  }, [filters.status]);
+  }, [filters.status, roleLoading, isAdmin, reportsRetry]);
+
+  const loading = loadedStatus !== filters.status;
 
   useEffect(() => {
-    setRestockLoading(true);
+    if (roleLoading || !isAdmin) return;
     const q = query(collection(db, 'restock_reports'), orderBy('createdAt', 'desc'));
     const unsub = onSnapshot(
       q,
@@ -115,18 +124,18 @@ export default function IssueReportsPage() {
         const out: RestockReport[] = [];
         snap.forEach((s) => out.push({ id: s.id, ...(s.data() as Omit<RestockReport, 'id'>) }));
         setRestockReports(out);
-        setRestockLoading(false);
+        setRestockLoaded(true);
       },
       (err) => {
         console.error('restock reports snapshot error', err);
-        setRestockLoading(false);
+        setRestockLoaded(true);
       }
     );
     return () => unsub();
-  }, []);
+  }, [roleLoading, isAdmin]);
 
   // Apply filters
-  useEffect(() => {
+  const filteredReports = useMemo(() => {
     let result = [...reports];
 
     if (filters.priority !== 'all') {
@@ -143,10 +152,10 @@ export default function IssueReportsPage() {
       );
     }
 
-    setFilteredReports(result);
+    return result;
   }, [reports, filters.priority, filters.search]);
 
-  useEffect(() => {
+  const filteredRestockReports = useMemo(() => {
     let result = [...restockReports];
 
     if (restockUnresolvedOnly) {
@@ -163,7 +172,7 @@ export default function IssueReportsPage() {
       );
     }
 
-    setFilteredRestockReports(result);
+    return result;
   }, [restockReports, restockUnresolvedOnly, filters.search]);
 
   if (roleLoading) {
@@ -208,8 +217,7 @@ export default function IssueReportsPage() {
   } as const;
 
   const handleResolveRestock = async (r: RestockReport) => {
-    const current = auth.currentUser;
-    if (!current) {
+    if (!effectiveUid) {
       alert('Sign in to resolve reports.');
       return;
     }
@@ -217,8 +225,8 @@ export default function IssueReportsPage() {
     try {
       await updateDoc(doc(db, 'restock_reports', r.id), {
         resolved: true,
-        resolvedBy: current.uid,
-        resolvedByName: current.displayName || current.email || null,
+        resolvedBy: effectiveUid,
+        resolvedByName: userData?.fullName || user?.displayName || user?.email || null,
         resolvedAt: serverTimestamp(),
       });
     } catch (e) {
@@ -318,7 +326,16 @@ export default function IssueReportsPage() {
 
         {/* ── Combined reports list (issues + inventory) ─────────────────── */}
         <div className="space-y-3">
-          {loading || restockLoading ? (
+          {!loading && reportsError ? (
+            <LoadFailureNotice
+              title="Couldn't load issue reports"
+              message={describeLoadError(reportsError)}
+              onRetry={() => {
+                setLoadedStatus(null);
+                setReportsRetry((n) => n + 1);
+              }}
+            />
+          ) : loading || !restockLoaded ? (
             <div className="bg-content1 border border-divider rounded-large flex items-center justify-center py-16">
               <Spinner size="md" color="primary" />
             </div>
@@ -470,7 +487,7 @@ export default function IssueReportsPage() {
         onOpenChange={setIsTriageOpen}
         report={selectedReport}
         admins={[
-          { id: user?.uid || '', name: user?.displayName || 'Unknown' },
+          { id: effectiveUid || '', name: userData?.fullName || user?.displayName || 'Unknown' },
         ]}
         onSuccess={() => {
           setSelectedReport(null);

@@ -153,7 +153,7 @@ export default function StatsPage() {
     const fromUrl = tabParamToDashboard(new URLSearchParams(window.location.search).get('tab'));
     const next = fromUrl && visibleDashboards.includes(fromUrl) ? fromUrl : visibleDashboards[0];
     // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing from the URL (an external system) post-hydration; see comment above.
-    setDashboard((cur) => cur ?? next);
+    setDashboard((cur) => (cur && visibleDashboards.includes(cur) ? cur : next));
   }, [visibleDashboards]);
 
   // Dev guard: a default layout naming a tile the registry lacks renders
@@ -350,8 +350,8 @@ export default function StatsPage() {
         ) : dashboard === 'calls' ? (
           <CallsEmptyState />
         ) : (
-          <div className="md:flex-1 md:min-h-0 md:grid md:grid-cols-[248px_1fr] md:gap-4">
-            <aside className="mb-4 md:mb-0 md:min-h-0 md:overflow-hidden">
+          <div className="md:flex-1 md:min-h-0 md:grid md:grid-cols-[248px_1fr] md:grid-rows-[minmax(0,1fr)] md:gap-4">
+            <aside className="mb-4 md:mb-0 md:min-h-0 md:h-full md:overflow-hidden">
               <TileCatalog
                 dashboard={dashboard!}
                 allTiles={ALL_TILES}

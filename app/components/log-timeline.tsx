@@ -48,6 +48,7 @@ const getActionMeta = (action: string) => {
   if (action === 'maintenance') return { color: 'secondary' as const, icon: Clock, badgeClass: 'bg-purple-100 text-purple-700' };
   if (action === 'restock') return { color: 'primary' as const, icon: CheckCircle2, badgeClass: 'bg-sky-100 text-sky-700' };
   if (action === 'audit') return { color: 'primary' as const, icon: CheckCircle2, badgeClass: 'bg-sky-100 text-sky-700' };
+  if (action === 'status_change') return { color: 'warning' as const, icon: ShieldAlert, badgeClass: 'bg-amber-100 text-amber-700' };
   return { color: 'default' as const, icon: ShieldAlert, badgeClass: 'bg-slate-100 text-slate-600' };
 };
 
@@ -230,6 +231,9 @@ export default function LogTimeline({ statpackId, maxRows = 8, onViewAll }: LogT
                       <Chip size="sm" variant="flat" color={meta.color} className="capitalize">
                         {log.action === 'checkin' ? 'Check-in' : log.action === 'checkout' ? 'Check-out' : log.action.replace(/_/g, ' ')}
                       </Chip>
+                      {log.statusChange && (
+                        <Chip size="sm" variant="flat" color="warning">{log.statusChange.from} → {log.statusChange.to}</Chip>
+                      )}
                       {isQuick && (
                         <Chip size="sm" variant="flat" color="warning">Quick</Chip>
                       )}

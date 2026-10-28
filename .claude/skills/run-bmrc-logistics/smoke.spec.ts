@@ -76,6 +76,8 @@ async function signIn(page: import('@playwright/test').Page) {
 
 // Renders with live seeded data WITHOUT a signed-in Firebase user (role-gated only).
 test('statpacks renders seeded packs', async ({ page }) => {
+  // /statpacks now waits for a real Firebase sign-in + role gate.
+  await signIn(page);
   await shoot(page, '/statpacks', 'statpacks');
   // Distinctive seeded content proves the emulator round-trip, not just chrome.
   // (Each pack name appears in both a card and the "expiring" banner → .first().)
@@ -83,13 +85,32 @@ test('statpacks renders seeded packs', async ({ page }) => {
   await expect(page.getByText('MRC2 Primary').first()).toBeVisible();
 });
 
-// Regression: overriding to a NON-admin role (member) used to hide the sidebar's
-// role-override control (it was gated on the effective isAdmin), stranding the
-// user with no way to clear the test role. It must stay reachable.
-test('sidebar keeps Clear test role reachable under a member override', async ({ page }) => {
+// Regression: overriding to a NON-admin role (member) must never strand a real admin
+// without a way back. The control now lives on /profile (it is keyed on the REAL
+// account role, so a member override can't hide it). Overrides are only honored for
+// a real admin, so this signs in as the seeded admin first.
+test('profile keeps the test-role control reachable and clearable under a member override', async ({ page }) => {
+  await signIn(page);
+  // beforeEach's init script re-sets 'admin' on every navigation; register a later
+  // one so the member override wins after the reload below.
   await page.addInitScript(() => localStorage.setItem('bmrc_role_override', 'member'));
-  await shoot(page, '/statpacks', 'sidebar-clear-test-role');
-  await expect(page.getByRole('button', { name: /Clear test role/i }).first()).toBeVisible();
+  await page.goto('/profile', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'profile-clear-test-role.png'), fullPage: true });
+
+  // The control lives on the Settings tab and reports the active override.
+  await page.getByRole('tab', { name: 'Settings' }).click();
+  const control = page.getByRole('button', { name: /Test Role: member/i });
+  await expect(control).toBeVisible();
+
+  // Clear it from the dropdown.
+  await control.click();
+  await page.getByRole('option', { name: /Clear override/i }).click();
+  await expect(page.getByRole('button', { name: /Real role: admin/i })).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem('bmrc_role_override'))).toBeNull();
 });
 
 test('buy-list renders', async ({ page }) => {
@@ -354,9 +375,10 @@ test('statpack editor exposes exchange bags assignment', async ({ page }) => {
 test('inventory merges duplicate items and archives the loser', async ({ page }) => {
   const stamp = Date.now();
   const KEEP = `E2E Bandaids ${stamp}`;
-  const DUPE = `E2E Bandaids Small ${stamp}`;
+  // Near-duplicate name WITHOUT a size word: 'Small' is a variant the merge guard rejects.
+  const DUPE = `E2E Bandaid ${stamp}`;
   const base = { category: 'First Aid', unit: 'each', itemsPerBox: 10, looseUnits: 0, isAsset: false };
-  await createDoc('inventory', { ...base, name: KEEP, unopenedBoxes: 2, totalStockQuantity: 20 });
+  const keepId = await createDoc('inventory', { ...base, name: KEEP, unopenedBoxes: 2, totalStockQuantity: 20 });
   const dupeId = await createDoc('inventory', { ...base, name: DUPE, unopenedBoxes: 3, totalStockQuantity: 30 });
 
   await signIn(page);
@@ -369,17 +391,22 @@ test('inventory merges duplicate items and archives the loser', async ({ page })
 
   // Narrow to the two fixtures so selection can't pick up seeded items.
   const search = page.getByPlaceholder(/search/i).first();
-  await search.fill(`E2E Bandaids ${stamp}`);
+  // Both fixtures share only the stamp ('E2E Bandaids' vs 'E2E Bandaid').
+  await search.fill(`${stamp}`);
   await page.waitForTimeout(1200);
   await page.screenshot({ path: join(SHOTS, 'inventory-duplicates.png') });
 
   // Select both rows, then merge via the selection bar.
-  const boxes = page.locator('input[type="checkbox"]');
-  const n = await boxes.count();
-  for (let i = 0; i < n; i++) await boxes.nth(i).check({ force: true }).catch(() => {});
+  // Rows use a custom toggle button (aria-label flips Select item -> Deselect item).
+  // exact: 'Select item' would otherwise also substring-match 'Deselect item'.
+  const selects = page.getByRole('button', { name: 'Select item', exact: true });
+  await expect(selects).toHaveCount(2);
+  await selects.first().click();
+  await selects.first().click(); // the remaining unselected row is the other fixture
+  await expect(page.getByRole('button', { name: 'Deselect item', exact: true })).toHaveCount(2);
   await page.waitForTimeout(500);
   await page.screenshot({ path: join(SHOTS, 'inventory-selection-bar.png') });
-  await page.getByRole('button', { name: /Merge/i }).first().click();
+  await page.getByRole('button', { name: /Merge selected/i }).click();
   await page.waitForTimeout(1200);
   await page.screenshot({ path: join(SHOTS, 'inventory-merge-modal.png') });
   // Confirm in the merge modal (survivor defaults to the first selected).
@@ -387,10 +414,14 @@ test('inventory merges duplicate items and archives the loser', async ({ page })
   await page.waitForTimeout(3000);
   await page.screenshot({ path: join(SHOTS, 'inventory-after-merge.png') });
 
-  const loser = await getDocById('inventory', dupeId);
-  expect(loser, 'loser doc must still exist (archived, not deleted)').toBeTruthy();
+  // The survivor is whichever row was selected first (list order), so identify the
+  // loser from the data: exactly one fixture is archived, the other absorbs its stock.
+  const [a, b] = await Promise.all([getDocById('inventory', keepId), getDocById('inventory', dupeId)]);
+  expect(a && b, 'both docs must still exist (archived, not deleted)').toBeTruthy();
+  const [loser, survivor] = a?.isArchived ? [a, b] : [b, a];
   expect(loser?.isArchived, 'loser must be archived').toBe(true);
   expect(loser?.mergedIntoId, 'loser must point at the survivor').toBeTruthy();
+  expect(survivor?.isArchived, 'survivor must stay active').toBeFalsy();
 });
 
 // Member dashboard: real signed-in user + a member role override.

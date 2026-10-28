@@ -267,7 +267,9 @@ export default function AuditActionDrawer({
             dest.location = moveArea as LocationType;
             dest.room = null;
           } else {
-            dest.location = 'HQ';
+            // Use the room's actual site, not a hardcoded 'HQ'.
+            const site = locations.find((l) => l.rooms.some((r) => r.name === moveArea));
+            dest.location = (site?.name ?? 'HQ') as LocationType;
             dest.room = moveArea as HQRoom;
           }
         }

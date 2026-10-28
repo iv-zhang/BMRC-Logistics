@@ -25,7 +25,8 @@ import { logStatpackCheckOff, verifyAssetAgainstRules } from '@/app/lib/inventor
 import { parseGs1Barcode } from '@/app/lib/gs1';
 import type { Statpack, ValidationWarning } from '@/app/types';
 import ScannerInput from './scanner-input';
-import { THRESHOLDS } from '@/app/config/org-config';
+import { getThresholds } from '@/app/lib/org-config-store';
+import { parseDateInput, toDateInputValue } from '@/app/lib/dates';
 import { ScanLine, CheckCircle2, XCircle, AlertTriangle, PackageOpen, AlertCircle, RefreshCw } from 'lucide-react';
 
 interface StatpackCheckOffModalProps {
@@ -251,7 +252,7 @@ export default function StatpackCheckOffModal({
       // Check if any readings are below minimum threshold
       const lowO2Items = oxygenItems.filter(item => {
         const reading = Number(oxygenReadings[statpackEntryKey(item)]);
-        const minPsi = item.itemDetails?.verificationPolicy?.requireO2PsiMin || THRESHOLDS.o2PsiMin;
+        const minPsi = item.itemDetails?.verificationPolicy?.requireO2PsiMin || getThresholds().o2PsiMin;
         return reading < minPsi;
       });
       
@@ -266,6 +267,7 @@ export default function StatpackCheckOffModal({
     }
 
     setSubmitting(true);
+    let keepLocked = false;
     try {
       const checkEntries = (statpack.contents || []).map(item => {
         const counted = checkCounts[statpackEntryKey(item)] ?? (checkinUsageMode ? 1 : item.requiredQuantity);
@@ -309,6 +311,7 @@ export default function StatpackCheckOffModal({
           notes: notes || undefined,
         });
 
+        keepLocked = true;
         // Show success message inline
         if (isAdmin) {
           setInlineAlert({ type: 'success', message: `Pocket verified for ${statpack.name}.` });
@@ -352,6 +355,7 @@ export default function StatpackCheckOffModal({
         setValidationWarnings(warnings);
       }
 
+      keepLocked = true;
       // Show success message inline
       if (isAdmin) {
         setInlineAlert({ type: 'success', message: `Audit complete for ${statpack.name}. You are accountable for this bag.` });
@@ -377,11 +381,13 @@ export default function StatpackCheckOffModal({
         setInlineAlert({ type: 'error', message: 'Error saving check-off. Try again.' });
       }
     } finally {
-      setSubmitting(false);
+      // After a successful save stay locked until the modal closes (handleClose resets).
+      if (!keepLocked) setSubmitting(false);
     }
   };
 
   const handleClose = () => {
+    setSubmitting(false);
     setCheckCounts({});
     setCheckedItems(new Set());
     setSealChecks({});
@@ -840,10 +846,10 @@ export default function StatpackCheckOffModal({
                                         size="sm"
                                         type="date"
                                         placeholder="Confirm Expiration"
-                                        value={itemVerifications[itemId]?.scannedExpiration?.toISOString().slice(0,10) || ''}
+                                        value={itemVerifications[itemId]?.scannedExpiration ? toDateInputValue(itemVerifications[itemId]?.scannedExpiration) : ''}
                                         onClick={(e) => e.stopPropagation()}
                                         onValueChange={async (v) => {
-                                          const parsed = v ? new Date(v) : undefined;
+                                          const parsed = v ? parseDateInput(v, true) ?? undefined : undefined;
                                           const statpackItem = statpack?.contents.find(i => statpackEntryKey(i) === itemId);
                                           if (!statpackItem) return;
                                           const currentVerif = itemVerifications[itemId];
@@ -1008,7 +1014,7 @@ export default function StatpackCheckOffModal({
                     isRequired
                     min="0"
                     max="3000"
-                    description={`Minimum required: ${item.itemDetails?.verificationPolicy?.requireO2PsiMin || THRESHOLDS.o2PsiMin} PSI`}
+                    description={`Minimum required: ${item.itemDetails?.verificationPolicy?.requireO2PsiMin || getThresholds().o2PsiMin} PSI`}
                   />
                 ))}
             </div>

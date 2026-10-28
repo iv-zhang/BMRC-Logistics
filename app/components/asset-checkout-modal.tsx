@@ -71,10 +71,9 @@ export default function AssetCheckoutModal({
 
     try {
       const action = mode === 'checkout' ? 'asset_checkout' : 'asset_checkin';
-      const timestamp = new Date();
 
       // Create log entry
-      const logEntry: any = {
+      const logEntry: Record<string, unknown> = {
         itemId: asset.id,
         itemName: asset.name,
         action,
@@ -82,9 +81,9 @@ export default function AssetCheckoutModal({
         userName,
         timestamp: serverTimestamp(),
         location: location || asset.currentLocation || 'Unknown',
-        serialNumber: asset.assetSerial,
-        notes: notes || undefined,
       };
+      if (asset.assetSerial) logEntry.serialNumber = asset.assetSerial;
+      if (notes.trim()) logEntry.notes = notes.trim();
 
       if (mode === 'checkout') {
         logEntry.reason = reason;
@@ -94,8 +93,9 @@ export default function AssetCheckoutModal({
 
       // Update asset status
       const assetRef = doc(db, 'inventory', asset.id);
-      const statusUpdate: any = {
-        assetStatus: mode === 'checkout' ? 'In Use' : 'Ready',
+      const statusUpdate: Record<string, unknown> = {
+        // 'Checked Out' is the canonical checked-out value (check-in lists, inventory.ts).
+        assetStatus: mode === 'checkout' ? 'Checked Out' : 'Ready',
         updatedAt: serverTimestamp(),
       };
 
@@ -128,10 +128,10 @@ export default function AssetCheckoutModal({
         },
         targets: [{ collection: 'inventory', docId: asset.id }],
         details: {
-          reason: mode === 'checkout' ? reason : undefined,
+          ...(mode === 'checkout' ? { reason } : {}),
           location,
           notes,
-          serialNumber: asset.assetSerial,
+          ...(asset.assetSerial ? { serialNumber: asset.assetSerial } : {}),
         },
       });
 
@@ -197,7 +197,7 @@ export default function AssetCheckoutModal({
                     color={
                       asset.assetStatus === 'Ready'
                         ? 'success'
-                        : asset.assetStatus === 'In Use'
+                        : (asset.assetStatus === 'In Use' || asset.assetStatus === 'Checked Out')
                         ? 'primary'
                         : 'warning'
                     }

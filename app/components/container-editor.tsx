@@ -93,7 +93,7 @@ export default function ContainerEditor({ container, shelves, isOpen, onOpenChan
           barcode: barcode || null,
           isSealed,
           updatedAt: serverTimestamp(),
-        } as any);
+        });
 
         if (trimmedName !== (container.name || '')) {
           await propagateContainerRename(container.id, trimmedName);
@@ -106,7 +106,7 @@ export default function ContainerEditor({ container, shelves, isOpen, onOpenChan
           isSealed,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
-        } as any);
+        });
       }
       onSave();
     } catch (e) {
@@ -132,11 +132,11 @@ export default function ContainerEditor({ container, shelves, isOpen, onOpenChan
 
             <div>
               <Select label="Shelf" size="sm" selectedKeys={[shelfId ?? '']} onChange={(e) => setShelfId(e.target.value || undefined)}>
-                <SelectItem key="">-- None --</SelectItem>
                 {(
-                  shelves.map(s => (
-                    <SelectItem key={s.id}>{s.name}</SelectItem>
-                  )) as unknown as any
+                  [
+                    <SelectItem key="">-- None --</SelectItem>,
+                    ...shelves.map((s) => <SelectItem key={s.id}>{s.name}</SelectItem>),
+                  ] as unknown as React.ComponentProps<typeof Select>['children']
                 )}
               </Select>
             </div>

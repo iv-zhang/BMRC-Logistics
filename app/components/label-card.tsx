@@ -81,10 +81,7 @@ export default function LabelCard({
   useEffect(() => {
     let mounted = true;
 
-    if (!tagContent) {
-      setQrDataUrl('');
-      return;
-    }
+    if (!tagContent) return;
 
     (async () => {
       try {
@@ -145,7 +142,7 @@ export default function LabelCard({
     >
       {/* QR Code */}
       <div style={{ width: '100%', display: 'flex', justifyContent: 'center', marginBottom: '2px' }}>
-        {qrDataUrl ? (
+        {tagContent && qrDataUrl ? (
           <div
             style={{
               width: '60px',

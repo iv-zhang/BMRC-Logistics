@@ -86,7 +86,7 @@ async function putUser(uid: string, fullName: string, role: string, email: strin
   }
 }
 
-async function seedFixture(ftoUid: string, ftoEmail: string): Promise<{ eventName: string }> {
+async function seedFixture(ftoUid: string, ftoEmail: string): Promise<{ eventName: string; eventId: string }> {
   const stamp = Date.now();
   const eventName = `E2E Attendance ${stamp}`;
   const FTO_UID = ftoUid;
@@ -148,7 +148,7 @@ async function seedFixture(ftoUid: string, ftoEmail: string): Promise<{ eventNam
   await createDoc('shift_requests', approved(INTERN_UID, 'E2E Indy Intern', 'FTO_INTERN', 'e2e-team-1', 'Team 1'));
   await createDoc('shift_requests', approved('other-emt', 'E2E Otto Other', 'EMT', 'e2e-team-2', 'Team 2'));
 
-  return { eventName };
+  return { eventName, eventId };
 }
 
 /**
@@ -174,17 +174,17 @@ async function openAttendance(page: Page, eventName: string) {
 }
 
 /** Mint an FTO account, seed the event around its uid, and sign in as them. */
-async function arrangeAsFto(page: Page): Promise<{ eventName: string; ftoUid: string }> {
+async function arrangeAsFto(page: Page): Promise<{ eventName: string; eventId: string; ftoUid: string }> {
   const email = `e2e-fto-${Date.now()}-${Math.floor(Math.random() * 1e4)}@bmrc.test`;
   const ftoUid = await createAuthUser(email);
-  const { eventName } = await seedFixture(ftoUid, email);
+  const { eventName, eventId } = await seedFixture(ftoUid, email);
   await login(page, email);
-  return { eventName, ftoUid };
+  return { eventName, eventId, ftoUid };
 }
 
 test.describe('FTO attendance gate', () => {
   test('the FTO must check themselves in before they can check anyone else in', async ({ page }) => {
-    const { eventName, ftoUid: FTO_UID } = await arrangeAsFto(page);
+    const { eventName, eventId, ftoUid: FTO_UID } = await arrangeAsFto(page);
 
     const panel = await openAttendance(page, eventName);
 
@@ -212,7 +212,7 @@ test.describe('FTO attendance gate', () => {
       .poll(
         async () => {
           const reqs = await listCollection('shift_requests');
-          return reqs.some((r) => r.userId === FTO_UID && r.attendance?.checkedInAt);
+          return reqs.some((r) => r.eventId === eventId && r.userId === FTO_UID && r.attendance?.checkedInAt);
         },
         { timeout: 15_000 },
       )
@@ -224,7 +224,7 @@ test.describe('FTO attendance gate', () => {
   });
 
   test('there is no arrival-time input in the live flow, and check-out replaces "left early"', async ({ page }) => {
-    const { eventName, ftoUid: FTO_UID } = await arrangeAsFto(page);
+    const { eventName, eventId, ftoUid: FTO_UID } = await arrangeAsFto(page);
 
     const panel = await openAttendance(page, eventName);
 
@@ -251,7 +251,7 @@ test.describe('FTO attendance gate', () => {
       .poll(
         async () => {
           const reqs = await listCollection('shift_requests');
-          const emt = reqs.find((r) => r.userId === EMT_UID);
+          const emt = reqs.find((r) => r.eventId === eventId && r.userId === EMT_UID);
           return !!emt?.attendance?.shiftEndAt && emt?.attendance?.leftEarly === true;
         },
         { timeout: 15_000 },

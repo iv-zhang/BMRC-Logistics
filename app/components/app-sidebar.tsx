@@ -1,5 +1,7 @@
 'use client';
 import { canManageLogistics } from '@/app/lib/roles';
+import { isEventManagerRole } from '@/app/lib/events';
+import NotificationBell from './notification-bell';
 import React, { useEffect, useState } from 'react';
 import Image from 'next/image';
 import { usePathname, useRouter } from 'next/navigation';
@@ -13,7 +15,7 @@ import {
   BarChart2, Users, AlertTriangle,
   GraduationCap,
   ChevronsLeft, ChevronsRight, ScanBarcode, SlidersHorizontal,
-  SquareKanban, Ambulance, CalendarDays, Shirt,
+  SquareKanban, Ambulance, CalendarDays, Shirt, History,
 } from 'lucide-react';
 
 export interface AppSidebarProps {
@@ -73,6 +75,21 @@ export const MEMBER_NAV: NavSection[] = [
   {
     items: [
       { key: 'dashboard', label: 'Dashboard', Icon: Home, path: '/dashboard' },
+      { key: 'shifts',    label: 'Shifts',    Icon: CalendarDays, path: '/events' },
+      { key: 'history',   label: 'History',   Icon: History, path: '/history' },
+      { key: 'apparel',   label: 'Uniform Exchange', Icon: Shirt, path: '/apparel' },
+    ],
+  },
+];
+
+/** MedOps: events + roster + stats, never logistics surfaces (D-13). */
+export const MEDOPS_NAV: NavSection[] = [
+  {
+    items: [
+      { key: 'dashboard', label: 'Dashboard', Icon: Home, path: '/dashboard' },
+      { key: 'shifts',    label: 'Shifts',    Icon: CalendarDays, path: '/events' },
+      { key: 'roster',    label: 'Roster',    Icon: Users, path: '/roster' },
+      { key: 'stats',     label: 'Stats',     Icon: BarChart2, path: '/stats' },
       { key: 'apparel',   label: 'Uniform Exchange', Icon: Shirt, path: '/apparel' },
     ],
   },
@@ -87,6 +104,7 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
   const [navHover, setNavHover] = useState(false);
   const [tourPinned, setTourPinned] = useState(false);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- standard mount flag for theme hydration
   useEffect(() => setMounted(true), []);
 
   useEffect(() => {
@@ -130,15 +148,16 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
   const isItemActive = (path: string) =>
     pathname === path || pathname.startsWith(path + '/');
 
-  // On true phones (< sm) the icon rail is replaced app-wide by the bottom nav
-  // bar (see mobile-bottom-nav.tsx). From `sm` up — tablets and narrow desktops —
-  // the rail stays visible so the full left bar is available at those sizes.
-  const railHideCls = 'max-sm:hidden';
+  // Below `md` the icon rail is replaced app-wide by the bottom nav bar (see
+  // mobile-bottom-nav.tsx) — the same breakpoint every page switches layout at.
+  const railHideCls = 'max-md:hidden';
 
   // Committee members (flag on the users doc) get the board section without being admins
   const isCommitteeMember = userData?.isCommitteeMember === true;
   const navSections = isAdmin
     ? ADMIN_NAV
+    : isEventManagerRole(role)
+      ? MEDOPS_NAV
     : isCommitteeMember
       ? [...MEMBER_NAV, COMMITTEE_NAV_SECTION]
       : MEMBER_NAV;
@@ -245,6 +264,12 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
               <GraduationCap size={19} className="flex-none" />
               <span className={labelCls}>Tutorial</span>
             </button>
+
+            {/* Notifications — in-app broadcasts (shift requests, restock flags) */}
+            <div className="flex items-center gap-[13px] h-9 px-[7px] rounded-[10px] whitespace-nowrap text-[13px] text-foreground-500 font-medium">
+              <NotificationBell placement="right-end" />
+              <span className={labelCls}>Notifications</span>
+            </div>
 
             <div className="border-t border-divider my-1" />
 
