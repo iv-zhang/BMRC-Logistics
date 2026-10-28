@@ -22,6 +22,8 @@ import { auth, db } from '@/firebase';
 import type { InventoryItem, Statpack, StatpackItem } from '@/app/types';
 import BarcodeScanner from '@/app/components/barcode-scanner';
 import { findAssetByCode } from '@/app/lib/inventory';
+import { isStatpackCheckinPickerEligible, sortStatpacksByName } from '@/app/lib/statpack-checkout';
+import LoadFailureNotice, { describeLoadError } from '@/app/components/load-failure-notice';
 import CheckoutModal from '@/app/components/checkout-modal';
 import { useUserRole } from '@/app/hooks/useUserRole';
 
@@ -33,6 +35,8 @@ export default function CheckinPage() {
   const [statpacks, setStatpacks] = useState<Statpack[]>([]);
   const [filteredPacks, setFilteredPacks] = useState<Statpack[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
 
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -56,11 +60,8 @@ export default function CheckinPage() {
   useEffect(() => {
     if (!user) return;
     setLoading(true);
-    const q = query(
-      collection(db, 'statpacks'),
-      where('status', '==', 'In Use'),
-      orderBy('name'),
-    );
+    // No where(): status+name needs a composite index; filter client-side (see statpack-checkout.ts).
+    const q = query(collection(db, 'statpacks'), orderBy('name'));
     const unsub = onSnapshot(q, (snap) => {
       try {
         const packs: Statpack[] = snap.docs.map((d) => {
@@ -79,16 +80,19 @@ export default function CheckinPage() {
               : [],
           } as Statpack;
         });
-        setStatpacks(packs);
-        setFilteredPacks(packs);
+        const eligible = sortStatpacksByName(packs.filter(isStatpackCheckinPickerEligible));
+        setLoadError(null);
+        setStatpacks(eligible);
+        setFilteredPacks(eligible);
       } catch (err) {
         console.error('Failed to load statpacks:', err);
+        setLoadError(describeLoadError(err));
       } finally {
         setLoading(false);
       }
-    }, (err) => { console.error(err); setLoading(false); });
+    }, (err) => { console.error(err); setLoadError(describeLoadError(err)); setLoading(false); });
     return () => unsub();
-  }, [user]);
+  }, [user, retryKey]);
 
   useEffect(() => {
     if (!searchQuery.trim()) {
@@ -254,7 +258,14 @@ export default function CheckinPage() {
                 </Card>
 
                 <div className="space-y-3">
-                  {filteredPacks.length === 0 ? (
+                  {loadError ? (
+                    <LoadFailureNotice
+                      title="Couldn't load statpacks"
+                      message={loadError}
+                      onRetry={() => { setLoading(true); setRetryKey((k) => k + 1); }}
+                      testId="checkin-statpacks-load-error"
+                    />
+                  ) : filteredPacks.length === 0 ? (
                     <Card>
                       <CardBody className="text-center py-12">
                         <Package size={48} className="mx-auto mb-3 text-foreground-400" />
@@ -294,7 +305,7 @@ export default function CheckinPage() {
                                 </div>
                               </div>
                               <div className="flex flex-col items-end gap-2">
-                                <Chip color="warning" size="sm" variant="flat">{pack.status}</Chip>
+                                <Chip color="warning" size="sm" variant="flat">{pack.isCheckedOut ? 'In Use' : pack.status}</Chip>
                                 {!isYours && <Chip size="sm" color="danger" variant="flat">Not your pack</Chip>}
                                 {pack.contents && (
                                   <span className="text-xs text-foreground-500 tabular-nums">
