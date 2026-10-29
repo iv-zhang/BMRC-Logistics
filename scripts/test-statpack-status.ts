@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { getStatpackStatusInfo } from '../app/lib/statpack-status';
+import { buildStatpackAuditUpdate } from '../app/lib/statpack-audit';
 import {
   getStatpackCheckoutUnavailableReason,
   isStatpackCheckinPickerEligible,
@@ -73,6 +74,9 @@ for (const pack of [
 for (const pack of [{ status: 'In Use' }, { status: 'Ready', isCheckedOut: true }]) {
   assert.equal(isStatpackCheckinPickerEligible(pack), true, JSON.stringify(pack));
 }
+const liveConflict = { status: 'Ready', isCheckedOut: true };
+assert.equal(isStatpackCheckoutPickerEligible(liveConflict), false, 'a checked-out Ready pack is unavailable for checkout');
+assert.equal(isStatpackCheckinPickerEligible(liveConflict), true, 'a checked-out Ready pack remains available for check-in');
 for (const pack of [{ status: 'Ready' }, {}]) {
   assert.equal(isStatpackCheckinPickerEligible(pack), false, JSON.stringify(pack));
 }
@@ -80,3 +84,29 @@ const unsorted = [{ name: 'b' }, {}, { name: 'a' }];
 assert.deepEqual(sortStatpacksByName(unsorted), [{}, { name: 'a' }, { name: 'b' }]);
 assert.deepEqual(unsorted, [{ name: 'b' }, {}, { name: 'a' }]);
 console.log('Statpack picker eligibility cases passed.');
+
+const auditTime = new Date('2026-10-28T12:00:00.000Z');
+const checkedOutAuditPack = {
+  status: 'In Use',
+  isCheckedOut: true,
+  assignedToUserId: 'member-1',
+  assignedToUserName: 'Member One',
+  checkedOutAt: new Date('2026-10-27T12:00:00.000Z'),
+  currentEventId: 'event-1',
+};
+const auditPatch = buildStatpackAuditUpdate(checkedOutAuditPack, 'Ready', auditTime, 'Auditor');
+assert.equal('status' in auditPatch, false, 'audit never writes derived status over live custody');
+assert.deepEqual({ ...checkedOutAuditPack, ...auditPatch }, {
+  ...checkedOutAuditPack,
+  lastAuditAt: auditTime,
+  lastAuditBy: 'Auditor',
+});
+assert.deepEqual(buildStatpackAuditUpdate({ isCheckedOut: false }, 'Ready', auditTime, 'Auditor'), {
+  status: 'Ready', lastAuditAt: auditTime, lastAuditBy: 'Auditor',
+});
+assert.deepEqual(buildStatpackAuditUpdate({ isCheckedOut: false }, 'Restock Needed', auditTime, 'Auditor').status, 'Restock Needed');
+assert.deepEqual(buildStatpackAuditUpdate({ isCheckedOut: false }, 'Expired Items', auditTime, 'Auditor').status, 'Expired Items');
+const conflictedAuditPack = { isCheckedOut: true, status: 'Ready' };
+const conflictedAuditPatch = buildStatpackAuditUpdate(conflictedAuditPack, 'Restock Needed', auditTime, 'Auditor');
+assert.equal('status' in conflictedAuditPatch, false, 'audit preserves an existing status/custody conflict for explicit reconciliation');
+console.log('Statpack audit custody/status cases passed.');

@@ -142,6 +142,20 @@ change. No admin maintenance override is authorized. This checkout gate does not
 check-in or audit. `Restock Needed` remains eligible under the shortage amendment above;
 existing expiry and ownership checks continue to apply.
 
+**Amended 2026-10-28 — audits preserve checkout custody.** An audit uses the live
+transactional `isCheckedOut` value. When it is exactly `true`, omit the pack's
+`status` from the audit update: an `In Use` pack stays `In Use`, and an existing
+conflict is left for explicit reconciliation. Audits still persist verified
+contents, stamp `lastAuditAt`/`lastAuditBy`, clear the one-shot `readyOverride`, and
+record the contents-derived readiness as `statpack_logs.derivedStatus`. Auditing
+an available pack still derives its stored status normally. Previously an audit
+after checkout could set `Ready` while leaving `isCheckedOut: true`; all four live
+packs exhibited this conflict. `isCheckedOut` remains authoritative for checkout
+eligibility, including the strict transactional gate; Assets displays `In Use`
+whenever it is truthy. The admin reconciliation script clears stale custody only
+on explicit `--apply`, keeps status, and atomically logs a `checkin` so history
+can pair it with the checkout. It never ends event shifts automatically.
+
 ### D-9 — One shared check-off page for checkout / check-in / audit
 **Decision:** all three modes share `app/statpacks/check-off/page.tsx`, driven by `?id` +
 `?mode` query params. Audit mode logs `action: 'audit'` and stamps `lastAuditAt`/`By`

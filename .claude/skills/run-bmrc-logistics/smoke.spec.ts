@@ -56,8 +56,9 @@ const ADMIN_PASSWORD = 'test1234';
 
 // Drive the same guarded domain helper used by the app, in a short-lived Node
 // process, for state transitions that are the setup to an editor UI assertion.
-async function runStatpackCheckoff(input: { statpackId: string; itemId: string; action: 'checkout' | 'checkin' }) {
-  const source = `(async () => { await import('./scripts/emulator/guard.ts'); const { logStatpackCheckOff } = await import('./app/lib/inventory.ts'); const { db } = await import('./firebase.ts'); const { terminate } = await import('firebase/firestore'); try { await logStatpackCheckOff({ statpackId: ${JSON.stringify(input.statpackId)}, statpackName: 'Editor smoke pack', action: ${JSON.stringify(input.action)}, userId: 'smoke-member', userName: 'Smoke Member', userRole: 'admin', checkEntries: [{ itemId: ${JSON.stringify(input.itemId)}, itemName: 'Smoke checklist gauze', requiredQuantity: 1, countedQuantity: 1, ok: true }] }); } finally { await terminate(db); } })().catch((error) => { console.error(error); process.exitCode = 1; });`;
+async function runStatpackCheckoff(input: { statpackId: string; itemId: string; action: 'checkout' | 'checkin' | 'audit' }) {
+  const checkEntries = input.action === 'audit' ? [] : [{ itemId: input.itemId, itemName: 'Smoke checklist gauze', requiredQuantity: 1, countedQuantity: 1, ok: true }];
+  const source = `(async () => { await import('./scripts/emulator/guard.ts'); const { logStatpackCheckOff } = await import('./app/lib/inventory.ts'); const { db } = await import('./firebase.ts'); const { terminate } = await import('firebase/firestore'); try { await logStatpackCheckOff({ statpackId: ${JSON.stringify(input.statpackId)}, statpackName: 'Editor smoke pack', action: ${JSON.stringify(input.action)}, userId: 'smoke-member', userName: 'Smoke Member', userRole: 'admin', checkEntries: ${JSON.stringify(checkEntries)} }); } finally { await terminate(db); } })().catch((error) => { console.error(error); process.exitCode = 1; });`;
   execFileSync('./node_modules/.bin/tsx', ['-e', source], { stdio: 'pipe', env: process.env, timeout: 30_000 });
 }
 
@@ -790,6 +791,12 @@ test('pickers list status-less and drifted checked-out packs', async ({ page }) 
     await page.waitForTimeout(2000);
     await expect(page.getByText(driftedName).first()).toBeVisible();
     await expect(page.getByText(noStatusName, { exact: true })).toHaveCount(0);
+
+    await page.goto('/assets', { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('load');
+    await expect(page.getByText(driftedName, { exact: true })).toBeVisible({ timeout: 15_000 });
+    const row = page.getByText(driftedName, { exact: true }).locator('..');
+    await expect(row.getByText('In Use', { exact: true })).toBeVisible();
   } finally {
     await createDoc('test_cleanup_manifests', {
       isTest: true,
@@ -797,6 +804,66 @@ test('pickers list status-less and drifted checked-out packs', async ({ page }) 
       purpose,
       fixtures: fixtureRefs,
       generated: [],
+      createdAt: new Date(),
+    }, testRunId);
+  }
+});
+
+test('auditing a checked-out statpack preserves custody and In Use status', async ({ page }) => {
+  const testRunId = `smoke-audit-checked-out-${Date.now()}`;
+  const purpose = 'Verify audit derives a status without changing checkout custody';
+  const packName = `[TEST] Smoke Audit Checked Out ${testRunId}`;
+  const fixtureRefs: Array<{ collection: string; id: string }> = [];
+  try {
+    const packId = await createDoc('statpacks', {
+      isTest: true,
+      testRunId,
+      purpose,
+      name: packName,
+      type: 'Primary',
+      status: 'In Use',
+      isCheckedOut: true,
+      assignedToUserId: 'smoke-member',
+      assignedToUserName: 'Smoke Member',
+      checkedOutAt: new Date(Date.now() - 60_000),
+      currentEventId: 'smoke-event',
+      currentEvent: 'Smoke Event',
+      readyOverride: { by: 'smoke-admin', note: 'one pass' },
+      contents: [],
+    });
+    fixtureRefs.push({ collection: 'statpacks', id: packId });
+
+    await runStatpackCheckoff({ statpackId: packId, itemId: '', action: 'audit' });
+    const saved = await getDocById('statpacks', packId);
+    expect(saved?.status).toBe('In Use');
+    expect(saved?.isCheckedOut).toBe(true);
+    expect(saved?.assignedToUserId).toBe('smoke-member');
+    expect(saved?.assignedToUserName).toBe('Smoke Member');
+    expect(saved?.currentEventId).toBe('smoke-event');
+    expect(saved?.currentEvent).toBe('Smoke Event');
+    expect(saved?.readyOverride).toBe(null);
+
+    const audit = (await listCollection('statpack_logs')).find(
+      (log) => log.statpackId === packId && log.action === 'audit',
+    );
+    expect(audit?.derivedStatus).toBe('Ready');
+
+    await signIn(page);
+    await page.goto('/assets', { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('load');
+    await expect(page.getByText(packName, { exact: true })).toBeVisible({ timeout: 15_000 });
+    const row = page.getByText(packName, { exact: true }).locator('..');
+    await expect(row.getByText('In Use', { exact: true })).toBeVisible();
+  } finally {
+    const packIds = fixtureRefs.map((ref) => ref.id);
+    const logs = await listCollection('statpack_logs');
+    await createDoc('test_cleanup_manifests', {
+      isTest: true,
+      testRunId,
+      purpose,
+      fixtures: fixtureRefs,
+      generated: logs.filter((log) => packIds.includes(log.statpackId))
+        .map((log) => ({ collection: 'statpack_logs', id: log.id })),
       createdAt: new Date(),
     }, testRunId);
   }

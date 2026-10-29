@@ -1,0 +1,116 @@
+========================================================================
+TARGET PROJECT : bmrc-logistics
+TARGET         : LIVE FIRESTORE
+MODE           : DRY RUN (no writes)
+ACTOR          : DRY RUN ONLY - replace with admin name (DRY_RUN_ONLY_REPLACE_WITH_ADMIN_UID)
+========================================================================
+Scanned 4 statpacks; 4 checkout conflict(s) found.
+
+GyWa1frkzslUrn2PrZ9j (BMRC2) status="Ready"; status will be kept.
+  isCheckedOut: true → false
+  assignedToUserId: "bGVRtzID3OZdWTnOmNeujtuPo8I3" → null
+  assignedToUserName: "Vincent Kreft" → null
+  checkedOutAt: {"type":"firestore/timestamp/1.0","seconds":1792890895,"nanoseconds":27000000} → null
+  currentEventId: null → null
+  currentEvent: null → null
+  statpacks/GyWa1frkzslUrn2PrZ9j patch: {
+  "isCheckedOut": false,
+  "assignedToUserId": null,
+  "assignedToUserName": null,
+  "checkedOutAt": null,
+  "currentEventId": null,
+  "currentEvent": null
+}
+  statpack_logs new row: {
+  "statpackId": "GyWa1frkzslUrn2PrZ9j",
+  "statpackName": "BMRC2",
+  "action": "checkin",
+  "notes": "Admin reconcile: stale checkout cleared (status/isCheckedOut conflict)",
+  "userId": "DRY_RUN_ONLY_REPLACE_WITH_ADMIN_UID",
+  "userName": "DRY RUN ONLY - replace with admin name",
+  "timestamp": "SERVER_TIMESTAMP",
+  "clientTimestamp": "2026-10-29T01:54:10.791Z"
+}
+
+j3JeiVxPx7uf4NnQpRjU (BMRC3) status="Ready"; status will be kept.
+  isCheckedOut: true → false
+  assignedToUserId: "7hn1Nm9ZuDhiWnkLzo3WXew9aJy1" → null
+  assignedToUserName: "Ivan Zhang" → null
+  checkedOutAt: {"type":"firestore/timestamp/1.0","seconds":1790728235,"nanoseconds":301000000} → null
+  currentEventId: null → null
+  currentEvent: null → null
+  statpacks/j3JeiVxPx7uf4NnQpRjU patch: {
+  "isCheckedOut": false,
+  "assignedToUserId": null,
+  "assignedToUserName": null,
+  "checkedOutAt": null,
+  "currentEventId": null,
+  "currentEvent": null
+}
+  statpack_logs new row: {
+  "statpackId": "j3JeiVxPx7uf4NnQpRjU",
+  "statpackName": "BMRC3",
+  "action": "checkin",
+  "notes": "Admin reconcile: stale checkout cleared (status/isCheckedOut conflict)",
+  "userId": "DRY_RUN_ONLY_REPLACE_WITH_ADMIN_UID",
+  "userName": "DRY RUN ONLY - replace with admin name",
+  "timestamp": "SERVER_TIMESTAMP",
+  "clientTimestamp": "2026-10-29T01:54:11.103Z"
+}
+
+s9dQJnYwpeKSTMjaEx5J (BMRC4) status="Ready"; status will be kept.
+  isCheckedOut: true → false
+  assignedToUserId: "DPEjKAL4wCTmsPJrzIGyTK9m2JJ3" → null
+  assignedToUserName: "Yuxin Yang" → null
+  checkedOutAt: {"type":"firestore/timestamp/1.0","seconds":1791575265,"nanoseconds":218000000} → null
+  currentEventId: null → null
+  currentEvent: null → null
+  statpacks/s9dQJnYwpeKSTMjaEx5J patch: {
+  "isCheckedOut": false,
+  "assignedToUserId": null,
+  "assignedToUserName": null,
+  "checkedOutAt": null,
+  "currentEventId": null,
+  "currentEvent": null
+}
+  statpack_logs new row: {
+  "statpackId": "s9dQJnYwpeKSTMjaEx5J",
+  "statpackName": "BMRC4",
+  "action": "checkin",
+  "notes": "Admin reconcile: stale checkout cleared (status/isCheckedOut conflict)",
+  "userId": "DRY_RUN_ONLY_REPLACE_WITH_ADMIN_UID",
+  "userName": "DRY RUN ONLY - replace with admin name",
+  "timestamp": "SERVER_TIMESTAMP",
+  "clientTimestamp": "2026-10-29T01:54:11.424Z"
+}
+
+vwZVWOTh6GfvhL31dawc (BMRC1) status="Ready"; status will be kept.
+  isCheckedOut: true → false
+  assignedToUserId: "miKmJAEYKqhNfoEFrB7f5OdZwF43" → null
+  assignedToUserName: "Siddharth Thomas" → null
+  checkedOutAt: {"type":"firestore/timestamp/1.0","seconds":1793064654,"nanoseconds":111000000} → null
+  currentEventId: "d3vySP4s5SHj297ShZ1L" → null
+  currentEvent: "test 3" → null
+  statpacks/vwZVWOTh6GfvhL31dawc patch: {
+  "isCheckedOut": false,
+  "assignedToUserId": null,
+  "assignedToUserName": null,
+  "checkedOutAt": null,
+  "currentEventId": null,
+  "currentEvent": null
+}
+  statpack_logs new row: {
+  "statpackId": "vwZVWOTh6GfvhL31dawc",
+  "statpackName": "BMRC1",
+  "action": "checkin",
+  "notes": "Admin reconcile: stale checkout cleared (status/isCheckedOut conflict)",
+  "userId": "DRY_RUN_ONLY_REPLACE_WITH_ADMIN_UID",
+  "userName": "DRY RUN ONLY - replace with admin name",
+  "timestamp": "SERVER_TIMESTAMP",
+  "clientTimestamp": "2026-10-29T01:54:11.725Z",
+  "eventId": "d3vySP4s5SHj297ShZ1L",
+  "eventName": "test 3"
+}
+  MANUAL SHIFT CLOSE: currentEventId=d3vySP4s5SHj297ShZ1L (event shifts were not changed).
+
+SUMMARY: planned=4 applied=0 skipped=0
