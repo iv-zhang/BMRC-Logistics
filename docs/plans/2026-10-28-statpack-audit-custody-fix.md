@@ -88,6 +88,8 @@ No collection or rules change is required; no rules deployment is performed.
 - Browser smoke and `--apply` will not run, per owner instruction.
 - Full invariant/property/semester suites, browser smoke, and rules tests were
   not run. Rules are unchanged; focused emulator transactions were verified.
-- Preparing the authorized feature-branch commit and one ready PR into `main`,
-  with complete dry-run output in the PR description. No merge or production
-  data writes performed.
+- Committed implementation as `2ed9aac`, pushed the authorized branch, and opened
+  ready [PR #37](https://github.com/iv-zhang/BMRC-Logistics/pull/37) into `main`,
+  with complete dry-run output in its description. The GitHub connector returned
+  403 on PR creation; the authenticated GitHub CLI created it. No merge or
+  production data writes performed. Latest CI/review state is tracked on the PR.
