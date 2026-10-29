@@ -906,6 +906,8 @@ export interface StatpackLog {
   action: 'checkout' | 'checkin' | 'restock' | 'created' | 'maintenance' | 'audit' | 'content_edit' | 'status_change';
   /** Manual status transition (admin edit / Ready override); set on status_change and content_edit rows. */
   statusChange?: { from: string; to: string };
+  /** Contents readiness found by an audit; does not override checked-out custody. */
+  derivedStatus?: Statpack['status'];
   pairId?: string; // Explicit pairing between checkout + checkin
   quickCheckin?: boolean; // True when member used quick check-in (no items used)
   /** Event this checkout was for (set on checkout, carried onto the paired checkin). */

@@ -10,6 +10,7 @@ import { flagStatpackRestock } from '@/app/lib/statpack-restock-flag';
 import { getStatpackCheckoutUnavailableReason } from '@/app/lib/statpack-checkout';
 import { findStatpackContentIndex } from '@/app/lib/statpack-content-match';
 import { coerceDate } from '@/app/lib/timestamps';
+import { buildStatpackAuditUpdate } from '@/app/lib/statpack-audit';
 
 /**
  * Fetch an inventory item by ID and return enriched itemDetails + suggested verification rules.
@@ -788,10 +789,10 @@ export async function logStatpackCheckOff(params: {
         statpackUpdate.currentEvent = null;
         statpackUpdate.currentEventId = null;
       } else if (action === 'audit') {
-        // Audits verify the pack in place — never take ownership of it.
-        statpackUpdate.status = deriveStatus();
-        statpackUpdate.lastAuditAt = serverTimestamp();
-        statpackUpdate.lastAuditBy = userName;
+        // BMRC1–4 availability bug (2026-10-28): deriving Ready during an audit
+        // left isCheckedOut true. Audits verify contents, never change custody;
+        // omit status for a live checked-out pack, including existing conflicts.
+        Object.assign(statpackUpdate, buildStatpackAuditUpdate(spData, deriveStatus(), serverTimestamp(), userName));
       }
 
       // Use transaction to write the new log and update the statpack document.
@@ -799,6 +800,8 @@ export async function logStatpackCheckOff(params: {
       // Ensure serverTimestamp sentinel fields remain present for server resolution
       txLog.timestamp = serverTimestamp();
       txLog.clientTimestamp = now;
+      // Preserve the finding even while custody keeps the pack's status In Use.
+      if (action === 'audit') txLog.derivedStatus = deriveStatus();
 
       // A check-in doesn't ask which event again — carry the event the pack
       // was already stamped with (from checkout) onto the check-in log, so

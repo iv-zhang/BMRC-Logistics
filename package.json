@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node ./scripts/test-audit-restock.cjs && tsx ./scripts/test-roles.ts && tsx ./scripts/test-statpack-status.ts && tsx ./scripts/test-audit-count.ts && tsx ./scripts/test-statpack-entry-identity.ts && tsx ./scripts/test-statpack-content-match.ts && tsx ./scripts/test-dashboard-summary.ts && tsx ./scripts/test-buy-list-intake.ts",
+    "test": "node ./scripts/test-audit-restock.cjs && tsx ./scripts/test-roles.ts && tsx ./scripts/test-statpack-status.ts && tsx ./scripts/test-audit-count.ts && tsx ./scripts/test-statpack-entry-identity.ts && tsx ./scripts/test-statpack-content-match.ts && tsx ./scripts/test-dashboard-summary.ts && tsx ./scripts/test-buy-list-intake.ts && node ./scripts/test-statpack-checkout-conflicts.cjs",
     "test:roles": "tsx ./scripts/test-roles.ts",
     "migrate:batch-locations": "node ./scripts/migrate-batch-locations.js --dry-run",
     "migrate:normalize-inventory": "node ./scripts/normalize-inventory.cjs --dry-run",
@@ -35,6 +35,7 @@
     "test:statpack-status-log": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx --test app/lib/__tests__/statpack-status-log.test.ts\"",
     "migrate:normalize-expiration-months": "node ./scripts/normalize-expiration-months.cjs",
     "rehearse:expiration-months": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"node ./scripts/emulator/rehearse-expiration-months.cjs\"",
+    "repair:statpack-checkout-conflicts": "node ./scripts/repair-statpack-checkout-conflicts.cjs",
     "repair:statpack-dates": "node ./scripts/repair-statpack-dates.cjs",
     "rehearse:statpack-dates": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"node ./scripts/emulator/rehearse-statpack-dates.cjs\""
   },

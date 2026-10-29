@@ -42,6 +42,65 @@ after(async () => { await terminate(db); });
 
 describe('statpack status changes are logged', () => {
 
+  it('audit preserves checked-out custody and logs the derived status', async () => {
+    const checkedOutAt = Timestamp.fromDate(new Date('2026-10-27T18:00:00.000Z'));
+    const { id } = await seed('In Use', {
+      isCheckedOut: true,
+      assignedToUserId: 'member-1',
+      assignedToUserName: 'Member One',
+      checkedOutAt,
+      currentEventId: 'event-1',
+      currentEvent: 'Training Night',
+      readyOverride: { by: 'admin-1', note: 'one pass' },
+    });
+
+    await logStatpackCheckOff({
+      statpackId: id,
+      statpackName: 'Primary ALS Statpack',
+      action: 'audit',
+      userId: actor.uid,
+      userName: actor.name,
+      userRole: 'admin',
+      checkEntries: [],
+    });
+
+    const saved = (await getDoc(doc(db, 'statpacks', id))).data()!;
+    assert.equal(saved.status, 'In Use');
+    assert.equal(saved.isCheckedOut, true);
+    assert.equal(saved.assignedToUserId, 'member-1');
+    assert.equal(saved.assignedToUserName, 'Member One');
+    assert.equal((saved.checkedOutAt as Timestamp).toMillis(), checkedOutAt.toMillis());
+    assert.equal(saved.currentEventId, 'event-1');
+    assert.equal(saved.currentEvent, 'Training Night');
+    assert.equal(saved.readyOverride, null);
+    assert.ok(saved.lastAuditAt instanceof Timestamp);
+    assert.equal(saved.lastAuditBy, actor.name);
+
+    const logs = await logsFor(id);
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0].action, 'audit');
+    assert.equal(logs[0].derivedStatus, 'Ready');
+  });
+
+  it('audit preserves checked-out status while logging a non-ready derived result', async () => {
+    const { id } = await seed('In Use', {
+      isCheckedOut: true,
+      assignedToUserId: 'member-1',
+      contents: [{ itemId: 'empty-gauze', requiredQuantity: 1, currentQuantity: 0 }],
+    });
+    await logStatpackCheckOff({
+      statpackId: id,
+      statpackName: 'Primary ALS Statpack',
+      action: 'audit',
+      userId: actor.uid,
+      userName: actor.name,
+      userRole: 'admin',
+      checkEntries: [],
+    });
+    assert.equal((await getDoc(doc(db, 'statpacks', id))).data()?.status, 'In Use');
+    assert.equal((await logsFor(id))[0].derivedStatus, 'Restock Needed');
+  });
+
   it('updateStatpackDetails with a status change writes pack + status_change log', async () => {
     const { id } = await seed('Ready');
     const openingSeed = editorSeed(id, { status: 'Ready', name: 'Primary ALS Statpack', contents: [], isCheckedOut: false });

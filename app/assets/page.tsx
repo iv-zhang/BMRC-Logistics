@@ -282,7 +282,7 @@ export default function AssetsPage() {
             id: d.id,
             name: data.name,
             type: 'statpack' as const,
-            status: data.status,
+            status: data.isCheckedOut ? 'In Use' : data.status,
             assetValue: data.assetValue,
             currentLocation: data.currentLocation,
             maintenance_logs: data.maintenance_logs,

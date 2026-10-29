@@ -5,6 +5,36 @@ layers, each tagged by severity, with a `file:line` to fix and a one-line
 reproduction. See [invariants.md](invariants.md) for the spec and [MODEL.md](MODEL.md)
 for the data-model trace.
 
+## 2026-10-28 — Audits overwrite checked-out statpack status
+
+**HIGH — confirmed live; code fix prepared, data repair pending owner apply.**
+`logStatpackCheckOff`'s audit branch wrote a contents-derived status without
+checking live `isCheckedOut`. An audit could turn `In Use` into `Ready` while
+retaining custody. The checkout picker correctly excluded it, while Assets
+displayed the misleading raw status. PR #34 guarded editor writes only.
+
+The read-only production scan found all four named packs with exactly
+`status: 'Ready'` and `isCheckedOut: true`:
+
+| Pack | Document ID | Assigned user | Event requiring manual shift follow-up |
+|---|---|---|---|
+| BMRC1 | `vwZVWOTh6GfvhL31dawc` | Siddharth Thomas | `d3vySP4s5SHj297ShZ1L` (`test 3`) |
+| BMRC2 | `GyWa1frkzslUrn2PrZ9j` | Vincent Kreft | none |
+| BMRC3 | `j3JeiVxPx7uf4NnQpRjU` | Ivan Zhang | none |
+| BMRC4 | `s9dQJnYwpeKSTMjaEx5J` | Yuxin Yang | none |
+
+BMRC1 and BMRC4 have an audit after their latest checkout. All documents contain
+`name`, with no status whitespace/casing mismatch. A stale bundle is unnecessary
+to explain the result; individual browser caches were not inspected.
+
+Fix: omit status from checked-out audit updates using the live transaction;
+retain the readiness finding as `statpack_logs.derivedStatus`; show `In Use` in
+Assets whenever checked out. Explicit reconciliation clears custody, preserves
+status, and records a transactional `checkin` log for history pairing. Event
+shifts require manual follow-up; the script never ends them. No repair apply
+has run. See [the approved plan](docs/plans/2026-10-28-statpack-audit-custody-fix.md)
+and D-8 in `decisions.md`.
+
 ## ✅ Resolution status (12 of 14 fixed & verified)
 
 The invariant suite went from **18/39 → 38/40 passing**; property suite is fully green
