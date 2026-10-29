@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Shared UI and UX standards
+
+For UI, UX, app copy, navigation, and new feature surfaces, read [bmrc-ui](.claude/skills/bmrc-ui/SKILL.md) and [docs/ui-ux-standards.md](docs/ui-ux-standards.md). Codex uses the same files through [AGENTS.md](AGENTS.md). Keep app copy concise, avoid em dashes, and include information only when it helps the current task. The [current audit plan](docs/plans/2026-10-22-ui-ux-audit-and-plan.md) lists issues before proposed fixes. Existing domain decisions and workflow authorization still apply.
+
+Current UX request (2026-10-22): context and planning only, not implementation. Prioritize member phone checkout with a first-use tutorial and physical content/quantity checks. The plan's Confirmed direction records the owner's answers and later admin/logistics backlog; biweekly logistics checks are planned but have not started. Wait for a subsequent implementation request before changing app behavior.
+
 ## Commands
 
 ```bash
