@@ -7,9 +7,15 @@
 - H3 existence-baseline report · read-only report script; classifies items by existence and shows unverified stock > 0 · 3ace209 (brought into `main` 2026-10-17) · 19 unit tests pass (needs fake `NEXT_PUBLIC_FIREBASE_*` env vars), `node --check` and eslint clean
 - H8 audit cadence · `thresholds.auditCadence` + `isAuditCurrent` + settings select (amends D-6) · 579045a · 17 unit tests pass, settings form not viewed in browser
 - Final pass · ff3f34e · `npm run build` ok, `npm run test` 69/0, 119 node:test pass, tsc only the 5 known o2 errors, eslint clean; emulator smoke driver NOT run, no live data touched
+- Sterility variant (2026-10-31, uncommitted on `main` working tree) · `variantSignature` adds `sterile:yes` /
+  `sterile:no` (`non-sterile`, `nonsterile`, `non sterile`, `unsterile`; "NS" deliberately ignored, it means normal
+  saline); strict: unmarked vs marked is a mismatch; `checkVariantMerge` reason names sterility · tsc + eslint clean, 101 variant/merge unit tests pass, `npm run build` ok,
+  `npm run test` ok; emulator smoke driver NOT run (no UI change), nothing committed
 
 ## Unfolded findings
 - Retired items still appear in `findDuplicateCandidates` and the `/inventory` list; hide retired by default. No UI consumes `findVariantConflicts` yet. (H4/H5)
+- Add Item duplicate suggestions (`additemmodal.tsx`) still use name-only Levenshtein, so they can suggest a sterile
+  item for a non-sterile name (same gap as sizes; covered by the H6 note below).
 
 ## H6: skipped
 The v2 packet text is lost, and H6 (family/variant picker, **On shelf | In a container** control, `Container.kind`,
@@ -35,9 +41,10 @@ evaluated by `isAuditCurrent()`. `isAuditedThisMonth` remains as the monthly spe
 ### D-33 (proposed): Merge only identical variants
 **Decision:** two items may be treated as duplicates or merged only when their variant signatures match
 (`variantSignature()` in `app/lib/variant-signature.ts`: size N, Fr, gauge, mm/in/mL, S-XL, adult/peds/infant, triage
-colors, bare numbers; pack counts ignored). `findDuplicateCandidates` never links different variants,
+colors, sterile/non-sterile, bare numbers; pack counts ignored). `findDuplicateCandidates` never links different variants,
 `mergeInventoryItems` refuses them, and a shared SKU/barcode across different variants is reported as a `conflict`
-(`findVariantConflicts`) for a human to resolve. Unsized vs sized is a mismatch.
+(`findVariantConflicts`) for a human to resolve. Unsized vs sized is a mismatch; likewise a name with no sterility word vs a sterile or
+non-sterile name.
 **Why:** merging `NPA 28 Fr` into `NPA 30 Fr` pools two products and repoints every statpack that requires the 28 Fr.
 Near-identical names (edit distance 1-2) are exactly what differs between sizes, so fuzzy name matching alone is unsafe.
 

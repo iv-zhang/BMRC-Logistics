@@ -16,6 +16,7 @@
  *   - French / gauge    `28 Fr`, `28 french`, `14g`, `18 ga`   -> fr:28, g:14
  *   - length/volume     `80 mm`, `4 in`, `4"`, `500 mL`, `1 L` -> mm:80, in:4, ml:500, ml:1000
  *   - weight/strength   `15 g`, `5 oz`, `10 mg`, `1 lb`        -> g:15, oz:5, mg:10, lb:1
+ *   - sterility         sterile, non-sterile, nonsterile       -> sterile:yes, sterile:no
  *   - letter sizes      S, M, L, XL, XXL, small, x-large, S/M  -> letter:m, letter:s/m
  *   - age group         adult, peds/pediatric, infant, neonate -> age:adult ...
  *   - triage colors     red, yellow, green, black, ...         -> color:red
@@ -28,7 +29,10 @@
  *
  * Strictness: an unsized name vs a sized name is a MISMATCH (`Gloves` vs
  * `Gloves, M`). An unsized legacy record cannot be assumed to be size M, so it
- * is never auto-merged into one. Two names with no variant tokens match.
+ * is never auto-merged into one. Two names with no variant tokens match. The
+ * same holds for sterility: an unmarked name vs a sterile or non-sterile name
+ * is a mismatch (like unsized vs sized), and sterile vs non-sterile never match.
+ * "NS" is deliberately not read as non-sterile (it means normal saline).
  */
 
 export interface VariantSignature {
@@ -213,7 +217,20 @@ export function variantSignature(name: string): VariantSignature {
     out,
   );
 
-  // 5. Letter sizes. Words are normalized to letters in place, ranges first.
+  // 5. Sterility. Non-sterile first, since every non-sterile spelling contains "sterile".
+  s = extract(
+    s,
+    [
+      {
+        re: new RegExp(`${B}(?:non-sterile|nonsterile|non sterile|unsterile|un-sterile|not sterile)${E}`, 'g'),
+        fn: () => 'sterile:no',
+      },
+      { re: new RegExp(`${B}sterile${E}`, 'g'), fn: () => 'sterile:yes' },
+    ],
+    out,
+  );
+
+  // 6. Letter sizes. Words are normalized to letters in place, ranges first.
   for (const [re, rep] of LETTER_WORDS) s = s.replace(re, rep);
   s = extract(
     s,
@@ -230,7 +247,7 @@ export function variantSignature(name: string): VariantSignature {
     out,
   );
 
-  // 6. Age group.
+  // 7. Age group.
   for (const [re, tok] of AGE_MAP) {
     re.lastIndex = 0;
     if (re.test(s)) out.add(tok);
@@ -238,10 +255,10 @@ export function variantSignature(name: string): VariantSignature {
     s = s.replace(re, ' ');
   }
 
-  // 7. Colors (triage tags, tape, pack colors).
+  // 8. Colors (triage tags, tape, pack colors).
   s = extract(s, [{ re: COLOR_RE, fn: (m) => `color:${m[1] === 'grey' ? 'gray' : m[1]}` }], out);
 
-  // 8. Any remaining bare number (Stat Pack 1 vs Stat Pack 2, ET tube 7.0 vs 7.5).
+  // 9. Any remaining bare number (Stat Pack 1 vs Stat Pack 2, ET tube 7.0 vs 7.5).
   s = extract(
     s,
     [{ re: new RegExp(`${B}(${NUM})${E}`, 'g'), fn: (m) => `num:${normNum(m[1])}` }],
@@ -305,7 +322,21 @@ export function checkVariantMerge(
   const sb = itemVariantSignature(b);
   if (sa.key === sb.key) return { verdict: 'ok', reason: '', aTokens: sa.tokens, bTokens: sb.tokens };
 
-  const describe = (t: string[]) => (t.length ? t.map((x) => x.replace(':', ' ')).join(', ') : 'no size/variant');
+  const describe = (t: string[]) =>
+    t.length
+      ? t
+          .map((x) =>
+            x === 'sterile:yes' ? 'sterile' : x === 'sterile:no' ? 'non-sterile' : x.replace(':', ' '),
+          )
+          .join(', ')
+      : 'no size/variant';
+  const sterileOf = (t: string[]) => t.find((x) => x.startsWith('sterile:'));
+  const sterilityDiffers = sterileOf(sa.tokens) !== sterileOf(sb.tokens);
+  const sterileNote = sterilityDiffers
+    ? sterileOf(sa.tokens) && sterileOf(sb.tokens)
+      ? ' Sterility differs: one is sterile and the other is non-sterile.'
+      : ' Sterility differs: only one is marked sterile/non-sterile.'
+    : '';
   const skuA = norm(a.sku), skuB = norm(b.sku);
   const barA = norm(a.barcode), barB = norm(b.barcode);
   const sharedCode = (skuA && skuA === skuB) || (barA && barA === barB);
@@ -313,13 +344,13 @@ export function checkVariantMerge(
   return sharedCode
     ? {
         verdict: 'conflict',
-        reason: `They share a SKU/barcode but are different variants: ${diff}. Fix the wrong code or name first.`,
+        reason: `They share a SKU/barcode but are different variants: ${diff}. Fix the wrong code or name first.${sterileNote}`,
         aTokens: sa.tokens,
         bTokens: sb.tokens,
       }
     : {
         verdict: 'blocked',
-        reason: `They are different sizes/variants: ${diff}.`,
+        reason: `They are different sizes/variants: ${diff}.${sterileNote}`,
         aTokens: sa.tokens,
         bTokens: sb.tokens,
       };

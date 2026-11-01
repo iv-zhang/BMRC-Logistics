@@ -209,3 +209,41 @@ describe('checkVariantMerge verdicts', () => {
     );
   });
 });
+
+describe('sterility', () => {
+  it('each spelling maps to the right token', () => {
+    for (const n of ['Non-Sterile Gauze', 'Nonsterile Gauze', 'Non sterile Gauze', 'Unsterile Gauze', 'Un-sterile Gauze', 'NON-STERILE gauze']) {
+      assert.deepEqual(tokens(n), ['sterile:no'], n);
+    }
+    assert.deepEqual(tokens('Sterile Gauze'), ['sterile:yes']);
+    assert.deepEqual(tokens('STERILE gauze'), ['sterile:yes']);
+  });
+  it('sterile vs non-sterile mismatch', () => {
+    assert.equal(match('Sterile Gauze 4x4', 'Non-Sterile Gauze 4x4'), false);
+  });
+  it('unmarked vs sterile mismatch (strict)', () => {
+    assert.equal(match('Gauze 4x4', 'Sterile Gauze 4x4'), false);
+  });
+  it('same sterility and size match across spellings', () => {
+    assert.equal(match('Sterile Gloves M', 'sterile gloves medium'), true);
+  });
+  it('combines with letter size', () => {
+    const t = tokens('Nonsterile gloves L');
+    assert.ok(t.includes('sterile:no'));
+    assert.ok(t.includes('letter:l'));
+    assert.ok(!t.includes('sterile:yes'));
+  });
+  it('NS (normal saline) is not non-sterile', () => {
+    assert.ok(!tokens('NS 1000 mL').some((x) => x.startsWith('sterile:')));
+  });
+  it('checkVariantMerge names sterility; conflict with shared SKU, blocked otherwise', () => {
+    const c = checkVariantMerge({ name: 'Sterile Gauze 4x4', sku: 'G4' }, { name: 'Non-Sterile Gauze 4x4', sku: 'g4' });
+    assert.equal(c.verdict, 'conflict');
+    assert.match(c.reason, /sterile/i);
+    assert.match(c.reason, /one is sterile and the other is non-sterile/);
+    const b = checkVariantMerge({ name: 'Sterile Gauze 4x4', sku: 'G4' }, { name: 'Non-Sterile Gauze 4x4', sku: 'G5' });
+    assert.equal(b.verdict, 'blocked');
+    assert.match(b.reason, /sterile/i);
+    assert.match(b.reason, /non-sterile/);
+  });
+});

@@ -72,6 +72,36 @@ describe('findDuplicateCandidates variant gate', () => {
   });
 });
 
+describe('sterile vs non-sterile', () => {
+  it('does not group sterile with non-sterile, even with a shared SKU', () => {
+    assert.deepEqual(
+      findDuplicateCandidates([mk('1', 'Sterile Gauze 4x4'), mk('2', 'Non-sterile Gauze 4x4')]),
+      [],
+    );
+    assert.deepEqual(
+      findDuplicateCandidates([
+        mk('1', 'Sterile Gauze 4x4', { sku: 'G4' }),
+        mk('2', 'Non-sterile Gauze 4x4', { sku: 'g4' }),
+      ]),
+      [],
+    );
+  });
+
+  it('still groups two identically named sterile items', () => {
+    const groups = findDuplicateCandidates([mk('1', 'Sterile Gauze 4x4'), mk('2', 'sterile gauze 4x4')]);
+    assert.equal(groups.length, 1);
+  });
+
+  it('findVariantConflicts reports a sterile/non-sterile pair sharing a SKU', () => {
+    const c = findVariantConflicts([
+      mk('1', 'Sterile Gauze 4x4', { sku: 'G4' }),
+      mk('2', 'Non-sterile Gauze 4x4', { sku: 'g4' }),
+    ]);
+    assert.equal(c.length, 1);
+    assert.deepEqual(c[0].shared, ['sku']);
+  });
+});
+
 describe('findVariantConflicts', () => {
   it('reports same SKU or barcode with different variants', () => {
     const c = findVariantConflicts([
