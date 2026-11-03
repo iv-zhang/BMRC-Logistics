@@ -93,6 +93,20 @@ function deriveRules(item: StatpackItem): ItemRules {
 // D-32): "Jun 2027" expires 2027-06-01 00:00 local until we capture an exact day.
 const parseExpMonth = (month?: string): Date | null => parseMonthInput(month, 'start');
 
+// Bound on how long Submit waits for the check-off write before unlocking the UI.
+// Firestore queues writes offline and never rejects, so without a bound the
+// spinner can hang forever. The write may still land later — we can't cancel it.
+const SUBMIT_TIMEOUT_MS = 45_000;
+const SUBMIT_TIMEOUT = Symbol('submit-timeout');
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(SUBMIT_TIMEOUT), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 function isMonthExpired(month: string | undefined, today: Date): boolean {
   const start = parseExpMonth(month);
   if (!start) return false;
@@ -1610,6 +1624,10 @@ export default function StatpackCheckOffPage() {
       showToast(checkoutUnavailable, false);
       return;
     }
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      showToast("You're offline — reconnect, then submit again.", false);
+      return;
+    }
     const built = buildPayload(override);
     if (!built) return;
     if (submitLock.current) return;
@@ -1617,7 +1635,10 @@ export default function StatpackCheckOffPage() {
     setShowReview(false);
     setSubmitting(true);
     try {
-      await logStatpackCheckOff(built.payload as Parameters<typeof logStatpackCheckOff>[0]);
+      const result = await withTimeout(
+        logStatpackCheckOff(built.payload as Parameters<typeof logStatpackCheckOff>[0]),
+        SUBMIT_TIMEOUT_MS,
+      );
 
       // Drive exchange bag swaps from `bagChecks` (resolution === 'swapped'),
       // not a separate toggle. Kept outside the main transaction — it writes
@@ -1645,10 +1666,20 @@ export default function StatpackCheckOffPage() {
         msg = `${msg} — but couldn't record bag swap for ${swapFailures.join(', ')}`;
         ok = false;
       }
+      if (result.reportFailures > 0) {
+        const n = result.reportFailures;
+        msg = `${msg} — but ${n} issue report${n === 1 ? '' : 's'} couldn't be saved; tell an admin`;
+        ok = false;
+      }
       showToast(msg, ok);
       setTimeout(() => router.push('/dashboard'), 1500);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Submission failed', false);
+      showToast(
+        e === SUBMIT_TIMEOUT
+          ? 'Still waiting on the network — your check-off may already be saved. Check your History before submitting again.'
+          : e instanceof Error ? e.message : 'Submission failed',
+        false,
+      );
       // Only unlock on failure; after success the UI stays locked until navigation.
       submitLock.current = false;
       setSubmitting(false);
@@ -2147,7 +2178,7 @@ export default function StatpackCheckOffPage() {
                           }}
                           onReport={(issueType, quantity, notes) => {
                             setResolution(prev => ({ ...prev, [statpackEntryKey(it)]: { kind: 'reported', issueType, quantity, notes } }));
-                            showToast('Issue reported to admin', false);
+                            showToast('Will be reported to admin when you submit', true);
                           }}
                           onAcknowledge={(rsn) => {
                             setResolution(prev => ({ ...prev, [statpackEntryKey(it)]: { kind: 'acknowledged', reason: rsn } }));

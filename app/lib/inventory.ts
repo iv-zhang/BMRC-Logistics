@@ -820,73 +820,94 @@ export async function logStatpackCheckOff(params: {
     throw e;
   }
 
-  // Checking a statpack back in that was deployed for an event auto-ends that
-  // event's shifts (the manual counterpart is the "End shift" button in the
-  // event detail drawer). Best-effort, outside the transaction — a failure
-  // here must never fail the check-off itself.
-  if (action === 'checkin' && checkedInEventId) {
-    try {
-      await endEventShifts(checkedInEventId, { uid: userId, name: userName });
-    } catch (e) {
-      console.warn('logStatpackCheckOff: endEventShifts failed', e);
-    }
-  }
-
-  // Flag logistics when a check-in leaves the pack short (fast-path or full
-  // check-off). Best-effort, outside the transaction, never able to roll back
-  // the check-in — same convention as the endEventShifts hook above. The
-  // helper itself no-ops when there are no shortages, so no pre-check needed.
-  if (action === 'checkin' && checkinFinalContents) {
-    try {
-      await flagStatpackRestock(
-        { id: statpackId, name: statpackName, contents: checkinFinalContents },
-        { uid: userId, name: userName },
-      );
-    } catch (e) {
-      console.warn('logStatpackCheckOff: flagStatpackRestock failed', e);
-    }
-  }
-
-  await logValidationWarningsToCollections({
-    warnings: validationWarnings,
-    statpackId,
-    statpackName,
-    userId,
-    userName,
-  });
-
-  // Create tracked issue reports for any item the member flagged during the
-  // check-off. Done AFTER the transaction commits so a report write can never
-  // roll back the check-off; failures are logged, not thrown.
+  // Post-commit steps. The check-off is already durable, so none of these may
+  // throw (a throw would show "Submission failed" and invite a duplicate
+  // resubmit). They are independent, so run them concurrently, each swallowing
+  // its own failure; only issue-report failures are counted and returned so the
+  // UI can tell the user.
   const ISSUE_LABEL: Record<'missing' | 'broken' | 'expired', string> = {
     missing: 'Missing',
     broken: 'Broken',
     expired: 'Expired',
   };
-  for (const ce of (checkEntries || [])) {
-    if (!ce.issue || !ce.issue.type) continue;
-    const label = ISSUE_LABEL[ce.issue.type] ?? 'Issue';
-    const itemLabel = ce.itemName || ce.itemId;
-    const qtyPart = ce.issue.quantity ? ` (${ce.issue.quantity} affected)` : '';
-    try {
-      await createReport({
-        reporter: { userId, userName },
-        type: 'bug',
-        priority: (ce.issue.type === 'missing' || ce.issue.type === 'broken') ? 'high' : 'medium',
-        title: `${label}: ${itemLabel} (in ${statpackName})`,
-        description:
-          `${label} reported during statpack ${action} of "${statpackName}"${qtyPart}.` +
-          (ce.issue.notes ? `\n\n${ce.issue.notes}` : ''),
-        pagePath: '/statpacks/check-off',
-        component: 'statpack_checkoff',
-        target: { collection: 'statpacks', docId: statpackId },
-      });
-    } catch (err) {
-      console.warn('logStatpackCheckOff: failed to create issue report for', ce.itemId, err);
-    }
+  let reportFailures = 0;
+  const postCommit: Promise<void>[] = [];
+
+  // Checking a statpack back in that was deployed for an event auto-ends that
+  // event's shifts (the manual counterpart is the "End shift" button in the
+  // event detail drawer).
+  if (action === 'checkin' && checkedInEventId) {
+    postCommit.push((async () => {
+      try {
+        await endEventShifts(checkedInEventId, { uid: userId, name: userName });
+      } catch (e) {
+        console.warn('logStatpackCheckOff: endEventShifts failed', e);
+      }
+    })());
   }
 
-  return { logRef: newLogRef, validationWarnings };
+  // Flag logistics when a check-in leaves the pack short (fast-path or full
+  // check-off). The helper itself no-ops when there are no shortages.
+  if (action === 'checkin' && checkinFinalContents) {
+    postCommit.push((async () => {
+      try {
+        await flagStatpackRestock(
+          { id: statpackId, name: statpackName, contents: checkinFinalContents },
+          { uid: userId, name: userName },
+        );
+      } catch (e) {
+        console.warn('logStatpackCheckOff: flagStatpackRestock failed', e);
+      }
+    })());
+  }
+
+  postCommit.push((async () => {
+    try {
+      await logValidationWarningsToCollections({
+        warnings: validationWarnings,
+        statpackId,
+        statpackName,
+        userId,
+        userName,
+      });
+    } catch (e) {
+      console.warn('logStatpackCheckOff: logValidationWarningsToCollections failed', e);
+    }
+  })());
+
+  // Create tracked issue reports for any item the member flagged during the
+  // check-off. A report write can never roll back the check-off; failures are
+  // logged and counted, not thrown.
+  for (const ce of (checkEntries || [])) {
+    if (!ce.issue || !ce.issue.type) continue;
+    const issue = ce.issue;
+    const label = ISSUE_LABEL[issue.type] ?? 'Issue';
+    const itemLabel = ce.itemName || ce.itemId;
+    const qtyPart = issue.quantity ? ` (${issue.quantity} affected)` : '';
+    postCommit.push((async () => {
+      try {
+        await createReport({
+          reporter: { userId, userName },
+          type: 'bug',
+          priority: (issue.type === 'missing' || issue.type === 'broken') ? 'high' : 'medium',
+          title: `${label}: ${itemLabel} (in ${statpackName})`,
+          description:
+            `${label} reported during statpack ${action} of "${statpackName}"${qtyPart}.` +
+            (issue.notes ? `\n\n${issue.notes}` : ''),
+          pagePath: '/statpacks/check-off',
+          component: 'statpack_checkoff',
+          target: { collection: 'statpacks', docId: statpackId },
+        });
+      } catch (err) {
+        reportFailures++;
+        console.warn('logStatpackCheckOff: failed to create issue report for', ce.itemId, err);
+      }
+    })());
+  }
+
+  await Promise.all(postCommit);
+
+  return { logRef: newLogRef, validationWarnings, reportFailures };
 }
 
 function resolveAssetInstance(item: InventoryItem, serial?: string): { matched: boolean; instance?: AssetInstance } {
