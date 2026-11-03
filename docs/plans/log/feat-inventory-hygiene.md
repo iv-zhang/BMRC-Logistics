@@ -7,15 +7,21 @@
 - H3 existence-baseline report · read-only report script; classifies items by existence and shows unverified stock > 0 · 3ace209 (brought into `main` 2026-10-17) · 19 unit tests pass (needs fake `NEXT_PUBLIC_FIREBASE_*` env vars), `node --check` and eslint clean
 - H8 audit cadence · `thresholds.auditCadence` + `isAuditCurrent` + settings select (amends D-6) · 579045a · 17 unit tests pass, settings form not viewed in browser
 - Final pass · ff3f34e · `npm run build` ok, `npm run test` 69/0, 119 node:test pass, tsc only the 5 known o2 errors, eslint clean; emulator smoke driver NOT run, no live data touched
-- Sterility variant (2026-10-31, uncommitted on `main` working tree) · `variantSignature` adds `sterile:yes` /
+- Sterility variant (2026-10-31, branch `inventory-dupe-fixes`) · `variantSignature` adds `sterile:yes` /
   `sterile:no` (`non-sterile`, `nonsterile`, `non sterile`, `unsterile`; "NS" deliberately ignored, it means normal
   saline); strict: unmarked vs marked is a mismatch; `checkVariantMerge` reason names sterility · tsc + eslint clean, 101 variant/merge unit tests pass, `npm run build` ok,
-  `npm run test` ok; emulator smoke driver NOT run (no UI change), nothing committed
+  `npm run test` ok; emulator smoke driver NOT run (no UI change) · 5f65f27
+- Name matching (2026-11-02, uncommitted on `inventory-dupe-fixes`) · shared `namesLookAlike()` in `inventory-merge.ts`, used by
+  `findDuplicateCandidates` and the Add Item hints: whole-name edit allowance floor lowered 2 -> 1 ("KED" no longer
+  matches "pen"); new 'words' reason = same >= 2 significant words in any order, stopwords dropped, 1 typo allowed in
+  4+ letter words; shown as "Similar words" on `/inventory` · tsc clean, eslint 0 errors (3 pre-existing warnings),
+  112 variant/merge unit tests pass, `npm run build` ok, `npm run test` ok; emulator smoke driver NOT run, nothing committed
 
 ## Unfolded findings
 - Retired items still appear in `findDuplicateCandidates` and the `/inventory` list; hide retired by default. No UI consumes `findVariantConflicts` yet. (H4/H5)
-- Add Item duplicate suggestions (`additemmodal.tsx`) still use name-only Levenshtein, so they can suggest a sterile
-  item for a non-sterile name (same gap as sizes; covered by the H6 note below).
+- Add Item duplicate suggestions (`additemmodal.tsx`) now share `namesLookAlike` but still skip the variant gate, so they
+  can suggest a sterile item for a non-sterile name (same gap as sizes; covered by the H6 note below).
+- Fuzzy/word matches still chain transitively in `findDuplicateCandidates` (A~B~C groups all three); not changed.
 
 ## H6: skipped
 The v2 packet text is lost, and H6 (family/variant picker, **On shelf | In a container** control, `Container.kind`,

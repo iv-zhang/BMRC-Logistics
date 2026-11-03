@@ -1617,10 +1617,11 @@ export default function InventoryPage() {
                   {duplicateGroups.map(group => (
                     <div key={group.key} className="border border-divider rounded-large p-3">
                       <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
-                        <Chip size="sm" variant="flat" color={group.reason === 'fuzzy' ? 'warning' : 'primary'}>
+                        <Chip size="sm" variant="flat" color={group.reason === 'fuzzy' || group.reason === 'words' ? 'warning' : 'primary'}>
                           {group.reason === 'sku' ? 'Same SKU'
                             : group.reason === 'barcode' ? 'Same barcode'
                             : group.reason === 'name' ? 'Same name'
+                            : group.reason === 'words' ? 'Similar words'
                             : 'Similar name'}
                         </Chip>
                         <Button

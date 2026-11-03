@@ -67,9 +67,53 @@ function normalizeName(name: string): string {
   return name.toLowerCase().trim().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+// ─── Name similarity (shared with app/components/additemmodal.tsx) ───────────
+
+export type NameMatchKind = 'fuzzy' | 'words';
+
+const NAME_STOPWORDS = new Set(['of', 'the', 'a', 'an', 'and', 'for', 'with', 'w', 'per']);
+
+/** Backtracking one-to-one pairing; names are short so this is cheap. */
+function wordsPairUp(a: string[], b: string[]): boolean {
+  const used = new Array(b.length).fill(false);
+  const close = (x: string, y: string) =>
+    x === y || (x.length >= 4 && y.length >= 4 && levenshtein(x, y) <= 1);
+  function go(i: number): boolean {
+    if (i === a.length) return true;
+    for (let j = 0; j < b.length; j++) {
+      if (used[j] || !close(a[i], b[j])) continue;
+      used[j] = true;
+      if (go(i + 1)) return true;
+      used[j] = false;
+    }
+    return false;
+  }
+  return go(0);
+}
+
+/**
+ * Do two item names look alike enough to flag as a possible duplicate?
+ * - 'fuzzy': whole normalized names within max(1, floor(25% of the longer)) edits.
+ * - 'words': same multiset of >= 2 significant words (stopwords dropped, any
+ *   order), each word paired one-to-one with an equal word or, for words of
+ *   4+ letters, one within 1 edit ("Bag of ice" ~ "ice bag").
+ * Exact equality also returns 'fuzzy'; callers treat that case as 'name' first.
+ */
+export function namesLookAlike(a: string, b: string): NameMatchKind | null {
+  const na = normalizeName(a || '');
+  const nb = normalizeName(b || '');
+  if (na.length < 2 || nb.length < 2) return null;
+  const threshold = Math.max(1, Math.floor(Math.max(na.length, nb.length) * 0.25));
+  if (levenshtein(na, nb) <= threshold) return 'fuzzy';
+  const wa = na.split(' ').filter((w) => !NAME_STOPWORDS.has(w));
+  const wb = nb.split(' ').filter((w) => !NAME_STOPWORDS.has(w));
+  if (wa.length >= 2 && wa.length === wb.length && wordsPairUp(wa, wb)) return 'words';
+  return null;
+}
+
 // ─── Duplicate detection ──────────────────────────────────────────────────────
 
-export type DuplicateReason = 'sku' | 'barcode' | 'name' | 'fuzzy';
+export type DuplicateReason = 'sku' | 'barcode' | 'name' | 'fuzzy' | 'words';
 
 export interface DuplicateGroup {
   /** Stable key for this group (derived from member ids). */
@@ -79,12 +123,14 @@ export interface DuplicateGroup {
   reason: DuplicateReason;
 }
 
-const REASON_RANK: Record<DuplicateReason, number> = { sku: 3, barcode: 3, name: 2, fuzzy: 1 };
+const REASON_RANK: Record<DuplicateReason, number> = { sku: 3, barcode: 3, name: 2, fuzzy: 1, words: 1.5 };
 
 /**
  * Group inventory items that look like duplicates of each other: exact SKU
  * match, exact barcode match, exact normalized-name match, or a near-name
- * match (Levenshtein distance within 25% of the longer name, floor 2).
+ * match (see `namesLookAlike`: whole-name edit distance within 25% of the
+ * longer name with a floor of 1, or the same >= 2 significant words in any
+ * order, tolerating one typo in words of 4+ letters; reason 'words').
  * Archived/already-merged items are excluded. Union-find groups transitively
  * — if A~B and B~C, all three land in one group even if A and C alone
  * wouldn't have matched.
@@ -130,11 +176,8 @@ export function findDuplicateCandidates(items: InventoryItem[]): DuplicateGroup[
       if (skus[i] && skus[j] && skus[i] === skus[j]) { union(i, j, 'sku'); continue; }
       if (barcodes[i] && barcodes[j] && barcodes[i] === barcodes[j]) { union(i, j, 'barcode'); continue; }
       if (normalized[i] && normalized[i] === normalized[j]) { union(i, j, 'name'); continue; }
-      if (normalized[i].length >= 2 && normalized[j].length >= 2) {
-        const dist = levenshtein(normalized[i], normalized[j]);
-        const threshold = Math.max(2, Math.floor(Math.max(normalized[i].length, normalized[j].length) * 0.25));
-        if (dist <= threshold) union(i, j, 'fuzzy');
-      }
+      const kind = namesLookAlike(normalized[i], normalized[j]);
+      if (kind) union(i, j, kind);
     }
   }
 

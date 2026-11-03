@@ -14,7 +14,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { findDuplicateCandidates, findVariantConflicts } from '../inventory-merge';
+import { findDuplicateCandidates, findVariantConflicts, namesLookAlike } from '../inventory-merge';
 import type { InventoryItem } from '@/app/types';
 
 const mk = (id: string, name: string, extra: Record<string, unknown> = {}) =>
@@ -124,5 +124,34 @@ describe('findVariantConflicts', () => {
       mk('5', 'Gloves L', { sku: 'GL', isArchived: true }),
     ]);
     assert.deepEqual(c, []);
+  });
+});
+
+describe('namesLookAlike', () => {
+  const yes: Array<[string, string]> = [
+    ['Gauze Sterile 4x4', '4x4 gauze sterile'],
+    ['Trauma Sheers', 'Shears, Trauma'],
+    ['Bag of ice', 'ice bag'],
+  ];
+  const no: Array<[string, string]> = [
+    ['Trauma Shears', 'Trauma Pads'],
+    ['Gauze Pad', 'Gauze'],
+    ['KED', 'pen'],
+    ['Ice pack', 'Ice bag'],
+    ['Pen light', 'Pen'],
+  ];
+  for (const [a, b] of yes) it(`matches "${a}" ~ "${b}"`, () => assert.ok(namesLookAlike(a, b)));
+  for (const [a, b] of no) it(`does not match "${a}" ~ "${b}"`, () => assert.equal(namesLookAlike(a, b), null));
+
+  it('reports word-order matches as words', () => {
+    assert.equal(namesLookAlike('Gauze Sterile 4x4', '4x4 gauze sterile'), 'words');
+  });
+  it('findDuplicateCandidates does not group KED with Pen', () => {
+    assert.deepEqual(findDuplicateCandidates([mk('1', 'KED'), mk('2', 'Pen')]), []);
+  });
+  it('groups reordered names with reason words', () => {
+    const g = findDuplicateCandidates([mk('1', 'Gauze Sterile 4x4'), mk('2', '4x4 Gauze Sterile')]);
+    assert.equal(g.length, 1);
+    assert.equal(g[0].reason, 'words');
   });
 });
