@@ -11,7 +11,7 @@ import { doc, collection as coll, query as q, where, limit, getDocs, writeBatch,
 import { db } from '@/firebase';
 import { safeParseDate } from '@/app/utils/inventoryNormalization';
 import { addAuditEventToBatch } from '@/app/lib/audit';
-import { levenshtein } from '@/app/lib/inventory-merge';
+import { levenshtein, isFuzzyNameMatch, normalizeName } from '@/app/lib/inventory-merge';
 import StorageLocationPicker from '@/app/components/storage-location-picker';
 import { useStorageLocations } from '@/app/hooks/useStorageLocations';
 import { useOrgConfig } from '@/app/hooks/useOrgConfig';
@@ -225,7 +225,7 @@ export default function InventoryModal({
         });
         const exacts = scored.filter(s => s.skuMatch || s.barMatch).map(s => s.r);
         const fuzzy = scored
-          .filter(s => !s.skuMatch && !s.barMatch && s.score <= Math.max(2, Math.floor(name.length * 0.25)))
+          .filter(s => !s.skuMatch && !s.barMatch && (normalizeName(name) === normalizeName((s.r.name as string) ?? '') || isFuzzyNameMatch(normalizeName(name), normalizeName((s.r.name as string) ?? ''))))
           .sort((a, b) => a.score - b.score)
           .map(s => s.r);
         setDuplicates([...exacts, ...fuzzy].slice(0, 6));
