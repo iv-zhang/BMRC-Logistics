@@ -39,6 +39,8 @@ describe('must NOT match (different variants)', () => {
     ['BVM, Adult', 'BVM, Infant'],
     ['BVM, Pediatric', 'BVM, Infant'],
     ['Cervical Collar, Adult', 'Cervical Collar, Neonatal'],
+    ['Epinephrine Auto-Injector', 'Epinephrine Auto Injector Jr'],
+    ['EpiPen', 'EpiPen Junior'],
     // gauge
     ['14g IV', '18g IV'],
     ['IV Catheter 20 ga', 'IV Catheter 22 ga'],

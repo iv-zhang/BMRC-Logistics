@@ -17,7 +17,7 @@
  *   - length/volume     `80 mm`, `4 in`, `4"`, `500 mL`, `1 L` -> mm:80, in:4, ml:500, ml:1000
  *   - weight/strength   `15 g`, `5 oz`, `10 mg`, `1 lb`        -> g:15, oz:5, mg:10, lb:1
  *   - letter sizes      S, M, L, XL, XXL, small, x-large, S/M  -> letter:m, letter:s/m
- *   - age group         adult, peds/pediatric, infant, neonate -> age:adult ...
+ *   - age group         adult, peds/pediatric/jr, infant, neonate -> age:adult ...
  *   - triage colors     red, yellow, green, black, ...         -> color:red
  *   - bare numbers      `Stat Pack 1`                          -> num:1
  *
@@ -114,7 +114,7 @@ function unitToken(value: string, unit: string): string {
 
 const AGE_MAP: Array<[RegExp, string]> = [
   [/(?<![a-z0-9])adults?(?![a-z0-9])/g, 'age:adult'],
-  [/(?<![a-z0-9])(?:pediatrics?|paediatrics?|pedi|peds|ped|child|children|kids?|toddlers?)(?![a-z0-9])/g, 'age:peds'],
+  [/(?<![a-z0-9])(?:pediatrics?|paediatrics?|pedi|peds|ped|child|children|kids?|toddlers?|jr|junior)(?![a-z0-9])/g, 'age:peds'],
   [/(?<![a-z0-9])(?:infants?|babies|baby)(?![a-z0-9])/g, 'age:infant'],
   [/(?<![a-z0-9])(?:neonates?|neonatal|newborns?|neo)(?![a-z0-9])/g, 'age:neo'],
 ];
