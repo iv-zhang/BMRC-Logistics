@@ -266,10 +266,13 @@ export default function AppSidebar({ navHidden, onHide, onShow }: AppSidebarProp
             </button>
 
             {/* Notifications — in-app broadcasts (shift requests, restock flags) */}
-            <div className="flex items-center gap-[13px] h-9 px-[7px] rounded-[10px] whitespace-nowrap text-[13px] text-foreground-500 font-medium">
-              <NotificationBell placement="right-end" />
-              <span className={labelCls}>Notifications</span>
-            </div>
+            <NotificationBell
+              placement="top-end"
+              wrapper={{
+                label: <span className={labelCls}>Notifications</span>,
+                classes: "flex justify-start items-center gap-[13px] h-9 px-[11px] rounded-[10px] whitespace-nowrap text-[13px] w-full text-foreground-500 font-medium"
+              }}
+            />
 
             <div className="border-t border-divider my-1" />
 
