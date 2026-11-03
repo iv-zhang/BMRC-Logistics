@@ -11,6 +11,12 @@
  */
 
 import {
+  deriveAuditCondition,
+  formatConditionCounts,
+  validateConditionCounts,
+  type AuditConditionCounts,
+} from './audit-condition';
+import {
   collection,
   doc,
   getDoc,
@@ -114,6 +120,7 @@ export interface DisposableSnapshot {
   auditVerified: boolean;
   lastAuditDate?: Date;
   auditCondition?: 'Good' | 'Damaged' | 'Expired';
+  auditConditionCounts?: AuditConditionCounts | null;
   /**
    * Derived existence (`getExistence`). Always set by `generateAuditSnapshot`;
    * optional only so hand-built snapshots keep compiling — `analyzeRestockNeeds`
@@ -255,6 +262,7 @@ export async function generateAuditSnapshot(
         auditVerified: verifiedThisCycle,
         lastAuditDate,
         auditCondition: item.auditCondition,
+        auditConditionCounts: item.auditConditionCounts ?? null,
         existence: getExistence(item),
         totalStockQuantity: item.totalStockQuantity,
       });
@@ -353,7 +361,10 @@ export interface AuditEntry {
   /** For assets: verified status */
   assetVerified?: boolean;
   assetCondition?: string;
+  /** Sealed-package condition (or asset condition). */
   condition: 'Good' | 'Damaged' | 'Expired';
+  /** Loose units only: how many of the counted loose units are damaged / expired. */
+  conditionCounts?: AuditConditionCounts;
   notes?: string;
   expirationDate?: string;
   /** Optional: units per sealed box/bag as observed during audit */
@@ -403,6 +414,15 @@ export async function submitAuditEntries(
       if (count?.variance) variances++;
       if (count?.unresolved) unresolved++;
       const verified = isAsset || count!.verified;
+      if (!isAsset && entry.conditionCounts) {
+        const err = validateConditionCounts(entry.conditionCounts, count!.loose);
+        if (err) throw new Error(err);
+      }
+      const conditionCounts = !isAsset && entry.conditionCounts
+        && entry.conditionCounts.damaged + entry.conditionCounts.expired > 0
+        ? { damaged: entry.conditionCounts.damaged, expired: entry.conditionCounts.expired } : null;
+      const derivedCondition = isAsset ? entry.condition : deriveAuditCondition(entry.condition, conditionCounts);
+      const countsLabel = formatConditionCounts(conditionCounts);
       transaction.update(doc(db, 'inventory', item.id), {
         ...(count?.patch ?? {}),
         auditCountObservation: count && !verified ? {
@@ -415,7 +435,8 @@ export async function submitAuditEntries(
           observedAt: serverTimestamp(), observedBy: user.uid,
         } : null,
         auditVerified: verified,
-        auditCondition: entry.condition,
+        auditCondition: derivedCondition,
+        ...(isAsset ? {} : { auditConditionCounts: conditionCounts }),
         auditNotes: entry.notes ?? null,
         // A count difference is an observation awaiting reconciliation. An old
         // current-cycle stamp must not continue to imply it was verified.
@@ -427,6 +448,9 @@ export async function submitAuditEntries(
         reconciled: !!(entry.reconcileCount && count?.variance && verified),
         stockFingerprint: fingerprint,
         scannedBarcode: entry.scannedBarcode ?? null,
+        packageCondition: entry.condition,
+        condition: derivedCondition,
+        conditionCounts,
         ...(count ? {
           countedBoxes: count.boxes, countedLooseUnits: count.loose,
           countedTotalUnits: count.total,
@@ -452,7 +476,7 @@ export async function submitAuditEntries(
           totalStockQuantity: count!.systemTotal,
         },
         after: isAsset ? { auditVerified: true, condition: entry.condition } : {
-          ...count!.patch, auditVerified: verified, condition: entry.condition,
+          ...count!.patch, auditVerified: verified, condition: derivedCondition, conditionCounts,
           unresolved: count!.unresolved,
         },
         details,
@@ -464,7 +488,7 @@ export async function submitAuditEntries(
         userId: user.uid, userName: user.displayName || user.email || 'Unknown',
         timestamp: serverTimestamp(),
         notes: isAsset ? `Asset audit: condition ${entry.condition}`
-          : `Count: ${count!.boxes} sealed + ${count!.loose} loose = ${count!.total ?? 'unknown'} units; ${count!.unresolved ? 'unresolved observation' : verified ? 'verified' : 'variance recorded; verification pending'}`,
+          : `Count: ${count!.boxes} sealed + ${count!.loose} loose = ${count!.total ?? 'unknown'} units; ${count!.unresolved ? 'unresolved observation' : verified ? 'verified' : 'variance recorded; verification pending'}${countsLabel ? ` · ${countsLabel}` : ''}`,
         details,
       });
       itemsUpdated++;

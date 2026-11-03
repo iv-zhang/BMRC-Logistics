@@ -23,6 +23,7 @@ import { computeBagStock, displayLocation, getItemStatus } from '@/app/lib/item-
 import { parseGs1Barcode } from '@/app/lib/gs1';
 import { auditStockFingerprint, buildAuditCountPlan } from '@/app/lib/audit-count';
 import { submitAuditEntries } from '@/app/lib/audit-helpers';
+import { formatConditionCounts, validateConditionCounts } from '@/app/lib/audit-condition';
 import {
   addShipment,
   moveItemLocation,
@@ -113,6 +114,8 @@ export default function AuditActionDrawer({
   const [showSealedCount, setShowSealedCount] = useState(false);
   const [countedLoose, setCountedLoose] = useState('');
   const [condition, setCondition] = useState<ConditionValue>('Good');
+  const [damagedUnits, setDamagedUnits] = useState('');
+  const [expiredUnits, setExpiredUnits] = useState('');
   const [countExp, setCountExp] = useState('');
   const [countLot, setCountLot] = useState('');
   const [countNotes, setCountNotes] = useState('');
@@ -164,6 +167,8 @@ export default function AuditActionDrawer({
     setShowSealedCount(false);
     setCountedLoose('');
     setCondition('Good');
+    setDamagedUnits('');
+    setExpiredUnits('');
     setCountExp('');
     setCountLot('');
     setCountNotes('');
@@ -219,12 +224,24 @@ export default function AuditActionDrawer({
     : 'Enter the quantities you observed, including zero.';
   const perUnitNum = Math.max(1, Number(shipPerUnit) || 1);
 
+  const damagedNum = damagedUnits.trim() === '' ? 0 : Number(damagedUnits);
+  const expiredNum = expiredUnits.trim() === '' ? 0 : Number(expiredUnits);
+  const countsNumeric = Number.isSafeInteger(damagedNum) && damagedNum >= 0 &&
+    Number.isSafeInteger(expiredNum) && expiredNum >= 0;
+  const looseNum = Number(countedLoose);
+  const conditionError: string | null = isAsset || !validCount
+    ? null
+    : !countsNumeric
+      ? 'Damaged and expired must be whole numbers.'
+      : validateConditionCounts({ damaged: damagedNum, expired: expiredNum }, looseNum);
+  const conditionCountsValid = isAsset || (countsNumeric && !conditionError);
+
   const canSubmit =
     action === 'move'
       ? Boolean(moveLoc?.zoneId || moveArea)
       : action === 'shipment'
         ? shipQty > 0
-        : action === 'count' ? isAsset || countPlan !== null : true;
+        : action === 'count' ? isAsset || (countPlan !== null && conditionCountsValid) : true;
 
   const handleSubmit = async (reconcileCount = false) => {
     if (saving || !canSubmit || (action === 'count' && stockChanged)) return;
@@ -239,7 +256,10 @@ export default function AuditActionDrawer({
               reconcileCount,
               countedBoxes: isAsset ? undefined : looseOnly ? 0 : Number(countedBoxes),
               countedLooseUnits: isAsset ? undefined : Number(countedLoose),
-              condition,
+              condition: !isAsset && looseOnly ? 'Good' : condition,
+              conditionCounts: !isAsset && (damagedNum > 0 || expiredNum > 0)
+                ? { damaged: damagedNum, expired: expiredNum }
+                : undefined,
               notes: countNotes || undefined,
               expirationDate: countExp || undefined,
               lotNumber: countLot || undefined,
@@ -382,9 +402,13 @@ export default function AuditActionDrawer({
             {status === 'out' && <Chip size="sm" variant="flat" color="danger">Out of Stock</Chip>}
             {status === 'low' && <Chip size="sm" variant="flat" color="warning">Low Stock</Chip>}
             {status === 'expiring' && <Chip size="sm" variant="flat" color="warning">Exp. Soon</Chip>}
-            {item.auditCondition && item.auditCondition !== 'Good' && (
-              <Chip size="sm" variant="flat" color="warning">{item.auditCondition}</Chip>
-            )}
+            {(() => {
+              const countsLabel = formatConditionCounts(item.auditConditionCounts);
+              const label = countsLabel ?? (item.auditCondition && item.auditCondition !== 'Good' ? item.auditCondition : null);
+              return label ? (
+                <Chip size="sm" variant="flat" color={item.auditCondition === 'Expired' ? 'danger' : 'warning'}>{label}</Chip>
+              ) : null;
+            })()}
             {isAsset && <Chip size="sm" variant="flat" color="primary">Asset</Chip>}
           </div>
 
@@ -471,6 +495,20 @@ export default function AuditActionDrawer({
                     label={looseOnly ? 'Individual units observed' : 'Loose units observed'}
                     value={countedLoose} onValueChange={setCountedLoose} placeholder="Enter count"
                     className={looseOnly ? '' : 'mt-3'} />
+                  <div className="mt-3 grid grid-cols-2 gap-3">
+                    <Input type="number" inputMode="numeric" min={0} step={1} size="sm"
+                      label="Damaged" placeholder="0"
+                      value={damagedUnits} onValueChange={setDamagedUnits} />
+                    <Input type="number" inputMode="numeric" min={0} step={1} size="sm"
+                      label="Expired" placeholder="0"
+                      value={expiredUnits} onValueChange={setExpiredUnits} />
+                  </div>
+                  {validCount && countsNumeric && (
+                    <div className="mt-2 text-xs text-foreground-600">
+                      {Math.max(0, looseNum - damagedNum - expiredNum)} good · {damagedNum} damaged · {expiredNum} expired
+                    </div>
+                  )}
+                  {conditionError && <p role="alert" className="mt-1 text-xs text-danger">{conditionError}</p>}
                   <div className="mt-2 text-sm text-foreground-600">{countSummary}</div>
                   {countPlan && <div className="mt-2 text-sm" data-testid="audit-count-comparison">
                     <p>Expected {countPlan.systemTotal ?? 'unknown'} units · Observed {countPlan.total ?? 'unknown'} units · Delta {countPlan.total !== null && countPlan.systemTotal !== null ? countPlan.total - countPlan.systemTotal : 'unknown'} units</p>
@@ -487,7 +525,10 @@ export default function AuditActionDrawer({
                 </div>
               )}
 
-              <ConditionToggle value={condition} onChange={setCondition} label="Condition" />
+              {(isAsset || !looseOnly) && (
+                <ConditionToggle value={condition} onChange={setCondition}
+                  label={isAsset ? 'Condition' : 'Sealed package condition'} />
+              )}
 
               {!isAsset && (
                 <div className="grid grid-cols-2 gap-3">
