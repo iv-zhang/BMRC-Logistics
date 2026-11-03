@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { JSX, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Popover,
@@ -13,9 +13,15 @@ import { useUserRole } from '@/app/hooks/useUserRole';
 import { subscribeUserNotifications, markNotificationRead, markAllRead } from '@/app/lib/notifications';
 import type { AppNotification } from '@/app/types';
 
-type BellPlacement = 'bottom-end' | 'right-end' | 'top-end';
+interface Props {
+  placement?: 'bottom-end' | 'right-end' | 'top-end' | 'left-end';
+  wrapper?: {
+    label: JSX.Element; // Makes button into a row with specified label
+    classes: string; // Wrapper styling
+  }
+}
 
-export default function NotificationBell({ placement = 'bottom-end' }: { placement?: BellPlacement } = {}) {
+export default function NotificationBell({ placement = 'bottom-end', wrapper }: Props = {}) {
   const router = useRouter();
   const { user, effectiveUid } = useUserRole();
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
@@ -88,20 +94,36 @@ export default function NotificationBell({ placement = 'bottom-end' }: { placeme
   };
 
   return (
-    <Popover placement={placement} offset={10}>
+    <Popover placement={placement} offset={10} disableAnimation>
       <PopoverTrigger asChild>
-        <Button
-          isIconOnly
-          variant="light"
-          size="sm"
-          aria-label="Notifications"
-          className="relative text-foreground-400"
-        >
-          <Bell size={18} />
-          {unreadCount > 0 && (
-            <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-danger rounded-full" />
-          )}
-        </Button>
+        {wrapper ? (
+          <Button
+            variant="light"
+            aria-label="Notifications"
+            className = {wrapper.classes}
+          >
+            <span className="relative inline-block w-[18px] h-[18px]">
+              <Bell size={18}/>
+              {unreadCount > 0 && (
+                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-danger rounded-full" />
+              )}
+            </span>
+            {wrapper.label}
+          </Button>
+        ) : (
+          <Button
+            isIconOnly
+            variant="light"
+            size="sm"
+            aria-label="Notifications"
+            className="relative text-foreground-400"
+          >
+            <Bell size={18} />
+            {unreadCount > 0 && (
+              <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-danger rounded-full" />
+            )}
+          </Button>
+        )}
       </PopoverTrigger>
 
       <PopoverContent className="w-[360px] max-w-[calc(100vw-24px)] bg-content1 border border-divider rounded-large p-0">
