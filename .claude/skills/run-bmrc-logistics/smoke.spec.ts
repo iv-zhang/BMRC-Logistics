@@ -1228,3 +1228,43 @@ test('duplicate review: exclude, cancel and merge return to review; dismiss hide
   await expect(coldGroup).toHaveCount(0);
   await page.screenshot({ path: join(SHOTS, 'dup-review-after.png') });
 });
+
+// Issue #19: a stalled connection (browser still reports online) must not spin
+// forever — after SUBMIT_TIMEOUT_MS the UI unlocks with a "may already be saved"
+// warning. Simulated by black-holing every Firestore emulator request after load.
+test('check-off submit times out on a stalled network instead of hanging', async ({ page }) => {
+  test.setTimeout(150_000);
+  const testRunId = `smoke-stall-${Date.now()}`;
+  const packId = await createDoc('statpacks', {
+    isTest: true,
+    testRunId,
+    name: `[TEST] Smoke Stall Pack ${testRunId}`,
+    type: 'Primary',
+    status: 'Ready',
+    isCheckedOut: false,
+    currentLocation: 'MRC1',
+    compartments: [{ id: 'main', name: 'Main', parentPocket: 'main', isSealed: false }],
+    contents: [{ itemId: 'gauze-2x2', batchId: '', requiredQuantity: 20, currentQuantity: 20, pocket: 'main' }],
+    sharpsContainer: { status: 'ok' },
+  });
+
+  await signIn(page);
+  await page.goto(`/statpacks/check-off?id=${packId}&mode=checkout`, { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2500);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+  await expect(page.getByRole('button', { name: 'Complete Checkout' })).toBeVisible();
+
+  // Hang (never answer) every Firestore emulator request from here on.
+  await page.route(/127\.0\.0\.1:8080/, () => { /* never fulfilled */ });
+  const started = Date.now();
+  await page.getByRole('button', { name: 'Complete Checkout' }).click();
+  await expect(page.getByText(/Still waiting on the network/)).toBeVisible({ timeout: 70_000 });
+  const elapsed = Date.now() - started;
+  expect(elapsed).toBeGreaterThan(40_000);
+  await page.screenshot({ path: join(SHOTS, 'checkoff-stall-timeout.png'), fullPage: true });
+  // Spinner released: the submit button is usable again.
+  await expect(page.getByRole('button', { name: 'Complete Checkout' })).toBeEnabled();
+  await page.unroute(/127\.0\.0\.1:8080/);
+});
