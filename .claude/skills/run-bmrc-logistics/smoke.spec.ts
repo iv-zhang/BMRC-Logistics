@@ -1119,3 +1119,112 @@ test('audit package and loose count works at desktop and phone widths', async ({
     }, testRunId);
   }
 });
+
+// Issue #19/#30: the Report button no longer claims the report is filed before
+// submit, an offline submit is refused with a clear toast (no endless spinner),
+// and the report is actually written to issue_reports once back online.
+test('check-off report toast, offline submit guard, and report reaches issue_reports', async ({ page, context }) => {
+  const testRunId = `smoke-report-${Date.now()}`;
+  const PACK = `[TEST] Smoke Report Pack ${testRunId}`;
+  const packId = await createDoc('statpacks', {
+    isTest: true,
+    testRunId,
+    name: PACK,
+    type: 'Primary',
+    status: 'Ready',
+    isCheckedOut: false,
+    currentLocation: 'MRC1',
+    compartments: [{ id: 'main', name: 'Main', parentPocket: 'main', isSealed: false }],
+    contents: [{ itemId: 'gauze-2x2', batchId: '', requiredQuantity: 20, currentQuantity: 0, pocket: 'main' }],
+    sharpsContainer: { status: 'ok' },
+  });
+
+  await signIn(page);
+  await page.goto(`/statpacks/check-off?id=${packId}&mode=checkout`, { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2500);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+
+  await page.getByRole('button', { name: 'Report', exact: true }).first().click();
+  await page.getByLabel('Report notes').fill('smoke: none on hand');
+  await page.getByRole('button', { name: 'File', exact: true }).click();
+  await expect(page.getByText('Will be reported to admin when you submit')).toBeVisible();
+  await expect(page.getByText('Issue reported to admin')).toHaveCount(0);
+
+  await context.setOffline(true);
+  await page.getByRole('button', { name: 'Complete Checkout' }).click();
+  await expect(page.getByText(/You're offline/)).toBeVisible();
+  await page.screenshot({ path: join(SHOTS, 'checkoff-offline-toast.png'), fullPage: true });
+  expect((await getDocById('statpacks', packId))?.isCheckedOut).toBeFalsy();
+
+  await context.setOffline(false);
+  await page.waitForTimeout(1500);
+  await page.getByRole('button', { name: 'Complete Checkout' }).click();
+  await expect(page.getByText(/Checkout complete/)).toBeVisible({ timeout: 20_000 });
+  await expect.poll(async () => (await getDocById('statpacks', packId))?.isCheckedOut, { timeout: 15_000 }).toBe(true);
+  await expect.poll(async () => (await listCollection('issue_reports')).some(
+    (r) => r.target?.docId === packId && r.component === 'statpack_checkoff',
+  ), { timeout: 15_000 }).toBe(true);
+});
+
+// Issue #21: merging from the duplicate review returns to the review list, a
+// candidate can be excluded, and a group can be dismissed for the session.
+test('duplicate review: exclude, cancel and merge return to review; dismiss hides group', async ({ page }) => {
+  const stamp = Date.now();
+  const base = { category: 'First Aid', unit: 'each', itemsPerBox: 10, looseUnits: 0, isAsset: false, isTest: true };
+  const splintA = `E2E Splint Roll ${stamp}`;
+  const splintB = `E2E Splint Rol ${stamp}`;
+  const coldA = `E2E Cold Pack ${stamp}`;
+  const coldB = `E2E Cold Packs ${stamp}`;
+  const splintAId = await createDoc('inventory', { ...base, name: splintA, unopenedBoxes: 2, totalStockQuantity: 20 });
+  const splintBId = await createDoc('inventory', { ...base, name: splintB, unopenedBoxes: 1, totalStockQuantity: 10 });
+  await createDoc('inventory', { ...base, name: coldA, unopenedBoxes: 1, totalStockQuantity: 10 });
+  await createDoc('inventory', { ...base, name: coldB, unopenedBoxes: 1, totalStockQuantity: 10 });
+
+  await signIn(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/inventory', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(3000);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+
+  await page.getByRole('button', { name: 'Review', exact: true }).click();
+  const review = page.getByRole('dialog').filter({ hasText: 'Possible duplicates' });
+  await expect(review).toBeVisible();
+  const splintGroup = review.locator('div.border').filter({ hasText: splintA }).filter({ hasText: splintB });
+  await expect(splintGroup).toHaveCount(1);
+  await page.screenshot({ path: join(SHOTS, 'dup-review.png') });
+
+  const merge = page.getByRole('dialog').filter({ hasText: 'Merge duplicate items' });
+  // Exclude the only other candidate -> drops below 2 -> back to review.
+  await splintGroup.getByRole('button', { name: /Merge these 2/ }).click();
+  await expect(merge).toBeVisible();
+  await merge.getByRole('button', { name: 'Not a duplicate' }).click();
+  await expect(review).toBeVisible();
+  await expect(merge).toHaveCount(0);
+
+  // Cancel -> back to review.
+  await splintGroup.getByRole('button', { name: /Merge these 2/ }).click();
+  await expect(merge).toBeVisible();
+  await merge.getByRole('button', { name: 'Cancel' }).click();
+  await expect(review).toBeVisible();
+
+  // Merge -> back to review, group gone, loser archived.
+  await splintGroup.getByRole('button', { name: /Merge these 2/ }).click();
+  await expect(merge).toBeVisible();
+  await page.waitForTimeout(1500); // preview load
+  await merge.getByRole('button', { name: /^(Merge|Confirm)/i }).last().click();
+  await expect(review).toBeVisible({ timeout: 15_000 });
+  await expect(splintGroup).toHaveCount(0, { timeout: 15_000 });
+  const [a, b] = await Promise.all([getDocById('inventory', splintAId), getDocById('inventory', splintBId)]);
+  expect(Boolean(a?.isArchived) !== Boolean(b?.isArchived), 'exactly one splint fixture archived').toBe(true);
+
+  // Dismiss the cold-pack group for the session.
+  const coldGroup = review.locator('div.border').filter({ hasText: coldA }).filter({ hasText: coldB });
+  await expect(coldGroup).toHaveCount(1);
+  await coldGroup.getByRole('button', { name: 'Not duplicates' }).click();
+  await expect(coldGroup).toHaveCount(0);
+  await page.screenshot({ path: join(SHOTS, 'dup-review-after.png') });
+});
