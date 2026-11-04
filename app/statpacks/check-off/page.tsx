@@ -5,7 +5,7 @@ import { statpackEntryKey } from '@/app/lib/statpack-entry-identity';
 import { canManageLogistics } from '@/app/lib/roles';
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { Button, Spinner, Input } from '@heroui/react';
+import { Button, Spinner, Input, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from '@heroui/react';
 import {
   ArrowLeft, ArrowRight, MapPin, ChevronDown,
   Check, Plus, Minus, Shield, AlertTriangle, X, Repeat,
@@ -18,6 +18,8 @@ import {
 import { auth, db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { logStatpackCheckOff } from '@/app/lib/inventory';
+import { flagUnfillablePack, type UnfillableItem } from '@/app/lib/statpack-restock-flag';
+import { isCriticalStatpackItem } from '@/app/lib/statpack-critical';
 import { getThresholds } from '@/app/lib/org-config-store';
 import { parseMonthInput } from '@/app/lib/dates';
 import { canUserAudit } from '@/app/lib/audit-helpers';
@@ -71,7 +73,11 @@ interface ItemIssue {
   lowPsi: boolean;
   shortBy: number;
   any: boolean;
-  /** Safety problem (expired / low PSI) — blocks submission. Shortage alone only flags. */
+  /**
+   * Blocks submission. Expired / low PSI always block. A shortage only flags
+   * (amber) EXCEPT at checkout, where packs must go out full, so it blocks too.
+   * At checkout nothing but fixing it clears a blocker (no Report / Acknowledge).
+   */
   blocking: boolean;
 }
 
@@ -160,13 +166,14 @@ function cssAttrEscape(v: string): string {
 
 function computeIssue(
   item: StatpackItem, rules: ItemRules, found: number, checks: ItemChecks, today: Date,
+  mode: Mode,
 ): ItemIssue {
   const shortBy = Math.max(0, item.requiredQuantity - found);
   const short = shortBy > 0;
   const exp = effectiveExpDate(item, rules, checks);
   const expired = exp !== null && exp.getTime() < today.getTime();
   const lowPsi = rules.needPsi && !!checks.psi ? Number(checks.psi) < rules.minPsi : false;
-  return { short, expired, lowPsi, shortBy, any: short || expired || lowPsi, blocking: expired || lowPsi };
+  return { short, expired, lowPsi, shortBy, any: short || expired || lowPsi, blocking: expired || lowPsi || (mode === 'checkout' && short) };
 }
 
 // "Ready" (green) = genuinely good: complete checks AND non-expired AND (for O2) in-pressure.
@@ -281,7 +288,9 @@ function ItemRow({
   const psiHintColor = !checks.psi ? 'text-warning' : psiOk ? 'text-success' : 'text-danger';
 
   const checksReady = checksComplete(rules, checks) && (!needExp || !isMonthExpired(checks.exp, today)) && (!needAED || !isMonthExpired(checks.padExp, today)) && (!needPsi || psiOk);
-  const resolved = isResolved(resolution);
+  // At checkout a blocker can't be waved through, so a stale report/ack never counts as resolved.
+  const cantWaive = mode === 'checkout' && issue.blocking;
+  const resolved = isResolved(resolution) && !cantWaive;
   const V = verified;
   const rowBase = V
     ? 'bg-primary border-primary cursor-default'
@@ -526,7 +535,7 @@ function ItemRow({
       )}
 
       {/* Fix-or-acknowledge — shown whenever the item has an unresolved short / expired / low-PSI issue.
-          Short-only is a non-blocking flag (amber); expired / low PSI still block (red). */}
+          Short-only is a non-blocking flag (amber) except at checkout, where it blocks too. */}
       {(issue.any || resolved) && (
         <div
           onClick={e => e.stopPropagation()}
@@ -558,6 +567,7 @@ function ItemRow({
                     Set to par
                   </button>
                 )}
+                {!cantWaive && (
                 <button
                   onClick={() => { setDraft('report'); setReason(''); }}
                   className={`text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border transition-colors ${
@@ -566,6 +576,8 @@ function ItemRow({
                 >
                   Report
                 </button>
+                )}
+                {!cantWaive && (
                 <button
                   onClick={() => { setDraft('acknowledge'); setReason(''); }}
                   className={`text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border transition-colors ${
@@ -574,6 +586,7 @@ function ItemRow({
                 >
                   Acknowledge
                 </button>
+                )}
               </div>
             )}
           </div>
@@ -1269,6 +1282,10 @@ export default function StatpackCheckOffPage() {
   // the incomplete-checks push are exactly what they were when this was a
   // string[], EXCEPT that shortages and a full sharps container moved to
   // `flagList` below (D-8 2nd amendment) and are no longer blockers.
+  // CHECKOUT EXCEPTION (2026-11-03): packs go out full and in date, so there a
+  // shortage blocks again and NO blocker is cleared by Report / Acknowledge —
+  // only fixing it (Set to par, in-date month, passing PSI) removes it from the
+  // list. Check-in and audit are unchanged.
   const fixList = useMemo<FixItem[]>(() => {
     const list: FixItem[] = [];
     const pocketNameOf = (p?: StatpackPocket) => POCKETS.find(pk => pk.id === p)?.name;
@@ -1307,8 +1324,8 @@ export default function StatpackCheckOffPage() {
       }
 
       const found = countOf(it);
-      const iss = computeIssue(it, rules, found, chk, today);
-      if (iss.blocking && !isResolved(resolution[statpackEntryKey(it)])) {
+      const iss = computeIssue(it, rules, found, chk, today, mode);
+      if (iss.blocking && (mode === 'checkout' || !isResolved(resolution[statpackEntryKey(it)]))) {
         const details: string[] = [];
         // Blocking problems lead; a shortage on the same item rides along after them.
         if (iss.expired) {
@@ -1319,7 +1336,7 @@ export default function StatpackCheckOffPage() {
         if (iss.short) details.push(`Only ${found} of the ${it.requiredQuantity} that should be here — ${iss.shortBy} missing`);
 
         const fixes: string[] = [];
-        if (iss.short) fixes.push(`add the missing ${iss.shortBy} and tap "Set to par"`);
+        if (iss.short) fixes.push(mode === 'checkout' ? `fill it up to ${it.requiredQuantity} and tap "Set to par"` : `add the missing ${iss.shortBy} and tap "Set to par"`);
         if (iss.expired) fixes.push('swap in one that is still in date and type its new month in the box');
         if (iss.lowPsi) fixes.push('swap in a full cylinder and type its new number in the "Cylinder pressure" box');
 
@@ -1329,10 +1346,12 @@ export default function StatpackCheckOffPage() {
           kind: 'issue',
           headline: details[0],
           details,
-          fixHint:
-            `Tap this row, then ${joinList(fixes)}. ` +
-            'If there is none on the shelf, tap "Report" so an admin is told. ' +
-            `If it has to go out like this, tap "Acknowledge" and say why — that is recorded ${lead}.`,
+          fixHint: mode === 'checkout'
+            ? `Tap this row, then ${joinList(fixes)}. ` +
+              'If there\'s none on the shelf, tap "Can\'t fix it — flag this pack" and take another pack.'
+            : `Tap this row, then ${joinList(fixes)}. ` +
+              'If there is none on the shelf, tap "Report" so an admin is told. ' +
+              `If it has to go out like this, tap "Acknowledge" and say why — that is recorded ${lead}.`,
         });
       }
     });
@@ -1376,7 +1395,7 @@ export default function StatpackCheckOffPage() {
       if (rules.hasRules && !checksComplete(rules, chk)) return;   // already a blocker
 
       const found = countOf(it);
-      const iss = computeIssue(it, rules, found, chk, today);
+      const iss = computeIssue(it, rules, found, chk, today, mode);
       if (iss.short && !iss.blocking && !resolution[statpackEntryKey(it)]) {
         const pName = pocketNameOf(it.pocket);
         list.push({
@@ -1411,7 +1430,7 @@ export default function StatpackCheckOffPage() {
       });
     }
     return list;
-  }, [allItems, itemChecks, countOf, resolution, sharps, sharpsAck, today]);
+  }, [allItems, itemChecks, countOf, resolution, sharps, sharpsAck, today, mode]);
 
   const fixCountByPocket = useMemo(() => {
     const m: Record<string, number> = {};
@@ -1527,7 +1546,7 @@ export default function StatpackCheckOffPage() {
       const chk = itemChecks[statpackEntryKey(it)] ?? {};
       const found = countOf(it);
       const res = resolution[statpackEntryKey(it)];
-      const iss = computeIssue(it, rules, found, chk, today);
+      const iss = computeIssue(it, rules, found, chk, today, mode);
       const baseName = it.itemDetails?.name || 'Unknown';
       const variant = it.variantName || it.itemDetails?.variantLabel;
       const displayName = variant && !baseName.includes(variant) ? `${baseName} · ${variant}` : baseName;
@@ -1552,6 +1571,7 @@ export default function StatpackCheckOffPage() {
       const newExpirationDate = enteredMonth ? parseExpMonth(enteredMonth) ?? undefined : undefined;
 
       return {
+        critical: isCriticalStatpackItem(it),
         itemId: it.itemId,
         itemName: displayName,
         batchId: it.batchId,
@@ -1577,6 +1597,16 @@ export default function StatpackCheckOffPage() {
         } : undefined,
         restockStatus,
       };
+    });
+
+    // AED items whose checks are finished and whose pads are in date: refresh the device check.
+    const freshDeviceChecks: { itemId: string; padExpiration?: Date }[] = [];
+    allItems.forEach(it => {
+      const rules = deriveRules(it);
+      const chk = itemChecks[statpackEntryKey(it)] ?? {};
+      if (rules.needAED && checksComplete(rules, chk) && !isMonthExpired(chk.padExp, today)) {
+        freshDeviceChecks.push({ itemId: it.itemId, padExpiration: parseExpMonth(chk.padExp) ?? undefined });
+      }
     });
 
     const sealChecks: Record<string, { sealed: boolean }> = {};
@@ -1606,6 +1636,7 @@ export default function StatpackCheckOffPage() {
         userId: effectiveUid ?? user.uid,
         userName: actorName || user.displayName || user.email || 'Unknown',
         checkEntries,
+        freshDeviceChecks: freshDeviceChecks.length > 0 ? freshDeviceChecks : undefined,
         sealChecks: Object.keys(sealChecks).length > 0 ? sealChecks : undefined,
         oxygenReadings: Object.keys(oxygenReadings).length > 0 ? oxygenReadings : undefined,
         sharpsCheck,
@@ -1705,6 +1736,74 @@ export default function StatpackCheckOffPage() {
     if (mode === 'checkin') { setShowReview(true); return; }
     doSubmit();
   }, [pack, user, checkoutUnavailable, fixList, mode, doSubmit, showToast, revealFix]);
+
+  // ── "Can't fix it — flag this pack" (checkout only) ───────────────────────
+  // What the member could not fill: shortages, expired items, low O₂ PSI, and
+  // AED / O₂ devices whose checks failed or weren't finished. Mirrors fixList's
+  // per-item order (unfinished checks win, one blocker per item).
+  const unfillable = useMemo<UnfillableItem[]>(() => {
+    if (mode !== 'checkout') return [];
+    const out: UnfillableItem[] = [];
+    allItems.forEach(it => {
+      const rules = deriveRules(it);
+      const chk = itemChecks[statpackEntryKey(it)] ?? {};
+      const base = {
+        itemId: it.itemId,
+        itemName: it.itemDetails?.name || `Item ${it.itemId.slice(-6)}`,
+        critical: isCriticalStatpackItem(it),
+      };
+      if (rules.hasRules && !checksComplete(rules, chk)) {
+        if (rules.needAED || rules.needPsi) {
+          const bits: string[] = [];
+          if (rules.needAED && !chk.batteryOk) bits.push('battery not confirmed green');
+          if (rules.needAED && !chk.padsSealed) bits.push('pads not confirmed sealed');
+          if (rules.needAED && !chk.padExp) bits.push('pad expiration not entered');
+          if (rules.needPsi && !chk.psi) bits.push('pressure not entered');
+          if (rules.needPsi && !chk.regulatorOk) bits.push('regulator not confirmed working');
+          out.push({ ...base, problem: 'check_failed', detail: joinList(bits) || 'checks not finished' });
+        }
+        return;
+      }
+      const iss = computeIssue(it, rules, countOf(it), chk, today, mode);
+      if (iss.short) out.push({ ...base, problem: 'short', detail: `${countOf(it)} of ${it.requiredQuantity} on hand` });
+      if (iss.expired) {
+        const exp = effectiveExpDate(it, rules, chk);
+        out.push({ ...base, problem: 'expired', detail: exp ? `expired ${fmtMonthYear(exp)}` : 'expired' });
+      }
+      if (iss.lowPsi) out.push({ ...base, problem: 'low_psi', detail: `reads ${chk.psi} psi` });
+    });
+    return out;
+  }, [mode, allItems, itemChecks, countOf, today]);
+
+  const [showFlagConfirm, setShowFlagConfirm] = useState(false);
+  const [flagging, setFlagging] = useState(false);
+
+  const handleFlagPack = useCallback(async () => {
+    if (!pack || !user || flagging) return;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      showToast("You're offline — reconnect, then try again.", false);
+      return;
+    }
+    setFlagging(true);
+    try {
+      const { reportFailures } = await flagUnfillablePack(
+        { id: pack.id, name: pack.name },
+        unfillable,
+        { uid: effectiveUid ?? user.uid, name: actorName || user.displayName || user.email || 'Unknown' },
+      );
+      setShowFlagConfirm(false);
+      if (reportFailures > 0) {
+        showToast(`Flagged for logistics — pick another pack — but ${reportFailures} report${reportFailures === 1 ? '' : 's'} couldn't be saved; tell an admin`, false);
+      } else {
+        showToast('Flagged for logistics — pick another pack', true);
+      }
+      router.push('/statpacks/checkout');
+    } catch (e) {
+      // flagUnfillablePack never throws; this is a belt-and-braces guard.
+      showToast(e instanceof Error ? e.message : 'Could not flag this pack', false);
+      setFlagging(false);
+    }
+  }, [pack, user, flagging, unfillable, effectiveUid, actorName, showToast, router]);
 
   const reviewSummary = useMemo(() => {
     if (!showReview) return null;
@@ -1990,6 +2089,44 @@ export default function StatpackCheckOffPage() {
           {fixList.length > 0 && (
             <ThingsToFixCard mode={mode} items={fixList} onSelect={revealFix} />
           )}
+          {mode === 'checkout' && unfillable.length > 0 && (
+            <Button
+              data-testid="flag-pack-button"
+              color="warning"
+              variant="flat"
+              className="font-semibold"
+              isDisabled={flagging || submitting}
+              onPress={() => setShowFlagConfirm(true)}
+            >
+              Can&apos;t fix it — flag this pack
+            </Button>
+          )}
+          <Modal isOpen={showFlagConfirm} onOpenChange={(o) => { if (!flagging) setShowFlagConfirm(o); }}>
+            <ModalContent>
+              <ModalHeader>Flag this pack for logistics?</ModalHeader>
+              <ModalBody>
+                <p className="text-sm">It won&apos;t be checked out — you&apos;ll pick another pack.</p>
+                <p className="text-sm text-foreground-500">Logistics will get a report for:</p>
+                <ul className="text-sm list-disc pl-5 flex flex-col gap-0.5">
+                  {unfillable.map((u, i) => (
+                    <li key={`${u.itemId}:${u.problem}:${i}`}>{u.itemName}: {u.detail}</li>
+                  ))}
+                </ul>
+              </ModalBody>
+              <ModalFooter>
+                <Button variant="light" isDisabled={flagging} onPress={() => setShowFlagConfirm(false)}>Cancel</Button>
+                <Button
+                  data-testid="flag-pack-confirm"
+                  color="warning"
+                  isLoading={flagging}
+                  isDisabled={flagging}
+                  onPress={handleFlagPack}
+                >
+                  Flag pack
+                </Button>
+              </ModalFooter>
+            </ModalContent>
+          </Modal>
           {flagList.length > 0 && (
             <ThingsToFixCard mode={mode} variant="flag" items={flagList} onSelect={revealFix} />
           )}
@@ -2154,7 +2291,7 @@ export default function StatpackCheckOffPage() {
                       const rules = deriveRules(it);
                       const chk = itemChecks[statpackEntryKey(it)] ?? {};
                       const found = countOf(it);
-                      const iss = computeIssue(it, rules, found, chk, today);
+                      const iss = computeIssue(it, rules, found, chk, today, mode);
                       return (
                         <ItemRow
                           key={statpackEntryKey(it)}

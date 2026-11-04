@@ -18,6 +18,10 @@ import {
   deleteAedComponent,
   type AedComponent,
 } from '@/app/lib/asset-components';
+import { useUserRole } from '@/app/hooks/useUserRole';
+import { canUserAudit } from '@/app/lib/audit-helpers';
+import { recordControlTest } from '@/app/lib/asset-checks';
+import { getThresholds } from '@/app/lib/org-config-store';
 import { parseDateInput, toDateInputValue } from '@/app/lib/dates';
 
 type SelectChildren = Extract<React.ComponentProps<typeof Select>['children'], React.ReactElement>;
@@ -92,6 +96,10 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
   const [showTopScanner, setShowTopScanner] = useState(false);
   const [scannedTopCode, setScannedTopCode] = useState<string>('');
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const { user: authUser, userData, role: userRole, effectiveUid } = useUserRole();
+  const [ctBusy, setCtBusy] = useState(false);
+  const [ctMsg, setCtMsg] = useState<string | null>(null);
+  const [ctNow] = useState(() => Date.now());
   
   // Scanner and barcode assignment state
   const [showScanner, setShowScanner] = useState(false);
@@ -889,6 +897,47 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
               </div>
             )}
           </Section>
+          {initial?.id && (initial.controlTest || /glucometer|glucose meter/i.test(initial.name ?? '')) && (() => {
+            const ct = (initial.controlTest ?? {}) as { lastPassedAt?: unknown; intervalDays?: number; lastResult?: string };
+            const lp = ct.lastPassedAt as { toDate?: () => Date; seconds?: number } | Date | undefined;
+            const passed = !lp ? null : lp instanceof Date ? lp : typeof lp.toDate === 'function' ? lp.toDate() : typeof lp.seconds === 'number' ? new Date(lp.seconds * 1000) : null;
+            const interval = ct.intervalDays ?? getThresholds().glucometerControlTestIntervalDays;
+            const overdue = !passed || ctNow - passed.getTime() > interval * 86400000;
+            const canRecord = canUserAudit(userData ? { role: userData.role, canAudit: userData.canAudit } : (userRole ? { role: userRole, canAudit: false } : null));
+            const record = async (result: 'pass' | 'fail') => {
+              if (!initial) return;
+              const uid = effectiveUid || authUser?.uid;
+              if (!uid) return;
+              setCtBusy(true);
+              setCtMsg(null);
+              try {
+                await recordControlTest(initial, result, { uid, name: userData?.fullName || authUser?.displayName || 'Unknown', email: authUser?.email }, undefined);
+                setCtMsg(`Control test ${result === 'pass' ? 'pass' : 'fail'} recorded.`);
+              } catch (e) {
+                console.error(e);
+                setCtMsg('Could not record the control test.');
+              } finally {
+                setCtBusy(false);
+              }
+            };
+            return (
+              <Section title="Control test">
+                <div className="flex items-center gap-2 flex-wrap text-sm">
+                  <span>Last passed: {passed ? passed.toLocaleDateString() : 'Never recorded'}</span>
+                  <span className="text-foreground-400">every {interval} days</span>
+                  {overdue && <Chip size="sm" color="danger" variant="flat">Overdue</Chip>}
+                  {ct.lastResult === 'fail' && <Chip size="sm" color="warning" variant="flat">Last result: fail</Chip>}
+                </div>
+                {canRecord && (
+                  <div className="flex items-center gap-2 mt-2">
+                    <Button size="sm" color="success" variant="flat" isLoading={ctBusy} onPress={() => record('pass')}>Record pass</Button>
+                    <Button size="sm" color="danger" variant="flat" isLoading={ctBusy} onPress={() => record('fail')}>Record fail</Button>
+                    {ctMsg && <span className="text-xs text-foreground-500">{ctMsg}</span>}
+                  </div>
+                )}
+              </Section>
+            );
+          })()}
           </ModalBody>
           <BarcodeScanner isOpen={showTopScanner} onClose={() => setShowTopScanner(false)} onDetected={handleTopScanDetected} />
           <ModalFooter>

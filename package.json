@@ -33,6 +33,7 @@
     "test:events": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx ./scripts/emulator/run-events.ts\"",
     "test:buylist-intake": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx ./scripts/emulator/run-buy-list-intake.ts\"",
     "test:statpack-status-log": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx --test app/lib/__tests__/statpack-status-log.test.ts\"",
+    "test:checkout-full": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"./node_modules/.bin/tsx --test app/lib/__tests__/statpack-checkout-full.test.ts\"",
     "migrate:normalize-expiration-months": "node ./scripts/normalize-expiration-months.cjs",
     "rehearse:expiration-months": "firebase emulators:exec --config firebase.emulator.json --only firestore --project demo-bmrc-logistics \"node ./scripts/emulator/rehearse-expiration-months.cjs\"",
     "repair:statpack-checkout-conflicts": "node ./scripts/repair-statpack-checkout-conflicts.cjs",
