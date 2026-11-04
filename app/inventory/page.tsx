@@ -408,6 +408,8 @@ export default function InventoryPage() {
   const [dupReviewOpen, setDupReviewOpen] = useState(false);
 
   const [mergeModalOpen, setMergeModalOpen] = useState(false);
+  const [mergeFromReview, setMergeFromReview] = useState(false);
+  const [dismissedDupKeys, setDismissedDupKeys] = useState<Set<string>>(new Set());
   const [mergeCandidateIds, setMergeCandidateIds] = useState<string[]>([]);
   const [mergeSurvivorId, setMergeSurvivorId] = useState<string>('');
   const [mergePreview, setMergePreview] = useState<MergePreview | null>(null);
@@ -697,15 +699,29 @@ export default function InventoryPage() {
     });
   }
 
-  function openMergeModal(ids: string[]) {
+  function openMergeModal(ids: string[], fromReview = false) {
     const uniq = Array.from(new Set(ids));
     if (uniq.length < 2) return;
     setMergeCandidateIds(uniq);
     setMergeSurvivorId(uniq[0]);
     setMergeError('');
     setMergePreview(null);
+    setMergeFromReview(fromReview);
     setDupReviewOpen(false);
     setMergeModalOpen(true);
+  }
+
+  // Close the merge modal; return to duplicate review when it was opened from there.
+  function closeMergeModal() {
+    setMergeModalOpen(false);
+    if (mergeFromReview) { setDupReviewOpen(true); setMergeFromReview(false); }
+  }
+
+  function excludeMergeCandidate(id: string) {
+    if (id === mergeSurvivorId) return;
+    const next = mergeCandidateIds.filter(x => x !== id);
+    if (next.length < 2) { closeMergeModal(); return; }
+    setMergeCandidateIds(next);
   }
 
   // Load the merge preview whenever the modal opens or the chosen survivor changes.
@@ -729,7 +745,7 @@ export default function InventoryPage() {
     setMergeLoading(true);
     try {
       await mergeInventoryItems({ survivorId: mergeSurvivorId, loserIds, actor: actorForMerge });
-      setMergeModalOpen(false);
+      closeMergeModal();
       setMergeCandidateIds([]);
       setMergeSurvivorId('');
       setMergePreview(null);
@@ -786,6 +802,10 @@ export default function InventoryPage() {
 
   // ── Computed ───────────────────────────────────────────────────────────────
   const duplicateGroups = useMemo(() => findDuplicateCandidates(inventory), [inventory]);
+  const visibleDuplicateGroups = useMemo(
+    () => duplicateGroups.filter(g => !dismissedDupKeys.has(g.key)),
+    [duplicateGroups, dismissedDupKeys],
+  );
 
   const statusCounts = useMemo(() => {
     const c = { ok: 0, low: 0, out: 0, expired: 0, expiring: 0 };
@@ -933,11 +953,11 @@ export default function InventoryPage() {
         </div>
 
         {/* ── Possible duplicates banner ────────────────────────────────── */}
-        {canWrite && duplicateGroups.length > 0 && !dupBannerDismissed && (
+        {canWrite && visibleDuplicateGroups.length > 0 && !dupBannerDismissed && (
           <div className="flex-none flex items-center gap-3 bg-warning-50 dark:bg-warning-900/20 border border-warning/30 rounded-large px-4 py-2.5 mb-4 flex-wrap">
             <AlertTriangle size={16} className="text-warning flex-none" />
             <span className="text-sm font-semibold text-warning">
-              <span className="font-mono tabular-nums">{duplicateGroups.length}</span> possible duplicate group{duplicateGroups.length !== 1 ? 's' : ''} found
+              <span className="font-mono tabular-nums">{visibleDuplicateGroups.length}</span> possible duplicate group{visibleDuplicateGroups.length !== 1 ? 's' : ''} found
             </span>
             <div className="flex items-center gap-2 ml-auto">
               <Button size="sm" variant="flat" color="warning" onPress={() => setDupReviewOpen(true)}>
@@ -1610,11 +1630,11 @@ export default function InventoryPage() {
           <>
             <ModalHeader>Possible duplicates</ModalHeader>
             <ModalBody className="pb-6">
-              {duplicateGroups.length === 0 ? (
+              {visibleDuplicateGroups.length === 0 ? (
                 <p className="text-sm text-foreground-400">No duplicate groups found.</p>
               ) : (
                 <div className="flex flex-col gap-3">
-                  {duplicateGroups.map(group => (
+                  {visibleDuplicateGroups.map(group => (
                     <div key={group.key} className="border border-divider rounded-large p-3">
                       <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
                         <Chip size="sm" variant="flat" color={group.reason === 'fuzzy' ? 'warning' : 'primary'}>
@@ -1623,15 +1643,24 @@ export default function InventoryPage() {
                             : group.reason === 'name' ? 'Same name'
                             : 'Similar name'}
                         </Chip>
-                        <Button
-                          size="sm"
-                          color="primary"
-                          variant="flat"
-                          startContent={<Copy size={13} />}
-                          onPress={() => openMergeModal(group.items.map(i => i.id))}
-                        >
-                          Merge these {group.items.length}
-                        </Button>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            size="sm"
+                            variant="light"
+                            onPress={() => setDismissedDupKeys(prev => new Set(prev).add(group.key))}
+                          >
+                            Not duplicates
+                          </Button>
+                          <Button
+                            size="sm"
+                            color="primary"
+                            variant="flat"
+                            startContent={<Copy size={13} />}
+                            onPress={() => openMergeModal(group.items.map(i => i.id), true)}
+                          >
+                            Merge these {group.items.length}
+                          </Button>
+                        </div>
                       </div>
                       <div className="flex flex-col gap-1">
                         {group.items.map(it => (
@@ -1653,7 +1682,7 @@ export default function InventoryPage() {
       </Modal>
 
       {/* ── Merge modal ────────────────────────────────────────────────────── */}
-      <Modal isOpen={mergeModalOpen} onOpenChange={setMergeModalOpen} size="2xl" scrollBehavior="inside">
+      <Modal isOpen={mergeModalOpen} onOpenChange={(open) => { if (open) setMergeModalOpen(true); else closeMergeModal(); }} size="2xl" scrollBehavior="inside">
         <ModalContent>
           <>
             <ModalHeader>Merge duplicate items</ModalHeader>
@@ -1669,9 +1698,16 @@ export default function InventoryPage() {
                   if (!it) return null;
                   const bag = computeBagStock(it);
                   return (
-                    <Radio key={id} value={id} description={`${bag.totalItems} on hand · ${it.category}`}>
-                      {it.name}
-                    </Radio>
+                    <div key={id} className="flex items-center justify-between gap-2">
+                      <Radio value={id} description={`${bag.totalItems} on hand · ${it.category}`}>
+                        {it.name}
+                      </Radio>
+                      {id !== mergeSurvivorId && (
+                        <Button size="sm" variant="light" onPress={() => excludeMergeCandidate(id)}>
+                          Not a duplicate
+                        </Button>
+                      )}
+                    </div>
                   );
                 })}
               </RadioGroup>
@@ -1727,7 +1763,7 @@ export default function InventoryPage() {
               )}
             </ModalBody>
             <ModalFooter>
-              <Button variant="light" onPress={() => setMergeModalOpen(false)}>Cancel</Button>
+              <Button variant="light" onPress={closeMergeModal}>Cancel</Button>
               <Button
                 color="primary"
                 isDisabled={!mergePreview || !!mergeError || mergeLoading || mergePreviewLoading}

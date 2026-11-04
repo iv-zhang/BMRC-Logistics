@@ -549,7 +549,9 @@ test('member dashboard (signed in, member override)', async ({ page }) => {
 // pack must be offered on the checkout list, and checking it out must not be
 // held up by its shortage — the amber "Flagged for restock" card shows instead
 // of a blocking "need fixing" count, and the submit goes through.
-test('restock-needed pack is flagged but can still be checked out', async ({ page }) => {
+// D-8 2026-11-03: a Restock Needed pack stays in the picker, but checkout is
+// blocked until the member fills it to par during the check-off.
+test('restock-needed pack is listed, blocked until set to par, then checks out', async ({ page }) => {
   const testRunId = `smoke-restock-${Date.now()}`;
   const purpose = 'Verify short-pack checkout assignment, member dashboard ownership, and quick check-in status preservation';
   const PACK = `[TEST] Smoke Short Pack ${testRunId}`;
@@ -615,10 +617,13 @@ test('restock-needed pack is flagged but can still be checked out', async ({ pag
     await page.goto(`/statpacks/check-off?id=${packId}&mode=checkout`, { waitUntil: 'domcontentloaded' });
     await page.waitForLoadState('load');
     await page.waitForTimeout(2500);
-    await expect(page.getByText('Flagged for restock', { exact: false }).first()).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText(/need(s)? fixing/)).toHaveCount(0);
-    await page.screenshot({ path: join(SHOTS, 'checkoff-restock-flag.png'), fullPage: true });
+    await expect(page.getByText(/need(s)? fixing/).first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole('button', { name: 'Report', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Acknowledge', exact: true })).toHaveCount(0);
+    await page.screenshot({ path: join(SHOTS, 'checkoff-short-blocked.png'), fullPage: true });
 
+    await page.getByRole('button', { name: 'Set to par', exact: true }).first().click();
+    await expect(page.getByText(/need(s)? fixing/)).toHaveCount(0);
     await page.getByRole('button', { name: 'Complete Checkout' }).click();
     await expect.poll(async () => (await getDocById('statpacks', packId))?.isCheckedOut, { timeout: 15_000 }).toBe(true);
     const checkedOut = await getDocById('statpacks', packId);
@@ -641,11 +646,11 @@ test('restock-needed pack is flagged but can still be checked out', async ({ pag
     await page.getByRole('button', { name: /No, used nothing/ }).click();
     await expect.poll(async () => {
       const pack = await getDocById('statpacks', packId);
-      return pack?.isCheckedOut === false && pack?.status === 'Restock Needed';
+      return pack?.isCheckedOut === false && pack?.status === 'Ready';
     }, { timeout: 15_000 }).toBe(true);
 
     const checkedIn = await getDocById('statpacks', packId);
-    expect(checkedIn?.contents?.[0]?.currentQuantity).toBe(0);
+    expect(checkedIn?.contents?.[0]?.currentQuantity).toBe(20);
     expect(checkedIn?.assignedToUserId).toBeNull();
     const checkinLog = (await listCollection('statpack_logs')).find(
       (log) => log.statpackId === packId && log.action === 'checkin',
@@ -1118,4 +1123,240 @@ test('audit package and loose count works at desktop and phone widths', async ({
       createdAt: new Date(),
     }, testRunId);
   }
+});
+
+// Issue #19/#30: the Report button no longer claims the report is filed before
+// submit, an offline submit is refused with a clear toast (no endless spinner),
+// and the report is actually written to issue_reports once back online.
+test('check-in report toast, offline submit guard, and report reaches issue_reports', async ({ page, context }) => {
+  const testRunId = `smoke-report-${Date.now()}`;
+  const PACK = `[TEST] Smoke Report Pack ${testRunId}`;
+  const packId = await createDoc('statpacks', {
+    isTest: true,
+    testRunId,
+    name: PACK,
+    type: 'Primary',
+    status: 'In Use',
+    isCheckedOut: true,
+    currentLocation: 'MRC1',
+    compartments: [{ id: 'main', name: 'Main', parentPocket: 'main', isSealed: false }],
+    contents: [{ itemId: 'gauze-2x2', batchId: '', requiredQuantity: 20, currentQuantity: 0, pocket: 'main' }],
+    sharpsContainer: { status: 'ok' },
+  });
+
+  await signIn(page);
+  await page.goto(`/statpacks/check-off?id=${packId}&mode=checkin`, { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2500);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+  await page.getByText('Open full check-off').click();
+
+  await page.getByRole('button', { name: 'Report', exact: true }).first().click();
+  await page.getByLabel('Report notes').fill('smoke: none on hand');
+  await page.getByRole('button', { name: 'File', exact: true }).click();
+  await expect(page.getByText('Will be reported to admin when you submit')).toBeVisible();
+  await expect(page.getByText('Issue reported to admin')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Review Check-In' }).click();
+  await context.setOffline(true);
+  await page.getByRole('button', { name: 'Confirm Check-In' }).click();
+  await expect(page.getByText(/You're offline/)).toBeVisible();
+  await page.screenshot({ path: join(SHOTS, 'checkoff-offline-toast.png'), fullPage: true });
+  expect((await getDocById('statpacks', packId))?.isCheckedOut).toBe(true);
+
+  await context.setOffline(false);
+  await page.waitForTimeout(1500);
+  // The offline refusal leaves the review sheet open; confirm from it again.
+  await page.getByRole('button', { name: 'Confirm Check-In' }).click();
+  await expect.poll(async () => (await getDocById('statpacks', packId))?.isCheckedOut, { timeout: 15_000 }).toBe(false);
+  await expect.poll(async () => (await listCollection('issue_reports')).some(
+    (r) => r.target?.docId === packId && r.component === 'statpack_checkoff',
+  ), { timeout: 15_000 }).toBe(true);
+});
+
+// Issue #21: merging from the duplicate review returns to the review list, a
+// candidate can be excluded, and a group can be dismissed for the session.
+test('duplicate review: exclude, cancel and merge return to review; dismiss hides group', async ({ page }) => {
+  const stamp = Date.now();
+  const base = { category: 'First Aid', unit: 'each', itemsPerBox: 10, looseUnits: 0, isAsset: false, isTest: true };
+  const splintA = `E2E Splint Roll ${stamp}`;
+  const splintB = `E2E Splint Rol ${stamp}`;
+  const coldA = `E2E Cold Pack ${stamp}`;
+  const coldB = `E2E Cold Packs ${stamp}`;
+  const splintAId = await createDoc('inventory', { ...base, name: splintA, unopenedBoxes: 2, totalStockQuantity: 20 });
+  const splintBId = await createDoc('inventory', { ...base, name: splintB, unopenedBoxes: 1, totalStockQuantity: 10 });
+  await createDoc('inventory', { ...base, name: coldA, unopenedBoxes: 1, totalStockQuantity: 10 });
+  await createDoc('inventory', { ...base, name: coldB, unopenedBoxes: 1, totalStockQuantity: 10 });
+
+  await signIn(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/inventory', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(3000);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+
+  await page.getByRole('button', { name: 'Review', exact: true }).click();
+  const review = page.getByRole('dialog').filter({ hasText: 'Possible duplicates' });
+  await expect(review).toBeVisible();
+  const splintGroup = review.locator('div.border').filter({ hasText: splintA }).filter({ hasText: splintB });
+  await expect(splintGroup).toHaveCount(1);
+  await page.screenshot({ path: join(SHOTS, 'dup-review.png') });
+
+  const merge = page.getByRole('dialog').filter({ hasText: 'Merge duplicate items' });
+  // Exclude the only other candidate -> drops below 2 -> back to review.
+  await splintGroup.getByRole('button', { name: /Merge these 2/ }).click();
+  await expect(merge).toBeVisible();
+  await merge.getByRole('button', { name: 'Not a duplicate' }).click();
+  await expect(review).toBeVisible();
+  await expect(merge).toHaveCount(0);
+
+  // Cancel -> back to review.
+  await splintGroup.getByRole('button', { name: /Merge these 2/ }).click();
+  await expect(merge).toBeVisible();
+  await merge.getByRole('button', { name: 'Cancel' }).click();
+  await expect(review).toBeVisible();
+
+  // Merge -> back to review, group gone, loser archived.
+  await splintGroup.getByRole('button', { name: /Merge these 2/ }).click();
+  await expect(merge).toBeVisible();
+  await page.waitForTimeout(1500); // preview load
+  await merge.getByRole('button', { name: /^(Merge|Confirm)/i }).last().click();
+  await expect(review).toBeVisible({ timeout: 15_000 });
+  await expect(splintGroup).toHaveCount(0, { timeout: 15_000 });
+  const [a, b] = await Promise.all([getDocById('inventory', splintAId), getDocById('inventory', splintBId)]);
+  expect(Boolean(a?.isArchived) !== Boolean(b?.isArchived), 'exactly one splint fixture archived').toBe(true);
+
+  // Dismiss the cold-pack group for the session.
+  const coldGroup = review.locator('div.border').filter({ hasText: coldA }).filter({ hasText: coldB });
+  await expect(coldGroup).toHaveCount(1);
+  await coldGroup.getByRole('button', { name: 'Not duplicates' }).click();
+  await expect(coldGroup).toHaveCount(0);
+  await page.screenshot({ path: join(SHOTS, 'dup-review-after.png') });
+});
+
+// Issue #19: a stalled connection (browser still reports online) must not spin
+// forever — after SUBMIT_TIMEOUT_MS the UI unlocks with a "may already be saved"
+// warning. Simulated by black-holing every Firestore emulator request after load.
+test('check-off submit times out on a stalled network instead of hanging', async ({ page }) => {
+  test.setTimeout(150_000);
+  const testRunId = `smoke-stall-${Date.now()}`;
+  const packId = await createDoc('statpacks', {
+    isTest: true,
+    testRunId,
+    name: `[TEST] Smoke Stall Pack ${testRunId}`,
+    type: 'Primary',
+    status: 'Ready',
+    isCheckedOut: false,
+    currentLocation: 'MRC1',
+    compartments: [{ id: 'main', name: 'Main', parentPocket: 'main', isSealed: false }],
+    contents: [{ itemId: 'gauze-2x2', batchId: '', requiredQuantity: 20, currentQuantity: 20, pocket: 'main' }],
+    sharpsContainer: { status: 'ok' },
+  });
+
+  await signIn(page);
+  await page.goto(`/statpacks/check-off?id=${packId}&mode=checkout`, { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2500);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+  await expect(page.getByRole('button', { name: 'Complete Checkout' })).toBeVisible();
+
+  // Hang (never answer) every Firestore emulator request from here on.
+  await page.route(/127\.0\.0\.1:8080/, () => { /* never fulfilled */ });
+  const started = Date.now();
+  await page.getByRole('button', { name: 'Complete Checkout' }).click();
+  await expect(page.getByText(/Still waiting on the network/)).toBeVisible({ timeout: 70_000 });
+  const elapsed = Date.now() - started;
+  expect(elapsed).toBeGreaterThan(40_000);
+  await page.screenshot({ path: join(SHOTS, 'checkoff-stall-timeout.png'), fullPage: true });
+  // Spinner released: the submit button is usable again.
+  await expect(page.getByRole('button', { name: 'Complete Checkout' })).toBeEnabled();
+  await page.unroute(/127\.0\.0\.1:8080/);
+});
+
+// D-8 2026-11-03: a pack that can't be filled is flagged instead of going out.
+test('short checkout is blocked; "flag this pack" files a report and returns to the picker', async ({ page }) => {
+  const testRunId = `smoke-flagpack-${Date.now()}`;
+  const packId = await createDoc('statpacks', {
+    isTest: true,
+    testRunId,
+    name: `[TEST] Smoke Flag Pack ${testRunId}`,
+    type: 'Primary',
+    status: 'Ready',
+    isCheckedOut: false,
+    currentLocation: 'MRC1',
+    compartments: [{ id: 'main', name: 'Main', parentPocket: 'main', isSealed: false }],
+    contents: [{ itemId: 'gauze-2x2', batchId: '', requiredQuantity: 20, currentQuantity: 5, pocket: 'main' }],
+    sharpsContainer: { status: 'ok' },
+  });
+
+  await signIn(page);
+  await page.goto(`/statpacks/check-off?id=${packId}&mode=checkout`, { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2500);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+
+  await expect(page.getByText(/need(s)? fixing/).first()).toBeVisible({ timeout: 10_000 });
+  await page.getByTestId('flag-pack-button').click();
+  await expect(page.getByText('Flag this pack for logistics?')).toBeVisible();
+  await page.screenshot({ path: join(SHOTS, 'checkoff-flag-pack-confirm.png'), fullPage: true });
+  await page.getByTestId('flag-pack-confirm').click();
+  await page.waitForURL(/\/statpacks\/checkout/, { timeout: 20_000 });
+
+  expect((await getDocById('statpacks', packId))?.isCheckedOut).toBeFalsy();
+  await expect.poll(async () => (await listCollection('issue_reports')).some(
+    (r) => r.target?.docId === packId && String(r.title).startsWith("Can't fill at checkout"),
+  ), { timeout: 15_000 }).toBe(true);
+  await expect.poll(async () => (await listCollection('team_tasks')).some(
+    (t) => t.linkedStatpackId === packId,
+  ), { timeout: 15_000 }).toBe(true);
+});
+
+// #30: an acknowledgement at check-in files an issue report, and every
+// check-off shows on the /reports Check-offs tab.
+test('check-in acknowledgement files a report and the check-off shows on /reports', async ({ page }) => {
+  const testRunId = `smoke-ack-${Date.now()}`;
+  const PACK = `[TEST] Smoke Ack Pack ${testRunId}`;
+  const packId = await createDoc('statpacks', {
+    isTest: true,
+    testRunId,
+    name: PACK,
+    type: 'Primary',
+    status: 'In Use',
+    isCheckedOut: true,
+    currentLocation: 'MRC1',
+    compartments: [{ id: 'main', name: 'Main', parentPocket: 'main', isSealed: false }],
+    contents: [{ itemId: 'gauze-2x2', batchId: '', requiredQuantity: 20, currentQuantity: 0, pocket: 'main' }],
+    sharpsContainer: { status: 'ok' },
+  });
+
+  await signIn(page);
+  await page.goto(`/statpacks/check-off?id=${packId}&mode=checkin`, { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2500);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+  await page.getByText('Open full check-off').click();
+
+  await page.getByRole('button', { name: 'Acknowledge', exact: true }).first().click();
+  await page.getByLabel('Acknowledge reason').fill('smoke: used on a call');
+  await page.getByRole('button', { name: 'Confirm', exact: true }).click();
+  await page.getByRole('button', { name: 'Review Check-In' }).click();
+  await page.getByRole('button', { name: 'Confirm Check-In' }).click();
+  await expect.poll(async () => (await getDocById('statpacks', packId))?.isCheckedOut, { timeout: 15_000 }).toBe(false);
+  await expect.poll(async () => (await listCollection('issue_reports')).some(
+    (r) => r.target?.docId === packId && String(r.title).startsWith('Acknowledged:'),
+  ), { timeout: 15_000 }).toBe(true);
+
+  await page.goto('/reports', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2000);
+  await page.getByRole('tab', { name: 'Check-offs' }).click();
+  const row = page.getByTestId('checkoff-report-row').filter({ hasText: PACK }).first();
+  await expect(row).toBeVisible({ timeout: 15_000 });
+  await expect(row.getByText(/acknowledged/i).first()).toBeVisible();
+  await page.screenshot({ path: join(SHOTS, 'reports-checkoffs-tab.png'), fullPage: true });
 });

@@ -7,6 +7,8 @@ import { createReport } from '@/app/lib/reports';
 import { getAssetCategoriesRuntime, getThresholds } from '@/app/lib/org-config-store';
 import { endEventShifts } from '@/app/lib/events';
 import { flagStatpackRestock } from '@/app/lib/statpack-restock-flag';
+import { isCriticalItem } from '@/app/lib/statpack-critical';
+import { broadcastNotification } from '@/app/lib/notifications';
 import { getStatpackCheckoutUnavailableReason } from '@/app/lib/statpack-checkout';
 import { findStatpackContentIndex } from '@/app/lib/statpack-content-match';
 import { coerceDate } from '@/app/lib/timestamps';
@@ -302,15 +304,21 @@ function toMillisLoose(v: unknown): number | undefined {
  * transaction stays light; a recall landing between this read and commit is
  * acceptable — the next check-off/audit catches it.
  */
-async function assessPackHazards(statpackId: string): Promise<{
+async function assessPackHazards(
+  statpackId: string,
+  freshDeviceChecks?: { itemId: string; padExpiration?: Date }[],
+): Promise<{
   quarantinedBatchIds: Set<string>;
   assetCurrencyLapsed: boolean;
+  lapsedReasons: string[];
 }> {
   const quarantinedBatchIds = new Set<string>();
+  const lapsedReasons: string[] = [];
   let assetCurrencyLapsed = false;
+  const fresh = new Map((freshDeviceChecks ?? []).map(f => [f.itemId, f]));
   try {
     const sp = await getDoc(doc(db, 'statpacks', statpackId));
-    if (!sp.exists()) return { quarantinedBatchIds, assetCurrencyLapsed };
+    if (!sp.exists()) return { quarantinedBatchIds, assetCurrencyLapsed, lapsedReasons };
     const contents = ((sp.data() as Statpack)?.contents ?? []) as StatpackItem[];
     const itemIds = Array.from(new Set(contents.map(c => c?.itemId).filter(Boolean)));
     const th = getThresholds();
@@ -325,26 +333,49 @@ async function assessPackHazards(statpackId: string): Promise<{
       if (inv.isAsset) {
         // AED: expired pads/battery, or an overdue periodic check → not current.
         if (inv.assetCategory === 'AED') {
-          const pad = toMillisLoose(inv.padExpiration);
-          const bat = toMillisLoose(inv.batteryExpiration);
-          if ((pad !== undefined && pad < nowMs) || (bat !== undefined && bat < nowMs)) assetCurrencyLapsed = true;
-          const checked = toMillisLoose(inv.assetLastChecked);
-          if (checked !== undefined && (nowMs - checked) / DAY_MS > th.aedCheckIntervalDays) assetCurrencyLapsed = true;
+          const name = inv.name || iid;
+          const freshCheck = fresh.get(iid as string);
+          if (freshCheck) {
+            // The crew's check-off THIS pass is the device check; the single
+            // "Pad / battery expiration" box is the expiry of record.
+            const entered = freshCheck.padExpiration ? freshCheck.padExpiration.getTime() : undefined;
+            if (entered !== undefined && entered < nowMs) {
+              assetCurrencyLapsed = true;
+              lapsedReasons.push(`AED pads/battery expired (${name})`);
+            }
+          } else {
+            const pad = toMillisLoose(inv.padExpiration);
+            const bat = toMillisLoose(inv.batteryExpiration);
+            if ((pad !== undefined && pad < nowMs) || (bat !== undefined && bat < nowMs)) {
+              assetCurrencyLapsed = true;
+              lapsedReasons.push(`AED pads/battery expired (${name})`);
+            }
+            const checked = toMillisLoose(inv.assetLastChecked);
+            if (checked !== undefined && (nowMs - checked) / DAY_MS > th.aedCheckIntervalDays) {
+              assetCurrencyLapsed = true;
+              lapsedReasons.push(`AED check overdue (${name})`);
+            }
+          }
         }
         // Glucometer / reagent asset: control test must be current AND passing.
         const ct = inv.controlTest;
         if (ct) {
           const last = toMillisLoose(ct.lastPassedAt);
           const interval = typeof ct.intervalDays === 'number' ? ct.intervalDays : th.glucometerControlTestIntervalDays;
-          if (last === undefined || (nowMs - last) / DAY_MS > interval) assetCurrencyLapsed = true;
-          if (ct.lastResult && ct.lastResult !== 'pass') assetCurrencyLapsed = true;
+          if (last === undefined || (nowMs - last) / DAY_MS > interval) {
+            assetCurrencyLapsed = true;
+            lapsedReasons.push(`Glucometer control test is overdue (${inv.name || iid})`);
+          } else if (ct.lastResult && ct.lastResult !== 'pass') {
+            assetCurrencyLapsed = true;
+            lapsedReasons.push(`Glucometer control test is overdue (${inv.name || iid})`);
+          }
         }
       }
     }));
   } catch (e) {
     console.warn('logStatpackCheckOff: hazard pre-assessment failed', e);
   }
-  return { quarantinedBatchIds, assetCurrencyLapsed };
+  return { quarantinedBatchIds, assetCurrencyLapsed, lapsedReasons };
 }
 
 export async function logStatpackCheckOff(params: {
@@ -391,7 +422,11 @@ export async function logStatpackCheckOff(params: {
     acknowledgeReason?: string;
     // Member reported a problem with this item -> spawns a tracked issue report
     issue?: { type: 'missing' | 'broken' | 'expired'; quantity?: number; notes?: string };
+    /** Set by the check-off page from `isCriticalStatpackItem` (AED / oxygen / epinephrine). */
+    critical?: boolean;
   }[];
+  /** AED items whose checks were completed THIS pass; counts as the device check. */
+  freshDeviceChecks?: { itemId: string; padExpiration?: Date }[];
   sealChecks?: Record<string, { sealed: boolean; sealNumber?: string }>;
   oxygenReadings?: Record<string, string>;
   // Pack-level sharps container safety check
@@ -425,6 +460,7 @@ export async function logStatpackCheckOff(params: {
     notes,
     eventId,
     eventName,
+    freshDeviceChecks,
   } = params;
 
   const resolvedPairId = await resolveStatpackPairId({ statpackId, action, pairId });
@@ -480,6 +516,7 @@ export async function logStatpackCheckOff(params: {
       acknowledged: ce.acknowledged,
       acknowledgeReason: ce.acknowledgeReason,
       issue: ce.issue,
+      critical: ce.critical,
     };
     Object.keys(entry).forEach(k => { if (entry[k] === undefined) delete entry[k]; });
     return entry as unknown as NonNullable<StatpackLog["checkEntries"]>[number];
@@ -572,7 +609,7 @@ export async function logStatpackCheckOff(params: {
   }
   // Pre-assess recall + asset-currency hazards from the backing inventory docs so
   // readiness can fail-closed on them (bounded reads, outside the transaction).
-  const hazard = await assessPackHazards(statpackId);
+  const hazard = await assessPackHazards(statpackId, freshDeviceChecks);
 
   // Write the log and update the statpack inside a transaction to avoid races.
   const statpackRef = doc(db, 'statpacks', statpackId);
@@ -642,6 +679,11 @@ export async function logStatpackCheckOff(params: {
       // unknown, and unknown must resolve to not-ready (never optimistic 'Ready').
       let anyUnknown = false;
       const nowMs = Date.now();
+      // Checkout-only: this pack must leave full and in date. Collected here,
+      // thrown after the loop.
+      const checkoutShort: string[] = [];
+      const checkoutExpired: string[] = [];
+      const checkoutLowPsi: string[] = [];
       // Items explicitly restocked THIS pass, so the post-loop untouched-contents
       // scan below doesn't re-flag something the crew just fixed.
       const restockedIndices = new Set<number>();
@@ -671,6 +713,21 @@ export async function logStatpackCheckOff(params: {
         const expiredByIssue = Boolean(e.issue && (e.issue.type === 'broken' || e.issue.type === 'expired'));
         if (expiredByDate || expiredByIssue) anyExpired = true;
 
+        if (action === 'checkout') {
+          const label = e.itemName || content?.itemDetails?.name || e.itemId;
+          if (expiredByDate) checkoutExpired.push(label);
+          if (!isAssetEntry && typeof e.requiredQuantity === 'number' && e.requiredQuantity > 0
+            && typeof e.countedQuantity === 'number' && e.countedQuantity < e.requiredQuantity) {
+            checkoutShort.push(`${label} (${e.countedQuantity} of ${e.requiredQuantity})`);
+          }
+          if (typeof e.oxygenPsi === 'number') {
+            const minPsi = content?.verificationRules?.requireO2PsiMin ?? getThresholds().o2PsiMin;
+            if (typeof minPsi === 'number' && e.oxygenPsi < minPsi) {
+              checkoutLowPsi.push(`${label} (${e.oxygenPsi} psi, needs ${minPsi})`);
+            }
+          }
+        }
+
         if (idx >= 0 && e.restockStatus === 'restocked') restockedIndices.add(idx);
 
         if (!isAssetEntry && typeof e.requiredQuantity === 'number' && e.requiredQuantity > 0) {
@@ -680,6 +737,22 @@ export async function logStatpackCheckOff(params: {
           } else if (e.countedQuantity <= 0 && e.restockStatus !== 'restocked') {
             anyOutConsumable = true;
           }
+        }
+      }
+
+      if (action === 'checkout') {
+        const list = (xs: string[]) => xs.slice(0, 3).join(', ') + (xs.length > 3 ? `, +${xs.length - 3} more` : '');
+        if (hazard.assetCurrencyLapsed) {
+          throw new Error(`${hazard.lapsedReasons.join('; ') || 'A device check has lapsed'}. Logistics must fix or record this before the pack can go out.`);
+        }
+        if (checkoutExpired.length > 0) {
+          throw new Error(`Replace expired items before taking this pack: ${list(checkoutExpired)}.`);
+        }
+        if (checkoutLowPsi.length > 0) {
+          throw new Error(`Oxygen is below the minimum pressure: ${list(checkoutLowPsi)}. Swap the tank before taking this pack.`);
+        }
+        if (checkoutShort.length > 0) {
+          throw new Error(`Fill ${list(checkoutShort)} to par before taking this pack.`);
         }
       }
 
@@ -820,73 +893,164 @@ export async function logStatpackCheckOff(params: {
     throw e;
   }
 
-  // Checking a statpack back in that was deployed for an event auto-ends that
-  // event's shifts (the manual counterpart is the "End shift" button in the
-  // event detail drawer). Best-effort, outside the transaction — a failure
-  // here must never fail the check-off itself.
-  if (action === 'checkin' && checkedInEventId) {
-    try {
-      await endEventShifts(checkedInEventId, { uid: userId, name: userName });
-    } catch (e) {
-      console.warn('logStatpackCheckOff: endEventShifts failed', e);
-    }
-  }
-
-  // Flag logistics when a check-in leaves the pack short (fast-path or full
-  // check-off). Best-effort, outside the transaction, never able to roll back
-  // the check-in — same convention as the endEventShifts hook above. The
-  // helper itself no-ops when there are no shortages, so no pre-check needed.
-  if (action === 'checkin' && checkinFinalContents) {
-    try {
-      await flagStatpackRestock(
-        { id: statpackId, name: statpackName, contents: checkinFinalContents },
-        { uid: userId, name: userName },
-      );
-    } catch (e) {
-      console.warn('logStatpackCheckOff: flagStatpackRestock failed', e);
-    }
-  }
-
-  await logValidationWarningsToCollections({
-    warnings: validationWarnings,
-    statpackId,
-    statpackName,
-    userId,
-    userName,
-  });
-
-  // Create tracked issue reports for any item the member flagged during the
-  // check-off. Done AFTER the transaction commits so a report write can never
-  // roll back the check-off; failures are logged, not thrown.
+  // Post-commit steps. The check-off is already durable, so none of these may
+  // throw (a throw would show "Submission failed" and invite a duplicate
+  // resubmit). They are independent, so run them concurrently, each swallowing
+  // its own failure; only issue-report failures are counted and returned so the
+  // UI can tell the user.
   const ISSUE_LABEL: Record<'missing' | 'broken' | 'expired', string> = {
     missing: 'Missing',
     broken: 'Broken',
     expired: 'Expired',
   };
-  for (const ce of (checkEntries || [])) {
-    if (!ce.issue || !ce.issue.type) continue;
-    const label = ISSUE_LABEL[ce.issue.type] ?? 'Issue';
-    const itemLabel = ce.itemName || ce.itemId;
-    const qtyPart = ce.issue.quantity ? ` (${ce.issue.quantity} affected)` : '';
-    try {
-      await createReport({
-        reporter: { userId, userName },
-        type: 'bug',
-        priority: (ce.issue.type === 'missing' || ce.issue.type === 'broken') ? 'high' : 'medium',
-        title: `${label}: ${itemLabel} (in ${statpackName})`,
-        description:
-          `${label} reported during statpack ${action} of "${statpackName}"${qtyPart}.` +
-          (ce.issue.notes ? `\n\n${ce.issue.notes}` : ''),
-        pagePath: '/statpacks/check-off',
-        component: 'statpack_checkoff',
-        target: { collection: 'statpacks', docId: statpackId },
-      });
-    } catch (err) {
-      console.warn('logStatpackCheckOff: failed to create issue report for', ce.itemId, err);
-    }
+  let reportFailures = 0;
+  const isCriticalEntry = (ce: { critical?: boolean; itemName?: string; oxygenPsi?: number }) =>
+    ce.critical ?? isCriticalItem({ name: ce.itemName, hasPsiRule: typeof ce.oxygenPsi === 'number' });
+  const postCommit: Promise<void>[] = [];
+
+  // Checking a statpack back in that was deployed for an event auto-ends that
+  // event's shifts (the manual counterpart is the "End shift" button in the
+  // event detail drawer).
+  if (action === 'checkin' && checkedInEventId) {
+    postCommit.push((async () => {
+      try {
+        await endEventShifts(checkedInEventId, { uid: userId, name: userName });
+      } catch (e) {
+        console.warn('logStatpackCheckOff: endEventShifts failed', e);
+      }
+    })());
   }
 
-  return { logRef: newLogRef, validationWarnings };
+  // Flag logistics when a check-in leaves the pack short (fast-path or full
+  // check-off). The helper itself no-ops when there are no shortages.
+  if (action === 'checkin' && checkinFinalContents) {
+    postCommit.push((async () => {
+      try {
+        await flagStatpackRestock(
+          { id: statpackId, name: statpackName, contents: checkinFinalContents },
+          { uid: userId, name: userName },
+        );
+      } catch (e) {
+        console.warn('logStatpackCheckOff: flagStatpackRestock failed', e);
+      }
+    })());
+  }
+
+  postCommit.push((async () => {
+    try {
+      await logValidationWarningsToCollections({
+        warnings: validationWarnings,
+        statpackId,
+        statpackName,
+        userId,
+        userName,
+      });
+    } catch (e) {
+      console.warn('logStatpackCheckOff: logValidationWarningsToCollections failed', e);
+    }
+  })());
+
+  // Create tracked issue reports for any item the member flagged during the
+  // check-off. A report write can never roll back the check-off; failures are
+  // logged and counted, not thrown.
+  for (const ce of (checkEntries || [])) {
+    if (!ce.issue || !ce.issue.type) continue;
+    const issue = ce.issue;
+    const label = ISSUE_LABEL[issue.type] ?? 'Issue';
+    const itemLabel = ce.itemName || ce.itemId;
+    const qtyPart = issue.quantity ? ` (${issue.quantity} affected)` : '';
+    postCommit.push((async () => {
+      try {
+        await createReport({
+          reporter: { userId, userName },
+          type: 'bug',
+          priority: (issue.type === 'missing' || issue.type === 'broken') ? 'high' : 'medium',
+          title: `${label}: ${itemLabel} (in ${statpackName})`,
+          description:
+            `${label} reported during statpack ${action} of "${statpackName}"${qtyPart}.` +
+            (issue.notes ? `\n\n${issue.notes}` : ''),
+          pagePath: '/statpacks/check-off',
+          component: 'statpack_checkoff',
+          target: { collection: 'statpacks', docId: statpackId },
+        });
+      } catch (err) {
+        reportFailures++;
+        console.warn('logStatpackCheckOff: failed to create issue report for', ce.itemId, err);
+      }
+    })());
+  }
+
+  // Acknowledged (proceeded despite an expired/short item) -> tracked report too.
+  for (const ce of (checkEntries || [])) {
+    if (ce.acknowledged !== true) continue;
+    const itemLabel = ce.itemName || ce.itemId;
+    postCommit.push((async () => {
+      try {
+        await createReport({
+          reporter: { userId, userName },
+          type: 'bug',
+          priority: isCriticalEntry(ce) ? 'high' : 'low',
+          title: `Acknowledged: ${itemLabel} (in ${statpackName})`,
+          description:
+            `Acknowledged during statpack ${action} of "${statpackName}": counted ${ce.countedQuantity} of ${ce.requiredQuantity} required.` +
+            (ce.acknowledgeReason ? `\n\nReason: ${ce.acknowledgeReason}` : ''),
+          pagePath: '/statpacks/check-off',
+          component: 'statpack_checkoff',
+          target: { collection: 'statpacks', docId: statpackId },
+        });
+      } catch (err) {
+        reportFailures++;
+        console.warn('logStatpackCheckOff: failed to create acknowledgement report for', ce.itemId, err);
+      }
+    })());
+  }
+
+  // ONE admin/QM notification if any reported or acknowledged entry is critical
+  // (medops excluded per D-13).
+  const criticalFlagged = (checkEntries || []).filter(ce => (ce.acknowledged === true || (ce.issue && ce.issue.type)) && isCriticalEntry(ce));
+  if (criticalFlagged.length > 0) {
+    postCommit.push((async () => {
+      try {
+        const recipientsSnap = await getDocs(
+          query(collection(db, 'users'), where('role', 'in', ['admin', 'quartermaster'])),
+        );
+        const names = Array.from(new Set(criticalFlagged.map(ce => ce.itemName || ce.itemId)));
+        await broadcastNotification(
+          recipientsSnap.docs.map(d => d.id),
+          {
+            type: 'broadcast',
+            title: `Critical item flagged: ${statpackName}`,
+            body: `${userName} flagged ${names.slice(0, 3).join(', ')}${names.length > 3 ? `, +${names.length - 3} more` : ''} during ${action}.`,
+            link: '/reports',
+          },
+          { uid: userId, name: userName },
+        );
+      } catch (e) {
+        console.warn('logStatpackCheckOff: critical notification failed', e);
+      }
+    })());
+  }
+
+  // A completed AED check this pass IS the device check: stamp the inventory
+  // doc (only the three keys prod rules allow members to write on asset docs).
+  for (const f of (freshDeviceChecks || [])) {
+    postCommit.push((async () => {
+      try {
+        const payload: Record<string, unknown> = {
+          assetLastChecked: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        };
+        if (f.padExpiration) payload.padExpiration = f.padExpiration;
+        await updateDoc(doc(db, 'inventory', f.itemId), payload);
+      } catch (e) {
+        console.warn('logStatpackCheckOff: device check stamp failed for', f.itemId, e);
+      }
+    })());
+  }
+
+  await Promise.all(postCommit);
+
+  return { logRef: newLogRef, validationWarnings, reportFailures };
 }
 
 function resolveAssetInstance(item: InventoryItem, serial?: string): { matched: boolean; instance?: AssetInstance } {

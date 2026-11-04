@@ -241,7 +241,10 @@ service cloud.firestore {
           changedKeys().hasOnly([
             'assetStatus', 'assets', 'currentLocation', 'lastKnownReturnLocation',
             'checkedOutBy', 'checkedOutAt', 'checkoutReason',
-            'lastCheckedInBy', 'lastCheckedInAt', 'assetNextExpiration', 'updatedAt'
+            'lastCheckedInBy', 'lastCheckedInAt', 'assetNextExpiration', 'updatedAt',
+            // Crew AED check on a statpack check-off counts as the device check
+            // (decisions.md D-8, 2026-11-03): logStatpackCheckOff writes these back.
+            'assetLastChecked', 'padExpiration'
           ]));
       allow delete: if callerIsAdminOrQm();
     }

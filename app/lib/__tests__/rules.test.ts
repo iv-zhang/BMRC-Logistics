@@ -564,6 +564,13 @@ describe('inventory', () => {
     await assertFails(updateDoc(doc(as(MEMBER), 'inventory', 'asset1'), { isAsset: false }));
     await assertFails(updateDoc(doc(as(MEDOPS), 'inventory', 'asset1'), { unopenedBoxes: 99 }));
   });
+  it('flow: crew AED check write-back on an asset (D-8 2026-11-03); control test stays operator-only', async () => {
+    await matrix(EVERYONE, (db) => updateDoc(doc(db, 'inventory', 'asset1'), {
+      assetLastChecked: serverTimestamp(), padExpiration: new Date('2027-06-01'), updatedAt: serverTimestamp(),
+    }), { auditor: true });
+    await seed();
+    await assertFails(updateDoc(doc(as(MEMBER), 'inventory', 'asset1'), { 'controlTest.lastPassedAt': serverTimestamp() }));
+  });
   it('delete: admin/QM only', async () => {
     await matrix(MANAGERS, (db) => deleteDoc(doc(db, 'inventory', 'item1')), { auditor: false });
   });
