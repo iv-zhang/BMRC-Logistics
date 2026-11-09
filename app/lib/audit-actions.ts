@@ -486,6 +486,7 @@ export async function recordItemFix(
 
   await updateDoc(doc(db, 'inventory', item.id), {
     auditCondition: 'Good',
+    auditConditionCounts: null,
     auditNotes: input.notes ?? null,
     updatedAt: serverTimestamp(),
   });
@@ -508,7 +509,7 @@ export async function recordItemFix(
     sourceId: item.id,
     actor: { userId: actor.uid, userName: actor.name, userEmail: actor.email ?? null },
     targets: [{ collection: 'inventory', docId: item.id }],
-    after: { auditCondition: 'Good' },
+    after: { auditCondition: 'Good', auditConditionCounts: null },
     details: removeUndefined({
       fixType: input.fixType,
       quantity: input.quantity,

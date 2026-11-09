@@ -606,6 +606,8 @@ export interface InventoryItem {
   auditCountObservation?: AuditCountObservation | null;
   // QC/Condition recorded during audit: Good (default), Damaged, or Expired
   auditCondition?: 'Good' | 'Damaged' | 'Expired';
+  // Loose-unit condition breakdown from the last count (units stay in stock)
+  auditConditionCounts?: import('@/app/lib/audit-condition').AuditConditionCounts | null;
   auditNotes?: string;
   lastAuditDate?: Date;
   /**
