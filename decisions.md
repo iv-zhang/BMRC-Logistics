@@ -156,6 +156,39 @@ whenever it is truthy. The admin reconciliation script clears stale custody only
 on explicit `--apply`, keeps status, and atomically logs a `checkin` so history
 can pair it with the checkout. It never ends event shifts automatically.
 
+**Amended 2026-11-03: checkout requires a full, in-date pack; reports on every check-off.**
+Approved by the user (issues #19 and #30). The goal is that a pack is always full and in
+date when it goes out, and that a member checks it and restocks it before the shift. **For
+checkout only, this reverses the 2026-10-14 "shortages flag" amendment.**
+- **Blocking at checkout.** A shortage, an expired item, low O₂ PSI, or a lapsed device
+  check blocks checkout on the page (`fixList`) and inside the write transaction.
+  - Acknowledge and Report no longer clear a blocker at checkout. The only ways through
+    are fixing it in the flow (Set to par, an in-date month, a passing PSI) or
+    **"Can't fix it — flag this pack"** (`flagUnfillablePack`). Flagging files one issue
+    report per problem plus the restock `team_tasks` card. The pack does not go out, and
+    the member picks another.
+  - Check-in and audit are unchanged: shortages flag, Report and Acknowledge resolve, and
+    a returning pack is never refused. `Restock Needed` packs stay in the checkout list,
+    because restocking during checkout is the intended path.
+- **The crew's AED check is the device check.** `assessPackHazards` used to read
+  `assetLastChecked`, `padExpiration` and `controlTest.lastPassedAt` from the inventory
+  record, and nothing in the app wrote them. As a result, packs stuck on `Restock Needed`
+  forever.
+  - A check-off that completes the AED checks with an in-date pad/battery month now counts
+    as current (`freshDeviceChecks`). It is written back to the AED's inventory record.
+    The prod rules let members write `assetLastChecked` and `padExpiration` on asset docs.
+  - **Glucometer control tests are monthly**, recorded by logistics in the asset modal
+    (`recordControlTest`). An overdue or failed test blocks checkout until a pass is
+    recorded.
+- **Every check-off is a report.** Admin/QM see every checkout, check-in and audit
+  (`statpack_logs`) under the **Check-offs** tab on `/reports`. Acknowledgements now create
+  `issue_reports`, as Report always did.
+- **Notifications go out for critical items only.** Only AED, oxygen and epinephrine
+  problems page admin/QM (`app/lib/statpack-critical.ts`). This covers a shortage at
+  check-in, a report or acknowledgement, and a flagged pack. Everything else gets a report
+  or restock task with no notification. This narrows the auto-flag notification from the
+  untouched-contents note above.
+
 ### D-9 — One shared check-off page for checkout / check-in / audit
 **Decision:** all three modes share `app/statpacks/check-off/page.tsx`, driven by `?id` +
 `?mode` query params. Audit mode logs `action: 'audit'` and stamps `lastAuditAt`/`By`

@@ -2,13 +2,14 @@
 
 import { canManageLogistics } from '@/app/lib/roles';
 import React, { useState, useEffect, useMemo } from 'react';
-import { Button, Chip, Checkbox, Spinner } from '@heroui/react';
+import { Button, Chip, Checkbox, Spinner, Tabs, Tab } from '@heroui/react';
 import { Search, AlertCircle, Clock, User, X } from 'lucide-react';
 import { collection, onSnapshot, orderBy, query, Timestamp, updateDoc, doc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { subscribeToAllReports } from '@/app/lib/reports';
 import LoadFailureNotice, { describeLoadError } from '@/app/components/load-failure-notice';
+import CheckoffReportList from '@/app/components/checkoff-report-list';
 import IssueTriageModal from '@/app/components/IssueTriageModal';
 import type { IssueReport } from '@/app/types';
 
@@ -65,7 +66,7 @@ const PRIORITY_OPTIONS = [
   { value: 'urgent', label: 'Urgent' },
 ];
 
-export default function IssueReportsPage() {
+function IssuesView() {
   const { user, userData, effectiveUid, role, loading: roleLoading } = useUserRole();
   const [reports, setReports] = useState<Array<IssueReport & { id: string }>>([]);
   // Which status filter the current `reports` snapshot (or error) belongs to;
@@ -493,6 +494,31 @@ export default function IssueReportsPage() {
           setSelectedReport(null);
         }}
       />
+    </div>
+  );
+}
+
+export default function IssueReportsPage() {
+  const { role } = useUserRole();
+  const [tab, setTab] = useState<'issues' | 'checkoffs'>('issues');
+  const isAdmin = canManageLogistics(role);
+
+  if (!isAdmin) return <IssuesView />;
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 pt-4">
+        <Tabs
+          aria-label="Report type"
+          selectedKey={tab}
+          onSelectionChange={(k) => setTab(k as 'issues' | 'checkoffs')}
+          size="sm"
+        >
+          <Tab key="issues" title="Issues" />
+          <Tab key="checkoffs" title="Check-offs" />
+        </Tabs>
+      </div>
+      {tab === 'issues' ? <IssuesView /> : <CheckoffReportList />}
     </div>
   );
 }

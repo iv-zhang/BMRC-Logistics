@@ -63,8 +63,44 @@ export function levenshtein(a: string, b: string): number {
   return dp[m][n];
 }
 
-function normalizeName(name: string): string {
+export function normalizeName(name: string): string {
   return name.toLowerCase().trim().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** Edit distance where an adjacent transposition ("ua" vs "au") costs 1. */
+function osaDistance(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        dp[i][j] = Math.min(dp[i][j], dp[i - 2][j - 2] + 1);
+      }
+    }
+  }
+  return dp[m][n];
+}
+
+function numericTokens(s: string): string {
+  return (s.match(/\d+(\.\d+)?/g) ?? []).sort().join(',');
+}
+
+/**
+ * Near-name test on already-normalized names (see `normalizeName`). Both names
+ * must be at least 5 chars (shorter names only match exactly, handled by the
+ * caller), edit distance must be within max(1, 15% of the longer name), and
+ * the names' numeric tokens must agree ("Gauze 2x2" vs "Gauze 4x4" differ).
+ */
+export function isFuzzyNameMatch(a: string, b: string): boolean {
+  if (a.length < 5 || b.length < 5) return false;
+  if (numericTokens(a) !== numericTokens(b)) return false;
+  const threshold = Math.max(1, Math.floor(Math.max(a.length, b.length) * 0.15));
+  if (Math.abs(a.length - b.length) > threshold) return false;
+  return osaDistance(a, b) <= threshold;
 }
 
 // ─── Duplicate detection ──────────────────────────────────────────────────────
@@ -84,15 +120,16 @@ const REASON_RANK: Record<DuplicateReason, number> = { sku: 3, barcode: 3, name:
 /**
  * Group inventory items that look like duplicates of each other: exact SKU
  * match, exact barcode match, exact normalized-name match, or a near-name
- * match (Levenshtein distance within 25% of the longer name, floor 2).
- * Archived/already-merged items are excluded. Union-find groups transitively
- * — if A~B and B~C, all three land in one group even if A and C alone
- * wouldn't have matched.
+ * match (`isFuzzyNameMatch`). Archived/already-merged items are excluded.
+ *
+ * Strong links (SKU / barcode / exact name) group transitively via union-find.
+ * Fuzzy links never chain: two groups only join through a fuzzy link when every
+ * item in the combined group pairwise matches (strong or fuzzy) every other
+ * item (complete linkage), so A~B~C with A and C unrelated stays split.
  *
  * Variant gate: a pair is only linked when their variant signatures match
  * (`app/lib/variant-signature.ts`), so `NPA 28 Fr` / `NPA 30 Fr` or
- * `Gloves M` / `Gloves L` are never suggested as duplicates, and the
- * transitive grouping can never chain different sizes together. Pairs that
+ * `Gloves M` / `Gloves L` are never suggested as duplicates. Pairs that
  * share a SKU/barcode but differ in variant are reported by
  * `findVariantConflicts` instead.
  */
@@ -111,43 +148,61 @@ export function findDuplicateCandidates(items: InventoryItem[]): DuplicateGroup[
   function upgrade(i: number, reason: DuplicateReason) {
     if (REASON_RANK[reason] > REASON_RANK[bestReason[i]]) bestReason[i] = reason;
   }
-  function union(a: number, b: number, reason: DuplicateReason) {
-    upgrade(a, reason);
-    upgrade(b, reason);
-    const ra = find(a), rb = find(b);
-    if (ra !== rb) parent[ra] = rb;
-  }
 
   const normalized = active.map((i) => normalizeName(i.name || ''));
   const skus = active.map((i) => ((i as unknown as { sku?: string }).sku || '').trim().toLowerCase());
   const barcodes = active.map((i) => (i.barcode || '').trim().toLowerCase());
   const variantKeys = active.map((i) => itemVariantSignature(i).key);
 
+  // Pairwise match matrix (variant gate applied once).
+  const strong: boolean[][] = Array.from({ length: n }, () => new Array(n).fill(false));
+  const fuzzy: boolean[][] = Array.from({ length: n }, () => new Array(n).fill(false));
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
       // Different sizes/variants are different products, however close the names.
       if (variantKeys[i] !== variantKeys[j]) continue;
-      if (skus[i] && skus[j] && skus[i] === skus[j]) { union(i, j, 'sku'); continue; }
-      if (barcodes[i] && barcodes[j] && barcodes[i] === barcodes[j]) { union(i, j, 'barcode'); continue; }
-      if (normalized[i] && normalized[i] === normalized[j]) { union(i, j, 'name'); continue; }
-      if (normalized[i].length >= 2 && normalized[j].length >= 2) {
-        const dist = levenshtein(normalized[i], normalized[j]);
-        const threshold = Math.max(2, Math.floor(Math.max(normalized[i].length, normalized[j].length) * 0.25));
-        if (dist <= threshold) union(i, j, 'fuzzy');
+      let reason: DuplicateReason | null = null;
+      if (skus[i] && skus[i] === skus[j]) reason = 'sku';
+      else if (barcodes[i] && barcodes[i] === barcodes[j]) reason = 'barcode';
+      else if (normalized[i] && normalized[i] === normalized[j]) reason = 'name';
+      if (reason) {
+        strong[i][j] = strong[j][i] = true;
+        upgrade(i, reason);
+        upgrade(j, reason);
+        const ra = find(i), rb = find(j);
+        if (ra !== rb) parent[ra] = rb;
+      } else if (isFuzzyNameMatch(normalized[i], normalized[j])) {
+        fuzzy[i][j] = fuzzy[j][i] = true;
       }
     }
   }
 
-  const groups = new Map<number, number[]>();
+  const members = new Map<number, number[]>();
   for (let i = 0; i < n; i++) {
-    const root = find(i);
-    if (!groups.has(root)) groups.set(root, []);
-    groups.get(root)!.push(i);
+    const r = find(i);
+    if (!members.has(r)) members.set(r, []);
+    members.get(r)!.push(i);
+  }
+  const compOf: number[] = Array.from({ length: n }, (_, i) => find(i));
+
+  // Join components through fuzzy links only under complete linkage.
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (!fuzzy[i][j] || compOf[i] === compOf[j]) continue;
+      const ma = members.get(compOf[i])!, mb = members.get(compOf[j])!;
+      const complete = ma.every((x) => mb.every((y) => strong[x][y] || fuzzy[x][y]));
+      if (!complete) continue;
+      const keep = compOf[i], drop = compOf[j];
+      for (const y of mb) compOf[y] = keep;
+      ma.push(...mb);
+      members.delete(drop);
+    }
   }
 
   const result: DuplicateGroup[] = [];
-  for (const idxs of groups.values()) {
+  for (const idxs of members.values()) {
     if (idxs.length < 2) continue;
+    idxs.sort((a, b) => a - b);
     let reason: DuplicateReason = 'fuzzy';
     for (const i of idxs) if (REASON_RANK[bestReason[i]] > REASON_RANK[reason]) reason = bestReason[i];
     const groupItems = idxs.map((i) => active[i]);
