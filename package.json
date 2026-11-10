@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node ./scripts/test-audit-restock.cjs && tsx ./scripts/test-roles.ts && tsx ./scripts/test-statpack-status.ts && tsx ./scripts/test-audit-count.ts && tsx ./scripts/test-statpack-entry-identity.ts && tsx ./scripts/test-statpack-content-match.ts && tsx ./scripts/test-dashboard-summary.ts && tsx ./scripts/test-buy-list-intake.ts && node ./scripts/test-statpack-checkout-conflicts.cjs",
+    "test": "node ./scripts/test-audit-restock.cjs && tsx ./scripts/test-roles.ts && tsx ./scripts/test-statpack-status.ts && tsx ./scripts/test-audit-count.ts && tsx ./scripts/test-count-velocity.ts && tsx ./scripts/test-statpack-entry-identity.ts && tsx ./scripts/test-statpack-content-match.ts && tsx ./scripts/test-dashboard-summary.ts && tsx ./scripts/test-buy-list-intake.ts && node ./scripts/test-statpack-checkout-conflicts.cjs",
     "test:roles": "tsx ./scripts/test-roles.ts",
     "migrate:batch-locations": "node ./scripts/migrate-batch-locations.js --dry-run",
     "migrate:normalize-inventory": "node ./scripts/normalize-inventory.cjs --dry-run",

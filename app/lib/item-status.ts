@@ -54,13 +54,19 @@ export function expiringCutoff(now = new Date()): Date {
  * Two-pool model: this total = back-room RESERVE pool (front-shelf stock is
  * tracked separately in `InventoryItem.shelfQuantity`).
  */
+export function batchHasBagTracking(b: { bagCount?: number; itemsPerBag?: number; looseItems?: number }): boolean {
+  return (b.bagCount !== undefined && b.bagCount > 0) ||
+    (b.itemsPerBag !== undefined && (b.itemsPerBag ?? 0) > 0) ||
+    (b.looseItems ?? 0) > 0;
+}
+
+export function hasBagTracking(item: InventoryItem): boolean {
+  return (item.batches || []).some(batchHasBagTracking);
+}
+
 export function computeBagStock(item: InventoryItem, now = new Date()): BagStock {
   const batches = item.batches || [];
-  const hasBagTracking = batches.some(
-    b => (b.bagCount !== undefined && b.bagCount > 0) ||
-         (b.itemsPerBag !== undefined && (b.itemsPerBag ?? 0) > 0) ||
-         (b.looseItems ?? 0) > 0,
-  );
+  const hasBagTracking = batches.some(batchHasBagTracking);
   if (hasBagTracking) {
     let totalBags = 0, totalLoose = 0, totalItems = 0, availableItems = 0;
     for (const b of batches) {
