@@ -1360,3 +1360,44 @@ test('check-in acknowledgement files a report and the check-off shows on /report
   await expect(row.getByText(/acknowledged/i).first()).toBeVisible();
   await page.screenshot({ path: join(SHOTS, 'reports-checkoffs-tab.png'), fullPage: true });
 });
+
+// Issue #36: streamlined check-off checks. An AED row asks for its expiry ONCE
+// (the pad/battery box, even when the expiration rule is also on), has no -/+
+// counter (assets are status-tracked), and an epinephrine row needs a
+// "Solution clear" confirmation before it counts as ready.
+test('check-off streamlines AED and epinephrine checks', async ({ page }) => {
+  const testRunId = `smoke-streamline-${Date.now()}`;
+  const packId = await createDoc('statpacks', {
+    isTest: true,
+    testRunId,
+    name: `[TEST] Smoke Streamline Pack ${testRunId}`,
+    type: 'Primary',
+    status: 'Ready',
+    isCheckedOut: false,
+    currentLocation: 'MRC1',
+    compartments: [{ id: 'main', name: 'Main', parentPocket: 'main', isSealed: false }],
+    contents: [
+      { itemId: 'aed', serialNumber: 'AED-001', assetInstanceId: 'AED-001', requiredQuantity: 1, currentQuantity: 1, pocket: 'main', requiresExpirationCheck: true },
+      { itemId: 'epi', batchId: '', requiredQuantity: 1, currentQuantity: 1, pocket: 'main' },
+    ],
+    sharpsContainer: { status: 'ok' },
+  });
+
+  await signIn(page);
+  await page.goto(`/statpacks/check-off?id=${packId}&mode=audit`, { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2500);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+
+  const aedRow = page.locator('[data-item-id]').filter({ hasText: 'AED' }).first();
+  await expect(aedRow.getByLabel('Pad / battery expiration')).toHaveCount(1);
+  await expect(aedRow.getByLabel('Confirm expiration')).toHaveCount(0);
+  await expect(aedRow.getByRole('button', { name: /(Increase|Decrease) .* count/ })).toHaveCount(0);
+
+  const epiRow = page.locator('[data-item-id]').filter({ hasText: 'Epinephrine' }).first();
+  await expect(epiRow.getByText('Solution clear')).toBeVisible();
+  await epiRow.getByText('Solution clear').click();
+  await expect(epiRow.getByText('Complete')).toBeVisible();
+  await page.screenshot({ path: join(SHOTS, 'checkoff-streamlined-checks.png'), fullPage: true });
+});

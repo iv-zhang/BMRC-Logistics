@@ -20,6 +20,32 @@ export interface CriticalItemSignals {
 const AED_RE = /\baed\b/i;
 const EPI_RE = /\bepi(?:pen|nephrine)?\b|\bepinephrine\b|\badrenaline\b/i;
 
+const AED_ACCESSORY_RE = /\bpads?\b|\bbatter(?:y|ies)\b|\btrainer\b/i;
+
+export interface AedDeviceSignals {
+  name?: string | null;
+  assetCategory?: string | null;
+  isTrainer?: boolean | null;
+}
+
+/**
+ * True only for the AED unit itself (gets the pads / battery / expiry checklist).
+ * "AED Pads", "AED Battery" and trainer AEDs are not the device. An explicit
+ * `assetCategory === 'AED'` always wins.
+ */
+export function isAedDevice(d: AedDeviceSignals | null | undefined): boolean {
+  if (!d) return false;
+  if (d.assetCategory === 'AED') return true;
+  if (d.isTrainer === true) return false;
+  const name = d.name ?? '';
+  return AED_RE.test(name) && !AED_ACCESSORY_RE.test(name);
+}
+
+/** Epinephrine auto-injector / vial (needs the "solution clear" check). */
+export function isEpinephrine(d: { name?: string | null } | null | undefined): boolean {
+  return EPI_RE.test(d?.name ?? '');
+}
+
 export function criticalKindOf(s: CriticalItemSignals): CriticalKind | null {
   const name = s.name ?? '';
   if (s.assetCategory === 'AED' || AED_RE.test(name)) return 'aed';

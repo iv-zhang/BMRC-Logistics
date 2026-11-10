@@ -554,3 +554,13 @@ statpack are outside this item-removal rule.
 into maintenance or pending initial check. Editor saves retain their opening
 snapshot and reject when live ownership, status, check-in, or audit observations
 have changed, preserving the unsaved draft for review.
+
+### D-36 — Check-off asks each item only what matters (issue #36)
+
+**Decision (2026-11-10):** the check-off page trims per-item prompts to the essentials:
+- **AED checklist only on the AED unit** — `isAedDevice()` (`app/lib/statpack-critical.ts`): `assetCategory === 'AED'`, or an "AED" name that isn't pads/battery/trainer. "AED Pads" / "AED Battery" are ordinary items.
+- **One expiration box per AED** — the "Pad / battery expiration" month is the AED's expiration check; the generic "Confirm expiration" box is not asked again. That month still flows to `newExpirationDate` and the device-currency write-back.
+- **No −/+ counter on assets** (serial / asset instance / `isAsset`) — assets are status-tracked, never counted.
+- **Epinephrine: "Solution clear — not discolored or cloudy"** is a required check; "discolored / cloudy" is a blocking problem (checkout → flag the pack; check-in/audit → report or acknowledge). Enforced on the page only, like the AED pads/battery checkboxes.
+
+Out of scope for now (tracked on #36): name standardization from the 11/4 CSV mapping, a dropdown item picker, and asset checks in the audit drawer.
