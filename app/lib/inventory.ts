@@ -405,6 +405,8 @@ export async function logStatpackCheckOff(params: {
       batteryStatus?: 'Good' | 'Low' | 'Unknown';
       batteryPct?: number;
       padsSealed?: boolean;
+      /** Epinephrine: solution confirmed clear (not discolored / cloudy). */
+      solutionClear?: boolean;
       oxygenPsi?: number;
       notes?: string;
     };
