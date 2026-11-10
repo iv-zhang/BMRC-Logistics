@@ -55,8 +55,8 @@ only for this reason, D-19).
 | Components | HeroUI |
 | Icons | Lucide |
 | Responsive | Mobile bottom nav + safe-area handling; desktop fixed-height shells on `/inventory` and `/stats` |
-| Reference pages | `/inventory` and `/dashboard` are the canonical look — new pages should match them |
-| Written rules | The `bmrc-ui` Claude skill (design rules for AI-written UI) |
+| Reference pages | `/inventory` and `/dashboard` illustrate existing layout families; follow the shared standards rather than copying known defects |
+| Written rules | [Shared UI/UX standards](ui-ux-standards.md) and [bmrc-ui](../.claude/skills/bmrc-ui/SKILL.md), referenced by both Codex and Claude Code |
 | Mockups | None — pages are designed directly in code |
 
 ---
@@ -121,11 +121,13 @@ decisions.md, SANDBOX.md, STAGING.md.
 
 ### Design / UX
 
-**11. No type scale or written style guide.** The code uses 20 distinct text sizes,
-including one-off pixel values (`text-[9px]`, `[10px]`, `[11px]`, `[13px]`, `[15px]`), so
-AI-generated pages drift. → Define ~6 named sizes and a short style guide (spacing, card,
-header, table patterns) based on `/inventory` and `/dashboard`; fold it into the `bmrc-ui`
-skill.
+**11. Shared UI/UX rules are documented; screen adoption and type cleanup remain.**
+Update 2026-10-22: [the shared standards](ui-ux-standards.md) now cover copy,
+information hierarchy, interactions, and layout families, with one skill used by both
+agents. Existing screens have not yet been converted. The code still uses many text
+sizes, including one-off pixel values. Follow [the member-first plan](plans/2026-10-22-ui-ux-audit-and-plan.md)
+before broad style cleanup; writing a guide does not establish visual consistency or
+runtime accessibility.
 
 **12. Not installable on phones.** No web app manifest. Members use the app on phones in
 supply closets; a home-screen install with an icon would help. → Add `app/manifest.ts`.
