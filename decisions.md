@@ -554,3 +554,13 @@ statpack are outside this item-removal rule.
 into maintenance or pending initial check. Editor saves retain their opening
 snapshot and reject when live ownership, status, check-in, or audit observations
 have changed, preserving the unsaved draft for review.
+
+### D-35 — Inventory low/out stock auto-flags logistics (extends D-31)
+
+**Decision (2026-11-10, issue #38):** when a stock-reducing write moves an inventory item **into** `low` or `out` (per `getItemStatus`, reserve pool only), the app files one open `team_tasks` card for that item ("Reorder <name>", `linkedInventoryItemId`) and, only when the card is newly created, notifies admin/QM in-app. Hooked writes: audit count reconcile (`submitAuditEntries`), `refillShelf`, and inventory quick-adjust decrements. Helper: `app/lib/low-stock-alerts.ts`.
+
+**This reverses part of D-31**, which kept inventory below-par display-only and auto-flagged statpacks only. Same shape as D-31's statpack flag: runs after the write commits, best-effort, never throws, de-duplicated (a chronically low item keeps one open card), and recipients are admin/quartermaster only — never medops (D-13). No buy-list auto-add: `buyList` creates stay admin/QM/medops in prod rules.
+
+**Member reports:** `/member/report` now judges stock with `computeBagStock().availableItems` instead of the stored `totalStockQuantity`, and a `low_stock` report notifies admin/QM with a link to `/issue-reports`.
+
+**Do not regress:** don't alert on every subsequent drop (only the transition into low/out, and only one card while it's open); don't include medops; never let an alert failure fail the stock write.

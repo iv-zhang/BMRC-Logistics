@@ -2,6 +2,7 @@
 
 import { canManageLogistics, canViewLogisticsArea } from '@/app/lib/roles';
 import { toDateInputValue } from '@/app/lib/dates';
+import { maybeFlagLowStock } from '@/app/lib/low-stock-alerts';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { useEffect, useState, useMemo, Fragment } from 'react';
 import { useRouter } from 'next/navigation';
@@ -638,6 +639,13 @@ export default function InventoryPage() {
         unopenedBoxes: newUnopened, totalStockQuantity: newTotal, updatedAt: serverTimestamp(),
       });
       const item = inventory.find(i => i.id === itemId);
+      if (item && delta < 0) {
+        void maybeFlagLowStock(
+          item,
+          { ...item, unopenedBoxes: newUnopened, totalStockQuantity: newTotal },
+          { uid: effectiveUid ?? '', name: actorName },
+        );
+      }
       await recordAuditEvent({
         eventType: 'stock_adjusted', sourceId: itemId,
         actor: { userId: effectiveUid ?? '', userName: actorName },

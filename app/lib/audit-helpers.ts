@@ -32,6 +32,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/firebase';
 import type { InventoryItem, ItemExistence, User } from '@/app/types';
+import { maybeFlagLowStock } from '@/app/lib/low-stock-alerts';
 import { addAuditEventToBatch, deepRemoveUndefined } from '@/app/lib/audit';
 import { determineIsAsset } from '@/app/lib/inventory';
 import { auditStockFingerprint, buildAuditCountPlan } from '@/app/lib/audit-count';
@@ -390,7 +391,11 @@ export async function submitAuditEntries(
   if (new Set(entries.map(entry => entry.itemId)).size !== entries.length) {
     throw new Error('Count each item once per submission');
   }
-  return runTransaction(db, async transaction => {
+  // Before/after pairs captured inside the transaction (reset per attempt) and
+  // flagged only after it commits — an alert failure can never roll back a count.
+  let stockDrops: Array<{ before: InventoryItem; after: InventoryItem }> = [];
+  const result = await runTransaction(db, async transaction => {
+    stockDrops = [];
     // All reads precede writes. Transaction retries recheck the physical snapshot
     // instead of replaying absolute counts over a receipt or reserve transfer.
     const snapshots = await Promise.all(entries.map(entry => transaction.get(doc(db, 'inventory', entry.itemId))));
@@ -491,10 +496,17 @@ export async function submitAuditEntries(
           : `Count: ${count!.boxes} sealed + ${count!.loose} loose = ${count!.total ?? 'unknown'} units; ${count!.unresolved ? 'unresolved observation' : verified ? 'verified' : 'variance recorded; verification pending'}${countsLabel ? ` · ${countsLabel}` : ''}`,
         details,
       });
+      if (count && Object.keys(count.patch).length > 0) {
+        stockDrops.push({ before: item, after: { ...item, ...count.patch } as InventoryItem });
+      }
       itemsUpdated++;
     }
     return { success: true, itemsUpdated, variances, unresolved };
   });
+  // Fire-and-forget: reconciled counts that push an item into low/out.
+  const actor = { uid: user.uid, name: user.displayName || user.email || 'Unknown' };
+  for (const { before, after } of stockDrops) void maybeFlagLowStock(before, after, actor);
+  return result;
 }
 
 // ─── Restock decision helpers ─────────────────────────────────────────────────

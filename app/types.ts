@@ -1339,6 +1339,9 @@ export interface TeamTask {
   /** Set when the card was auto-created by a statpack check-in shortage flag;
    *  also the de-dupe key so a chronically short pack gets one card, not many. */
   linkedStatpackId?: string;
+  /** Set when auto-created by a low/out-of-stock flag (app/lib/low-stock-alerts.ts);
+   *  also the de-dupe key so one item gets one open card. */
+  linkedInventoryItemId?: string;
 }
 
 export interface IssueReport {

@@ -28,11 +28,16 @@ import { useUserRole } from '@/app/hooks/useUserRole';
 import LoadFailureNotice, { describeLoadError } from '@/app/components/load-failure-notice';
 import { parseDateInput } from '@/app/lib/dates';
 import { ArrowLeft } from 'lucide-react';
+import { computeBagStock } from '@/app/lib/item-status';
+import { broadcastNotification } from '@/app/lib/notifications';
+import { getAdminRecipientIds } from '@/app/lib/statpack-restock-flag';
+import type { InventoryItem as FullInventoryItem } from '@/app/types';
 
 interface InventoryItem {
   id: string;
   name: string;
-  totalStockQuantity: number;
+  /** Deployable reserve stock: computeBagStock(item).availableItems (not the stored total). */
+  availableStock: number;
   reorderThreshold?: number;
   expirationDate?: Date;
   tracksExpiration?: boolean;
@@ -98,10 +103,20 @@ export default function MemberReportPage() {
     const unsubscribe = onSnapshot(collection(db, 'inventory'), (snapshot) => {
       const items: InventoryItem[] = snapshot.docs.map((doc) => {
         const data = doc.data() as DocumentData;
+        const available = computeBagStock({
+          ...(data as object),
+          id: doc.id,
+          batches: Array.isArray(data.batches)
+            ? data.batches.map((b: { expirationDate?: Timestamp }) => ({
+                ...b,
+                expirationDate: b.expirationDate instanceof Timestamp ? b.expirationDate.toDate() : undefined,
+              }))
+            : undefined,
+        } as unknown as FullInventoryItem).availableItems;
         return {
           id: doc.id,
           name: data.name || 'Unknown Item',
-          totalStockQuantity: Number(data.totalStockQuantity ?? 0),
+          availableStock: available,
           reorderThreshold: data.reorderThreshold,
           tracksExpiration: data.tracksExpiration,
           expirationDate: data.expirationDate instanceof Timestamp ? data.expirationDate.toDate() : undefined,
@@ -181,10 +196,10 @@ export default function MemberReportPage() {
       // Add metadata
       if (item) {
         reportData.reorderThreshold = item.reorderThreshold ?? null;
-        reportData.totalStockQuantity = item.totalStockQuantity ?? null;
+        reportData.totalStockQuantity = item.availableStock;
         reportData.severity =
           reportType === 'low_stock' && item.reorderThreshold !== undefined
-            ? item.totalStockQuantity <= item.reorderThreshold
+            ? item.availableStock <= item.reorderThreshold
               ? 'critical'
               : 'attention'
             : null;
@@ -209,6 +224,24 @@ export default function MemberReportPage() {
       reportData.createdAt = serverTimestamp();
       reportData.resolved = false;
       await addDoc(collection(db, 'restock_reports'), reportData);
+      if (reportType === 'low_stock' && item) {
+        // Best-effort: tell admin/QM (never medops) so it doesn't sit unseen.
+        try {
+          const reporterName = userData.fullName || user.displayName || 'A member';
+          await broadcastNotification(
+            await getAdminRecipientIds(),
+            {
+              type: 'broadcast',
+              title: `Low stock reported: ${item.name}`,
+              body: `${reporterName} reported ${item.name} as low${quantity ? ` (${quantity} seen)` : ''}.`,
+              link: '/issue-reports',
+            },
+            { uid: effectiveUid ?? user.uid, name: reporterName },
+          );
+        } catch (e) {
+          console.warn('low-stock report notification failed:', e);
+        }
+      }
       setSuccess(true);
       setTimeout(() => {
         router.push('/dashboard');
@@ -336,7 +369,7 @@ export default function MemberReportPage() {
                   {searchTerm && (() => {
                     const filtered = inventory
                       .filter((it) => it.name.toLowerCase().includes(searchTerm.trim().toLowerCase()))
-                      .filter((it) => (lowStockOnly ? (it.reorderThreshold !== undefined ? it.totalStockQuantity <= (it.reorderThreshold ?? 0) : false) : true));
+                      .filter((it) => (lowStockOnly ? (it.reorderThreshold !== undefined ? it.availableStock <= (it.reorderThreshold ?? 0) : false) : true));
 
                     if (filtered.length === 0) return null;
 
@@ -364,7 +397,7 @@ export default function MemberReportPage() {
                             }`}
                           >
                             <span className="font-medium">{item.name}</span>
-                            <span className="text-xs text-foreground-500">Stock: <span className="tabular-nums">{item.totalStockQuantity}</span> {item.reorderThreshold ? `/ Par: ${item.reorderThreshold}` : ''}</span>
+                            <span className="text-xs text-foreground-500">Stock: <span className="tabular-nums">{item.availableStock}</span> {item.reorderThreshold ? `/ Par: ${item.reorderThreshold}` : ''}</span>
                           </button>
                         ))}
                       </div>
@@ -376,7 +409,7 @@ export default function MemberReportPage() {
               {getItemDetails() && (
                 <div className="bg-blue-50 dark:bg-blue-950 p-3 rounded-lg text-sm space-y-1">
                   <p>
-                    <strong>Current Stock:</strong> {getItemDetails()?.totalStockQuantity}
+                    <strong>Current Stock:</strong> {getItemDetails()?.availableStock}
                   </p>
                   {getItemDetails()?.reorderThreshold && (
                     <p>
