@@ -46,6 +46,12 @@ export function expiringCutoff(now = new Date()): Date {
   return new Date(now.getTime() + getThresholds().expirationWarningDays * DAY_MS);
 }
 
+/** Pluralized label for the unit actually counted (`baseUnit`, default "unit"). */
+export function baseUnitLabel(item: { baseUnit?: string } | undefined | null, n: number): string {
+  const base = (item?.baseUnit ?? '').trim().toLowerCase() || 'unit';
+  return n === 1 || base.endsWith('s') ? base : `${base}s`;
+}
+
 /**
  * Compute on-hand stock for an item. Batch-level bag tracking (bagCount /
  * itemsPerBag / looseItems) is the source of truth when present; otherwise

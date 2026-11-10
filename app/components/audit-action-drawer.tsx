@@ -19,7 +19,7 @@ import StorageLocationPicker from '@/app/components/storage-location-picker';
 import ScannerInput from '@/app/components/scanner-input';
 import PanelShell from '@/app/components/panel-shell';
 import { determineIsAsset } from '@/app/lib/inventory';
-import { computeBagStock, displayLocation, getItemStatus } from '@/app/lib/item-status';
+import { computeBagStock, displayLocation, getItemStatus, baseUnitLabel } from '@/app/lib/item-status';
 import { parseGs1Barcode } from '@/app/lib/gs1';
 import { auditStockFingerprint, buildAuditCountPlan } from '@/app/lib/audit-count';
 import { submitAuditEntries } from '@/app/lib/audit-helpers';
@@ -492,7 +492,7 @@ export default function AuditActionDrawer({
                       value={countedBoxes} onValueChange={setCountedBoxes} placeholder="Enter count" />
                   )}
                   <Input type="number" min={0} step={1}
-                    label={looseOnly ? 'Individual units observed' : 'Loose units observed'}
+                    label={looseOnly ? `Individual ${baseUnitLabel(item, 2)} observed` : `Loose ${baseUnitLabel(item, 2)} observed`}
                     value={countedLoose} onValueChange={setCountedLoose} placeholder="Enter count"
                     className={looseOnly ? '' : 'mt-3'} />
                   <div className="mt-3 grid grid-cols-2 gap-3">
