@@ -1360,3 +1360,47 @@ test('check-in acknowledgement files a report and the check-off shows on /report
   await expect(row.getByText(/acknowledged/i).first()).toBeVisible();
   await page.screenshot({ path: join(SHOTS, 'reports-checkoffs-tab.png'), fullPage: true });
 });
+
+// Issue #38: an audit count that drops an item below its reorder threshold files
+// one open team_tasks card for it (and notifies admin/QM), with no manual report.
+test('audit count below the reorder threshold files a low-stock team task', async ({ page }) => {
+  const testRunId = `smoke-lowstock-${Date.now()}`;
+  const name = `[TEST] Low stock OPA ${testRunId}`;
+  const itemId = await createDoc('inventory', {
+    isTest: true,
+    testRunId,
+    purpose: 'Audit count below reorder threshold creates a low-stock team task',
+    name,
+    category: 'Trauma',
+    unit: 'count',
+    unopenedBoxes: 0,
+    looseUnits: 50,
+    totalStockQuantity: 50,
+    reorderThreshold: 10,
+    location: 'HQ',
+    room: 'Back Room',
+    pool: 'hq_reserve',
+    auditVerified: false,
+    lastAuditDate: null,
+  });
+
+  await signIn(page);
+  await page.goto('/audit?tab=disposables', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2000);
+  await page.getByPlaceholder('Search items, categories, locations…').fill(name);
+  const card = page.getByText(name, { exact: true }).locator('xpath=../../..');
+  await expect(card).toBeVisible({ timeout: 10_000 });
+  await card.getByRole('button', { name: 'Count' }).click();
+  await page.getByRole('spinbutton', { name: 'Individual units observed' }).fill('3');
+  await page.getByRole('button', { name: 'Apply observed count to stock' }).click({ position: { x: 20, y: 15 } });
+
+  await expect.poll(async () => (await getDocById('inventory', itemId))?.looseUnits, { timeout: 10_000 }).toBe(3);
+  // The flag is post-commit and best-effort, so poll for the card.
+  await expect.poll(async () => (await listCollection('team_tasks')).filter(
+    (t) => t.linkedInventoryItemId === itemId && t.status !== 'done',
+  ).length, { timeout: 15_000 }).toBe(1);
+  await expect.poll(async () => (await listCollection('notifications')).some(
+    (n) => String(n.title ?? '').includes(name),
+  ), { timeout: 15_000 }).toBe(true);
+});
