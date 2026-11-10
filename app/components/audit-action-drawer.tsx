@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import type { HQRoom, InventoryItem, LocationType, StorageLocationRef } from '@/app/types';
 import { CategoryBadge } from '@/app/components/category-badge';
+import { ItemPhotoButton } from '@/app/components/item-photo-button';
 import CountControl from '@/app/components/count-control';
 import ConditionToggle, { type ConditionValue } from '@/app/components/condition-toggle';
 import StorageLocationPicker from '@/app/components/storage-location-picker';
@@ -378,8 +379,11 @@ export default function AuditActionDrawer({
             <div className="flex items-center gap-3 min-w-0">
               <CategoryBadge category={item.category} />
               <div className="min-w-0">
-                <div className="font-semibold text-lg text-foreground leading-tight truncate">
-                  {item.name}
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <div className="font-semibold text-lg text-foreground leading-tight truncate">
+                    {item.name}
+                  </div>
+                  <ItemPhotoButton url={item.imageUrl} name={item.name} size="md" />
                 </div>
                 <div className="flex items-center gap-1 text-xs text-foreground-500 mt-0.5">
                   <MapPin size={11} className="flex-none" />

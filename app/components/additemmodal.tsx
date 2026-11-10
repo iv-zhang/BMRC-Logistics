@@ -18,6 +18,8 @@ import { useOrgConfig } from '@/app/hooks/useOrgConfig';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { parseDateInput, toDateInputValue } from '@/app/lib/dates';
 import { deriveItemName, parseLegacyName } from '@/app/lib/item-naming';
+import { normalizeImageUrl } from '@/app/lib/image-url';
+import { PhotoLinkField, photoLinkError } from '@/app/components/item-photo-button';
 
 // Constants
 const BATCH_STATUSES: { key: BatchStatus; label: string; color: 'default' | 'success' | 'primary' | 'warning' | 'danger' }[] = [
@@ -48,6 +50,7 @@ type InventoryFormState = {
   unit?: string;
   reorderThreshold: number;
   description?: string;
+  imageUrl?: string;
   storageLocation?: StorageLocationRef;
   batches: InventoryBatch[];
   requiresExpirationCheck?: boolean;
@@ -137,6 +140,7 @@ export default function InventoryModal({
       unit: data.unit || 'box',
       reorderThreshold: data.reorderThreshold ?? 5,
       description: data.description || '',
+      imageUrl: data.imageUrl || '',
       storageLocation: data.storageLocation,
       batches,
       requiresExpirationCheck: (dataRecord.requiresExpirationCheck as boolean) ?? false,
@@ -291,7 +295,7 @@ export default function InventoryModal({
 
   // --- Submit ---
   const handleSubmit = async (onClose: () => void) => {
-    if (!formData.family?.trim() || submitting) return;
+    if (!formData.family?.trim() || submitting || photoLinkError(formData.imageUrl ?? '')) return;
 
     // Compute total stock from batches
     const batchTotal = formData.batches.reduce((a, b) => a + Number(b.stock ?? 0), 0);
@@ -317,6 +321,8 @@ export default function InventoryModal({
       reorderThreshold: Number(formData.reorderThreshold ?? 0),
       maxUnits: formData.maxUnits ?? 0,
       description: formData.description || undefined,
+      // '' (not undefined) so clearing the field actually clears it on update.
+      imageUrl: normalizeImageUrl(formData.imageUrl ?? '') ?? '',
       storageLocation: formData.storageLocation || undefined,
       requiresExpirationCheck: !!formData.requiresExpirationCheck,
       // Batch data
@@ -907,6 +913,12 @@ export default function InventoryModal({
                   onValueChange={(v) => setFormData(prev => ({ ...prev, description: v }))}
                   minRows={2}
                 />
+                <div className="mt-3">
+                  <PhotoLinkField
+                    value={formData.imageUrl ?? ''}
+                    onChange={(v) => setFormData(prev => ({ ...prev, imageUrl: v }))}
+                  />
+                </div>
               </section>
             </ModalBody>
 
@@ -918,7 +930,7 @@ export default function InventoryModal({
                 color="primary"
                 onPress={() => handleSubmit(() => closeModal())}
                 className="font-semibold shadow-lg"
-                isDisabled={!formData.family?.trim()}
+                isDisabled={!formData.family?.trim() || !!photoLinkError(formData.imageUrl ?? '')}
                 isLoading={submitting}
               >
                 {isEditMode ? 'Save Changes' : 'Add Item'}

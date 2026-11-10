@@ -1360,3 +1360,78 @@ test('check-in acknowledgement files a report and the check-off shows on /report
   await expect(row.getByText(/acknowledged/i).first()).toBeVisible();
   await page.screenshot({ path: join(SHOTS, 'reports-checkoffs-tab.png'), fullPage: true });
 });
+
+// Issue #31: an item with a photo link shows a "View photo of …" button on the
+// check-off page and on /audit; the button opens a modal with the image.
+test('item photo button appears on check-off and audit, and opens the photo modal', async ({ page }) => {
+  const testRunId = `smoke-photo-${Date.now()}`;
+  const purpose = 'Verify item reference photo button on check-off and audit surfaces';
+  const ITEM = `[TEST] Photo Item ${testRunId}`;
+  const PACK = `[TEST] Photo Pack ${testRunId}`;
+  const THUMB = 'https://drive.google.com/thumbnail?id=smokePhotoId123&sz=w1000';
+  const fixtureRefs: Array<{ collection: string; id: string }> = [];
+  try {
+    const metadata = { isTest: true, testRunId, purpose };
+    const itemId = await createDoc('inventory', {
+      ...metadata,
+      name: ITEM,
+      category: 'Trauma',
+      unit: 'each',
+      unopenedBoxes: 1,
+      looseUnits: 0,
+      totalStockQuantity: 10,
+      reorderThreshold: 1,
+      location: 'HQ',
+      room: 'Back Room',
+      pool: 'hq_reserve',
+      imageUrl: THUMB,
+    });
+    fixtureRefs.push({ collection: 'inventory', id: itemId });
+    const packId = await createDoc('statpacks', {
+      ...metadata,
+      name: PACK,
+      type: 'Primary',
+      status: 'Ready',
+      isCheckedOut: false,
+      currentLocation: 'MRC1',
+      compartments: [{ id: 'main', name: 'Main', parentPocket: 'main', isSealed: false }],
+      contents: [{ itemId, batchId: '', requiredQuantity: 2, currentQuantity: 2, pocket: 'main' }],
+      sharpsContainer: { status: 'ok' },
+    });
+    fixtureRefs.push({ collection: 'statpacks', id: packId });
+
+    await signIn(page);
+    // Serve the Drive thumbnail locally so the test never depends on the network.
+    const PNG_1PX = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
+    await page.route('https://drive.google.com/thumbnail**', route => route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX }));
+
+    await page.goto(`/statpacks/check-off?id=${packId}&mode=audit`, { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('load');
+    await page.waitForTimeout(2500);
+    const photoBtn = page.getByRole('button', { name: `View photo of ${ITEM}` }).first();
+    await expect(photoBtn).toBeVisible({ timeout: 10_000 });
+    await photoBtn.click();
+    const modalImg = page.getByRole('dialog').locator('img');
+    await expect(modalImg).toBeVisible();
+    await expect(modalImg).toHaveAttribute('src', /drive\.google\.com\/thumbnail\?id=/);
+    await page.keyboard.press('Escape');
+
+    await page.goto('/audit?tab=disposables', { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('load');
+    await page.waitForTimeout(2000);
+    await page.getByPlaceholder('Search items, categories, locations…').fill(ITEM);
+    const auditBtn = page.getByRole('button', { name: `View photo of ${ITEM}` }).first();
+    await expect(auditBtn).toBeVisible({ timeout: 10_000 });
+    await auditBtn.click();
+    await expect(page.getByRole('dialog').locator('img')).toHaveAttribute('src', /drive\.google\.com\/thumbnail\?id=/);
+  } finally {
+    await createDoc('test_cleanup_manifests', {
+      isTest: true,
+      testRunId,
+      purpose,
+      fixtures: fixtureRefs,
+      generated: [],
+      createdAt: new Date(),
+    }, testRunId);
+  }
+});

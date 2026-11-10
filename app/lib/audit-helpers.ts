@@ -100,6 +100,8 @@ export interface AuditSnapshot {
 export interface DisposableSnapshot {
   id: string;
   name: string;
+  /** Reference photo URL (InventoryItem.imageUrl) */
+  imageUrl?: string;
   category: string;
   location: string;
   room?: string;
@@ -134,6 +136,8 @@ export interface DisposableSnapshot {
 export interface AssetSnapshot {
   id: string;
   name: string;
+  /** Reference photo URL (InventoryItem.imageUrl) */
+  imageUrl?: string;
   category: string;
   assetSerial?: string;
   assetStatus?: string;
@@ -198,6 +202,7 @@ export async function generateAuditSnapshot(
       assets.push({
         id: item.id,
         name: item.name,
+        imageUrl: item.imageUrl || undefined,
         category: item.category,
         assetSerial: item.assetSerial,
         assetStatus: item.assetStatus,
@@ -247,6 +252,7 @@ export async function generateAuditSnapshot(
       disposables.push({
         id: item.id,
         name: item.name,
+        imageUrl: item.imageUrl || undefined,
         category: item.category,
         location: item.location,
         room: item.room,
