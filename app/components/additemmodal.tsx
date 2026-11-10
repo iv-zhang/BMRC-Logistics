@@ -46,6 +46,7 @@ type InventoryFormState = {
   barcode?: string;
   category: ItemCategory;
   unit?: string;
+  baseUnit?: string;
   reorderThreshold: number;
   description?: string;
   storageLocation?: StorageLocationRef;
@@ -314,6 +315,7 @@ export default function InventoryModal({
       barcode: formData.barcode || undefined,
       category: formData.category,
       unit: formData.unit || 'box',
+      baseUnit: formData.baseUnit?.trim() || undefined,
       reorderThreshold: Number(formData.reorderThreshold ?? 0),
       maxUnits: formData.maxUnits ?? 0,
       description: formData.description || undefined,
@@ -569,6 +571,15 @@ export default function InventoryModal({
                     size="sm"
                     value={formData.unit ?? ''}
                     onValueChange={(v) => setFormData(prev => ({ ...prev, unit: v }))}
+                  />
+
+                  <Input
+                    label="Counted in (optional)"
+                    placeholder="e.g. pairs"
+                    variant="bordered"
+                    size="sm"
+                    value={formData.baseUnit ?? ''}
+                    onValueChange={(v) => setFormData(prev => ({ ...prev, baseUnit: v }))}
                   />
 
                   <Input

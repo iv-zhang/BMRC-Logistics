@@ -106,6 +106,10 @@ export interface DisposableSnapshot {
   /** Sealed boxes/bags in the back (item-level or summed from bag-tracked batches) */
   unopenedBoxes: number;
   itemsPerBox: number;
+  /** Unit actually counted (e.g. "pair"), from InventoryItem.baseUnit */
+  baseUnit?: string;
+  /** True when stock is bag-tracked (sealed units are bags, else boxes) */
+  bagTracked?: boolean;
   /** Total on-hand units — same math as the inventory page (bag-tracking aware) */
   totalUnits: number;
   /** Total individual units across all open batches (front area — informational only) */
@@ -252,6 +256,8 @@ export async function generateAuditSnapshot(
         room: item.room,
         unopenedBoxes,
         itemsPerBox,
+        baseUnit: item.baseUnit,
+        bagTracked: bag.hasBagTracking,
         totalUnits: bag.totalItems,
         openBatchUnits,
         reorderThreshold,

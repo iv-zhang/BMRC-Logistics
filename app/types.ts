@@ -502,6 +502,8 @@ export interface InventoryItem {
 
   // UI / metadata
   unit?: string; // e.g., 'box' or 'count'
+  /** The unit actually counted (e.g. "pair"). `unit` stays the package label (box/bag). */
+  baseUnit?: string;
   // Asset flag: when true this item is an individual asset (e.g., Blue Stat Pack 1)
   // Assets are tracked by status, not by quantity.
   isAsset?: boolean;
