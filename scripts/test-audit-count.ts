@@ -83,4 +83,24 @@ assert.notEqual(auditStockFingerprint(bagItem), auditStockFingerprint({ ...bagIt
 assert.equal(auditStockFingerprint({ ...base, batches: [{ id: 'lot', stock: 0, expirationDate: new Date('2030-01-01') }] }),
   auditStockFingerprint({ ...base, batches: [{ id: 'lot', stock: 0, expirationDate: { toDate: () => new Date('2030-01-01') } }] } as unknown as InventoryItem));
 
+// Reconcile=true on a bag item syncs the item-level mirrors with the batches.
+assert.equal(bagPlan.patch.unopenedBoxes, 2);
+assert.equal(bagPlan.patch.looseUnits, 7);
+assert.equal(computeBagStock({ ...bagItem, ...bagPlan.patch }).availableItems, 27);
+// Loose-only count on a bag item with the sealed bag gone (the issue #33 case).
+const looseOnlyBag = buildAuditCountPlan(bagItem, { countedBoxes: 0, countedLooseUnits: 4, reconcileCount: true });
+assert.equal(looseOnlyBag.verified, true);
+assert.equal(looseOnlyBag.patch.totalStockQuantity, 4);
+assert.equal(looseOnlyBag.patch.unopenedBoxes, 0);
+assert.equal(looseOnlyBag.patch.looseUnits, 4);
+// A zero-stock metadata lot is not bag tracking: item falls back to box fields and still reconciles.
+const metaOnly = { ...base, unopenedBoxes: 3, itemsPerBox: 10, batches: [{ id: 'meta', stock: 0, bagCount: 0, looseItems: 0 }] } as InventoryItem;
+const metaPlan = buildAuditCountPlan(metaOnly, { countedBoxes: 0, countedLooseUnits: 5, reconcileCount: true });
+assert.equal(metaPlan.canReconcile, true);
+assert.equal(metaPlan.patch.unopenedBoxes, 0);
+assert.equal(metaPlan.patch.looseUnits, 5);
+assert.equal(metaPlan.patch.totalStockQuantity, 5);
+// Without the reconcile flag, the lib still only records an observation.
+assert.deepEqual(buildAuditCountPlan(metaOnly, { countedBoxes: 0, countedLooseUnits: 5 }).patch, {});
+
 console.log('Audit count pure write-plan and stock-math cases passed');

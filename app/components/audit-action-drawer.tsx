@@ -243,7 +243,12 @@ export default function AuditActionDrawer({
         ? shipQty > 0
         : action === 'count' ? isAsset || (countPlan !== null && conditionCountsValid) : true;
 
-  const handleSubmit = async (reconcileCount = false) => {
+  // Saving a count updates stock whenever the plan can; otherwise it records an observation only.
+  const needsManualCorrection = action === 'count' && !isAsset && !!countPlan?.variance && !countPlan.canReconcile;
+  const submitLabel = needsManualCorrection ? 'Save count (needs manual correction)' : SUBMIT_LABEL[action];
+
+  const handleSubmit = async () => {
+    const reconcileCount = action === 'count' && !isAsset && !!countPlan?.canReconcile;
     if (saving || !canSubmit || (action === 'count' && stockChanged)) return;
     setSaving(true);
     try {
@@ -514,12 +519,11 @@ export default function AuditActionDrawer({
                     <p>Expected {countPlan.systemTotal ?? 'unknown'} units · Observed {countPlan.total ?? 'unknown'} units · Delta {countPlan.total !== null && countPlan.systemTotal !== null ? countPlan.total - countPlan.systemTotal : 'unknown'} units</p>
                     <p className="text-xs text-foreground-500">Expected {countPlan.systemBoxes} sealed + {countPlan.systemLoose} loose · Observed {countPlan.boxes} sealed + {countPlan.loose} loose · Delta {countPlan.boxes - countPlan.systemBoxes} sealed, {countPlan.loose - countPlan.systemLoose} loose</p>
                   </div>}
-                  {countPlan && !countPlan.canReconcile && <p className="mt-2 text-xs text-warning">Lot allocation or package conversion is ambiguous. Record this observation and reconcile the lot details separately.</p>}
-                  {countPlan?.variance && countPlan.canReconcile && <Button className="mt-3 max-w-full whitespace-normal h-auto py-2" color="warning" variant="flat" isDisabled={saving || stockChanged} onPress={() => handleSubmit(true)}>Apply observed count to stock</Button>}
+                  {countPlan && !countPlan.canReconcile && <p className="mt-2 text-xs text-warning">This item has several lots or no known package size, so the count is recorded but stock must be corrected in Inventory.</p>}
                   {countPlan && (countPlan.variance || countPlan.unresolved) && (
                     <div className="mt-2 flex items-center gap-1.5 text-xs text-warning font-semibold">
                       <AlertTriangle size={12} className="flex-none" />
-                      {countPlan.unresolved ? 'Unresolved observation — quantities need reconciliation.' : 'Count differs from system — recorded without verification.'}
+                      {countPlan.canReconcile ? 'Count differs from system — saving will update stock to the counted number.' : 'Unresolved observation — quantities need reconciliation.'}
                     </div>
                   )}
                 </div>
@@ -768,11 +772,11 @@ export default function AuditActionDrawer({
           <Button
             color="primary"
             className="flex-1"
-            onPress={() => handleSubmit()}
+            onPress={handleSubmit}
             isLoading={saving}
             isDisabled={!canSubmit || (action === 'count' && stockChanged)}
           >
-            {SUBMIT_LABEL[action]}
+            {submitLabel}
           </Button>
         </div>
     </PanelShell>

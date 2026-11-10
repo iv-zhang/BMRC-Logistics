@@ -1,5 +1,5 @@
 import type { InventoryItem } from '@/app/types';
-import { computeBagStock } from '@/app/lib/item-status';
+import { computeBagStock, batchHasBagTracking } from '@/app/lib/item-status';
 
 export interface AuditCountInput {
   countedBoxes?: number;
@@ -47,7 +47,8 @@ export function buildAuditCountPlan(item: InventoryItem, input: AuditCountInput)
   if (input.itemsPerBox !== undefined && (!Number.isSafeInteger(input.itemsPerBox) || input.itemsPerBox <= 0)) {
     throw new Error('Units per package must be a positive integer');
   }
-  const tracked = (item.batches ?? []).filter(b => b.bagCount !== undefined || b.itemsPerBag !== undefined || b.looseItems !== undefined);
+  // Same semantics as hasBagTracking in item-status (value > 0), so metadata-only lots don't count.
+  const tracked = (item.batches ?? []).filter(batchHasBagTracking);
   const sizes = new Set(tracked.map(b => b.itemsPerBag).filter((n): n is number => n !== undefined && n > 0));
   const missingSealedConversion = tracked.some(b => (b.bagCount ?? 0) > 0 && !(b.itemsPerBag && b.itemsPerBag > 0));
   const systemPerPackage = stock.hasBagTracking
@@ -66,12 +67,17 @@ export function buildAuditCountPlan(item: InventoryItem, input: AuditCountInput)
       patch.batches = (item.batches ?? []).map(b => b === tracked[0]
         ? { ...b, bagCount: boxes, looseItems: loose, stock: total! }
         : b);
+      // Keep the item-level mirrors in step with the batches (as the inventory page's open-bag path does).
+      const nextBatches = patch.batches as NonNullable<InventoryItem['batches']>;
+      patch.unopenedBoxes = nextBatches.reduce((s, b) => s + (b.bagCount ?? 0), 0);
+      patch.looseUnits = nextBatches.reduce((s, b) => s + (b.looseItems ?? 0), 0);
+      patch.totalStockQuantity = nextBatches.reduce((s, b) => s + (b.bagCount ?? 0) * (b.itemsPerBag ?? 0) + (b.looseItems ?? 0), 0);
     } else if (!stock.hasBagTracking) {
       patch.unopenedBoxes = boxes;
       patch.looseUnits = loose;
       if (input.itemsPerBox !== undefined) patch.itemsPerBox = input.itemsPerBox;
     }
-    patch.totalStockQuantity = total;
+    if (!stock.hasBagTracking) patch.totalStockQuantity = total;
   }
   return {
     boxes, loose, perPackage: perPackage ?? null, total, variance, unresolved,
