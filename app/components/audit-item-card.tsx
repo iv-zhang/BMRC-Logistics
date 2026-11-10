@@ -6,6 +6,7 @@ import { MapPin, ArrowRightLeft, PackagePlus, AlertTriangle } from 'lucide-react
 import type { DisposableSnapshot, AssetSnapshot } from '@/app/lib/audit-helpers';
 import type { DrawerAction } from '@/app/components/audit-action-drawer';
 import { CategoryBadge } from '@/app/components/category-badge';
+import { ItemPhotoButton } from '@/app/components/item-photo-button';
 import { formatExp, expTextColor } from '@/app/lib/item-status';
 
 function lastAuditLabel(d?: Date): string {
@@ -40,6 +41,7 @@ export function DisposableAuditCard({ item, onAction }: DisposableCardProps) {
       <div className="flex-1 min-w-0 basis-40">
         <div className="flex items-center gap-2 flex-wrap mb-1">
           <span className="font-semibold text-foreground">{item.name}</span>
+          <ItemPhotoButton url={item.imageUrl} name={item.name} />
           <span className="text-xs text-foreground-400">{item.category}</span>
         </div>
         {loc && (
@@ -130,6 +132,7 @@ export function AssetAuditCard({ item, onAction }: AssetCardProps) {
       <div className="flex-1 min-w-0 basis-40">
         <div className="flex items-center gap-2 flex-wrap mb-1">
           <span className="font-semibold text-foreground">{item.name}</span>
+          <ItemPhotoButton url={item.imageUrl} name={item.name} />
           {item.assetSerial && (
             <span className="font-mono text-xs text-foreground-500">#{item.assetSerial}</span>
           )}
