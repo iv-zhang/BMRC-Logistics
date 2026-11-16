@@ -593,7 +593,13 @@ Out of scope for now (tracked on #36): name standardization from the 11/4 CSV ma
 
 **Why:** BMRC is first-aid scope, and a blocked member on 11/15 took MRC 2 anyway outside the app. A gate people walk around protects nothing and erases the custody record. A pack that's 1 item short is better out *with* a record and a restock task than out *without* either.
 
-**Revisit when** epi enters protocol or scope grows. The likely shape then is a per-item "required for checkout" setting (data, per D-1), default off. Not built now (feature freeze).
+**Critical items, spelled out (2026-11-16):**
+- **AED and O₂ still block in practice.** Their required checks (pressure of at least 500, pad date, battery, pads) can't be honestly completed if the device isn't in the pack.
+- **A missing EpiPen flags, by deliberate product-owner decision.** BMRC is first-aid scope, and epi isn't in protocol yet.
+- To keep that visible rather than silent, the checkout card names it: "No EpiPen in this pack — OK at first-aid scope." Every such checkout is in `statpack_logs`.
+- Compare the status quo: on 11/15 a pack left without epi *and* without any record.
+
+**Revisit when** epi enters protocol (the check-and-inject rollout) or scope grows. The likely shape then is a per-item "required for checkout" setting (data, per D-1), default off. Making epi block before then is a one-line change (`criticalKindOf` in `app/lib/statpack-critical.ts` already identifies it).
 
 ### D-38 — Stay on Firestore (closes the platform question)
 
