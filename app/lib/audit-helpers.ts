@@ -100,12 +100,18 @@ export interface AuditSnapshot {
 export interface DisposableSnapshot {
   id: string;
   name: string;
+  /** Reference photo URL (InventoryItem.imageUrl) */
+  imageUrl?: string;
   category: string;
   location: string;
   room?: string;
   /** Sealed boxes/bags in the back (item-level or summed from bag-tracked batches) */
   unopenedBoxes: number;
   itemsPerBox: number;
+  /** Unit actually counted (e.g. "pair"), from InventoryItem.baseUnit */
+  baseUnit?: string;
+  /** True when stock is bag-tracked (sealed units are bags, else boxes) */
+  bagTracked?: boolean;
   /** Total on-hand units — same math as the inventory page (bag-tracking aware) */
   totalUnits: number;
   /** Total individual units across all open batches (front area — informational only) */
@@ -134,6 +140,8 @@ export interface DisposableSnapshot {
 export interface AssetSnapshot {
   id: string;
   name: string;
+  /** Reference photo URL (InventoryItem.imageUrl) */
+  imageUrl?: string;
   category: string;
   assetSerial?: string;
   assetStatus?: string;
@@ -198,6 +206,7 @@ export async function generateAuditSnapshot(
       assets.push({
         id: item.id,
         name: item.name,
+        imageUrl: item.imageUrl || undefined,
         category: item.category,
         assetSerial: item.assetSerial,
         assetStatus: item.assetStatus,
@@ -247,11 +256,14 @@ export async function generateAuditSnapshot(
       disposables.push({
         id: item.id,
         name: item.name,
+        imageUrl: item.imageUrl || undefined,
         category: item.category,
         location: item.location,
         room: item.room,
         unopenedBoxes,
         itemsPerBox,
+        baseUnit: item.baseUnit,
+        bagTracked: bag.hasBagTracking,
         totalUnits: bag.totalItems,
         openBatchUnits,
         reorderThreshold,

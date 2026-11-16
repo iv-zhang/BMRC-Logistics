@@ -554,3 +554,15 @@ statpack are outside this item-removal rule.
 into maintenance or pending initial check. Editor saves retain their opening
 snapshot and reject when live ownership, status, check-in, or audit observations
 have changed, preserving the unsaved draft for review.
+
+### D-34 — An audit count updates stock (amends remediation batch 1a)
+
+**Decision (2026-11-10, issue #33):** the audit drawer's primary **Save count** now writes the counted quantity to stock whenever the count plan can reconcile it (single-lot bag items and box/loose items). The separate "Apply observed count to stock" button is gone; "Matches expected (N)" stays.
+
+**Why:** members counted loose units, saved, and still saw the old number — the observe-then-explicitly-reconcile flow read as broken. The safeguards batch 1a added are kept: the transaction re-reads the item and rejects a count whose opening-stock fingerprint went stale (a receipt landed mid-count), and every count still logs expected/observed/delta to `inventory_logs` + `auditEvents`.
+
+**Still observation-only:** a count that can't be allocated unambiguously (several tracked lots, or sealed packages with no known size) saves as an unresolved observation labelled "needs manual correction"; stock is corrected in Inventory.
+
+**Mirrors:** reconciling a bag-tracked item also rewrites the item-level `unopenedBoxes` / `looseUnits` / `totalStockQuantity` sums, and "bag-tracked" uses the one `hasBagTracking` predicate in `item-status.ts`.
+
+**Velocity:** usage per week is derived from consecutive audit counts plus logged `intake` between them (`app/lib/count-velocity.ts`, shown in the inventory item's Activity History). Shelf refills are not added back — counts measure the back reserve, so a reserve→shelf transfer is part of the usage. Returns null, not 0, without two usable counts.

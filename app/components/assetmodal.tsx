@@ -23,6 +23,8 @@ import { canUserAudit } from '@/app/lib/audit-helpers';
 import { recordControlTest } from '@/app/lib/asset-checks';
 import { getThresholds } from '@/app/lib/org-config-store';
 import { parseDateInput, toDateInputValue } from '@/app/lib/dates';
+import { normalizeImageUrl } from '@/app/lib/image-url';
+import { PhotoLinkField, photoLinkError } from '@/app/components/item-photo-button';
 
 type SelectChildren = Extract<React.ComponentProps<typeof Select>['children'], React.ReactElement>;
 
@@ -361,6 +363,14 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
         setSaving(false);
         return;
       }
+      const photoErr = photoLinkError(String(form.imageUrl ?? ''));
+      if (photoErr) {
+        setValidationError(photoErr);
+        setSaving(false);
+        return;
+      }
+      // '' (not undefined) so clearing the field actually clears it on update.
+      payload.imageUrl = normalizeImageUrl(String(form.imageUrl ?? '')) ?? '';
       payload.expirationPrecision = expirationInput.trim() ? expirationPrecision : undefined;
       payload.expirationDate = parsedExpiration;
       if (!payload.barcode && !payload.qr) {
@@ -537,6 +547,7 @@ export default function AssetModal({ isOpen, onOpenChange, onAdd, onUpdate, init
           {/* ── Identity ─────────────────────────────────────────── */}
           <Section title="Identity">
             <Input label="Name" value={String(form.name ?? '')} onValueChange={(v) => setForm({ ...form, name: v })} />
+            <PhotoLinkField value={String(form.imageUrl ?? '')} onChange={(v) => setForm({ ...form, imageUrl: v })} />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <Select label="Category" selectedKeys={[String(form.assetCategory ?? 'Generic')]} onChange={(e) => handleCategoryChange(e.target.value)}>
                 <SelectItem key="Generic">Generic</SelectItem>

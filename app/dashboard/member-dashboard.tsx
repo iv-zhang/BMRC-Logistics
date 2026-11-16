@@ -23,7 +23,8 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
-import type { Statpack, User, AppNotification, ShiftRequest } from '@/app/types';
+import type { Statpack, User, AppNotification, ShiftRequest, InventoryItem } from '@/app/types';
+import { computeBagStock } from '@/app/lib/item-status';
 import { subscribeUserNotifications, markNotificationRead } from '@/app/lib/notifications';
 import { subscribeMyRequests } from '@/app/lib/events';
 import LoadFailureNotice, { describeLoadError } from '@/app/components/load-failure-notice';
@@ -129,10 +130,16 @@ export default function MemberDashboard({ userData }: MemberDashboardProps) {
         })
         .map((docSnap) => {
         const data = docSnap.data();
-        // Calculate sealed inventory from unopened boxes in back room
         const sealedBoxCount = Number(data.unopenedBoxes ?? 0);
         const itemsPerBox = Number(data.itemsPerBox ?? 1);
-        const sealedInventory = sealedBoxCount * itemsPerBox;
+        // Back-reserve units via the shared stock math (batches first, then box counts).
+        const batches = Array.isArray(data.batches)
+          ? data.batches.map((b: Record<string, unknown>) => ({ ...b, expirationDate: toDateSafe(b.expirationDate) }))
+          : undefined;
+        const sealedInventory = computeBagStock({
+          unopenedBoxes: sealedBoxCount, itemsPerBox: data.itemsPerBox,
+          looseUnits: Number(data.looseUnits ?? 0), batches,
+        } as unknown as InventoryItem).availableItems;
         
         return {
           id: docSnap.id,

@@ -160,6 +160,19 @@ test('assets page renders merged statpacks (signed in)', async ({ page }) => {
   await expect(page.getByText('MRC1 Primary').first()).toBeVisible();
 });
 
+// AUTH-GATED: glove bags (issue #32) — audit card names the counted unit.
+test('audit shows glove stock in pairs', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/audit', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2500);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+  const card = page.getByText('Nitrile Gloves, M').first();
+  await expect(card).toBeVisible();
+  await expect(page.getByText('pairs', { exact: false }).first()).toBeVisible();
+});
+
 // AUTH-GATED: admin edits a pack's expected contents straight from the audit
 // Statpacks tab — opens the shared StatpackEditorModal, adds an item, saves,
 // and expects the success toast (toast only fires after the Firestore writes).
@@ -982,11 +995,11 @@ test('audit loose-only count works at desktop and phone widths', async ({ page }
       await expect(page.getByRole('spinbutton', { name: 'Sealed boxes / bags observed' })).toHaveCount(0);
       await looseInput.fill('12');
       await expect(page.getByText('12 units', { exact: true })).toBeVisible();
-      await expect(page.getByText('Unresolved observation — quantities need reconciliation.', { exact: true })).toBeVisible();
+      await expect(page.getByText('Count differs from system — saving will update stock to the counted number.', { exact: true })).toBeVisible();
       await page.screenshot({ path: join(SHOTS, `audit-loose-count-${viewportName}.png`), fullPage: true });
       // Next's development issue badge overlaps the footer's right edge.
       // Click the exposed left side of the real button (no force/action bypass).
-      await page.getByRole('button', { name: 'Apply observed count to stock' }).click({ position: { x: 20, y: 15 } });
+      await page.getByRole('button', { name: 'Save count', exact: true }).click({ position: { x: 20, y: 15 } });
 
       await expect.poll(async () => (await getDocById('inventory', itemIds[i]))?.looseUnits, { timeout: 10_000 }).toBe(12);
       const saved = await getDocById('inventory', itemIds[i]);
@@ -1015,6 +1028,56 @@ test('audit loose-only count works at desktop and phone widths', async ({ page }
       fixtures: fixtureRefs,
       generated,
       createdAt: new Date(),
+    }, testRunId);
+  }
+});
+
+test('audit loose-only count on a box-tracked item updates the shown number', async ({ page }) => {
+  const testRunId = `audit-box-loose-${Date.now()}`;
+  const purpose = 'Issue 33: saving a loose-only count (boxes 0) must replace the recorded number';
+  const fixtureRefs: Array<{ collection: string; id: string }> = [];
+  let itemId = '';
+  try {
+    const name = `[TEST] Audit box item ${testRunId}`;
+    itemId = await createDoc('inventory', {
+      isTest: true, testRunId, purpose, name,
+      category: 'Trauma', unit: 'count',
+      unopenedBoxes: 3, itemsPerBox: 10, looseUnits: 0, totalStockQuantity: 30,
+      reorderThreshold: 0, location: 'HQ', room: 'Back Room', pool: 'hq_reserve',
+      auditVerified: false, lastAuditDate: null,
+    });
+    fixtureRefs.push({ collection: 'inventory', id: itemId });
+
+    await signIn(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('/audit?tab=disposables', { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('load');
+    await page.waitForTimeout(2000);
+    await page.getByPlaceholder('Search items, categories, locations…').fill(name);
+    const row = page.getByTestId(`audit-item-${itemId}`);
+    await expect(row).toBeVisible({ timeout: 10_000 });
+    await row.getByRole('button', { name: 'Count' }).click();
+
+    await page.getByRole('spinbutton', { name: 'Sealed boxes / bags observed' }).fill('0');
+    await page.getByRole('spinbutton', { name: 'Loose units observed' }).fill('5');
+    // Next's development issue badge overlaps the footer's right edge.
+    await page.getByRole('button', { name: 'Save count', exact: true }).click({ position: { x: 20, y: 15 } });
+
+    await expect.poll(async () => (await getDocById('inventory', itemId))?.totalStockQuantity, { timeout: 10_000 }).toBe(5);
+    const saved = await getDocById('inventory', itemId);
+    expect(saved?.unopenedBoxes).toBe(0);
+    expect(saved?.looseUnits).toBe(5);
+    await expect(row.getByText('Unresolved count', { exact: false })).toHaveCount(0);
+    await expect(row).toContainText('5');
+  } finally {
+    const [logs, events] = await Promise.all([listCollection('inventory_logs'), listCollection('auditEvents')]);
+    const generated = [
+      ...logs.filter((log) => log.itemId === itemId).map((log) => ({ collection: 'inventory_logs', id: log.id })),
+      ...events.filter((event) => event.sourceId === itemId).map((event) => ({ collection: 'auditEvents', id: event.id })),
+    ];
+    await test.info().attach('cleanup-manifest', { body: JSON.stringify({ testRunId, purpose, fixtures: fixtureRefs, generated }, null, 2), contentType: 'application/json' });
+    await createDoc('test_cleanup_manifests', {
+      isTest: true, testRunId, purpose, fixtures: fixtureRefs, generated, createdAt: new Date(),
     }, testRunId);
   }
 });
@@ -1084,15 +1147,17 @@ test('audit package and loose count works at desktop and phone widths', async ({
       await sealedInput.fill('2');
       await looseInput.fill('7');
       await expect(page.getByText('2 bags × 10 + 7 loose = 27 units', { exact: true })).toBeVisible();
-      await expect(page.getByText('Unresolved observation — quantities need reconciliation.', { exact: true })).toBeVisible();
+      await expect(page.getByText('Count differs from system — saving will update stock to the counted number.', { exact: true })).toBeVisible();
       await page.screenshot({ path: join(SHOTS, `audit-package-loose-count-${viewportName}.png`), fullPage: true });
       // Next's development issue badge overlaps the footer's right edge.
       // Click the exposed left side of the real button (no force/action bypass).
-      await page.getByRole('button', { name: 'Apply observed count to stock' }).click({ position: { x: 20, y: 15 } });
+      await page.getByRole('button', { name: 'Save count', exact: true }).click({ position: { x: 20, y: 15 } });
 
       await expect.poll(async () => (await getDocById('inventory', itemIds[i]))?.totalStockQuantity, { timeout: 10_000 }).toBe(27);
       const saved = await getDocById('inventory', itemIds[i]);
-      expect(saved?.unopenedBoxes).toBe(0);
+      // Item-level mirrors follow the batch totals.
+      expect(saved?.unopenedBoxes).toBe(2);
+      expect(saved?.looseUnits).toBe(7);
       expect(saved?.totalStockQuantity).toBe(27);
       expect(saved?.batches).toHaveLength(1);
       expect(saved?.batches?.[0]?.bagCount).toBe(2);
@@ -1359,4 +1424,79 @@ test('check-in acknowledgement files a report and the check-off shows on /report
   await expect(row).toBeVisible({ timeout: 15_000 });
   await expect(row.getByText(/acknowledged/i).first()).toBeVisible();
   await page.screenshot({ path: join(SHOTS, 'reports-checkoffs-tab.png'), fullPage: true });
+});
+
+// Issue #31: an item with a photo link shows a "View photo of …" button on the
+// check-off page and on /audit; the button opens a modal with the image.
+test('item photo button appears on check-off and audit, and opens the photo modal', async ({ page }) => {
+  const testRunId = `smoke-photo-${Date.now()}`;
+  const purpose = 'Verify item reference photo button on check-off and audit surfaces';
+  const ITEM = `[TEST] Photo Item ${testRunId}`;
+  const PACK = `[TEST] Photo Pack ${testRunId}`;
+  const THUMB = 'https://drive.google.com/thumbnail?id=smokePhotoId123&sz=w1000';
+  const fixtureRefs: Array<{ collection: string; id: string }> = [];
+  try {
+    const metadata = { isTest: true, testRunId, purpose };
+    const itemId = await createDoc('inventory', {
+      ...metadata,
+      name: ITEM,
+      category: 'Trauma',
+      unit: 'each',
+      unopenedBoxes: 1,
+      looseUnits: 0,
+      totalStockQuantity: 10,
+      reorderThreshold: 1,
+      location: 'HQ',
+      room: 'Back Room',
+      pool: 'hq_reserve',
+      imageUrl: THUMB,
+    });
+    fixtureRefs.push({ collection: 'inventory', id: itemId });
+    const packId = await createDoc('statpacks', {
+      ...metadata,
+      name: PACK,
+      type: 'Primary',
+      status: 'Ready',
+      isCheckedOut: false,
+      currentLocation: 'MRC1',
+      compartments: [{ id: 'main', name: 'Main', parentPocket: 'main', isSealed: false }],
+      contents: [{ itemId, batchId: '', requiredQuantity: 2, currentQuantity: 2, pocket: 'main' }],
+      sharpsContainer: { status: 'ok' },
+    });
+    fixtureRefs.push({ collection: 'statpacks', id: packId });
+
+    await signIn(page);
+    // Serve the Drive thumbnail locally so the test never depends on the network.
+    const PNG_1PX = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
+    await page.route('https://drive.google.com/thumbnail**', route => route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX }));
+
+    await page.goto(`/statpacks/check-off?id=${packId}&mode=audit`, { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('load');
+    await page.waitForTimeout(2500);
+    const photoBtn = page.getByRole('button', { name: `View photo of ${ITEM}` }).first();
+    await expect(photoBtn).toBeVisible({ timeout: 10_000 });
+    await photoBtn.click();
+    const modalImg = page.getByRole('dialog').locator('img');
+    await expect(modalImg).toBeVisible();
+    await expect(modalImg).toHaveAttribute('src', /drive\.google\.com\/thumbnail\?id=/);
+    await page.keyboard.press('Escape');
+
+    await page.goto('/audit?tab=disposables', { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('load');
+    await page.waitForTimeout(2000);
+    await page.getByPlaceholder('Search items, categories, locations…').fill(ITEM);
+    const auditBtn = page.getByRole('button', { name: `View photo of ${ITEM}` }).first();
+    await expect(auditBtn).toBeVisible({ timeout: 10_000 });
+    await auditBtn.click();
+    await expect(page.getByRole('dialog').locator('img')).toHaveAttribute('src', /drive\.google\.com\/thumbnail\?id=/);
+  } finally {
+    await createDoc('test_cleanup_manifests', {
+      isTest: true,
+      testRunId,
+      purpose,
+      fixtures: fixtureRefs,
+      generated: [],
+      createdAt: new Date(),
+    }, testRunId);
+  }
 });

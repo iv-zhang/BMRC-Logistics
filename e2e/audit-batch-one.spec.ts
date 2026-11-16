@@ -102,25 +102,14 @@ test('mixed-size bin: keyboard selection, mismatch persists, explicit correction
   await page.getByLabel('Individual units observed').fill('9');
   await expect(page.getByTestId('audit-count-comparison')).toContainText('Delta -3 units');
   await page.getByRole('button', { name: 'Save count', exact: true }).click();
-  await expect(page.getByTestId(`audit-item-${ids[0]}`)).toContainText('Unresolved count');
-  await expect.poll(async () => (await getDocById('inventory', ids[0]))?.auditCountObservation?.observed.loose).toBe(9);
-  let stored = await getDocById('inventory', ids[0]);
-  expect(stored?.looseUnits).toBe(12);
-  expect(stored?.auditCountObservation?.observed.loose).toBe(9);
-  await openCount(page, ids[0]);
-  await expect(page.getByTestId('saved-audit-variance')).toContainText('Delta: -3 units');
-  await page.screenshot({ path: test.info().outputPath('audit-desktop-unresolved.png'), animations: 'disabled', fullPage: false });
-  await page.getByRole('button', { name: 'Use recorded observation' }).click();
-  await page.screenshot({ path: test.info().outputPath('audit-desktop-correction.png'), animations: 'disabled', fullPage: false });
-  await page.getByRole('button', { name: 'Apply observed count to stock' }).click();
-  // Role queries can temporarily omit a loading button; wait for the server record,
-  // then require the whole drawer to close before continuing.
+  // Saving a count now updates stock directly (issue #33).
   await expect.poll(async () => {
     const saved = await getDocById('inventory', ids[0]);
     return { loose: saved?.looseUnits, verified: saved?.auditVerified, unresolved: Boolean(saved?.auditCountObservation) };
   }).toEqual({ loose: 9, verified: true, unresolved: false });
+  await expect(page.getByTestId(`audit-item-${ids[0]}`)).not.toContainText('Unresolved count');
   await expect(page.getByRole('dialog', { name: 'Audit actions for [TEST] OPA, 80 mm', exact: true })).not.toBeVisible();
-  stored = await getDocById('inventory', ids[0]);
+  const stored = await getDocById('inventory', ids[0]);
   expect(stored?.looseUnits).toBe(9);
   expect(stored?.auditCountObservation).toBeFalsy();
   await expect(page.getByTestId(`audit-item-${ids[0]}`)).toContainText('Verified');
@@ -172,6 +161,5 @@ test('receipt while count is open preserves input and blocks stale absolute corr
   await expect(page.getByRole('alert').filter({ hasText: 'Stock changed while this count was open' })).toContainText('Stock changed while this count was open');
   await expect(page.getByLabel('Individual units observed')).toHaveValue('9');
   await expect(page.getByRole('button', { name: 'Save count', exact: true })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Apply observed count to stock' })).toBeDisabled();
   expect((await getDocById('inventory', ids[0]))?.looseUnits).toBe(15);
 });

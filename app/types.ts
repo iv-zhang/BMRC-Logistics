@@ -444,6 +444,12 @@ export interface AuditCountObservation {
 export interface InventoryItem {
   id: string;
   /**
+   * Reference photo shown on audit / check-off ("what does this look like").
+   * An https URL; Google Drive share links are normalized to a thumbnail URL on
+   * save (app/lib/image-url.ts). Empty string = no photo.
+   */
+  imageUrl?: string;
+  /**
    * DERIVED, never typed by hand: `${family}, ${variantLabel}` (family alone if
    * there is no variant). Persisted so the ~78 existing read sites and
    * Firestore `orderBy('name')` keep working — sorting by name naturally
@@ -502,6 +508,8 @@ export interface InventoryItem {
 
   // UI / metadata
   unit?: string; // e.g., 'box' or 'count'
+  /** The unit actually counted (e.g. "pair"). `unit` stays the package label (box/bag). */
+  baseUnit?: string;
   // Asset flag: when true this item is an individual asset (e.g., Blue Stat Pack 1)
   // Assets are tracked by status, not by quantity.
   isAsset?: boolean;

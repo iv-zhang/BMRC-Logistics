@@ -2,6 +2,7 @@
 
 import { canManageLogistics, canViewLogisticsArea } from '@/app/lib/roles';
 import { toDateInputValue } from '@/app/lib/dates';
+import { computeCountVelocity } from '@/app/lib/count-velocity';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { useEffect, useState, useMemo, Fragment } from 'react';
 import { useRouter } from 'next/navigation';
@@ -107,6 +108,7 @@ export default function InventoryPage() {
   // Shared item-detail content, rendered either inline (list + dropdown mode)
   // or inside PanelShell (drawer / center / table view).
   const renderItemDetail = (item: InventoryItem) => {
+    const velocity = computeCountVelocity(drawerHistory);
     const bag = computeBagStock(item);
     const status = getItemStatus(item);
     const cfg = CAT_CFG[item.category];
@@ -294,6 +296,11 @@ export default function InventoryPage() {
                     </div>
                   ) : (
                     <div className="space-y-2">
+                      {velocity.unitsPerWeek !== null && velocity.since && (
+                        <p className="text-xs text-foreground-500">
+                          Usage: ~{Math.round(velocity.unitsPerWeek * 10) / 10}/week since {velocity.since.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                        </p>
+                      )}
                       {drawerHistory.map(entry => {
                         const ACTION_LABELS: Record<string, string> = {
                           create_open_batch: 'Batch added', consume_box: 'Units consumed',
@@ -301,6 +308,7 @@ export default function InventoryPage() {
                           asset_checkin: 'Checked in', asset_assign: 'Assigned',
                           asset_unassign: 'Unassigned', intake: 'Stock intake',
                           batch_added: 'Stock intake', quick_adjust: 'Quick adjust',
+                          audit_box_count: 'Audit count',
                         };
                         const label = ACTION_LABELS[entry.action] ?? entry.action.replace(/_/g, ' ');
                         const isIn = ['intake', 'batch_added', 'create_open_batch', 'asset_checkin'].includes(entry.action);
@@ -331,6 +339,12 @@ export default function InventoryPage() {
                                   </span>
                                 )}
                               </div>
+                              {entry.action === 'audit_box_count' && typeof entry.details?.countedTotalUnits === 'number' && (
+                                <p className="text-xs text-foreground-500 mt-1">
+                                  Counted {entry.details.countedTotalUnits}
+                                  {typeof entry.details.systemTotalUnits === 'number' ? ` (was ${entry.details.systemTotalUnits})` : ''}
+                                </p>
+                              )}
                               {entry.notes && <p className="text-xs text-foreground-400 mt-1">{entry.notes}</p>}
                             </div>
                           </div>
@@ -427,6 +441,7 @@ export default function InventoryPage() {
   const [drawerHistory, setDrawerHistory] = useState<Array<{
     id: string; action: string; quantity?: number; userName?: string;
     timestamp?: Date; notes?: string; supplier?: string;
+    details?: { countedTotalUnits?: number | null; systemTotalUnits?: number | null } | null;
   }>>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
@@ -549,6 +564,7 @@ export default function InventoryPage() {
           timestamp: data.timestamp?.toDate?.() ?? undefined,
           notes: data.notes ?? undefined,
           supplier: data.supplier ?? data.supplierName ?? undefined,
+          details: data.details ?? undefined,
         };
       }));
       setHistoryLoading(false);

@@ -1,5 +1,6 @@
 'use client';
 
+import { ItemPhotoButton } from '@/app/components/item-photo-button';
 import { statpackEntryKey } from '@/app/lib/statpack-entry-identity';
 
 import { canManageLogistics } from '@/app/lib/roles';
@@ -345,6 +346,7 @@ function ItemRow({
             <span className={`text-sm font-semibold ${V ? 'text-white' : 'text-foreground'}`}>
               {itemName}
             </span>
+            <ItemPhotoButton url={d?.imageUrl} name={itemName} />
             {isExpired && (
               <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${V ? 'bg-white/20 text-white' : 'bg-danger-50 dark:bg-danger-900/30 text-danger'}`}>
                 Expired

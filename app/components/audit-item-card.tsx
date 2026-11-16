@@ -6,7 +6,8 @@ import { MapPin, ArrowRightLeft, PackagePlus, AlertTriangle } from 'lucide-react
 import type { DisposableSnapshot, AssetSnapshot } from '@/app/lib/audit-helpers';
 import type { DrawerAction } from '@/app/components/audit-action-drawer';
 import { CategoryBadge } from '@/app/components/category-badge';
-import { formatExp, expTextColor } from '@/app/lib/item-status';
+import { ItemPhotoButton } from '@/app/components/item-photo-button';
+import { formatExp, expTextColor, baseUnitLabel } from '@/app/lib/item-status';
 
 function lastAuditLabel(d?: Date): string {
   if (!d) return 'Never audited';
@@ -40,6 +41,7 @@ export function DisposableAuditCard({ item, onAction }: DisposableCardProps) {
       <div className="flex-1 min-w-0 basis-40">
         <div className="flex items-center gap-2 flex-wrap mb-1">
           <span className="font-semibold text-foreground">{item.name}</span>
+          <ItemPhotoButton url={item.imageUrl} name={item.name} />
           <span className="text-xs text-foreground-400">{item.category}</span>
         </div>
         {loc && (
@@ -70,14 +72,14 @@ export function DisposableAuditCard({ item, onAction }: DisposableCardProps) {
             {item.unopenedBoxes}
           </div>
           <div className="text-[9px] uppercase tracking-wider text-foreground-400 mt-1 font-semibold">
-            Boxes
+            {item.bagTracked ? 'Bags' : 'Boxes'}
           </div>
         </div>
         <div className="w-full h-1.5 rounded-full bg-content3 overflow-hidden">
           <div className={`h-full rounded-full transition-all duration-300 ${barColor}`} style={{ width: `${pct}%` }} />
         </div>
         <div className="flex items-center gap-1 justify-end flex-wrap">
-          <Chip size="sm" variant="flat" color="default">{item.totalUnits} units</Chip>
+          <Chip size="sm" variant="flat" color="default">{item.totalUnits} {baseUnitLabel(item, item.totalUnits)}</Chip>
           {item.reorderThreshold > 0 && (
             <Chip size="sm" variant="flat" color="default">Reorder ≤{item.reorderThreshold}</Chip>
           )}
@@ -130,6 +132,7 @@ export function AssetAuditCard({ item, onAction }: AssetCardProps) {
       <div className="flex-1 min-w-0 basis-40">
         <div className="flex items-center gap-2 flex-wrap mb-1">
           <span className="font-semibold text-foreground">{item.name}</span>
+          <ItemPhotoButton url={item.imageUrl} name={item.name} />
           {item.assetSerial && (
             <span className="font-mono text-xs text-foreground-500">#{item.assetSerial}</span>
           )}
