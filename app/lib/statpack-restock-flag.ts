@@ -40,7 +40,7 @@ export interface RestockFlagActor {
 // the other equality filter here, so enumerate the open set for a `where(...,
 // 'in', ...)` query instead — same shape as the de-dupe query in
 // `addToBuyList` (app/lib/buy-list.ts:49).
-const OPEN_TEAM_TASK_STATUSES = ['backlog', 'this_cycle', 'in_progress', 'blocked'];
+export const OPEN_TEAM_TASK_STATUSES = ['backlog', 'this_cycle', 'in_progress', 'blocked'];
 
 /**
  * Best-effort: flag a statpack's shortages to the logistics team.
@@ -97,7 +97,7 @@ export async function flagStatpackRestock(
   }
 }
 
-async function getAdminRecipientIds(): Promise<string[]> {
+export async function getAdminRecipientIds(): Promise<string[]> {
   const recipientsSnap = await getDocs(
     query(collection(db, 'users'), where('role', 'in', ['admin', 'quartermaster'])),
   );

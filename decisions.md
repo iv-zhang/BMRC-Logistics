@@ -567,12 +567,22 @@ have changed, preserving the unsaved draft for review.
 
 **Velocity:** usage per week is derived from consecutive audit counts plus logged `intake` between them (`app/lib/count-velocity.ts`, shown in the inventory item's Activity History). Shelf refills are not added back — counts measure the back reserve, so a reserve→shelf transfer is part of the usage. Returns null, not 0, without two usable counts.
 
+### D-35 — Inventory low/out stock auto-flags logistics (extends D-31)
+
+**Decision (2026-11-10, issue #38):** when a stock-reducing write moves an inventory item **into** `low` or `out` (per `getItemStatus`, reserve pool only), the app files one open `team_tasks` card for that item ("Reorder <name>", `linkedInventoryItemId`) and, only when the card is newly created, notifies admin/QM in-app. Hooked writes: audit count reconcile (`submitAuditEntries`), `refillShelf`, and inventory quick-adjust decrements. Helper: `app/lib/low-stock-alerts.ts`.
+
+**This reverses part of D-31**, which kept inventory below-par display-only and auto-flagged statpacks only. Same shape as D-31's statpack flag: runs after the write commits, best-effort, never throws, de-duplicated (a chronically low item keeps one open card), and recipients are admin/quartermaster only — never medops (D-13). No buy-list auto-add: `buyList` creates stay admin/QM/medops in prod rules.
+
+**Member reports:** `/member/report` now judges stock with `computeBagStock().availableItems` instead of the stored `totalStockQuantity`, and a `low_stock` report notifies admin/QM with a link to `/issue-reports`.
+
+**Do not regress:** don't alert on every subsequent drop (only the transition into low/out, and only one card while it's open); don't include medops; never let an alert failure fail the stock write.
+
 ### D-36 — Check-off asks each item only what matters (issue #36)
 
 **Decision (2026-11-10):** the check-off page trims per-item prompts to the essentials:
 - **AED checklist only on the AED unit** — `isAedDevice()` (`app/lib/statpack-critical.ts`): `assetCategory === 'AED'`, or an "AED" name that isn't pads/battery/trainer. "AED Pads" / "AED Battery" are ordinary items.
 - **One expiration box per AED** — the "Pad / battery expiration" month is the AED's expiration check; the generic "Confirm expiration" box is not asked again. That month still flows to `newExpirationDate` and the device-currency write-back.
-- **No −/+ counter on assets** (serial / asset instance / `isAsset`) — assets are status-tracked, never counted.
+- **No −/+ counter on status-tracked assets** (rows with a serial or a linked asset instance — the same test the check-off transaction uses). A row flagged only `itemDetails.isAsset` still shows the Asset chip but is counted like a consumable, so a stored shortage is never silently reset to par.
 - **Epinephrine: "Solution clear — not discolored or cloudy"** is a required check; "discolored / cloudy" is a blocking problem (checkout → flag the pack; check-in/audit → report or acknowledge). Enforced on the page only, like the AED pads/battery checkboxes.
 
 Out of scope for now (tracked on #36): name standardization from the 11/4 CSV mapping, a dropdown item picker, and asset checks in the audit drawer.
