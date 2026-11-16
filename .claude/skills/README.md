@@ -15,6 +15,7 @@ overview; these load on demand when a task matches.
 | `bmrc-audit-workbench` | The `/audit` page, its five actions, receiving shipments, moves, issue reports, the `auditEvents` ledger. |
 | `bmrc-new-page` | Creating a route/page, nav registration, role gating, static-export routing, Firestore subscription patterns. |
 | `bmrc-testing` | Running/writing tests, the emulator harness, seeding, end-to-end verification of a change. |
+| `bmrc-next-step` | "What should I work on next?", my tasks, deadlines, phases, or project status. Reads `docs/ROADMAP.md`. |
 | `bmrc-migrations` | Anything in `scripts/` against live data; schema changes, backfills, data fixes. |
 | `bmrc-debugging` | Any bug hunt — symptom → cause → fix playbook for the recurring failure classes. |
 | `bmrc-ui` (in `.claude/commands/`) | Anything the user can see — layout, components, colors, responsiveness. |

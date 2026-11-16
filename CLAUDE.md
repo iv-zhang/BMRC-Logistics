@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Current focus (read first)
+
+**[docs/ROADMAP.md](docs/ROADMAP.md) is the team's shared plan: phases, dates, owners, cut lists, and open decisions.** When anyone asks "what should I work on / what's next," use the `bmrc-next-step` skill: it works out who you're talking to, finds the current phase by today's date, and recommends that person's next 1–3 steps from their lane. Right now (2026-11 → 2027-05) the work is **statpack check-off and supply inventory only**; shifts, stats, finance and uniforms are frozen. Don't start work outside the current phase, or on an item under "Open decisions," without asking. When a deliverable lands, update its row and the status log in ROADMAP.md in the same PR.
+
 ## Commands
 
 ```bash

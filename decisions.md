@@ -586,3 +586,27 @@ have changed, preserving the unsaved draft for review.
 - **Epinephrine: "Solution clear — not discolored or cloudy"** is a required check; "discolored / cloudy" is a blocking problem (checkout → flag the pack; check-in/audit → report or acknowledge). Enforced on the page only, like the AED pads/battery checkboxes.
 
 Out of scope for now (tracked on #36): name standardization from the 11/4 CSV mapping, a dropdown item picker, and asset checks in the audit drawer.
+
+### D-37 — At checkout, shortages flag; they never block (amends D-8)
+
+**Decision (Ivan, 2026-11-16):** a short or missing consumable (EpiPen, pressure dressings, cold packs, anything counted) **does not block checkout**. It shows in the amber card in plain words ("You can still take this pack. Logistics will restock: …"), and the pack still reads `Restock Needed` for logistics. This reverses the shortage part of the 2026-11-03 D-8 amendment. **Still blocking:** expired items, low O₂ PSI, unfinished or failed device checks, discolored epi, a lapsed device check, and bag seals.
+
+**Why:** BMRC is first-aid scope, and a blocked member on 11/15 took MRC 2 anyway outside the app. A gate people walk around protects nothing and erases the custody record. A pack that's 1 item short is better out *with* a record and a restock task than out *without* either.
+
+**Revisit when** epi enters protocol or scope grows. The likely shape then is a per-item "required for checkout" setting (data, per D-1), default off. Not built now (feature freeze).
+
+### D-38 — Stay on Firestore (closes the platform question)
+
+**Decision (2026-11-16):** the rebuild stays on Cloud Firestore. Firebase SQL Connect and Supabase are not adopted.
+
+**Why:** the team agreed the choice matters less than picking one and building. Firestore is the only option that meets all three hard constraints today: offline check-off in the no-signal HQ (writes queue on the phone), $0, and no server to maintain through turnover. SQL Connect costs ~$9.37/mo after its trial and has no documented offline write queue; Supabase's free tier pauses after 7 idle days and needs a paid add-on for offline. SQL's real advantage, enforced structure, is recovered with one data layer plus typed schema validation (ROADMAP Phase C).
+
+**Revisit when** reporting across collections gets painful (likely the shifts/roster phase) or a hard constraint changes. Keeping all Firestore access in one data layer keeps that switch contained.
+
+### D-39 — "Flag this pack" lists only real failures; checkout shortages create a restock task
+
+**Decision (2026-11-16):**
+1. The "Can't fix it — flag this pack" dialog lists **only problems the member found and can't fix there**: expired items, low O₂ PSI, a device check that failed, discolored epi. Things the member just **hasn't done yet** (an empty PSI box, an empty pad-date box) are never sent to logistics as reports. The member is pointed back to finish them. How a "this check failed" answer is captured (e.g. a Failed toggle like epi's "discolored") is the tech lead's call, within the feature freeze.
+2. A checkout with shortages creates the same de-duplicated restock task that check-in already creates (D-31). Logistics hears about it when the pack leaves, not when it comes back.
+
+**Why:** on 11/15 the dialog listed "pressure not entered" and "pads not confirmed" as if they were broken equipment. That confused members and would have sent logistics false reports.
