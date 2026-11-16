@@ -28,6 +28,7 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { db } from '@/firebase';
+import { maybeFlagLowStock } from '@/app/lib/low-stock-alerts';
 import { consumeReserveUnits } from '@/app/lib/stock-pools';
 import type { InventoryItem } from '@/app/types';
 
@@ -154,6 +155,15 @@ export async function refillShelf(params: RefillShelfParams): Promise<RefillShel
   }
 
   await batch.commit();
+
+  // Reserve was drawn down: flag if that pushed the item into low/out.
+  // Fire-and-forget, after commit; maybeFlagLowStock never throws.
+  if (consumed > 0) {
+    void maybeFlagLowStock(item, { ...item, ...patch } as InventoryItem, {
+      uid: actor.id ?? '',
+      name: actor.name ?? 'Unknown',
+    });
+  }
 
   return { consumed };
 }
