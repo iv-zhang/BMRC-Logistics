@@ -576,3 +576,13 @@ have changed, preserving the unsaved draft for review.
 **Member reports:** `/member/report` now judges stock with `computeBagStock().availableItems` instead of the stored `totalStockQuantity`, and a `low_stock` report notifies admin/QM with a link to `/issue-reports`.
 
 **Do not regress:** don't alert on every subsequent drop (only the transition into low/out, and only one card while it's open); don't include medops; never let an alert failure fail the stock write.
+
+### D-36 — Check-off asks each item only what matters (issue #36)
+
+**Decision (2026-11-10):** the check-off page trims per-item prompts to the essentials:
+- **AED checklist only on the AED unit** — `isAedDevice()` (`app/lib/statpack-critical.ts`): `assetCategory === 'AED'`, or an "AED" name that isn't pads/battery/trainer. "AED Pads" / "AED Battery" are ordinary items.
+- **One expiration box per AED** — the "Pad / battery expiration" month is the AED's expiration check; the generic "Confirm expiration" box is not asked again. That month still flows to `newExpirationDate` and the device-currency write-back.
+- **No −/+ counter on status-tracked assets** (rows with a serial or a linked asset instance — the same test the check-off transaction uses). A row flagged only `itemDetails.isAsset` still shows the Asset chip but is counted like a consumable, so a stored shortage is never silently reset to par.
+- **Epinephrine: "Solution clear — not discolored or cloudy"** is a required check; "discolored / cloudy" is a blocking problem (checkout → flag the pack; check-in/audit → report or acknowledge). Enforced on the page only, like the AED pads/battery checkboxes.
+
+Out of scope for now (tracked on #36): name standardization from the 11/4 CSV mapping, a dropdown item picker, and asset checks in the audit drawer.

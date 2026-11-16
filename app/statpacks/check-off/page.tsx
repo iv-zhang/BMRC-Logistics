@@ -20,7 +20,7 @@ import { auth, db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { logStatpackCheckOff } from '@/app/lib/inventory';
 import { flagUnfillablePack, type UnfillableItem } from '@/app/lib/statpack-restock-flag';
-import { isCriticalStatpackItem } from '@/app/lib/statpack-critical';
+import { isCriticalStatpackItem, isAedDevice, isEpinephrine, isStatusTrackedAsset } from '@/app/lib/statpack-critical';
 import { getThresholds } from '@/app/lib/org-config-store';
 import { parseMonthInput } from '@/app/lib/dates';
 import { canUserAudit } from '@/app/lib/audit-helpers';
@@ -57,12 +57,17 @@ interface ItemChecks {
   padsSealed?: boolean;
   batteryOk?: boolean;
   padExp?: string;
+  /** Epinephrine: member confirmed the solution is clear (not discolored / cloudy). */
+  epiClear?: boolean;
+  /** Epinephrine: member says the solution IS discolored / cloudy (must be reported). */
+  epiBad?: boolean;
 }
 
 interface ItemRules {
   needExp: boolean;
   needPsi: boolean;
   needAED: boolean;
+  needEpi: boolean;
   minPsi: number;
   expLabel: string;
   hasRules: boolean;
@@ -72,6 +77,8 @@ interface ItemIssue {
   short: boolean;
   expired: boolean;
   lowPsi: boolean;
+  /** Epinephrine reported discolored / cloudy. */
+  badSolution: boolean;
   shortBy: number;
   any: boolean;
   /**
@@ -82,18 +89,27 @@ interface ItemIssue {
   blocking: boolean;
 }
 
+// Display-only: the "Asset" chip also shows for rows flagged itemDetails.isAsset.
+// Counting must NOT use this — see isStatusTrackedAsset (matches the transaction).
+function isAssetRow(item: StatpackItem): boolean {
+  return isStatusTrackedAsset(item) || item.itemDetails?.isAsset === true;
+}
+
 function deriveRules(item: StatpackItem): ItemRules {
   const d = item.itemDetails;
   const isOxygen = d?.isOxygen === true;
-  const isAED = d?.assetCategory === 'AED' || /\baed\b/i.test(d?.name || '');
-  const needExp =
+  const isAED = isAedDevice(d);
+  // An AED's single "Pad / battery expiration" box IS its expiration check, so
+  // the generic expiration rule is not asked a second time on an AED row.
+  const needExp = !isAED && (
     item.requiresExpirationCheck === true ||
-    item.verificationRules?.requireExpirationConfirmation === true;
+    item.verificationRules?.requireExpirationConfirmation === true);
+  const needEpi = !isAED && isEpinephrine(d);
   const needPsi = isOxygen || (item.verificationRules?.requireO2PsiMin ?? 0) > 0;
   const needAED = isAED;
   const minPsi = item.verificationRules?.requireO2PsiMin ?? getThresholds().o2PsiMin;
-  const expLabel = needAED ? 'Pad / battery expiration' : 'Confirm expiration';
-  return { needExp, needPsi, needAED, minPsi, expLabel, hasRules: needExp || needPsi || needAED };
+  const expLabel = 'Confirm expiration';
+  return { needExp, needPsi, needAED, needEpi, minPsi, expLabel, hasRules: needExp || needPsi || needAED || needEpi };
 }
 
 // An expiration MONTH means the 1st of that month (decided 2026-10-27, decisions.md
@@ -133,6 +149,7 @@ function checksComplete(rules: ItemRules, checks: ItemChecks): boolean {
   if (rules.needExp && !checks.exp) return false;
   if (rules.needPsi && (!checks.psi || !checks.regulatorOk)) return false;
   if (rules.needAED && (!checks.padsSealed || !checks.batteryOk || !checks.padExp)) return false;
+  if (rules.needEpi && !checks.epiClear && !checks.epiBad) return false;
   return true;
 }
 
@@ -156,6 +173,7 @@ function missingCheckFields(rules: ItemRules, checks: ItemChecks): string[] {
   if (rules.needAED && !checks.padsSealed) out.push('the "Pads sealed & unexpired" checkbox');
   if (rules.needAED && !checks.batteryOk) out.push('the "Battery indicator green" checkbox');
   if (rules.needAED && !checks.padExp) out.push('the "Pad / battery expiration" box');
+  if (rules.needEpi && !checks.epiClear && !checks.epiBad) out.push('the "Solution clear" checkbox');
   return out;
 }
 
@@ -174,7 +192,8 @@ function computeIssue(
   const exp = effectiveExpDate(item, rules, checks);
   const expired = exp !== null && exp.getTime() < today.getTime();
   const lowPsi = rules.needPsi && !!checks.psi ? Number(checks.psi) < rules.minPsi : false;
-  return { short, expired, lowPsi, shortBy, any: short || expired || lowPsi, blocking: expired || lowPsi || (mode === 'checkout' && short) };
+  const badSolution = rules.needEpi && checks.epiBad === true;
+  return { short, expired, lowPsi, badSolution, shortBy, any: short || expired || lowPsi || badSolution, blocking: expired || lowPsi || badSolution || (mode === 'checkout' && short) };
 }
 
 // "Ready" (green) = genuinely good: complete checks AND non-expired AND (for O2) in-pressure.
@@ -185,11 +204,12 @@ function isItemReady(
   checks: ItemChecks,
   today: Date,
 ): boolean {
-  const { needExp, needPsi, needAED, minPsi, hasRules } = rules;
+  const { needExp, needPsi, needAED, needEpi, minPsi, hasRules } = rules;
   if (!hasRules) return verifiedSet.has(statpackEntryKey(item));
   if (needExp && (!checks.exp || isMonthExpired(checks.exp, today))) return false;
   if (needPsi && (!checks.psi || Number(checks.psi) < minPsi || !checks.regulatorOk)) return false;
   if (needAED && (!checks.padsSealed || !checks.batteryOk || !checks.padExp || isMonthExpired(checks.padExp, today))) return false;
+  if (needEpi && (!checks.epiClear || checks.epiBad)) return false;
   return true;
 }
 
@@ -257,7 +277,7 @@ function ItemRow({
   onToggle, onMinus, onPlus, onCheck, onRestock, onReport, onAcknowledge,
 }: ItemRowProps) {
   const rules = useMemo(() => deriveRules(item), [item]);
-  const { needExp, needPsi, needAED, minPsi, expLabel, hasRules } = rules;
+  const { needExp, needPsi, needAED, needEpi, minPsi, expLabel, hasRules } = rules;
 
   const [draft, setDraft] = useState<'report' | 'acknowledge' | null>(null);
   const [reason, setReason] = useState('');
@@ -269,7 +289,10 @@ function ItemRow({
   const isExpired = expDays !== null && expDays < 0;
   const isSoon = expDays !== null && expDays >= 0 && expDays <= getThresholds().expirationWarningDays;
 
-  const d = item.itemDetails as (InventoryItem & { maxPsi?: number; isMed?: boolean }) | undefined;
+  const d = item.itemDetails as (InventoryItem & { maxPsi?: number }) | undefined;
+  const isAsset = isAssetRow(item);
+  // Only rows the check-off transaction treats as assets skip counting.
+  const isCounted = !isStatusTrackedAsset(item);
   const isOxygen = d?.isOxygen === true;
   const serial = item.serialNumber || d?.assetSerial;
   const baseName = d?.name || `Item ${item.itemId.slice(-6)}`;
@@ -288,7 +311,7 @@ function ItemRow({
   const psiHint = !checks.psi ? `min ${minPsi}` : psiOk ? 'OK' : `Low · min ${minPsi}`;
   const psiHintColor = !checks.psi ? 'text-warning' : psiOk ? 'text-success' : 'text-danger';
 
-  const checksReady = checksComplete(rules, checks) && (!needExp || !isMonthExpired(checks.exp, today)) && (!needAED || !isMonthExpired(checks.padExp, today)) && (!needPsi || psiOk);
+  const checksReady = checksComplete(rules, checks) && (!needEpi || !checks.epiBad) && (!needExp || !isMonthExpired(checks.exp, today)) && (!needAED || !isMonthExpired(checks.padExp, today)) && (!needPsi || psiOk);
   // At checkout a blocker can't be waved through, so a stale report/ack never counts as resolved.
   const cantWaive = mode === 'checkout' && issue.blocking;
   const resolved = isResolved(resolution) && !cantWaive;
@@ -305,6 +328,7 @@ function ItemRow({
     issue.short ? `Short ${issue.shortBy}` : null,
     issue.expired ? 'Expired' : null,
     issue.lowPsi ? 'Low PSI' : null,
+    issue.badSolution ? 'Discolored / cloudy' : null,
   ].filter(Boolean).join(' · ');
 
   const submitReport = () => {
@@ -357,7 +381,7 @@ function ItemRow({
                 Expiring
               </span>
             )}
-            {d?.isMed && (
+            {d?.isMedication && (
               <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${V ? 'bg-white/20 text-white' : 'bg-pink-100 dark:bg-pink-900/30 text-pink-700 dark:text-pink-300'}`}>
                 Rx
               </span>
@@ -367,7 +391,7 @@ function ItemRow({
                 O₂
               </span>
             )}
-            {d?.assetCategory === 'AED' && (
+            {isAsset && (
               <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${V ? 'bg-white/20 text-white' : 'bg-primary-50 dark:bg-primary-900/20 text-primary'}`}>
                 Asset
               </span>
@@ -379,44 +403,46 @@ function ItemRow({
             )}
           </div>
           <span className={`text-xs font-medium ${V ? 'text-white/70' : 'text-foreground-500'}`}>
-            {POCKETS.find(pk => pk.id === item.pocket)?.name || 'Unassigned pocket'} · {sub}
+            {sub}
           </span>
         </div>
 
-        <div className="flex items-center gap-1.5 flex-none" onClick={e => e.stopPropagation()}>
-          <button
-            onClick={onMinus}
-            aria-label={`Decrease ${itemName} count`}
-            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors duration-150 ${
-              V ? 'bg-white/15 hover:bg-white/25 text-white' : 'bg-content3 hover:bg-content3/80 text-foreground-500'
-            }`}
-          >
-            <Minus size={13} strokeWidth={2.7} />
-          </button>
-          <div className="min-w-[38px] text-center">
-            <div className={`font-mono text-lg font-semibold leading-none tabular-nums ${
-              V ? 'text-white' : issue.short ? 'text-warning' : 'text-foreground'
-            }`}>
-              {found}
+        {isCounted && (
+          <div className="flex items-center gap-1.5 flex-none" onClick={e => e.stopPropagation()}>
+            <button
+              onClick={onMinus}
+              aria-label={`Decrease ${itemName} count`}
+              className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors duration-150 ${
+                V ? 'bg-white/15 hover:bg-white/25 text-white' : 'bg-content3 hover:bg-content3/80 text-foreground-500'
+              }`}
+            >
+              <Minus size={13} strokeWidth={2.7} />
+            </button>
+            <div className="min-w-[38px] text-center">
+              <div className={`font-mono text-lg font-semibold leading-none tabular-nums ${
+                V ? 'text-white' : issue.short ? 'text-warning' : 'text-foreground'
+              }`}>
+                {found}
+              </div>
+              <div className={`text-[9px] font-semibold mt-0.5 uppercase tracking-wide ${
+                V ? 'text-white/60' : 'text-foreground-400'
+              }`}>
+                / {item.requiredQuantity}
+              </div>
             </div>
-            <div className={`text-[9px] font-semibold mt-0.5 uppercase tracking-wide ${
-              V ? 'text-white/60' : 'text-foreground-400'
-            }`}>
-              / {item.requiredQuantity}
-            </div>
+            <button
+              onClick={onPlus}
+              aria-label={`Increase ${itemName} count`}
+              className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors duration-150 ${
+                V
+                  ? 'bg-white/20 hover:bg-white/30 text-white'
+                  : 'bg-primary-50 hover:bg-primary-100 dark:bg-primary-900/20 dark:hover:bg-primary-800/30 text-primary'
+              }`}
+            >
+              <Plus size={13} strokeWidth={2.7} />
+            </button>
           </div>
-          <button
-            onClick={onPlus}
-            aria-label={`Increase ${itemName} count`}
-            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors duration-150 ${
-              V
-                ? 'bg-white/20 hover:bg-white/30 text-white'
-                : 'bg-primary-50 hover:bg-primary-100 dark:bg-primary-900/20 dark:hover:bg-primary-800/30 text-primary'
-            }`}
-          >
-            <Plus size={13} strokeWidth={2.7} />
-          </button>
-        </div>
+        )}
       </div>
 
       {hasRules && (
@@ -530,6 +556,31 @@ function ItemRow({
                   />
                   <span className={`w-2 h-2 rounded-full flex-none ${monthDot(checks.padExp)}`} />
                 </div>
+              </div>
+            )}
+
+            {needEpi && (
+              <div className="flex items-center gap-3 flex-wrap">
+                <button onClick={() => onCheck('epiClear', !checks.epiClear)} className="flex items-center gap-2 text-left">
+                  <div className={`w-5 h-5 rounded-md flex-none flex items-center justify-center border-2 transition-all ${
+                    checks.epiClear
+                      ? V ? 'bg-white border-white' : 'bg-primary border-primary'
+                      : V ? 'bg-transparent border-white/60' : 'bg-transparent border-foreground-400'
+                  }`}>
+                    <Check size={11} strokeWidth={3.5} className={checks.epiClear ? (V ? 'text-primary' : 'text-white') : 'text-transparent'} />
+                  </div>
+                  <span className={`text-xs font-semibold ${V ? 'text-white/90' : 'text-foreground-600'}`}>Solution clear &mdash; not discolored or cloudy</span>
+                </button>
+                <button
+                  onClick={() => onCheck('epiBad', !checks.epiBad)}
+                  className={`text-[11px] font-semibold px-2 py-1 rounded-lg border transition-colors ${
+                    checks.epiBad
+                      ? 'border-danger bg-danger-50 dark:bg-danger-900/30 text-danger'
+                      : V ? 'border-white/40 text-white hover:bg-white/10' : 'border-divider text-foreground-600 hover:bg-content3'
+                  }`}
+                >
+                  {checks.epiBad ? 'Marked discolored / cloudy' : 'It is discolored / cloudy'}
+                </button>
               </div>
             )}
           </div>
@@ -1077,8 +1128,9 @@ export default function StatpackCheckOffPage() {
       }
 
       const contents = rawContents.map(item => {
-        const lookupId = item.assetInstanceId || item.itemId;
-        const inv = lookupId ? invMap.get(lookupId) : undefined;
+        // assetInstanceId may be a serial (not an inventory doc id): fall back to itemId.
+        const inv = (item.assetInstanceId ? invMap.get(item.assetInstanceId) : undefined)
+          ?? (item.itemId ? invMap.get(item.itemId) : undefined);
         return {
           ...item,
           itemDetails: inv ? { ...(item.itemDetails ?? {}), ...inv } : item.itemDetails,
@@ -1233,7 +1285,8 @@ export default function StatpackCheckOffPage() {
   const allItems = useMemo(() => pack?.contents ?? [], [pack]);
 
   const countOf = useCallback((it: StatpackItem) =>
-    itemCounts[statpackEntryKey(it)] ?? (typeof it.currentQuantity === 'number' ? it.currentQuantity : it.requiredQuantity),
+    isStatusTrackedAsset(it) ? it.requiredQuantity
+      : itemCounts[statpackEntryKey(it)] ?? (typeof it.currentQuantity === 'number' ? it.currentQuantity : it.requiredQuantity),
     [itemCounts]);
 
   const bagsByPocket = useMemo(() => {
@@ -1334,12 +1387,14 @@ export default function StatpackCheckOffPage() {
           const exp = effectiveExpDate(it, rules, chk);
           details.push(exp ? `Out of date — it expired ${fmtMonthYear(exp)}` : 'Out of date');
         }
+        if (iss.badSolution) details.push('The solution is discolored or cloudy — it cannot go out');
         if (iss.lowPsi) details.push(`The cylinder reads ${chk.psi} — it needs at least ${rules.minPsi} to go out`);
         if (iss.short) details.push(`Only ${found} of the ${it.requiredQuantity} that should be here — ${iss.shortBy} missing`);
 
         const fixes: string[] = [];
         if (iss.short) fixes.push(mode === 'checkout' ? `fill it up to ${it.requiredQuantity} and tap "Set to par"` : `add the missing ${iss.shortBy} and tap "Set to par"`);
         if (iss.expired) fixes.push('swap in one that is still in date and type its new month in the box');
+        if (iss.badSolution) fixes.push('swap in a fresh one and tap "Solution clear"');
         if (iss.lowPsi) fixes.push('swap in a full cylinder and type its new number in the "Cylinder pressure" box');
 
         list.push({
@@ -1484,7 +1539,13 @@ export default function StatpackCheckOffPage() {
   }, []);
 
   const updateCheck = useCallback((itemId: string, key: keyof ItemChecks, val: string | boolean) => {
-    setItemChecks(prev => ({ ...prev, [itemId]: { ...(prev[itemId] ?? {}), [key]: val } }));
+    setItemChecks(prev => {
+      const next: ItemChecks = { ...(prev[itemId] ?? {}), [key]: val };
+      // "Clear" and "discolored" are mutually exclusive answers.
+      if (key === 'epiClear' && val === true) next.epiBad = false;
+      if (key === 'epiBad' && val === true) next.epiClear = false;
+      return { ...prev, [itemId]: next };
+    });
   }, []);
 
   const setBagSealIntact = useCallback((bagId: string, intact: boolean) => {
@@ -1581,7 +1642,7 @@ export default function StatpackCheckOffPage() {
         pocket: it.pocket,
         requiredQuantity: it.requiredQuantity,
         countedQuantity: found,
-        ok: found >= it.requiredQuantity && !iss.expired && !iss.lowPsi,
+        ok: found >= it.requiredQuantity && !iss.expired && !iss.lowPsi && !iss.badSolution,
         serialNumber: it.serialNumber,
         expirationDate: it.expirationDate,
         newExpirationDate,
@@ -1592,7 +1653,8 @@ export default function StatpackCheckOffPage() {
         issue: res?.kind === 'reported'
           ? { type: res.issueType, quantity: res.quantity, notes: res.notes || undefined }
           : undefined,
-        assetCheckResult: (rules.needAED || rules.needPsi) ? {
+        assetCheckResult: (rules.needAED || rules.needPsi || rules.needEpi) ? {
+          solutionClear: rules.needEpi ? (chk.epiClear === true && chk.epiBad !== true) : undefined,
           padsSealed: chk.padsSealed,
           batteryStatus: chk.batteryOk ? 'Good' as const : undefined,
           oxygenPsi: rules.needPsi && chk.psi ? Number(chk.psi) : undefined,
@@ -1755,11 +1817,12 @@ export default function StatpackCheckOffPage() {
         critical: isCriticalStatpackItem(it),
       };
       if (rules.hasRules && !checksComplete(rules, chk)) {
-        if (rules.needAED || rules.needPsi) {
+        if (rules.needAED || rules.needPsi || rules.needEpi) {
           const bits: string[] = [];
           if (rules.needAED && !chk.batteryOk) bits.push('battery not confirmed green');
           if (rules.needAED && !chk.padsSealed) bits.push('pads not confirmed sealed');
           if (rules.needAED && !chk.padExp) bits.push('pad expiration not entered');
+          if (rules.needEpi && !chk.epiClear && !chk.epiBad) bits.push('solution not confirmed clear');
           if (rules.needPsi && !chk.psi) bits.push('pressure not entered');
           if (rules.needPsi && !chk.regulatorOk) bits.push('regulator not confirmed working');
           out.push({ ...base, problem: 'check_failed', detail: joinList(bits) || 'checks not finished' });
@@ -1772,6 +1835,7 @@ export default function StatpackCheckOffPage() {
         const exp = effectiveExpDate(it, rules, chk);
         out.push({ ...base, problem: 'expired', detail: exp ? `expired ${fmtMonthYear(exp)}` : 'expired' });
       }
+      if (iss.badSolution) out.push({ ...base, problem: 'check_failed', detail: 'solution discolored or cloudy' });
       if (iss.lowPsi) out.push({ ...base, problem: 'low_psi', detail: `reads ${chk.psi} psi` });
     });
     return out;

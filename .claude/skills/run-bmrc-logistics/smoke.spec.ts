@@ -1501,6 +1501,47 @@ test('item photo button appears on check-off and audit, and opens the photo moda
   }
 });
 
+// Issue #36: streamlined check-off checks. An AED row asks for its expiry ONCE
+// (the pad/battery box, even when the expiration rule is also on), has no -/+
+// counter (assets are status-tracked), and an epinephrine row needs a
+// "Solution clear" confirmation before it counts as ready.
+test('check-off streamlines AED and epinephrine checks', async ({ page }) => {
+  const testRunId = `smoke-streamline-${Date.now()}`;
+  const packId = await createDoc('statpacks', {
+    isTest: true,
+    testRunId,
+    name: `[TEST] Smoke Streamline Pack ${testRunId}`,
+    type: 'Primary',
+    status: 'Ready',
+    isCheckedOut: false,
+    currentLocation: 'MRC1',
+    compartments: [{ id: 'main', name: 'Main', parentPocket: 'main', isSealed: false }],
+    contents: [
+      { itemId: 'aed', serialNumber: 'AED-001', assetInstanceId: 'AED-001', requiredQuantity: 1, currentQuantity: 1, pocket: 'main', requiresExpirationCheck: true },
+      { itemId: 'epi', batchId: '', requiredQuantity: 1, currentQuantity: 1, pocket: 'main' },
+    ],
+    sharpsContainer: { status: 'ok' },
+  });
+
+  await signIn(page);
+  await page.goto(`/statpacks/check-off?id=${packId}&mode=audit`, { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2500);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+
+  const aedRow = page.locator('[data-item-id]').filter({ hasText: 'AED' }).first();
+  await expect(aedRow.getByLabel('Pad / battery expiration')).toHaveCount(1);
+  await expect(aedRow.getByLabel('Confirm expiration')).toHaveCount(0);
+  await expect(aedRow.getByRole('button', { name: /(Increase|Decrease) .* count/ })).toHaveCount(0);
+
+  const epiRow = page.locator('[data-item-id]').filter({ hasText: 'Epinephrine' }).first();
+  await expect(epiRow.getByText('Solution clear')).toBeVisible();
+  await epiRow.getByText('Solution clear').click();
+  await expect(epiRow.getByText('Complete')).toBeVisible();
+  await page.screenshot({ path: join(SHOTS, 'checkoff-streamlined-checks.png'), fullPage: true });
+});
+
 // Issue #38: an audit count that drops an item below its reorder threshold files
 // one open team_tasks card for it (and notifies admin/QM), with no manual report.
 test('audit count below the reorder threshold files a low-stock team task', async ({ page }) => {
@@ -1533,7 +1574,7 @@ test('audit count below the reorder threshold files a low-stock team task', asyn
   await expect(card).toBeVisible({ timeout: 10_000 });
   await card.getByRole('button', { name: 'Count' }).click();
   await page.getByRole('spinbutton', { name: 'Individual units observed' }).fill('3');
-  await page.getByRole('button', { name: 'Apply observed count to stock' }).click({ position: { x: 20, y: 15 } });
+  await page.getByRole('button', { name: 'Save count', exact: true }).click({ position: { x: 20, y: 15 } });
 
   await expect.poll(async () => (await getDocById('inventory', itemId))?.looseUnits, { timeout: 10_000 }).toBe(3);
   // The flag is post-commit and best-effort, so poll for the card.
