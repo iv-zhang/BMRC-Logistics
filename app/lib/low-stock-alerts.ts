@@ -32,6 +32,36 @@ export interface LowStockActor {
   name: string;
 }
 
+function toJsDateValue(v: unknown): Date | undefined {
+  if (v == null) return undefined;
+  if (v instanceof Date) return v;
+  const o = v as { toDate?: unknown; seconds?: unknown };
+  if (typeof o.toDate === 'function') return (o.toDate as () => Date).call(v);
+  if (typeof o.seconds === 'number') return new Date(o.seconds * 1000);
+  return undefined;
+}
+
+/**
+ * Pure. Shallow copy of `item` whose batch `expirationDate` / `openDate` are JS
+ * `Date`s. Items read straight from `snapshot.data()` carry Firestore
+ * `Timestamp`s, and `getItemStatus` compares `b.expirationDate < now` — a
+ * Timestamp coerces to a seconds string, which compares LESS than a Date, so every
+ * dated batch would read as expired. Accepts Date, Timestamp (anything with
+ * `toDate()`), legacy `{seconds, nanoseconds}`, and null/undefined.
+ */
+export function withJsBatchDates<T extends Partial<InventoryItem>>(item: T): T {
+  if (!Array.isArray(item.batches)) return item;
+  return {
+    ...item,
+    batches: item.batches.map((b) => {
+      const copy = { ...b } as Record<string, unknown>;
+      copy.expirationDate = toJsDateValue(b.expirationDate);
+      if ('openDate' in b) copy.openDate = toJsDateValue((b as { openDate?: unknown }).openDate);
+      return copy as unknown as typeof b;
+    }),
+  };
+}
+
 const RANK: Record<string, number> = { ok: 0, expiring: 0, low: 1, out: 2 };
 
 /**
@@ -44,8 +74,8 @@ export function stockStatusWorsened(
   before: InventoryItem,
   after: InventoryItem,
 ): LowStockLevel | null {
-  const b = getItemStatus(before);
-  const a = getItemStatus(after);
+  const b = getItemStatus(withJsBatchDates(before));
+  const a = getItemStatus(withJsBatchDates(after));
   if (a !== 'low' && a !== 'out') return null;
   if (b === 'expired') return null;
   return (RANK[a] ?? 0) > (RANK[b] ?? 0) ? a : null;
@@ -61,7 +91,7 @@ export async function flagLowStock(
   actor: LowStockActor,
 ): Promise<void> {
   try {
-    const available = computeBagStock(item as InventoryItem).availableItems;
+    const available = computeBagStock(withJsBatchDates(item) as InventoryItem).availableItems;
     const par = item.reorderThreshold ?? 0;
     const label = status === 'out' ? 'OUT of stock' : 'Low stock';
     const detail = status === 'out'
@@ -119,8 +149,10 @@ export async function maybeFlagLowStock(
   actor: LowStockActor,
 ): Promise<void> {
   try {
-    const status = stockStatusWorsened(before, after);
-    if (status) await flagLowStock(after, status, actor);
+    const nb = withJsBatchDates(before);
+    const na = withJsBatchDates(after);
+    const status = stockStatusWorsened(nb, na);
+    if (status) await flagLowStock(na, status, actor);
   } catch (e) {
     console.warn('maybeFlagLowStock failed:', e);
   }
