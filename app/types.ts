@@ -444,6 +444,12 @@ export interface AuditCountObservation {
 export interface InventoryItem {
   id: string;
   /**
+   * Reference photo shown on audit / check-off ("what does this look like").
+   * An https URL; Google Drive share links are normalized to a thumbnail URL on
+   * save (app/lib/image-url.ts). Empty string = no photo.
+   */
+  imageUrl?: string;
+  /**
    * DERIVED, never typed by hand: `${family}, ${variantLabel}` (family alone if
    * there is no variant). Persisted so the ~78 existing read sites and
    * Firestore `orderBy('name')` keep working — sorting by name naturally
