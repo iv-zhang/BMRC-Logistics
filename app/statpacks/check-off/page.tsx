@@ -20,7 +20,7 @@ import { auth, db } from '@/firebase';
 import { useUserRole } from '@/app/hooks/useUserRole';
 import { logStatpackCheckOff } from '@/app/lib/inventory';
 import { flagUnfillablePack, type UnfillableItem } from '@/app/lib/statpack-restock-flag';
-import { isCriticalStatpackItem, isAedDevice, isEpinephrine } from '@/app/lib/statpack-critical';
+import { isCriticalStatpackItem, isAedDevice, isEpinephrine, isStatusTrackedAsset } from '@/app/lib/statpack-critical';
 import { getThresholds } from '@/app/lib/org-config-store';
 import { parseMonthInput } from '@/app/lib/dates';
 import { canUserAudit } from '@/app/lib/audit-helpers';
@@ -89,10 +89,10 @@ interface ItemIssue {
   blocking: boolean;
 }
 
-// Assets (serial / linked asset instance / flagged isAsset) are status-tracked,
-// never counted — same test the check-off transaction uses (inventory.ts).
+// Display-only: the "Asset" chip also shows for rows flagged itemDetails.isAsset.
+// Counting must NOT use this — see isStatusTrackedAsset (matches the transaction).
 function isAssetRow(item: StatpackItem): boolean {
-  return Boolean(item.serialNumber) || Boolean(item.assetInstanceId) || item.itemDetails?.isAsset === true;
+  return isStatusTrackedAsset(item) || item.itemDetails?.isAsset === true;
 }
 
 function deriveRules(item: StatpackItem): ItemRules {
@@ -291,6 +291,8 @@ function ItemRow({
 
   const d = item.itemDetails as (InventoryItem & { maxPsi?: number }) | undefined;
   const isAsset = isAssetRow(item);
+  // Only rows the check-off transaction treats as assets skip counting.
+  const isCounted = !isStatusTrackedAsset(item);
   const isOxygen = d?.isOxygen === true;
   const serial = item.serialNumber || d?.assetSerial;
   const baseName = d?.name || `Item ${item.itemId.slice(-6)}`;
@@ -405,7 +407,7 @@ function ItemRow({
           </span>
         </div>
 
-        {!isAsset && (
+        {isCounted && (
           <div className="flex items-center gap-1.5 flex-none" onClick={e => e.stopPropagation()}>
             <button
               onClick={onMinus}
@@ -1283,7 +1285,7 @@ export default function StatpackCheckOffPage() {
   const allItems = useMemo(() => pack?.contents ?? [], [pack]);
 
   const countOf = useCallback((it: StatpackItem) =>
-    isAssetRow(it) ? it.requiredQuantity
+    isStatusTrackedAsset(it) ? it.requiredQuantity
       : itemCounts[statpackEntryKey(it)] ?? (typeof it.currentQuantity === 'number' ? it.currentQuantity : it.requiredQuantity),
     [itemCounts]);
 

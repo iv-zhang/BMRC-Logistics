@@ -68,3 +68,13 @@ export function isCriticalStatpackItem(item: StatpackItem): boolean {
     hasPsiRule: (item.verificationRules?.requireO2PsiMin ?? 0) > 0,
   });
 }
+
+/**
+ * Assets that are status-tracked and never counted. Mirrors the check-off
+ * transaction's `isAssetEntry` (inventory.ts): only a serial number or a linked
+ * asset instance qualifies. `itemDetails.isAsset` alone does NOT, so such rows
+ * are counted like consumables and a stored shortage is not overwritten.
+ */
+export function isStatusTrackedAsset(item: { serialNumber?: string | null; assetInstanceId?: string | null }): boolean {
+  return Boolean(item.serialNumber) || Boolean(item.assetInstanceId);
+}
