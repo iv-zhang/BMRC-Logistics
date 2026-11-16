@@ -54,7 +54,7 @@ good at copying an existing pattern and bad at inventing consistent ones, so any
 
 | Dates | Calendar context | Phase | Goal |
 |---|---|---|---|
-| **Mon 11/16 → Tue 11/24** | Week 13 | **A. Checkpoint** | Checkout worksession Tue 11/17; homework for 11/24 (milestone 1) |
+| **Mon 11/16 → Tue 11/24** | Week 13 | **A. Checkpoint** | Prep worksession Tue 11/17; checkout fixes and homework for 11/24 (milestone 1) |
 | Wed 11/25 → Fri 11/27 | Thanksgiving | — | No work expected |
 | **Mon 11/30 → Fri 12/4** | Last week of classes | **B. Live-app stopgap** | Stop the "checkout is broken" reports; log the platform decision |
 | Mon 12/7 → Mon 1/18 | RRR, finals (12/14–18), winter break | Quiet period | **No deadlines.** Optional work only (§5) |
@@ -73,16 +73,19 @@ with written homework** so the meeting makes decisions instead of debating.
 
 | Due | Owner | Issue | Deliverable | Done when |
 |---|---|---|---|---|
-| **Wed 11/18** | Ivan | #63 | Restock MRC 2; post the checkout rule in Slack | MRC 2 at par; Slack post up |
-| **Tue 11/17** | All | #59–#62, #65, #68 | **Checkout worksession**: [plan](plans/2026-11-17-checkout-worksession.md). Sid: #65 + #68 (sizes #60). Ivan + Claude: #60. Ian: #61 + #62 (Lang backs up #61). Lang: #59 | PRs open; the scenarios pass in the sandbox |
+| **Tue 11/17** | All | #50, #58, #52 | **Prep worksession** ([plan](plans/2026-11-17-checkout-worksession.md)), not a build session: (1) checkout walkthrough → tagged problem list (Ivan); (2) item and pack data structure → first draft of #50 (Sid); (3) rooms/shelves/bins/packs/pockets → first draft of #58 (Lang); (4) problem list → issues with owners (Ivan) | All four outputs written down, each with an owner |
+| **Wed 11/18** | Ivan | #63 | Restock MRC 2's pressure dressings and cold pack (no in-date EpiPens in stock); post the checkout rule in Slack | Those two at par; Slack post up |
+| Sun 11/22 | Ian (Lang if Ian is out) | #61 | Clearer bottom button; empty pressure and pad-date boxes look required. Built outside the session | PR open |
+| Sun 11/22 | Ivan + Claude | #60 | Shortages flag instead of block (D-37). After the session | PR open; Sid reviews `app/lib` |
+| Sun 11/22 | Sid | #68 | The flag dialog lists only real failures (D-39). After the session | PR open |
 | Sun 11/22 | Ian | #52 | Clean item catalog in a Google Sheet | Sheet linked on #52 |
-| Sun 11/22 | Sid | #50 | Draft data structure: catalog, locations, par, check-off log | Posted on #50 so others can read it before the meeting |
-| Sun 11/22 | Lang | #58 | HQ storage and pack location map | Sheet linked on #58 |
+| Sun 11/22 | Sid | #50 | Data structure: refine the 11/17 draft and map it to code | `docs/plans/2026-11-17-data-structure-draft.md` updated; linked on #50 |
+| Sun 11/22 | Lang | #58 | HQ organization: refine the 11/17 draft (rooms, shelves, bins, packs, pockets) | Linked on #58 |
 | Sun 11/22 | Ivan | #64 | Watch 3–5 FTOs do a checkout without helping | Notes posted on #64 |
 | Sun 11/22 | Lang | — | Send the 11/24 agenda (at most 4 decisions; each person brings a written pick, the same silent-prep format as 11/15) | Agenda in Slack |
-| Mon 11/23 | Sid, Ivan | #60–#62, #68 | Review the worksession PRs (Sid: `app/lib`; Ivan: member-facing) | Approved, or changes requested |
+| Mon 11/23 | Sid, Ivan | #60, #61, #68 | Review the checkout PRs (Sid: `app/lib`; Ivan: member-facing) | Approved, or changes requested |
 | **Tue 11/24** | Lang | #59 | CI check: typecheck, lint, tests on every PR | Runs on a PR |
-| **Tue 11/24** | Lang | #60–#62 | Merge and deploy the checkout fixes | Live; the 3 scenarios pass on the real site |
+| **Tue 11/24** | Lang | #60, #61, #68 | Merge and deploy the checkout fixes (#62 follows by 12/4) | Live; the scenarios pass on the real site |
 | Tue 11/24 | Ivan | #53 | Live-app safety. **Backups first** (no approval needed); rules deploy and registration are stop-and-ask | Backups on |
 | After 11/24 | Ivan | #54, #55 | Log the meeting's decisions; README PR | Merged |
 
@@ -106,8 +109,8 @@ applies.**
 | Deliverable | Owner | Done when |
 |---|---|---|
 | #66: checkout how-to guide with real screenshots; 5-minute member training | Ivan | Posted in HQ and Slack; demo given |
-| #61: the "N need fixing" button looks tappable and takes you to the empty field (started 11/17) | Ian builds, Ivan accepts | An FTO who has never seen the fix completes a checkout without help |
-| #62: the AED pad expiration is prefilled from the AED's record; an empty O₂ PSI is obviously required (started 11/17) | Ian builds, Ivan accepts (Sid if it touches `app/lib`) | An in-date AED opens prefilled; ticking the regulator box puts the cursor in the PSI box |
+| #61: the "N need fixing" button looks tappable and takes you to the empty field; empty pressure and pad-date boxes look required (PR by 11/22) | Ian builds (Lang if Ian is out), Ivan accepts | An FTO who has never seen the fix completes a checkout without help |
+| #62: the AED pad expiration is prefilled from the AED's record | Ian builds, Ivan accepts (Sid if it touches `app/lib`) | An in-date AED opens with the month filled in; an expired one opens empty |
 | One-page "how to check out a pack" card posted in HQ, with a QR to the site | Ivan | Posted |
 | Phase C issues written, with owners, for Spring cycle 1 | Lang | Issues exist in the new milestone |
 
@@ -205,6 +208,7 @@ Only if someone wants to. Nothing here is due.
 Add one line per change: date, what changed, who.
 
 - 2026-11-16: draft created from the 11/15 meeting, Slack reports, and the academic calendar (Ivan).
+- 2026-11-16: 11/17 worksession changed from a build session to a **prep session**: a checkout walkthrough, then first drafts of the data structure (#50, Sid) and HQ organization (#58, Lang), then problems turned into issues. Code (#60, #62, #68) moves to after the session with the same owners; #61 is built outside it (Ian, or Lang). #63: no in-date EpiPens in stock, so the restock covers pressure dressings and cold pack only (Ivan).
 - 2026-11-16: Worksession resized: #60 split into #60 (gate, Ivan + Claude, Sid reviews), #68 (flag dialog, Sid) and #69 (checkout restock task, deferred). Sid sizes his own work; Lang backs up Ian's #61. D-37 now spells out critical items (AED/O₂ still block via their checks; a missing EpiPen flags on purpose and the card says so) (Ivan).
 - 2026-11-16: D-37 broadened (all shortages flag at checkout); D-38 (stay on Firestore, #51 closed); D-39 (flag dialog lists only real failures; checkout shortages create a restock task). #60 rescoped and moved to Sid; #65 (duplicate AED) and #66 (training guide) created. Worksession planned for Tue 11/17 (Ivan).
 - 2026-11-16: Phase A detailed by day and owner. D-37 added (a missing EpiPen doesn't block checkout). Issues #60–#64 created; milestone "12/4 live-app stopgap" added (Ivan).
