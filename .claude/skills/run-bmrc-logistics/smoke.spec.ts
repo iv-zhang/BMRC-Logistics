@@ -160,6 +160,19 @@ test('assets page renders merged statpacks (signed in)', async ({ page }) => {
   await expect(page.getByText('MRC1 Primary').first()).toBeVisible();
 });
 
+// AUTH-GATED: glove bags (issue #32) — audit card names the counted unit.
+test('audit shows glove stock in pairs', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/audit', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(2500);
+  const skip = page.getByText('Skip Tutorial');
+  if (await skip.isVisible().catch(() => false)) { await skip.click(); await page.waitForTimeout(400); }
+  const card = page.getByText('Nitrile Gloves, M').first();
+  await expect(card).toBeVisible();
+  await expect(page.getByText('pairs', { exact: false }).first()).toBeVisible();
+});
+
 // AUTH-GATED: admin edits a pack's expected contents straight from the audit
 // Statpacks tab — opens the shared StatpackEditorModal, adds an item, saves,
 // and expects the success toast (toast only fires after the Firestore writes).

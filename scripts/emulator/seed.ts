@@ -44,6 +44,7 @@ export const IDS = {
 /** Every collection the seed writes — also the wipe list for clearAll(). */
 export const SEED_COLLECTIONS = [
   'inventory',
+  'exchange_bags',
   'statpacks',
   'laf_records',
   'pools',
@@ -274,6 +275,29 @@ export function buildSeedData(t0 = now()) {
     },
   };
 
+  // Glove bags (issue #32): 5 pairs per zip-lock bag, one SKU per size.
+  const exchange_bags: Record<string, Record<string, unknown>> = {};
+  for (const [size, bags] of [['S', 6], ['M', 10], ['L', 8], ['XL', 4]] as const) {
+    const id = `gloves-${size.toLowerCase()}`;
+    const name = `Nitrile Gloves, ${size}`;
+    inventory[id] = {
+      name, family: 'Nitrile Gloves', variantLabel: size,
+      category: 'PPE', unit: 'bag', baseUnit: 'pair',
+      tracksExpiration: false, reorderThreshold: 20,
+      location: 'HQ', room: 'Back Room', pool: 'field',
+      batches: [{
+        id: `${id}-lot`, lotNumber: `GLV-${size}-1`, stock: bags * 5,
+        bagCount: bags, itemsPerBag: 5, looseItems: 0, status: 'sealed', receivedAt: d(-20),
+      }],
+      createdAt: d(-40), updatedAt: d(-10),
+    };
+    exchange_bags[`glove-bag-${size.toLowerCase()}`] = {
+      name: `Glove bag (${size})`,
+      lines: [{ itemId: id, itemName: name, qtyPerBag: 5 }],
+      fullCount: 3, emptyCount: 0, parBags: 3, createdAt: d(-20), updatedAt: d(-5),
+    };
+  }
+
   // ── STATPACKS ──────────────────────────────────────────────────────────────
   // Both MRC1 and MRC2 carry epi LOT A, the glucometer, and the AED, so a recall
   // of epi-lot-A must cascade to both packs (INV-7).
@@ -394,7 +418,7 @@ export function buildSeedData(t0 = now()) {
     },
   };
 
-  return { inventory, statpacks, laf_records, pools, users, org_settings };
+  return { inventory, exchange_bags, statpacks, laf_records, pools, users, org_settings };
 }
 
 /** Delete every doc in the seed collections (bounded, known-collection wipe). */
